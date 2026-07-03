@@ -1,0 +1,844 @@
+{
+  "economy_raw_source": "extractor\\native\\lanes\\country_economy_counters_live\\wave2_ire_oracle\\economy_raw.json",
+  "generated_utc": "2026-07-03T08:09:59+00:00",
+  "independent_state_level_recompute": {
+    "attribution_checks": {
+      "controller_with_owner_fallback": {
+        "method": "Sum raw states.<id>.buildings.{industrial_complex,arms_factory,dockyard}.level from parse_save.py output, independent of parse_economy.py aggregation.",
+        "mismatches": {
+          "civilian": [
+            {
+              "delta_observed_minus_oracle": -13,
+              "oracle_from_states": 13,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "BEL"
+            },
+            {
+              "delta_observed_minus_oracle": 4,
+              "oracle_from_states": 15,
+              "recomputed_from_raw_state_buildings": 19,
+              "tag": "BRM"
+            },
+            {
+              "delta_observed_minus_oracle": -10,
+              "oracle_from_states": 24,
+              "recomputed_from_raw_state_buildings": 14,
+              "tag": "CHI"
+            },
+            {
+              "delta_observed_minus_oracle": -7,
+              "oracle_from_states": 21,
+              "recomputed_from_raw_state_buildings": 14,
+              "tag": "D04"
+            },
+            {
+              "delta_observed_minus_oracle": 26,
+              "oracle_from_states": 58,
+              "recomputed_from_raw_state_buildings": 84,
+              "tag": "ENG"
+            },
+            {
+              "delta_observed_minus_oracle": -35,
+              "oracle_from_states": 38,
+              "recomputed_from_raw_state_buildings": 3,
+              "tag": "FRA"
+            },
+            {
+              "delta_observed_minus_oracle": -13,
+              "oracle_from_states": 13,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "GDC"
+            },
+            {
+              "delta_observed_minus_oracle": 13,
+              "oracle_from_states": 6,
+              "recomputed_from_raw_state_buildings": 19,
+              "tag": "GEN"
+            },
+            {
+              "delta_observed_minus_oracle": 73,
+              "oracle_from_states": 95,
+              "recomputed_from_raw_state_buildings": 168,
+              "tag": "GER"
+            },
+            {
+              "delta_observed_minus_oracle": -10,
+              "oracle_from_states": 10,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "GRE"
+            },
+            {
+              "delta_observed_minus_oracle": -6,
+              "oracle_from_states": 9,
+              "recomputed_from_raw_state_buildings": 3,
+              "tag": "GXC"
+            },
+            {
+              "delta_observed_minus_oracle": -10,
+              "oracle_from_states": 13,
+              "recomputed_from_raw_state_buildings": 3,
+              "tag": "HOL"
+            },
+            {
+              "delta_observed_minus_oracle": 6,
+              "oracle_from_states": 30,
+              "recomputed_from_raw_state_buildings": 36,
+              "tag": "HUN"
+            },
+            {
+              "delta_observed_minus_oracle": 1,
+              "oracle_from_states": 8,
+              "recomputed_from_raw_state_buildings": 9,
+              "tag": "IRQ"
+            },
+            {
+              "delta_observed_minus_oracle": 23,
+              "oracle_from_states": 50,
+              "recomputed_from_raw_state_buildings": 73,
+              "tag": "ITA"
+            },
+            {
+              "delta_observed_minus_oracle": 3,
+              "oracle_from_states": 61,
+              "recomputed_from_raw_state_buildings": 64,
+              "tag": "JAP"
+            },
+            {
+              "delta_observed_minus_oracle": -6,
+              "oracle_from_states": 6,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "LEB"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 3,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "LUX"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 13,
+              "recomputed_from_raw_state_buildings": 15,
+              "tag": "MAL"
+            },
+            {
+              "delta_observed_minus_oracle": -18,
+              "oracle_from_states": 18,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "NOR"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 3,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "NXM"
+            },
+            {
+              "delta_observed_minus_oracle": 6,
+              "oracle_from_states": 8,
+              "recomputed_from_raw_state_buildings": 14,
+              "tag": "PAL"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 7,
+              "recomputed_from_raw_state_buildings": 4,
+              "tag": "PHI"
+            },
+            {
+              "delta_observed_minus_oracle": -23,
+              "oracle_from_states": 23,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "POL"
+            },
+            {
+              "delta_observed_minus_oracle": -4,
+              "oracle_from_states": 4,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "PRC"
+            },
+            {
+              "delta_observed_minus_oracle": 3,
+              "oracle_from_states": 12,
+              "recomputed_from_raw_state_buildings": 15,
+              "tag": "PSR"
+            },
+            {
+              "delta_observed_minus_oracle": 9,
+              "oracle_from_states": 7,
+              "recomputed_from_raw_state_buildings": 16,
+              "tag": "RKB"
+            },
+            {
+              "delta_observed_minus_oracle": 18,
+              "oracle_from_states": 8,
+              "recomputed_from_raw_state_buildings": 26,
+              "tag": "RKG"
+            },
+            {
+              "delta_observed_minus_oracle": 4,
+              "oracle_from_states": 7,
+              "recomputed_from_raw_state_buildings": 11,
+              "tag": "RKN"
+            },
+            {
+              "delta_observed_minus_oracle": 42,
+              "oracle_from_states": 7,
+              "recomputed_from_raw_state_buildings": 49,
+              "tag": "RKO"
+            },
+            {
+              "delta_observed_minus_oracle": 7,
+              "oracle_from_states": 5,
+              "recomputed_from_raw_state_buildings": 12,
+              "tag": "RKU"
+            },
+            {
+              "delta_observed_minus_oracle": 39,
+              "oracle_from_states": 8,
+              "recomputed_from_raw_state_buildings": 47,
+              "tag": "RNG"
+            },
+            {
+              "delta_observed_minus_oracle": 1,
+              "oracle_from_states": 21,
+              "recomputed_from_raw_state_buildings": 22,
+              "tag": "ROM"
+            },
+            {
+              "delta_observed_minus_oracle": -7,
+              "oracle_from_states": 7,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "SHX"
+            },
+            {
+              "delta_observed_minus_oracle": -19,
+              "oracle_from_states": 19,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "SIA"
+            },
+            {
+              "delta_observed_minus_oracle": -65,
+              "oracle_from_states": 149,
+              "recomputed_from_raw_state_buildings": 84,
+              "tag": "SOV"
+            },
+            {
+              "delta_observed_minus_oracle": -5,
+              "oracle_from_states": 5,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "SYR"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 182,
+              "recomputed_from_raw_state_buildings": 184,
+              "tag": "USA"
+            },
+            {
+              "delta_observed_minus_oracle": 1,
+              "oracle_from_states": 6,
+              "recomputed_from_raw_state_buildings": 7,
+              "tag": "VIN"
+            },
+            {
+              "delta_observed_minus_oracle": -23,
+              "oracle_from_states": 23,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "YUG"
+            }
+          ],
+          "dockyard": [
+            {
+              "delta_observed_minus_oracle": -6,
+              "oracle_from_states": 6,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "D04"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 56,
+              "recomputed_from_raw_state_buildings": 58,
+              "tag": "ENG"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 0,
+              "recomputed_from_raw_state_buildings": 2,
+              "tag": "ETH"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 9,
+              "recomputed_from_raw_state_buildings": 6,
+              "tag": "FRA"
+            },
+            {
+              "delta_observed_minus_oracle": 26,
+              "oracle_from_states": 20,
+              "recomputed_from_raw_state_buildings": 46,
+              "tag": "GER"
+            },
+            {
+              "delta_observed_minus_oracle": -2,
+              "oracle_from_states": 5,
+              "recomputed_from_raw_state_buildings": 3,
+              "tag": "GRE"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 3,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "HOL"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 3,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "LEB"
+            },
+            {
+              "delta_observed_minus_oracle": -7,
+              "oracle_from_states": 7,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "NOR"
+            },
+            {
+              "delta_observed_minus_oracle": 3,
+              "oracle_from_states": 3,
+              "recomputed_from_raw_state_buildings": 6,
+              "tag": "PAL"
+            },
+            {
+              "delta_observed_minus_oracle": -13,
+              "oracle_from_states": 13,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "POL"
+            },
+            {
+              "delta_observed_minus_oracle": 6,
+              "oracle_from_states": 1,
+              "recomputed_from_raw_state_buildings": 7,
+              "tag": "RKG"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 0,
+              "recomputed_from_raw_state_buildings": 2,
+              "tag": "RKO"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 0,
+              "recomputed_from_raw_state_buildings": 2,
+              "tag": "RKU"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 4,
+              "recomputed_from_raw_state_buildings": 6,
+              "tag": "ROM"
+            },
+            {
+              "delta_observed_minus_oracle": -2,
+              "oracle_from_states": 2,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "SIA"
+            },
+            {
+              "delta_observed_minus_oracle": -6,
+              "oracle_from_states": 23,
+              "recomputed_from_raw_state_buildings": 17,
+              "tag": "SOV"
+            },
+            {
+              "delta_observed_minus_oracle": 1,
+              "oracle_from_states": 75,
+              "recomputed_from_raw_state_buildings": 76,
+              "tag": "USA"
+            },
+            {
+              "delta_observed_minus_oracle": -1,
+              "oracle_from_states": 1,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "YUG"
+            }
+          ],
+          "military": [
+            {
+              "delta_observed_minus_oracle": -12,
+              "oracle_from_states": 12,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "BEL"
+            },
+            {
+              "delta_observed_minus_oracle": 1,
+              "oracle_from_states": 12,
+              "recomputed_from_raw_state_buildings": 13,
+              "tag": "BRM"
+            },
+            {
+              "delta_observed_minus_oracle": -17,
+              "oracle_from_states": 30,
+              "recomputed_from_raw_state_buildings": 13,
+              "tag": "CHI"
+            },
+            {
+              "delta_observed_minus_oracle": -13,
+              "oracle_from_states": 36,
+              "recomputed_from_raw_state_buildings": 23,
+              "tag": "D04"
+            },
+            {
+              "delta_observed_minus_oracle": 33,
+              "oracle_from_states": 136,
+              "recomputed_from_raw_state_buildings": 169,
+              "tag": "ENG"
+            },
+            {
+              "delta_observed_minus_oracle": 1,
+              "oracle_from_states": 2,
+              "recomputed_from_raw_state_buildings": 3,
+              "tag": "ETH"
+            },
+            {
+              "delta_observed_minus_oracle": -49,
+              "oracle_from_states": 53,
+              "recomputed_from_raw_state_buildings": 4,
+              "tag": "FRA"
+            },
+            {
+              "delta_observed_minus_oracle": -14,
+              "oracle_from_states": 14,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "GDC"
+            },
+            {
+              "delta_observed_minus_oracle": 14,
+              "oracle_from_states": 6,
+              "recomputed_from_raw_state_buildings": 20,
+              "tag": "GEN"
+            },
+            {
+              "delta_observed_minus_oracle": 91,
+              "oracle_from_states": 153,
+              "recomputed_from_raw_state_buildings": 244,
+              "tag": "GER"
+            },
+            {
+              "delta_observed_minus_oracle": -10,
+              "oracle_from_states": 11,
+              "recomputed_from_raw_state_buildings": 1,
+              "tag": "GRE"
+            },
+            {
+              "delta_observed_minus_oracle": -4,
+              "oracle_from_states": 14,
+              "recomputed_from_raw_state_buildings": 10,
+              "tag": "GXC"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 7,
+              "recomputed_from_raw_state_buildings": 4,
+              "tag": "HOL"
+            },
+            {
+              "delta_observed_minus_oracle": 8,
+              "oracle_from_states": 40,
+              "recomputed_from_raw_state_buildings": 48,
+              "tag": "HUN"
+            },
+            {
+              "delta_observed_minus_oracle": 1,
+              "oracle_from_states": 12,
+              "recomputed_from_raw_state_buildings": 13,
+              "tag": "IRQ"
+            },
+            {
+              "delta_observed_minus_oracle": 13,
+              "oracle_from_states": 75,
+              "recomputed_from_raw_state_buildings": 88,
+              "tag": "ITA"
+            },
+            {
+              "delta_observed_minus_oracle": 10,
+              "oracle_from_states": 47,
+              "recomputed_from_raw_state_buildings": 57,
+              "tag": "JAP"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 3,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "LEB"
+            },
+            {
+              "delta_observed_minus_oracle": -8,
+              "oracle_from_states": 8,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "LUX"
+            },
+            {
+              "delta_observed_minus_oracle": 3,
+              "oracle_from_states": 16,
+              "recomputed_from_raw_state_buildings": 19,
+              "tag": "MAL"
+            },
+            {
+              "delta_observed_minus_oracle": 1,
+              "oracle_from_states": 8,
+              "recomputed_from_raw_state_buildings": 9,
+              "tag": "MEN"
+            },
+            {
+              "delta_observed_minus_oracle": -13,
+              "oracle_from_states": 13,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "NOR"
+            },
+            {
+              "delta_observed_minus_oracle": -3,
+              "oracle_from_states": 3,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "NXM"
+            },
+            {
+              "delta_observed_minus_oracle": 3,
+              "oracle_from_states": 3,
+              "recomputed_from_raw_state_buildings": 6,
+              "tag": "PAL"
+            },
+            {
+              "delta_observed_minus_oracle": -2,
+              "oracle_from_states": 5,
+              "recomputed_from_raw_state_buildings": 3,
+              "tag": "PHI"
+            },
+            {
+              "delta_observed_minus_oracle": -23,
+              "oracle_from_states": 23,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "POL"
+            },
+            {
+              "delta_observed_minus_oracle": -8,
+              "oracle_from_states": 8,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "PRC"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 10,
+              "recomputed_from_raw_state_buildings": 12,
+              "tag": "RKB"
+            },
+            {
+              "delta_observed_minus_oracle": 13,
+              "oracle_from_states": 4,
+              "recomputed_from_raw_state_buildings": 17,
+              "tag": "RKG"
+            },
+            {
+              "delta_observed_minus_oracle": 2,
+              "oracle_from_states": 8,
+              "recomputed_from_raw_state_buildings": 10,
+              "tag": "RKN"
+            },
+            {
+              "delta_observed_minus_oracle": 20,
+              "oracle_from_states": 1,
+              "recomputed_from_raw_state_buildings": 21,
+              "tag": "RKO"
+            },
+            {
+              "delta_observed_minus_oracle": 16,
+              "oracle_from_states": 1,
+              "recomputed_from_raw_state_buildings": 17,
+              "tag": "RKU"
+            },
+            {
+              "delta_observed_minus_oracle": 39,
+              "oracle_from_states": 6,
+              "recomputed_from_raw_state_buildings": 45,
+              "tag": "RNG"
+            },
+            {
+              "delta_observed_minus_oracle": 7,
+              "oracle_from_states": 18,
+              "recomputed_from_raw_state_buildings": 25,
+              "tag": "ROM"
+            },
+            {
+              "delta_observed_minus_oracle": -6,
+              "oracle_from_states": 6,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "SHX"
+            },
+            {
+              "delta_observed_minus_oracle": -19,
+              "oracle_from_states": 19,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "SIA"
+            },
+            {
+              "delta_observed_minus_oracle": -54,
+              "oracle_from_states": 155,
+              "recomputed_from_raw_state_buildings": 101,
+              "tag": "SOV"
+            },
+            {
+              "delta_observed_minus_oracle": -5,
+              "oracle_from_states": 5,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "SYR"
+            },
+            {
+              "delta_observed_minus_oracle": 7,
+              "oracle_from_states": 257,
+              "recomputed_from_raw_state_buildings": 264,
+              "tag": "USA"
+            },
+            {
+              "delta_observed_minus_oracle": 3,
+              "oracle_from_states": 4,
+              "recomputed_from_raw_state_buildings": 7,
+              "tag": "VIN"
+            },
+            {
+              "delta_observed_minus_oracle": -22,
+              "oracle_from_states": 22,
+              "recomputed_from_raw_state_buildings": 0,
+              "tag": "YUG"
+            }
+          ]
+        },
+        "summary": {
+          "civilian": {
+            "countries_compared": 439,
+            "matches": 399,
+            "mismatches": 40,
+            "missing_oracle": 0
+          },
+          "dockyard": {
+            "countries_compared": 439,
+            "matches": 420,
+            "mismatches": 19,
+            "missing_oracle": 0
+          },
+          "military": {
+            "countries_compared": 439,
+            "matches": 398,
+            "mismatches": 41,
+            "missing_oracle": 0
+          }
+        }
+      },
+      "owner": {
+        "method": "Sum raw states.<id>.buildings.{industrial_complex,arms_factory,dockyard}.level from parse_save.py output, independent of parse_economy.py aggregation.",
+        "mismatches": {
+          "civilian": [],
+          "dockyard": [],
+          "military": []
+        },
+        "summary": {
+          "civilian": {
+            "countries_compared": 439,
+            "matches": 439,
+            "mismatches": 0,
+            "missing_oracle": 0
+          },
+          "dockyard": {
+            "countries_compared": 439,
+            "matches": 439,
+            "mismatches": 0,
+            "missing_oracle": 0
+          },
+          "military": {
+            "countries_compared": 439,
+            "matches": 439,
+            "mismatches": 0,
+            "missing_oracle": 0
+          }
+        }
+      }
+    },
+    "oracle_fields_compared": [
+      "civilian_from_state_building_levels",
+      "military_from_state_building_levels",
+      "dockyard_from_state_building_levels"
+    ],
+    "primary_oracle_attribution": "owner; parse_economy.py's *_from_states fields are owner-attributed. controller_with_owner_fallback is reported separately for occupation edge cases."
+  },
+  "melt_warning": "49d0\n3f75",
+  "meta": {
+    "countries_in_economy_raw": 439,
+    "explicit_controller_not_owner_states": 222,
+    "save_date": "1943.11.9.17",
+    "save_version": "Operation Postern v1.19.2.0.a729 (d245)",
+    "states_parsed": 1081
+  },
+  "oracle_total_accounting_self_consistency": {
+    "residual_country_count": 50,
+    "residual_examples": [
+      {
+        "kind": "civilian",
+        "offmap_levels": 5,
+        "residual_total_minus_state": 5,
+        "state_levels": 21,
+        "tag": "AFG",
+        "total": 26
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 1,
+        "residual_total_minus_state": 1,
+        "state_levels": 32,
+        "tag": "ARG",
+        "total": 33
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 3,
+        "residual_total_minus_state": 3,
+        "state_levels": 27,
+        "tag": "AST",
+        "total": 30
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 4,
+        "residual_total_minus_state": 4,
+        "state_levels": 13,
+        "tag": "BEL",
+        "total": 17
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 1,
+        "residual_total_minus_state": 1,
+        "state_levels": 35,
+        "tag": "BRA",
+        "total": 36
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 1,
+        "residual_total_minus_state": 1,
+        "state_levels": 15,
+        "tag": "BRM",
+        "total": 16
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 1,
+        "residual_total_minus_state": 1,
+        "state_levels": 36,
+        "tag": "CAN",
+        "total": 37
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 1,
+        "residual_total_minus_state": 1,
+        "state_levels": 36,
+        "tag": "CHL",
+        "total": 37
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 1,
+        "residual_total_minus_state": 1,
+        "state_levels": 29,
+        "tag": "COG",
+        "total": 30
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 4,
+        "residual_total_minus_state": 4,
+        "state_levels": 58,
+        "tag": "ENG",
+        "total": 62
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 2,
+        "residual_total_minus_state": 2,
+        "state_levels": 0,
+        "tag": "EST",
+        "total": 2
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 3,
+        "residual_total_minus_state": 3,
+        "state_levels": 38,
+        "tag": "FRA",
+        "total": 41
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 4,
+        "residual_total_minus_state": 4,
+        "state_levels": 95,
+        "tag": "GER",
+        "total": 99
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 2,
+        "residual_total_minus_state": 2,
+        "state_levels": 10,
+        "tag": "GRE",
+        "total": 12
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 1,
+        "residual_total_minus_state": 1,
+        "state_levels": 13,
+        "tag": "HOL",
+        "total": 14
+      },
+      {
+        "kind": "civilian",
+        "offmap_levels": 2,
+        "residual_total_minus_state": 2,
+        "state_levels": 7,
+        "tag": "ICE",
+        "total": 9
+      }
+    ],
+    "summary": {
+      "civilian": {
+        "countries_compared": 439,
+        "interpretation": "Oracle self-consistency only: total, from_states, and offmap all come from the save-oracle economy parser.",
+        "offmap_nonzero": 38,
+        "residual_nonzero": 38,
+        "state_only_equals_total": 401,
+        "state_plus_offmap_equals_total": 439
+      },
+      "dockyard": {
+        "countries_compared": 439,
+        "interpretation": "Oracle self-consistency only: total, from_states, and offmap all come from the save-oracle economy parser.",
+        "offmap_nonzero": 3,
+        "residual_nonzero": 3,
+        "state_only_equals_total": 436,
+        "state_plus_offmap_equals_total": 439
+      },
+      "military": {
+        "countries_compared": 439,
+        "interpretation": "Oracle self-consistency only: total, from_states, and offmap all come from the save-oracle economy parser.",
+        "offmap_nonzero": 18,
+        "residual_nonzero": 18,
+        "state_only_equals_total": 421,
+        "state_plus_offmap_equals_total": 439
+      }
+    }
+  },
+  "schema": "country_economy_counters_live.factory_totals_derive_verify.v2",
+  "source_save_redacted": "~/OneDrive/Documents/Paradox Interactive/Hearts of Iron IV/save games/IRE_1943_11_09_17.hoi4",
+  "status": "ok",
+  "was_melted": true
+}

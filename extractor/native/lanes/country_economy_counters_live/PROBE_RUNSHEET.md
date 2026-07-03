@@ -1,137 +1,321 @@
-# Domain 58 Probe Runsheet v2
+# Wave-2 Economy Residual Probe Runsheet
 
 Lane: `country_economy_counters_live`  
-Build gate: `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`  
+Also covers residual coordination with `market_trade_live` and
+`country_economy_production_stockpile_live`  
 Process: `hoi4.exe`  
-Status: root chain validated; factory/resource/consumer counters remain candidate until the same-save oracle pass validates them across countries.
+Required build SHA:
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`
 
-## Non-Negotiable Same-Save Rule
+All probes below are discovery-only. They must fail closed on SHA mismatch and
+must not be used to promote a root without same-frame oracle or controlled-delta
+proof. Stop after collecting the JSON outputs and applying the criteria here.
 
-The oracle JSON must be parsed from the exact save currently loaded in `hoi4.exe`, and the game must not unpause or advance a tick between loading that save and running the oracle-backed probe. If this rule is not met, equality matches are not validation evidence.
+## Common Setup
 
-The currently targeted live run is the 1943 Ireland save. If this save is `HOI4bin`, either pass `--rakaly` or provide an uncompressed/melted text save from the same loaded game state.
-
-## Compile Check
-
-```powershell
-python -m py_compile extractor\native\lanes\country_economy_counters_live\probe_870ebf_country_economy_roots.py extractor\native\lanes\country_economy_counters_live\compare_870ebf_country_economy_probes.py extractor\native\lanes\country_economy_counters_live\build_country_economy_oracle.py
-```
-
-## Build The Save Oracle
-
-Preferred command for the loaded 1943 Ireland save:
+Run from repository root:
 
 ```powershell
-python extractor\native\lanes\country_economy_counters_live\build_country_economy_oracle.py --save "C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\save games\IRE_1943_11_09_17.hoi4" --out-dir extractor\save_oracle\output
+$env:PYTHONPATH = "extractor/memory_reader"
+$run = "extractor\native\runs\economy_residuals_wave2_870ebf_20260703"
+New-Item -ItemType Directory -Force $run | Out-Null
+$hoi4Pid = (Get-Process the game -ErrorAction Stop).Id
 ```
 
-If the save is binary and `rakaly.exe` is available:
+Expected: `$hoi4Pid` resolves to the live `hoi4.exe` process. If the game is not
+running, stop. Do not substitute another process.
+
+Compile gate:
 
 ```powershell
-python extractor\native\lanes\country_economy_counters_live\build_country_economy_oracle.py --save "C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\save games\IRE_1943_11_09_17.hoi4" --rakaly "C:\path\to\rakaly.exe" --out-dir extractor\save_oracle\output
+python -m py_compile `
+  extractor\memory_reader\economy\offmap_factory_probe_870ebf.py `
+  extractor\memory_reader\economy\resource_flow_delta_probe_870ebf.py `
+  extractor\memory_reader\economy\market_license_rtti_probe_870ebf.py `
+  extractor\native\lanes\country_economy_counters_live\verify_factory_totals_derive.py `
+  extractor\native\lanes\country_economy_counters_live\build_country_economy_oracle.py `
+  extractor\native\lanes\country_economy_counters_live\probe_870ebf_country_economy_roots.py `
+  extractor\native\lanes\country_economy_counters_live\compare_870ebf_country_economy_probes.py
 ```
 
-If `oracle_status.json` reports `blocked_binary_save_needs_rakaly_or_uncompressed_text_save`, stop and create/load an uncompressed save for the same game state, then rerun the command with that text save path.
+Expected: no output and exit code `0`.
+
+## Same-Tick Save Oracles
+
+The game must be paused on the loaded 1943 Ireland save and must not advance a
+tick between save-oracle generation and the live probes.
+
+Country economy oracle:
+
+```powershell
+python extractor\native\lanes\country_economy_counters_live\build_country_economy_oracle.py `
+  --save "$env:USERPROFILE\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\save games\IRE_1943_11_09_17.hoi4" `
+  --out-dir "$run\country_economy_oracle"
+```
 
 Expected outputs:
 
-- `extractor\save_oracle\output\economy.json`
-- `extractor\save_oracle\output\production.json`
-- `extractor\save_oracle\output\oracle_status.json`
+- `$run\country_economy_oracle\economy.json`
+- `$run\country_economy_oracle\economy_raw.json`
+- `$run\country_economy_oracle\production.json`
+- `$run\country_economy_oracle\oracle_status.json`
 
-The builder augments the existing save-oracle schema with:
+Success criteria: `oracle_status.json.status == "ok"` and save date is
+`1943.11.9.17`. If the builder reports a binary-save/rakaly blocker, stop and
+provide the uncompressed same-tick save or rakaly path; do not run oracle-backed
+probes with stale output.
 
-- `factories.civilian_used_derived` and `factories.civilian_free_derived` from construction queue active factories.
-- `factories.military_used_assigned` and `factories.military_free_derived` from production factory totals.
-- `factories.dockyard_used_assigned` and `factories.dockyard_free_derived` from naval production factory totals.
-- resource maps exposed by the save, including `produced`, `exported`, `to_export`, and any available `imported`/`to_use` style maps.
-
-## Oracle-Backed Live Probe
-
-Run this immediately after building the oracle while `hoi4.exe` is still on that same save:
+Independent derive verification:
 
 ```powershell
-python extractor\native\lanes\country_economy_counters_live\probe_870ebf_country_economy_roots.py --out extractor\native\runs\country_economy_counters_live_870ebf_20260703_ireland_v1\country_economy_probe_with_oracle_v2.json --snapshot-label ireland_1943_same_save_oracle_v2 --focus-tags IRE --sample-tags IRE ENG GER USA SOV JAP ITA FRA --economy-oracle extractor\save_oracle\output\economy.json --production-oracle extractor\save_oracle\output\production.json
+python extractor\native\lanes\country_economy_counters_live\verify_factory_totals_derive.py `
+  --save "$env:USERPROFILE\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\save games\IRE_1943_11_09_17.hoi4" `
+  --economy-raw "$run\country_economy_oracle\economy_raw.json" `
+  --out-json "$run\factory_totals_derive_verify.json"
 ```
 
-## Decisive Factory Field Validation Re-Probe
+Success criteria: owner-attributed independent recomputation reports `439/439`
+matches for civilian, military, and dockyard `*_from_state_building_levels`.
+Controller-attributed counts may differ and must be treated as occupation
+context, not as the raw country-total oracle field. The state-plus-offmap total
+row is only oracle self-consistency.
 
-Run this while `hoi4.exe` is still paused on the same `1943.11.9.17` tick. This command emits `factory_consumer_scalar_census.oracle_matches.field_validation_tables`, which rereads each candidate factory/consumer offset for every sampled country and compares it to that country's own oracle value.
+Market oracle:
 
 ```powershell
-python extractor\native\lanes\country_economy_counters_live\probe_870ebf_country_economy_roots.py --out extractor\native\runs\country_economy_counters_live_870ebf_20260703_ireland_v1\country_economy_probe_factory_field_validation_v3.json --snapshot-label ireland_1943_factory_field_validation_v3 --focus-tags IRE --sample-tags IRE ENG GER USA SOV JAP ITA FRA --min-countries 8 --max-countries 8 --economy-oracle extractor\save_oracle\output\economy.json --production-oracle extractor\save_oracle\output\production.json
+python extractor\save_oracle\parse_market.py `
+  --out-dir "$run\market_oracle" `
+  "$env:USERPROFILE\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\save games\IRE_1943_11_09_17.hoi4"
 ```
 
-## Raw-Oracle Factory Field Re-Probe
+Expected output: `$run\market_oracle\market.json`.
 
-Run this as the final same-tick static-oracle attempt. It uses `economy_raw.json`, which omits free/used derived fields and compares only raw stored save fields or sums of raw stored save rows.
+Success criteria: save date is `1943.11.9.17`. Use this only for same-frame
+market stockpile comparisons.
+
+## Offmap Factory Probe
+
+Purpose: find the country offmap factory component after independent raw
+state-building recomputation proved the owner-attributed state-backed component
+is derivable.
 
 ```powershell
-python extractor\native\lanes\country_economy_counters_live\probe_870ebf_country_economy_roots.py --out extractor\native\runs\country_economy_counters_live_870ebf_20260703_ireland_v1\country_economy_probe_factory_raw_validation_v4.json --snapshot-label ireland_1943_factory_raw_validation_v4 --focus-tags IRE --sample-tags IRE ENG GER USA SOV JAP ITA FRA --min-countries 8 --max-countries 8 --economy-oracle extractor\save_oracle\output\economy_raw.json --production-oracle extractor\save_oracle\output\production.json
+python extractor\memory_reader\economy\offmap_factory_probe_870ebf.py `
+  --pid $hoi4Pid `
+  --economy-raw "$run\country_economy_oracle\economy_raw.json" `
+  --out-json "$run\offmap_factory_probe.json" `
+  --sample-tags IRE ENG GER AST FRA EST NOR USA SOV JAP ITA CAN
 ```
 
-## Decision Tree
+Expected output: `$run\offmap_factory_probe.json`.
 
-- If `build_gate_ok` is false, stop. Do not use any candidates.
-- If `roots.status` is not `read`, or `selected_countries` lacks the sample tags, stop and return the JSON.
-- Factory/consumer scalar validation lives at `factory_consumer_scalar_census.oracle_matches.cross_country_matches`.
-- A scalar offset is promotable only if its status is `VALIDATED_ORACLE_ALL_SAMPLED`, its `missing_tags` list is empty, and its provenance is this same-save oracle run.
-- Factory/consumer decisive field validation lives at `factory_consumer_scalar_census.oracle_matches.field_validation_tables`.
-- A factory/consumer offset is promotable only if its field-table status is `VALIDATED_FIELD_ALL_SAMPLED_NONCONSTANT`, it maps to exactly one named oracle field, and it is not duplicated by another offset with the same live value vector.
-- Resource-vector validation lives at `resource_flow_vector_candidates.oracle_matches.matches`.
-- A resource vector is promotable only if its status is `VALIDATED_RESOURCE_VECTOR_ORACLE_ALL_SAMPLED`, its scale is consistent, and every comparable nonzero sampled country matched.
-- `OVERLAP_DOMAIN14_*` entries are stability/war-support evidence only. Do not emit them in domain 58.
-- Fuel remains domain 10. Do not emit it in domain 58.
-- Existing rejected resource candidates (`CCountry+0x5B8`, `CCountry+0x1218`) stay rejected unless new evidence directly answers the prior rejection.
-- Partial matches, single-country matches, zero-only matches, and shape-only resource vectors remain `CANDIDATE` and must not enter encode paths.
+Hard failure criteria:
 
-## Optional UI Values
+- `status == "build_gate_failed"`;
+- `process.sha256` differs from the required SHA;
+- selected countries do not include nonzero offmap examples and zero controls.
 
-If the operator can read screen values at the same tick, pass `--ui-values <path>`. Fill only values actually visible; omitted values are safer than guesses.
+Candidate success criteria:
+
+- candidate status is
+  `CANDIDATE_ALL_SELECTED_EXACT_NEEDS_LIVE_DELTA` or
+  `CANDIDATE_TRIPLE_ALL_SELECTED_EXACT_NEEDS_LIVE_DELTA`;
+- candidate is not one of the known rejected paths
+  `CCountry+0x1750`, `CCountry+0x17E0`, `CCountry+0x1038`, or
+  `CCountry+0xF08`;
+- the probe's `scan.excluded_ccountry_offsets` lists those rejected offsets, so
+  they cannot appear as scalar or triple candidates in this run;
+- value vector matches the same-save offmap oracle for nonzero and zero-control
+  countries.
+
+Promotion is still forbidden after this single snapshot. To validate a root,
+run a before/after offmap fixture:
+
+```powershell
+python extractor\memory_reader\economy\offmap_factory_probe_870ebf.py `
+  --pid $hoi4Pid `
+  --economy-raw "$run\country_economy_oracle\economy_raw.json" `
+  --out-json "$run\offmap_factory_before.json" `
+  --sample-tags IRE ENG GER AST FRA EST NOR USA SOV JAP ITA CAN
+```
+
+Operator action: add or remove exactly one known offmap factory term for one
+focus country, ideally IRE if the fixture can isolate it. Do not alter state
+building levels, construction completion, occupation, or trade during the
+fixture.
+
+```powershell
+python extractor\memory_reader\economy\offmap_factory_probe_870ebf.py `
+  --pid $hoi4Pid `
+  --economy-raw "$run\country_economy_oracle\economy_raw.json" `
+  --out-json "$run\offmap_factory_after.json" `
+  --sample-tags IRE ENG GER AST FRA EST NOR USA SOV JAP ITA CAN
+```
+
+Delta success criteria: the same candidate path changes by the exact known
+offmap delta for the edited country and remains unchanged for control countries.
+If no candidate moves exactly, offmap root remains open.
+
+## Resource Flow Probe
+
+Purpose: enumerate produced/imported/exported/used/deficit candidate containers
+reachable from `CCountry` and `CProductionManager`.
+
+Before running, create `$run\resource_ui_oracle.json` from values visible in the
+same paused frame. Fill only values actually read from UI; omit unknown fields.
+Read the resource names and numbers from the country resource topbar tooltip and
+trade/resource UI for at least one importer, one exporter, and one control with
+zero/low trade. Recommended sample tags: IRE, GER, ENG, SWE, TUR, USA.
+
+Template:
 
 ```json
 {
   "countries": {
     "IRE": {
-      "factories": {
-        "civilian_total": 0,
-        "civilian_used": 0,
-        "civilian_free": 0,
-        "civilian_damaged": 0,
-        "military_total": 0,
-        "military_used": 0,
-        "military_free": 0,
-        "military_damaged": 0,
-        "dockyard_total": 0,
-        "dockyard_used": 0,
-        "dockyard_free": 0,
-        "dockyard_damaged": 0
-      },
-      "consumer_goods": {
-        "factor": 0.0,
-        "factories": 0
-      },
       "resources": {
         "steel": {"produced": 0, "imported": 0, "exported": 0, "used": 0, "deficit": 0},
-        "aluminium": {"produced": 0, "imported": 0, "exported": 0, "used": 0, "deficit": 0},
-        "oil": {"produced": 0, "imported": 0, "exported": 0, "used": 0, "deficit": 0},
-        "rubber": {"produced": 0, "imported": 0, "exported": 0, "used": 0, "deficit": 0},
-        "tungsten": {"produced": 0, "imported": 0, "exported": 0, "used": 0, "deficit": 0},
-        "chromium": {"produced": 0, "imported": 0, "exported": 0, "used": 0, "deficit": 0}
+        "oil": {"produced": 0, "imported": 0, "exported": 0, "used": 0, "deficit": 0}
       }
     }
   }
 }
 ```
 
-## Promotion Bar
+Run:
 
-Promote a lane-local offset only when the JSON result includes:
+```powershell
+python extractor\memory_reader\economy\resource_flow_delta_probe_870ebf.py `
+  --pid $hoi4Pid `
+  --ui-oracle "$run\resource_ui_oracle.json" `
+  --out-json "$run\resource_flow_probe.json" `
+  --sample-tags IRE GER ENG SWE TUR USA SOV JAP ITA FRA `
+  --min-countries 32 `
+  --max-countries 96
+```
 
-- exact build SHA match;
-- validated CCountry root and tag echo;
-- same-save oracle or UI equality across the sampled countries, not a single-country coincidence;
-- no contradiction with known rejected candidates;
-- provenance path under `extractor/native/runs/...` with date and snapshot label.
+Expected output: `$run\resource_flow_probe.json`.
 
-Until then, the Rust lane must remain badge-only for unproven slices.
+Hard failure criteria:
+
+- `status == "build_gate_failed"`;
+- `process.sha256` differs from the required SHA;
+- UI oracle was not collected from the same paused frame.
+
+Candidate success criteria:
+
+- path is not `CCountry+0x5B8` or `CCountry+0x1218` unless the new evidence
+  directly answers the old rejection;
+- `ui_oracle_matches.status == "CANDIDATE_UI_ORACLE_ALL_ELIGIBLE_MATCH"` for
+  a named resource category and scale across at least two eligible countries;
+- row resource ids are mapped to known resources, not only anonymous low ids.
+
+Controlled delta fixture: change exactly one resource flow, for example one
+trade import amount for IRE, then read the same UI fields and rerun the probe to
+`$run\resource_flow_after.json`. A root is valid only if the same candidate path
+moves by the known resource/category delta for the edited country and controls
+remain stable. If only state deposits move, this is not a country flow root.
+
+## Market Stockpile Probe
+
+Purpose: find a new market stockpile/sellable equipment root without retrying
+the rejected `CCountry+0x1230` path.
+
+```powershell
+python extractor\memory_reader\economy\market_license_rtti_probe_870ebf.py `
+  --pid $hoi4Pid `
+  --heap-scan `
+  --market-oracle "$run\market_oracle\market.json" `
+  --out-json "$run\market_license_rtti_market_stockpile.json" `
+  --max-discovered-rtti 128 `
+  --max-examples 96 `
+  --max-objects 96
+```
+
+Expected output: `$run\market_license_rtti_market_stockpile.json`.
+
+Hard failure criteria:
+
+- `status == "build_gate_failed"`;
+- `process.sha256` differs from the required SHA.
+
+Candidate success criteria:
+
+- current-build RTTI vtable exists for a market/stockpile/status class;
+- heap bodies are observed;
+- a country owner path exists;
+- variant/amount row shape exists;
+- same-frame market oracle can match rows by country tag and equipment variant.
+
+Explicit rejection: `country_owner_paths.rejected_inline_path.path` equal to
+`CCountry+0x1230` remains rejected no-retry unless a new non-stockpile semantics
+claim is separately proven. Do not count `CCountry+0x1230` as a market stockpile
+candidate from this run.
+
+## Active License Fixture
+
+Purpose: find a production-license detail root. Prior vectors
+`CCountry+0x1070/+0x10A0` are rejected; relation context alone is not license
+detail.
+
+Operator fixture:
+
+1. In the live game, create or accept one active production license involving a
+   unique equipment type and two known countries.
+2. Keep the game paused immediately after the license exists.
+3. Record the expected pair and equipment in a note beside the output, for
+   example `licensor=GER`, `licensee=IRE`, `equipment=<visible name>`.
+
+Run:
+
+```powershell
+python extractor\memory_reader\economy\market_license_rtti_probe_870ebf.py `
+  --pid $hoi4Pid `
+  --heap-scan `
+  --expect-active-license `
+  --out-json "$run\market_license_rtti_active_license.json" `
+  --max-discovered-rtti 128 `
+  --max-examples 96 `
+  --max-objects 128
+```
+
+Expected output: `$run\market_license_rtti_active_license.json`.
+
+Hard failure criteria:
+
+- `status == "build_gate_failed"`;
+- `process.sha256` differs from the required SHA;
+- the active license fixture was not actually present.
+
+Candidate success criteria:
+
+- `classification.license_fixture_status` indicates active license objects were
+  observed;
+- current-build RTTI is present for license detail/status classes, not only
+  `CLicenceProductionAccessRelation`;
+- a country owner path or nested object path links the object to the expected
+  licensor/licensee/equipment fixture;
+- prior `CCountry+0x1070/+0x10A0` dense consumer-vector rejection is not reused
+  as positive evidence.
+
+If only relation/access objects are observed, licensing remains open and owned
+detail is not rooted.
+
+## Prior Rejections To Preserve
+
+- Factory total scalars: `CCountry+0x1750`, `CCountry+0x17E0`,
+  `CCountry+0x1038`; rejected by v3/v4 same-save raw oracle evidence.
+- `CCountry+0xF08`: real per-country data but unmapped to any raw/derived
+  factory oracle field; delta-only candidate, not a known factory total.
+- Market stockpile: `CCountry+0x1230`; rejected by same-tick fixture with
+  272 live rows, 494 save rows, 0 exact matches.
+- Resource flow: `CCountry+0x5B8` and `CCountry+0x1218`; rejected by market lane
+  resource probes and state-shape proof.
+- Licensing: `CCountry+0x1070/+0x10A0`; rejected as dense country-indexed
+  vectors to one shared `CLicensedProductionConsumer`, not detail rows.
+
+## End State
+
+The expected end of the live session is a set of JSON proof files under `$run`.
+Do not edit shared collector/recorder code from this runsheet. Do not claim any
+root is validated unless the criteria above are met with the live JSON evidence.
