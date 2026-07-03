@@ -67,6 +67,8 @@ const COMPACT_RECORD_TYPE_FRAME_END: u16 = compact_contract::COMPACT_RECORD_TYPE
 const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA;
 const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 =
     compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2;
+const COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 =
+    compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER;
 const COMPACT_STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
 const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
 const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
@@ -76,6 +78,8 @@ const COMPACT_STATUS_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_FAILUR
 const COMPACT_STATUS_TRANSITION_BASELINE_RESET: u32 =
     compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
 const COMPACT_STATUS_CONTROL_INVALID: u32 = compact_contract::COMPACT_STATUS_CONTROL_INVALID;
+const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] = b"PDU1";
+const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 = 1;
 const COMPACT_FUEL_SCALE_RAW: u32 = 32768;
 const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
 const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;
@@ -2705,6 +2709,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                             .expected_partial_tolerance_hours
                             .insert(game_hour_raw);
                     }
+                    decode_compact_domain_perf_diagnostic_units(
+                        offset,
+                        domain_id,
+                        record_flags,
+                        payload,
+                        &mut summary,
+                    );
                 }
             }
             COMPACT_RECORD_TYPE_DOMAIN_DATA => {
@@ -5143,6 +5154,12 @@ fn decode_compact_division_equipment_data_payload(
     }
     add_compact_domain_data_unit(summary, 26, "division_equipment_rows", row_count);
     add_compact_domain_data_unit(summary, 26, "division_equipment_root_rows", root_rows);
+    add_compact_domain_data_unit(
+        summary,
+        26,
+        "division_equipment_skipped_root_rows",
+        root_rows.saturating_sub(observed_division_rows),
+    );
     add_compact_domain_data_unit(
         summary,
         26,
@@ -7594,6 +7611,14 @@ fn decode_compact_construction_buildings_state_damage_live_data_payload(
         }
     };
     summary.status_flags_or |= decoded.frame.status_flags;
+    for error in &decoded.gate.errors {
+        add_compact_domain_problem(
+            summary,
+            COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+            domain48_gate_problem_name(error),
+            1,
+        );
+    }
     if !compact_contract::compact_status_is_failure(decoded.frame.status_flags) && !decoded.gate.ok
     {
         summary.parse_errors.push(format!(
@@ -7652,6 +7677,36 @@ fn decode_compact_construction_buildings_state_damage_live_data_payload(
         "target_state_unavailable_badged",
         usize::from(decoded.summary.target_state_unavailable_badged),
     );
+}
+
+fn domain48_gate_problem_name(error: &str) -> &'static str {
+    if error.starts_with("blocking status_flags set") {
+        "domain48_gate_blocking_status_flags_set"
+    } else if error == "source_flags missing DLL-native bit" {
+        "domain48_gate_missing_dll_native_source_flag"
+    } else if error == "no building rows emitted" {
+        "domain48_gate_no_building_rows_emitted"
+    } else if error == "no state resource rows emitted" {
+        "domain48_gate_no_state_resource_rows_emitted"
+    } else if error == "construction target_state_id absent without target-state-unavailable source flag" {
+        "domain48_gate_target_state_absent_without_unavailable_flag"
+    } else if error
+        == "construction target_state_id emitted while target-state-unavailable source flag is set"
+    {
+        "domain48_gate_target_state_emitted_while_unavailable"
+    } else if error
+        == "construction target_state_id partially emitted; fill every construction row or badge unavailable"
+    {
+        "domain48_gate_target_state_partially_emitted"
+    } else if error.contains("duplicates tag/line/priority") {
+        "domain48_gate_duplicate_construction_row"
+    } else if error.contains("duplicates scope/location/type") {
+        "domain48_gate_duplicate_building_row"
+    } else if error.contains("duplicates state/resource") {
+        "domain48_gate_duplicate_resource_row"
+    } else {
+        "domain48_gate_unknown_error"
+    }
 }
 
 fn decode_compact_scripted_state_flags_variables_data_payload(
@@ -12551,6 +12606,116 @@ fn add_compact_domain_data_unit(
     }
 }
 
+fn decode_compact_domain_perf_diagnostic_units(
+    offset: usize,
+    domain_id: u16,
+    record_flags: u32,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if record_flags & COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER == 0 {
+        return;
+    }
+    let mut cursor = 40usize;
+    if payload.len().saturating_sub(cursor) < 8 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain perf diagnostic trailer is {} byte(s), expected at least 8",
+            payload.len().saturating_sub(cursor)
+        ));
+        return;
+    }
+    if &payload[cursor..cursor + 4] != COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain perf diagnostic trailer has unknown magic"
+        ));
+        return;
+    }
+    cursor += 4;
+    let version = read_u16_le(payload, cursor);
+    cursor += 2;
+    let unit_count = read_u16_le(payload, cursor) as usize;
+    cursor += 2;
+    if version != COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain perf diagnostic trailer version {version} != {COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION}"
+        ));
+        return;
+    }
+
+    for unit_index in 0..unit_count {
+        if payload.len().saturating_sub(cursor) < 12 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: domain perf diagnostic unit {unit_index} truncated"
+            ));
+            return;
+        }
+        let name_len = read_u16_le(payload, cursor) as usize;
+        let reserved = read_u16_le(payload, cursor + 2);
+        let value = read_u64_le(payload, cursor + 4);
+        cursor += 12;
+        if reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: domain perf diagnostic unit {unit_index} reserved field is nonzero"
+            ));
+        }
+        if payload.len().saturating_sub(cursor) < name_len {
+            summary.parse_errors.push(format!(
+                "offset {offset}: domain perf diagnostic unit {unit_index} name truncated"
+            ));
+            return;
+        }
+        let name_bytes = &payload[cursor..cursor + name_len];
+        cursor += name_len;
+        let Ok(name) = std::str::from_utf8(name_bytes) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: domain perf diagnostic unit {unit_index} name is not utf-8"
+            ));
+            continue;
+        };
+        if !is_valid_compact_perf_diagnostic_name(name) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: domain perf diagnostic unit {unit_index} has invalid name {name:?}"
+            ));
+            continue;
+        }
+        add_compact_domain_perf_diagnostic_unit(summary, domain_id, name, value);
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain perf diagnostic trailer has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+}
+
+fn is_valid_compact_perf_diagnostic_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn add_compact_domain_perf_diagnostic_unit(
+    summary: &mut CompactSummary,
+    domain_id: u16,
+    name: &str,
+    value: u64,
+) {
+    if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
+        let entry = domain.data_units_total.entry(name.to_string()).or_default();
+        *entry = entry.saturating_add(value);
+    }
+    if domain_id == COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE {
+        if name.starts_with("domain48_gate_") {
+            add_compact_domain_problem(summary, domain_id, name, value.max(1));
+        } else if value != 0
+            && (name.starts_with("domain48_failed_") || name.starts_with("domain48_skipped_"))
+        {
+            add_compact_domain_problem(summary, domain_id, name, value);
+        }
+    }
+}
+
 fn compact_sum_to_usize(value: u128) -> usize {
     value.min(usize::MAX as u128) as usize
 }
@@ -12887,6 +13052,145 @@ mod tests {
         assert_eq!(fuel.data_changed_rows_total, 2);
         assert_eq!(fuel.unit_count_total, 84);
         assert_eq!(fuel.max_read_time_us, 1_500);
+    }
+
+    #[test]
+    fn compact_summary_preserves_perf_diagnostic_units_with_zero_values() {
+        let mut raw = Vec::new();
+        append_test_compact_record_with_flags(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &test_domain_payload_with_diagnostics(
+                900,
+                0,
+                0,
+                0,
+                0,
+                COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+                &[
+                    ("domain56_game_state_valid", 1),
+                    ("domain56_country_count", 2),
+                    ("domain56_valid_country_count", 0),
+                    ("domain56_readable_fleet_vector_count", 0),
+                    ("domain56_fleet_count", 0),
+                    ("domain56_task_force_count", 0),
+                ],
+            ),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE)
+            .unwrap();
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("domain56_country_count")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("domain56_valid_country_count")
+                .copied(),
+            Some(0)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("domain56_task_force_count")
+                .copied(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn compact_summary_ignores_perf_diagnostic_magic_when_flag_clear() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_diagnostics(
+                900,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &[("domain56_country_count", 7)],
+            ),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE)
+            .unwrap();
+        assert_eq!(domain.data_units_total.get("domain56_country_count"), None);
+    }
+
+    #[test]
+    fn compact_summary_rejects_flagged_truncated_perf_diagnostic_trailer() {
+        let mut payload = test_domain_payload_with_status(900, 0, 0, 0, 0, 0);
+        payload.extend_from_slice(b"PD");
+        let mut raw = Vec::new();
+        append_test_compact_record_with_flags(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary.parse_errors.iter().any(|err| {
+            err.contains("domain perf diagnostic trailer is 2 byte(s), expected at least 8")
+        }));
     }
 
     #[test]
@@ -13542,7 +13846,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_untolerated_domain26_partial_e2e_fails_gate_and_nulls_fold() {
+    fn compact_untolerated_domain26_partial_e2e_fails_gate_and_folds_sparse_rows() {
         let mut raw = Vec::new();
         let game_hour_raw = 60_759_359;
         append_test_compact_record(
@@ -13642,9 +13946,12 @@ mod tests {
         let divisions = snapshot["divisions"]
             .as_array()
             .expect("D20 baseline should still fold divisions");
-        assert!(divisions
-            .iter()
-            .any(|division| division.get("equipment") == Some(&Value::Null)));
+        assert!(divisions.iter().all(|division| {
+            division
+                .get("equipment")
+                .and_then(Value::as_array)
+                .is_some()
+        }));
         assert!(snapshot["provenance"]["collector"]["domain_problems"]
             .as_array()
             .unwrap()
@@ -14170,6 +14477,16 @@ mod tests {
             "{:?}",
             partial_summary.parse_errors
         );
+        assert_eq!(
+            partial_summary
+                .per_domain
+                .get(&26)
+                .unwrap()
+                .data_units_total
+                .get("division_equipment_skipped_root_rows")
+                .copied(),
+            Some(1)
+        );
 
         let mut full_raw = Vec::new();
         append_test_compact_record(
@@ -14198,6 +14515,46 @@ mod tests {
                 "division equipment full equipment_entry_count 0 != observed_equipment_rows 5",
             )
         }));
+    }
+
+    #[test]
+    fn compact_summary_counts_sparse_partial_division_equipment_skipped_roots() {
+        let mut payload = test_division_equipment_data_payload(COMPACT_STATUS_PARTIAL_DATA);
+        payload[24..28].copy_from_slice(&3u32.to_le_bytes());
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .per_domain
+                .get(&26)
+                .unwrap()
+                .data_units_total
+                .get("division_equipment_skipped_root_rows")
+                .copied(),
+            Some(1)
+        );
     }
 
     #[test]
@@ -14819,6 +15176,75 @@ mod tests {
                 .get("target_state_unavailable_badged")
                 .copied(),
             None
+        );
+        assert!(domain.problems.is_empty(), "{:?}", domain.problems);
+    }
+
+    #[test]
+    fn compact_summary_reports_domain48_gate_errors_even_on_compact_failure() {
+        let frame = domain48::LaneFrame {
+            game_hour_raw: 100,
+            status_flags: COMPACT_STATUS_PARTIAL_DATA,
+            source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+                | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+                | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+                | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE,
+            observed_country_roots: 1,
+            observed_state_roots: 1,
+            observed_province_roots: 1,
+            construction_rows: Vec::new(),
+            building_rows: Vec::new(),
+            resource_rows: Vec::new(),
+        };
+        let payload = domain48::encode_lane_frame(&frame);
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE)
+            .unwrap();
+        assert_eq!(
+            domain
+                .problems
+                .get("domain48_gate_blocking_status_flags_set")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .problems
+                .get("domain48_gate_no_building_rows_emitted")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .problems
+                .get("domain48_gate_no_state_resource_rows_emitted")
+                .copied(),
+            Some(1)
         );
     }
 
@@ -18336,6 +18762,35 @@ mod tests {
         payload.extend_from_slice(&emitted_domains.to_le_bytes());
         payload.extend_from_slice(&status_flags.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn test_domain_payload_with_diagnostics(
+        read_time_us: u64,
+        row_count: u32,
+        changed_rows: u32,
+        unit_count: u32,
+        changed_unit_count: u32,
+        status_flags: u32,
+        diagnostic_units: &[(&str, u64)],
+    ) -> Vec<u8> {
+        let mut payload = test_domain_payload_with_status(
+            read_time_us,
+            row_count,
+            changed_rows,
+            unit_count,
+            changed_unit_count,
+            status_flags,
+        );
+        payload.extend_from_slice(COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC);
+        payload.extend_from_slice(&COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION.to_le_bytes());
+        payload.extend_from_slice(&(diagnostic_units.len() as u16).to_le_bytes());
+        for (name, value) in diagnostic_units {
+            payload.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&0u16.to_le_bytes());
+            payload.extend_from_slice(&value.to_le_bytes());
+            payload.extend_from_slice(name.as_bytes());
+        }
         payload
     }
 

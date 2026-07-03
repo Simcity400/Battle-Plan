@@ -32,6 +32,13 @@ pub const MAX_SCHEDULED_DOMAINS: usize = 64;
 /// collide with an in-payload magic marker.
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
 
+/// H4CR record-header `flags` bit announcing the optional domain-perf
+/// diagnostic-unit trailer after the base 40-byte perf payload.
+///
+/// Presence is decided from this framing bit, not by scanning payload bytes, so
+/// future perf payload extensions cannot collide with the trailer magic.
+pub const COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 = 1 << 30;
+
 // --- Compact stream status flags (record header `flags` field) -------------
 
 pub const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;

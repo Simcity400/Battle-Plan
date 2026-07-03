@@ -5674,23 +5674,35 @@ impl WorldFold {
         let observed_division_rows = read_u32(payload, 28) as usize;
         let equipment_entry_count = read_u32(payload, 32) as usize;
         let observed_equipment_rows = read_u32(payload, 36) as usize;
-        if self.handle_compact_failure(
+        let sparse_partial = row_count > 0
+            && compact_failure_flags_after_expected_partial_tolerance(
+                DIVISION_EQUIPMENT_DOMAIN_ID,
+                status_flags,
+            ) == COMPACT_STATUS_PARTIAL_DATA;
+        if sparse_partial {
+            self.record_domain_problem(DIVISION_EQUIPMENT_DOMAIN_ID, "compact_status_failure");
+            self.note(
+                "division_equipment partial data; sparse rows applied and omitted rows retained",
+            );
+        } else if self.handle_compact_failure(
             DIVISION_EQUIPMENT_DOMAIN_ID,
             "division_equipment",
             status_flags,
         ) {
             return Ok(());
         }
-        if self.reject_delta_before_baseline(
-            DIVISION_EQUIPMENT_DOMAIN_ID,
-            "division_equipment",
-            status_flags,
-        ) {
+        if !sparse_partial
+            && self.reject_delta_before_baseline(
+                DIVISION_EQUIPMENT_DOMAIN_ID,
+                "division_equipment",
+                status_flags,
+            )
+        {
             return Ok(());
         }
         ensure_fixed_scale("division_equipment", "scale_raw", scale_raw)?;
         let expected_len = DIVISION_EQUIPMENT_HEADER_LEN
-            .saturating_add(root_rows.saturating_mul(DIVISION_EQUIPMENT_ROOT_ROW_LEN))
+            .saturating_add(row_count.saturating_mul(DIVISION_EQUIPMENT_ROOT_ROW_LEN))
             .saturating_add(equipment_entry_count.saturating_mul(DIVISION_EQUIPMENT_ENTRY_ROW_LEN));
         if payload.len() != expected_len {
             return Err(format!(
@@ -5698,7 +5710,7 @@ impl WorldFold {
                 payload.len()
             ));
         }
-        if row_count != root_rows {
+        if !sparse_partial && row_count != root_rows {
             return Err(format!(
                 "division_equipment row_count {row_count} != root_rows {root_rows}"
             ));
@@ -5714,17 +5726,17 @@ impl WorldFold {
                 "division_equipment delta changed_rows {changed_rows} != row_count {row_count}"
             ));
         }
-        if root_rows > observed_division_rows {
+        if observed_division_rows > root_rows {
             return Err(format!(
-                "division_equipment root_rows {root_rows} > observed_division_rows {observed_division_rows}"
+                "division_equipment observed_division_rows {observed_division_rows} > root_rows {root_rows}"
             ));
         }
-        if !delta && root_rows != observed_division_rows {
+        if !delta && !sparse_partial && root_rows != observed_division_rows {
             return Err(format!(
                 "division_equipment full root_rows {root_rows} != observed_division_rows {observed_division_rows}"
             ));
         }
-        if !delta && equipment_entry_count != observed_equipment_rows {
+        if !delta && !sparse_partial && equipment_entry_count != observed_equipment_rows {
             return Err(format!(
                 "division_equipment full equipment_entry_count {equipment_entry_count} != observed_equipment_rows {observed_equipment_rows}"
             ));
@@ -5735,11 +5747,11 @@ impl WorldFold {
             ));
         }
 
-        let mut roots = Vec::with_capacity(root_rows);
+        let mut roots = Vec::with_capacity(row_count);
         let mut root_key_counts: BTreeMap<DivisionEquipmentKey, usize> = BTreeMap::new();
         let mut declared_entries = 0usize;
         let mut cursor = DIVISION_EQUIPMENT_HEADER_LEN;
-        for row_index in 0..root_rows {
+        for row_index in 0..row_count {
             let owner_tag_db_id = read_u32(payload, cursor);
             let div_id = read_u32(payload, cursor + 4);
             let flags = read_u32(payload, cursor + 8);
@@ -5829,8 +5841,11 @@ impl WorldFold {
             entries.push((variant_id, amount_raw));
         }
 
-        if !delta {
+        if !delta && !sparse_partial {
             self.division_equipment.clear();
+            self.delta_baselines_seen
+                .insert(DIVISION_EQUIPMENT_DOMAIN_ID);
+        } else if sparse_partial {
             self.delta_baselines_seen
                 .insert(DIVISION_EQUIPMENT_DOMAIN_ID);
         }

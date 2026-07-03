@@ -111,6 +111,16 @@ pub struct NavalMissionRoots {
     pub task_forces: Vec<TaskForceRoot>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NavalRootCounters {
+    pub game_state_valid: u32,
+    pub country_count: u32,
+    pub valid_country_count: u32,
+    pub readable_fleet_vector_count: u32,
+    pub fleet_count: u32,
+    pub task_force_count: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtractedRows {
     pub rows: Vec<compact::NavalMissionStatusRow>,
@@ -177,51 +187,93 @@ pub fn validate_build(sha256: &str) -> Result<(), ExtractError> {
 pub fn resolve_naval_roots<M: NavalMissionMemory>(
     mem: &M,
 ) -> Result<NavalMissionRoots, ExtractError> {
+    let (result, _) = resolve_naval_roots_with_counters(mem);
+    result
+}
+
+pub fn resolve_naval_roots_with_counters<M: NavalMissionMemory>(
+    mem: &M,
+) -> (Result<NavalMissionRoots, ExtractError>, NavalRootCounters) {
+    let mut counters = NavalRootCounters::default();
     let module_base = mem.module_base();
-    let game_state =
-        mem.read_u64(module_base + compact_contract::build_profile::CG_STATE_DATE_OFFSET as u64)?;
+    let game_state = match mem
+        .read_u64(module_base + compact_contract::build_profile::CG_STATE_DATE_OFFSET as u64)
+    {
+        Ok(game_state) => game_state,
+        Err(err) => return (Err(err), counters),
+    };
     if !is_heap_aligned(game_state) {
-        return Err(ExtractError::InvalidRoot("CGameState"));
+        return (Err(ExtractError::InvalidRoot("CGameState")), counters);
     }
-    let country_table = mem.read_u64(game_state + CGAMESTATE_COUNTRY_TABLE as u64)?;
-    let country_count = mem.read_u32(game_state + CGAMESTATE_COUNTRY_COUNT as u64)?;
+    counters.game_state_valid = 1;
+    let country_table = match mem.read_u64(game_state + CGAMESTATE_COUNTRY_TABLE as u64) {
+        Ok(country_table) => country_table,
+        Err(err) => return (Err(err), counters),
+    };
+    let country_count = match mem.read_u32(game_state + CGAMESTATE_COUNTRY_COUNT as u64) {
+        Ok(country_count) => country_count,
+        Err(err) => return (Err(err), counters),
+    };
+    counters.country_count = country_count;
     if !is_heap_aligned(country_table)
         || country_count == 0
         || country_count > MAX_COUNTRY_TABLE_SLOTS
     {
-        return Err(ExtractError::InvalidCount {
-            name: "country_count",
-            value: country_count,
-        });
+        return (
+            Err(ExtractError::InvalidCount {
+                name: "country_count",
+                value: country_count,
+            }),
+            counters,
+        );
     }
-    let table_raw = mem.read_bytes(country_table, country_count as usize * 8)?;
+    let table_raw = match mem.read_bytes(country_table, country_count as usize * 8) {
+        Ok(table_raw) => table_raw,
+        Err(err) => return (Err(err), counters),
+    };
     let mut fleets_by_ptr = BTreeMap::new();
     for tag_db_id in 1..country_count {
         let country_ptr = u64_from(&table_raw, tag_db_id as usize * 8);
         let Some(owner) = validate_country(mem, module_base, country_ptr, tag_db_id) else {
             continue;
         };
-        collect_country_fleet_roots(mem, module_base, country_ptr, owner, &mut fleets_by_ptr)?;
+        counters.valid_country_count = counters.valid_country_count.saturating_add(1);
+        match collect_country_fleet_roots(mem, module_base, country_ptr, owner, &mut fleets_by_ptr)
+        {
+            Ok(readable_vectors) => {
+                counters.readable_fleet_vector_count = counters
+                    .readable_fleet_vector_count
+                    .saturating_add(readable_vectors);
+            }
+            Err(err) => return (Err(err), counters),
+        }
     }
+    counters.fleet_count = fleets_by_ptr.len().min(u32::MAX as usize) as u32;
 
     let mut task_forces_by_ptr = BTreeMap::new();
     for fleet in fleets_by_ptr.values() {
-        collect_task_force_roots_from_fleet(
+        if let Err(err) = collect_task_force_roots_from_fleet(
             mem,
             module_base,
             fleet.body_ptr,
             &fleets_by_ptr,
             &mut task_forces_by_ptr,
-        )?;
+        ) {
+            return (Err(err), counters);
+        }
     }
+    counters.task_force_count = task_forces_by_ptr.len().min(u32::MAX as usize) as u32;
 
-    Ok(NavalMissionRoots {
-        game_state,
-        country_table,
-        country_count,
-        fleets: fleets_by_ptr.values().cloned().collect(),
-        task_forces: task_forces_by_ptr.values().cloned().collect(),
-    })
+    (
+        Ok(NavalMissionRoots {
+            game_state,
+            country_table,
+            country_count,
+            fleets: fleets_by_ptr.values().cloned().collect(),
+            task_forces: task_forces_by_ptr.values().cloned().collect(),
+        }),
+        counters,
+    )
 }
 
 pub fn extract_rows_from_roots<M: NavalMissionMemory>(
@@ -391,7 +443,7 @@ fn collect_country_fleet_roots<M: NavalMissionMemory>(
     country_ptr: u64,
     owner_tag_db_id: u32,
     fleets_by_ptr: &mut BTreeMap<u64, FleetRoot>,
-) -> Result<(), ExtractError> {
+) -> Result<u32, ExtractError> {
     let vector_data = mem.read_u64(country_ptr + COUNTRY_FLEET_VECTOR_DATA as u64)?;
     let capacity = mem.read_u32(country_ptr + COUNTRY_FLEET_VECTOR_CAPACITY as u64)?;
     let count = mem.read_u32(country_ptr + COUNTRY_FLEET_VECTOR_COUNT as u64)?;
@@ -400,7 +452,7 @@ fn collect_country_fleet_roots<M: NavalMissionMemory>(
         || count > MAX_COUNTRY_FLEET_ROWS
         || !is_heap_aligned(vector_data)
     {
-        return Ok(());
+        return Ok(0);
     }
     let raw = mem.read_bytes(vector_data, count as usize * 8)?;
     for index in 0..count as usize {
@@ -420,7 +472,7 @@ fn collect_country_fleet_roots<M: NavalMissionMemory>(
             owner_tag_db_id,
         });
     }
-    Ok(())
+    Ok(1)
 }
 
 fn collect_task_force_roots_from_fleet<M: NavalMissionMemory>(
@@ -812,6 +864,24 @@ mod tests {
         assert!(row.flags & compact::FLAG_HAS_LOCATION != 0);
         assert!(row.flags & compact::FLAG_HAS_REGION != 0);
         assert!(row.flags & compact::FLAG_HAS_SUNK_CONVOY_COUNT != 0);
+    }
+
+    #[test]
+    fn resolver_counters_report_country_validation_drop_stage() {
+        let mut mem = fake_memory();
+        mem.write_u32(COUNTRY_1 + OBJ_TAG_DB_ID as u64, 99);
+
+        let (roots, counters) = resolve_naval_roots_with_counters(&mem);
+        let roots = roots.unwrap();
+
+        assert_eq!(roots.fleets.len(), 0);
+        assert_eq!(roots.task_forces.len(), 0);
+        assert_eq!(counters.game_state_valid, 1);
+        assert_eq!(counters.country_count, 2);
+        assert_eq!(counters.valid_country_count, 0);
+        assert_eq!(counters.readable_fleet_vector_count, 0);
+        assert_eq!(counters.fleet_count, 0);
+        assert_eq!(counters.task_force_count, 0);
     }
 
     #[test]

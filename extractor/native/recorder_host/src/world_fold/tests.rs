@@ -993,6 +993,56 @@ fn chunk3_d26_rowless_partial_marks_unknown_without_clearing_equipment() {
 }
 
 #[test]
+fn chunk3_d26_sparse_partial_updates_present_rows_and_retains_skipped_prior() {
+    let mut sparse_partial = chunk3_division_equipment_payload(
+        COMPACT_STATUS_PARTIAL_DATA | DELTA,
+        &[(47, 17, 0, 0, 0, 1)],
+        &[(21, 450_000)],
+    );
+    sparse_partial[24..28].copy_from_slice(&2u32.to_le_bytes());
+
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (20, chunk3_division_payload(&[(17, 1, 47), (18, 1, 47)])),
+            (
+                26,
+                chunk3_division_equipment_payload(
+                    0,
+                    &[(47, 17, 0, 0, 0, 1), (47, 18, 0, 0, 1, 1)],
+                    &[(11, 250_000), (12, 750_000)],
+                ),
+            ),
+        ],
+        vec![(26, sparse_partial)],
+    ]);
+
+    let divs = snaps[1]["divisions"].as_array().unwrap();
+    let div17 = divs
+        .iter()
+        .find(|div| div["div_uid"] == json!("17:1"))
+        .unwrap();
+    let div18 = divs
+        .iter()
+        .find(|div| div["div_uid"] == json!("18:1"))
+        .unwrap();
+    assert_eq!(div17["equipment"][0]["equip_id"], json!(21));
+    assert_eq!(div17["equipment"][0]["amount"], json!(4.5));
+    assert_eq!(div18["equipment"][0]["equip_id"], json!(12));
+    assert_eq!(div18["equipment"][0]["amount"], json!(7.5));
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(26)
+            && problem["problem"] == json!("compact_status_failure")));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("sparse rows applied")));
+}
+
+#[test]
 fn chunk3_d26_ambiguous_join_is_dropped_and_counted() {
     let divisions = chunk3_division_payload(&[(17, 1, 47), (17, 2, 47)]);
     let equipment = chunk3_division_equipment_payload(0, &[(47, 17, 0, 0, 0, 1)], &[(11, 250_000)]);
