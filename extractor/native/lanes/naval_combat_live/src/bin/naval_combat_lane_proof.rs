@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use naval_combat_live_lane::{
     build_capture_frame, build_transition_capture_frame, gate_stream, result_json, CombatSide,
     CshipSnapshotRow, MemberBridgeRow, NavalCombatBodyBridgeRow, ValidatedCombatSnapshot,
-    CURRENT_870EBF_CSHIP_ROUTE, DOMAIN_NAVAL_COMBAT_LIFECYCLE, DOMAIN_NAVAL_COMBAT_MEMBERS,
+    CURRENT_870EBF_BUILD_SHA256, CURRENT_870EBF_CSHIP_ROUTE, DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+    DOMAIN_NAVAL_COMBAT_MEMBERS, STATUS_LOCATION_CANDIDATE_UNVALIDATED,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -136,6 +137,7 @@ fn main() {
             "  \"two_sided_combat_count\": {},\n",
             "  \"lifecycle_location_row_count\": {},\n",
             "  \"lifecycle_region_row_count\": {},\n",
+            "  \"location_candidate_unvalidated\": {},\n",
             "  \"lifecycle_started_row_count\": {},\n",
             "  \"lifecycle_updated_row_count\": {},\n",
             "  \"lifecycle_ended_row_count\": {},\n",
@@ -163,6 +165,7 @@ fn main() {
         gate.summary.two_sided_combat_count,
         gate.summary.lifecycle_location_row_count,
         gate.summary.lifecycle_region_row_count,
+        (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) != 0,
         gate.summary.lifecycle_started_row_count,
         gate.summary.lifecycle_updated_row_count,
         gate.summary.lifecycle_ended_row_count,
@@ -186,8 +189,9 @@ fn main() {
             && gate.summary.lifecycle_started_row_count > 0
             && gate.summary.lifecycle_updated_row_count > 0
             && gate.summary.lifecycle_ended_row_count > 0
-            && gate.summary.lifecycle_location_row_count == gate.summary.lifecycle_row_count
-            && gate.summary.lifecycle_region_row_count == gate.summary.lifecycle_row_count
+            && gate.summary.lifecycle_location_row_count == 0
+            && gate.summary.lifecycle_region_row_count == 0
+            && (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) != 0
             && gate.summary.member_deleted_row_count > 0
             && gate.summary.task_force_linked_member_count > 0
             && gate.summary.fleet_linked_member_count > 0
@@ -278,6 +282,7 @@ fn run_fixture_json_proof(fixture_path: &PathBuf, out_dir: &PathBuf) -> Result<b
         .map_err(|err| format!("read {} failed: {err}", fixture_path.display()))?;
     let input: FixtureProofInput = serde_json::from_str(input_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("parse {} failed: {err}", fixture_path.display()))?;
+    validate_fixture_source_build(&input.source)?;
     let snapshots = input.to_snapshots()?;
     let cships = input.to_cships()?;
     let frame = build_capture_frame(
@@ -309,8 +314,9 @@ fn run_fixture_json_proof(fixture_path: &PathBuf, out_dir: &PathBuf) -> Result<b
         && gate.summary.lifecycle_row_count > 0
         && gate.summary.member_row_count > 0
         && gate.summary.two_sided_combat_count > 0
-        && gate.summary.lifecycle_location_row_count == gate.summary.lifecycle_row_count
-        && gate.summary.lifecycle_region_row_count == gate.summary.lifecycle_row_count
+        && gate.summary.lifecycle_location_row_count == 0
+        && gate.summary.lifecycle_region_row_count == 0
+        && (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) != 0
         && gate.summary.cship_validated_member_count > 0
         && gate.summary.task_force_linked_member_count == gate.summary.cship_validated_member_count
         && gate.summary.fleet_linked_member_count == gate.summary.cship_validated_member_count
@@ -343,6 +349,7 @@ fn run_fixture_json_proof(fixture_path: &PathBuf, out_dir: &PathBuf) -> Result<b
         "two_sided_combat_count": gate.summary.two_sided_combat_count,
         "lifecycle_location_row_count": gate.summary.lifecycle_location_row_count,
         "lifecycle_region_row_count": gate.summary.lifecycle_region_row_count,
+        "location_candidate_unvalidated": (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) != 0,
         "lifecycle_started_row_count": gate.summary.lifecycle_started_row_count,
         "lifecycle_updated_row_count": gate.summary.lifecycle_updated_row_count,
         "lifecycle_ended_row_count": gate.summary.lifecycle_ended_row_count,
@@ -379,15 +386,45 @@ impl FixtureProofInput {
     }
 }
 
+fn validate_fixture_source_build(source: &Value) -> Result<(), String> {
+    let root = source
+        .get("root")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "fixture-json source.root is required".to_string())?;
+    let sha = root
+        .get("sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fixture-json source.root.sha256 is required".to_string())?;
+    let sha_ok = root
+        .get("sha256_ok")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !sha_ok {
+        return Err("fixture-json source.root.sha256_ok must be true".to_string());
+    }
+    if !sha.eq_ignore_ascii_case(CURRENT_870EBF_BUILD_SHA256) {
+        return Err(format!(
+            "fixture-json build sha mismatch: got {sha}, expected {CURRENT_870EBF_BUILD_SHA256}"
+        ));
+    }
+    Ok(())
+}
+
 impl FixtureSnapshotInput {
     fn to_snapshot(&self) -> Result<ValidatedCombatSnapshot, String> {
+        if self.lifecycle.location_id.is_some() || self.lifecycle.region_id.is_some() {
+            return Err(
+                "fixture-json lifecycle location_id/region_id are unvalidated; keep them absent until manual promotion"
+                    .to_string(),
+            );
+        }
         Ok(ValidatedCombatSnapshot {
             lifecycle: NavalCombatBodyBridgeRow {
                 combat_id: self.lifecycle.combat_id,
                 generation: self.lifecycle.generation,
                 body_ptr: self.lifecycle.body_ptr,
-                location_id: self.lifecycle.location_id,
-                region_id: self.lifecycle.region_id,
+                location_id: None,
+                region_id: None,
                 attacker_member_count: self.lifecycle.attacker_member_count,
                 defender_member_count: self.lifecycle.defender_member_count,
                 attacker_positioning_milli: self.lifecycle.attacker_positioning_milli,
@@ -502,9 +539,7 @@ fn write_and_verify_replay(
     ];
     let identity = PackIdentity {
         schema_version: Some(schema_version.to_string()),
-        build_exe_sha256: Some(
-            "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".to_string(),
-        ),
+        build_exe_sha256: Some(CURRENT_870EBF_BUILD_SHA256.to_string()),
         build_pinned: true,
         mod_identity: None,
         created_utc: Some("2026-07-01T00:00:00Z".to_string()),
@@ -540,8 +575,8 @@ fn fixture() -> ValidatedCombatSnapshot {
             combat_id: 240_580,
             generation: 1,
             body_ptr: 0x22aa_0004_000,
-            location_id: Some(2799),
-            region_id: Some(18),
+            location_id: None,
+            region_id: None,
             attacker_member_count: 1,
             defender_member_count: 1,
             attacker_positioning_milli: Some(812),
@@ -625,4 +660,61 @@ fn json_str(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn fixture_source_requires_expected_build_sha() {
+        let source = json!({
+            "root": {
+                "sha256": CURRENT_870EBF_BUILD_SHA256,
+                "sha256_ok": true
+            }
+        });
+
+        assert!(validate_fixture_source_build(&source).is_ok());
+    }
+
+    #[test]
+    fn fixture_source_rejects_missing_or_mismatched_build_sha() {
+        assert!(validate_fixture_source_build(&json!({})).is_err());
+        assert!(validate_fixture_source_build(&json!({
+            "root": {
+                "sha256": CURRENT_870EBF_BUILD_SHA256,
+                "sha256_ok": false
+            }
+        }))
+        .is_err());
+        assert!(validate_fixture_source_build(&json!({
+            "root": {
+                "sha256": "not-870ebf",
+                "sha256_ok": true
+            }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn fixture_snapshot_rejects_promoted_location_fields() {
+        let fixture: FixtureSnapshotInput = serde_json::from_value(json!({
+            "lifecycle": {
+                "combat_id": 1,
+                "generation": 1,
+                "body_ptr": 4096,
+                "location_id": 2799,
+                "region_id": null,
+                "attacker_member_count": 1,
+                "defender_member_count": 1
+            },
+            "members": []
+        }))
+        .expect("fixture parses");
+
+        let error = fixture.to_snapshot().unwrap_err();
+        assert!(error.contains("location_id/region_id are unvalidated"));
+    }
 }

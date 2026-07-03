@@ -96,6 +96,13 @@ class NavalCombatFixtureProbeContractTests(unittest.TestCase):
         self.assertIn("cship_unresolved_member_count == 0", criteria)
         self.assertIn("CShip module+0x2941748", criteria)
 
+    def test_fixture_contract_keeps_location_candidate_unvalidated(self) -> None:
+        criteria = " ".join(fixture_contract()["success_criteria"])
+
+        self.assertIn("location_candidate_front_0xA4", criteria)
+        self.assertIn("validated == false", criteria)
+        self.assertNotIn("promoted location/region", criteria.split("location_candidate_front_0xA4")[0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -235,6 +235,16 @@ def terminal_statuses() -> Iterable[str]:
 def run(args: argparse.Namespace) -> Dict[str, Any]:
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Bridge artifacts must reflect THIS run only: a stale bridge.txt from an
+    # earlier validated run must never survive a failed rerun in the same
+    # out-dir (the follow-up script reads $out_dir/bridge.txt directly).
+    for stale in (
+        "bridge.txt",
+        "member_bridge.jsonl",
+        "bridge.REJECTED.txt",
+        "member_bridge.REJECTED.jsonl",
+    ):
+        (out_dir / stale).unlink(missing_ok=True)
     script_path = write_followup_script(
         out_dir,
         pid=args.pid,
@@ -263,18 +273,17 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         polls.append(summary)
         final_report = report
 
-        bridge = report.get("bridge") or ""
-        if bridge:
-            (out_dir / "bridge.txt").write_text(bridge, encoding="ascii")
-        member_bridge_rows = report.get("member_bridge_rows") or []
-        if member_bridge_rows:
-            (out_dir / "member_bridge.jsonl").write_text(
-                encode_member_bridge_jsonl(member_bridge_rows),
-                encoding="utf-8",
-            )
-
         status = str(report.get("status") or "unknown")
         if status == "validated_active_fixture":
+            bridge = report.get("bridge") or ""
+            member_bridge_rows = report.get("member_bridge_rows") or []
+            if bridge:
+                (out_dir / "bridge.txt").write_text(bridge, encoding="ascii")
+            if member_bridge_rows:
+                (out_dir / "member_bridge.jsonl").write_text(
+                    encode_member_bridge_jsonl(member_bridge_rows),
+                    encoding="utf-8",
+                )
             lane_compact_followup = run_lane_compact_followup(args, bridge)
             followup = (
                 run_recorder_followup(args, bridge)
@@ -310,6 +319,22 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             }
 
         if status in terminal_statuses() and status != "validated_active_fixture":
+            if status in {
+                "candidate_rejected_cship_member_join",
+                "validated_member_rows_missing_cship_fixture",
+            }:
+                rejected_bridge = report.get("rejected_bridge") or ""
+                if rejected_bridge:
+                    (out_dir / "bridge.REJECTED.txt").write_text(
+                        rejected_bridge,
+                        encoding="ascii",
+                    )
+                rejected_member_rows = report.get("rejected_member_bridge_rows") or []
+                if rejected_member_rows:
+                    (out_dir / "member_bridge.REJECTED.jsonl").write_text(
+                        encode_member_bridge_jsonl(rejected_member_rows),
+                        encoding="utf-8",
+                    )
             break
 
         remaining = deadline - time.monotonic()
@@ -322,10 +347,18 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         poll_index += 1
 
     final_status = str(final_report.get("status") if final_report else "no_poll")
+    required_join_rejected = final_status in {
+        "candidate_rejected_cship_member_join",
+        "validated_member_rows_missing_cship_fixture",
+    }
     return {
         "watcher": "naval_combat_live_watch_gate_v1",
         "created_utc": utc_now(),
-        "status": "timeout_no_validated_fixture" if final_status == "fixture_absent" else "stopped_without_fixture",
+        "status": "required_cship_join_rejected"
+        if required_join_rejected
+        else "timeout_no_validated_fixture"
+        if final_status == "fixture_absent"
+        else "stopped_without_fixture",
         "final_fixture_status": final_status,
         "pid": args.pid,
         "timeout_s": args.timeout_s,
@@ -334,8 +367,14 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         "require_ended": args.require_ended,
         "poll_count": len(polls),
         "polls": polls,
-        "bridge_path": str(out_dir / "bridge.txt"),
-        "member_bridge_path": str(out_dir / "member_bridge.jsonl"),
+        "bridge_path": None,
+        "member_bridge_path": None,
+        "bridge_rejected_path": str(out_dir / "bridge.REJECTED.txt")
+        if required_join_rejected
+        else None,
+        "member_bridge_rejected_path": str(out_dir / "member_bridge.REJECTED.jsonl")
+        if required_join_rejected
+        else None,
         "bridge_row_count": int(final_report.get("bridge_row_count", 0)) if final_report else 0,
         "member_bridge_row_count": int(final_report.get("member_bridge_row_count", 0)) if final_report else 0,
         "cship_resolved_member_count": int(final_report.get("cship_resolved_member_count", 0)) if final_report else 0,
@@ -391,10 +430,6 @@ def main() -> int:
     report = run(args)
     out_path = args.out_dir / "watch_gate_summary.json"
     write_json(out_path, report)
-    if not (args.out_dir / "bridge.txt").exists():
-        (args.out_dir / "bridge.txt").write_text("", encoding="ascii")
-    if not (args.out_dir / "member_bridge.jsonl").exists():
-        (args.out_dir / "member_bridge.jsonl").write_text("", encoding="utf-8")
 
     print(json.dumps({
         "out_path": str(out_path),

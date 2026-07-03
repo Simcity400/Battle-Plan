@@ -37,32 +37,31 @@ EXPECTED_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c6
 # 0x29F9608 constants predated 870ebf and matched zero live bodies.
 NAVAL_COMBAT_VTABLE_RVA = 0x29C6F18
 NAVAL_COMBAT_SIDE_VTABLE_RVA = 0x29CD298
-NAVAL_COMBAT_REGISTRY_VTABLE_RVA = 0x29B6588
+NAVAL_COMBAT_REGISTRY_VTABLE_RVA = None
 NAVAL_COMBAT_MEMBER_VTABLE_RVA = 0x2A0A228
 CURRENT_870EBF_CSHIP_VTABLE_RVA = 0x2941748
 
-NAVAL_COMBAT_TYPE = 4713
+NAVAL_COMBAT_TYPE = 0x1269
 CSHIP_TYPE = 51
 
-OFF_BODY_HANDLE = 0x08
-OFF_BODY_ATTACKER_SIDE = 0x18
-OFF_BODY_DEFENDER_SIDE = 0x20
-OFF_BODY_FRONT = 0x28
+OFF_BODY_HANDLE = 0x18
+OFF_BODY_ATTACKER_SIDE = 0x28
+OFF_BODY_DEFENDER_SIDE = 0x30
+OFF_BODY_FRONT = 0x38
 
-OFF_SIDE_REGISTRY = 0x18
+OFF_SIDE_PARENT_BODY = 0x18
 OFF_SIDE_COUNTRY_DATA = 0x68
 OFF_SIDE_COUNTRY_SIZE = 0x74
-OFF_SIDE_GROUP_DATA = 0xC8
-OFF_SIDE_GROUP_SIZE = 0xD4
+OFF_SIDE_GROUP_BEGIN = 0x2A0
+OFF_SIDE_GROUP_END = 0x2A8
+OFF_SIDE_GROUP_CAP_END = 0x2B0
+OFF_SIDE_GROUP_COUNT = 0x2B8
+OFF_SIDE_GROUP_CAP_COUNT = 0x2C0
+GROUP_ALLOCATION_LEN = 0x80
 OFF_SIDE_LEADER = 0x110
 OFF_SIDE_POSITIONING = 0x288
 
-OFF_REG_HANDLE = 0x18
-OFF_REG_ATTACKER_SIDE = 0x28
-OFF_REG_DEFENDER_SIDE = 0x30
-OFF_REG_FRONT = 0x38
-
-OFF_FRONT_LOCATION = 0xA4
+OFF_FRONT_LOCATION_CANDIDATE = 0xA4
 
 OFF_GROUP_MEMBERS_DATA = 0x08
 OFF_GROUP_MEMBERS_SIZE = 0x14
@@ -199,7 +198,7 @@ class NavalCombatFixtureProbe:
         self.base = self.proc.module_base
         self.vt_body = self.base + NAVAL_COMBAT_VTABLE_RVA
         self.vt_side = self.base + NAVAL_COMBAT_SIDE_VTABLE_RVA
-        self.vt_registry = self.base + NAVAL_COMBAT_REGISTRY_VTABLE_RVA
+        self.vt_registry = None
         self.vt_member = self.base + NAVAL_COMBAT_MEMBER_VTABLE_RVA
         self.vt_cship = self.base + CURRENT_870EBF_CSHIP_VTABLE_RVA
 
@@ -419,34 +418,21 @@ class NavalCombatFixtureProbe:
         for label, side in (("attacker", attacker), ("defender", defender)):
             if not is_heap(side) or safe_u64(self.proc, side or 0) != self.vt_side:
                 errors.append("bad_%s_side_vtable" % label)
+            elif safe_u64(self.proc, (side or 0) + OFF_SIDE_PARENT_BODY) != body:
+                errors.append("%s_side_parent_mismatch" % label)
 
-        registry = safe_u64(self.proc, (attacker or 0) + OFF_SIDE_REGISTRY) if is_heap(attacker) else None
-        if not is_heap(registry) or safe_u64(self.proc, registry or 0) != self.vt_registry:
-            errors.append("bad_registry_vtable")
-        else:
-            reg_handle = safe_u64(self.proc, registry + OFF_REG_HANDLE)
-            reg_attacker = safe_u64(self.proc, registry + OFF_REG_ATTACKER_SIDE)
-            reg_defender = safe_u64(self.proc, registry + OFF_REG_DEFENDER_SIDE)
-            reg_front = safe_u64(self.proc, registry + OFF_REG_FRONT)
-            if reg_handle != packed:
-                errors.append("registry_handle_mismatch")
-            if reg_attacker != attacker:
-                errors.append("registry_attacker_mismatch")
-            if reg_defender != defender:
-                errors.append("registry_defender_mismatch")
-            if is_heap(front) and reg_front != front:
-                errors.append("registry_front_mismatch")
-            if not is_heap(front):
-                front = reg_front
-
-        attacker_stats = self.validate_side(attacker)
-        defender_stats = self.validate_side(defender)
+        attacker_stats = self.validate_side(attacker, body)
+        defender_stats = self.validate_side(defender, body)
         if attacker_stats.get("errors"):
             errors.append("attacker_side_invalid")
         if defender_stats.get("errors"):
             errors.append("defender_side_invalid")
 
-        location = safe_u32(self.proc, (front or 0) + OFF_FRONT_LOCATION) if is_heap(front) else None
+        location_candidate = (
+            safe_u32(self.proc, (front or 0) + OFF_FRONT_LOCATION_CANDIDATE)
+            if is_heap(front)
+            else None
+        )
         two_sided_members = (
             attacker_stats.get("member_count", 0) > 0
             and defender_stats.get("member_count", 0) > 0
@@ -457,17 +443,22 @@ class NavalCombatFixtureProbe:
             "combat_id": combat_id,
             "combat_type": combat_type,
             "body_ptr": body,
-            "location": location,
+            "front_ptr": front,
+            "front_ptr_hex": hx(front),
+            "location_candidate_front_0xA4": location_candidate,
+            "location_candidate_front_0xA4_validated": False,
             "attacker": attacker_stats,
             "defender": defender_stats,
             "two_sided_members": two_sided_members,
             "errors": errors,
         }
 
-    def validate_side(self, side: Optional[int]) -> Dict[str, Any]:
+    def validate_side(self, side: Optional[int], parent_body: int) -> Dict[str, Any]:
         errors: List[str] = []
         if not is_heap(side) or safe_u64(self.proc, side or 0) != self.vt_side:
             return {"status": "invalid", "member_count": 0, "errors": ["bad_side"]}
+        if safe_u64(self.proc, side + OFF_SIDE_PARENT_BODY) != parent_body:
+            errors.append("parent_body_mismatch")
 
         country_data = safe_u64(self.proc, side + OFF_SIDE_COUNTRY_DATA)
         country_count = safe_u32(self.proc, side + OFF_SIDE_COUNTRY_SIZE)
@@ -481,30 +472,53 @@ class NavalCombatFixtureProbe:
             else:
                 countries = [handle & 0xFFFFFFFF for handle in handles]
 
-        group_data = safe_u64(self.proc, side + OFF_SIDE_GROUP_DATA)
-        group_count = safe_u32(self.proc, side + OFF_SIDE_GROUP_SIZE)
+        group_begin = safe_u64(self.proc, side + OFF_SIDE_GROUP_BEGIN)
+        group_end = safe_u64(self.proc, side + OFF_SIDE_GROUP_END)
+        group_cap_end = safe_u64(self.proc, side + OFF_SIDE_GROUP_CAP_END)
+        group_header_count = safe_u32(self.proc, side + OFF_SIDE_GROUP_COUNT)
+        group_header_cap = safe_u32(self.proc, side + OFF_SIDE_GROUP_CAP_COUNT)
         member_count = 0
         group_rows = []
-        if group_count is None or group_count > MAX_GROUPS_PER_SIDE:
-            errors.append("bad_group_count")
+        groups: List[int] = []
+        if not (is_heap(group_begin) and is_heap(group_end) and is_heap(group_cap_end)):
+            errors.append("bad_group_vector")
+        elif group_end < group_begin or group_cap_end < group_end:
+            errors.append("bad_group_vector_bounds")
         else:
-            groups = read_ptr_array(self.proc, group_data or 0, group_count, MAX_GROUPS_PER_SIDE)
-            if groups is None:
-                errors.append("bad_group_vector")
+            allocation_len = group_end - group_begin
+            if allocation_len == 0:
+                groups = []
+            elif allocation_len % GROUP_ALLOCATION_LEN == 0:
+                groups = [
+                    group_begin + index * GROUP_ALLOCATION_LEN
+                    for index in range(allocation_len // GROUP_ALLOCATION_LEN)
+                ]
             else:
-                for group_index, group in enumerate(groups):
-                    row = self.validate_group(group, group_index)
-                    group_rows.append(row)
-                    member_count += int(row.get("member_count", 0))
-                    if row.get("errors"):
-                        errors.append("bad_group_%d" % group_index)
+                errors.append("bad_group_allocation_len")
+        if len(groups) > MAX_GROUPS_PER_SIDE:
+            errors.append("bad_group_count")
+            groups = []
+        for group_index, group in enumerate(groups):
+            row = self.validate_group(group, group_index)
+            group_rows.append(row)
+            member_count += int(row.get("member_count", 0))
+            if row.get("errors"):
+                errors.append("bad_group_%d" % group_index)
 
         leader_present = is_heap(safe_u64(self.proc, side + OFF_SIDE_LEADER))
         positioning = safe_f32(self.proc, side + OFF_SIDE_POSITIONING)
         return {
             "status": "valid" if not errors else "invalid",
             "country_tag_db_ids": countries,
-            "group_count": group_count,
+            "group_begin": group_begin,
+            "group_begin_hex": hx(group_begin),
+            "group_end": group_end,
+            "group_end_hex": hx(group_end),
+            "group_cap_end": group_cap_end,
+            "group_cap_end_hex": hx(group_cap_end),
+            "group_header_count": group_header_count,
+            "group_header_cap": group_header_cap,
+            "group_count": len(groups),
             "member_count": member_count,
             "leader_present": leader_present,
             "positioning": positioning,
@@ -610,7 +624,8 @@ def fixture_contract() -> Dict[str, Any]:
             "bridge_row_count >= 1",
             "member_bridge_row_count >= 2 with attacker and defender CFEXMember rows",
             "non_convoy_member_count >= 1 and cship_unresolved_member_count == 0 when --require-cship-join is active",
-            "each bridge row validates CNavalCombat body vtable, packed type/id, both side vtables, registry vtable, registry handle/order/front, and CFEXMember vectors",
+            "each bridge row validates CNavalCombat body vtable, packed type/id, both CNavalCombatant side vtables, side parent back-refs, and CFEXMember vectors",
+            "location_candidate_front_0xA4 may be present only with location_candidate_front_0xA4_validated == false; it is not a promoted location/region",
             "attacker.member_count > 0 and defender.member_count > 0 when --require-two-sided is used",
             "each non-convoy member resolves CFEXMember+0x08 high u32 ship_instance_id through current CShip module+0x2941748",
         ],
@@ -619,8 +634,8 @@ def fixture_contract() -> Dict[str, Any]:
             "A production acceptance run must emit raw naval_air_combats and naval_combat_members, replay-verify, advance hourly-or-better at current-equivalent speed, skip zero hours, and show naval_combat_ended if the fixture is the ending fixture.",
         ],
         "rejection_criteria": [
-            "body vtable hits exist but no candidate passes the registry/side/member validation chain",
-            "candidate passes body/side registry checks but cannot produce member rows for either side under the fleet-vs-fleet fixture",
+            "body vtable hits exist but no candidate passes the side/member validation chain",
+            "candidate passes body/side checks but cannot produce member rows for either side under the fleet-vs-fleet fixture",
             "candidate produces non-convoy CFEXMember rows whose ship_instance_id cannot resolve to current CShip module+0x2941748",
             "validated bridge rows produce DLL gap rows or fail replay verification in the recorder followup",
         ],
@@ -637,13 +652,14 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             "read_only": True,
             "root": root,
             "candidate_route": {
-                "body_vtable": "module+0x29B6660",
-                "side_vtable": "module+0x29BC908",
-                "registry_vtable": "module+0x29B6588",
-                "member_vtable": "module+0x29F9608",
+                "body_vtable": "module+0x29C6F18",
+                "side_vtable": "module+0x29CD298",
+                "registry_vtable": None,
+                "member_vtable": "module+0x2A0A228",
                 "cship_vtable": "module+0x2941748",
-                "body_chain": "body+0x18/+0x20 sides; side+0x18 registry; registry+0x28/+0x30 sides; registry+0x38 front",
-                "member_chain": "side+0xC8 group vector; group+0x08 member vector; group+0x14 member count",
+                "body_chain": "body+0x28/+0x30 sides; body+0x38 front; side+0x18 parent CNavalCombat back-ref",
+                "location_candidate": "body+0x38 front +0xA4 is reported as location_candidate_front_0xA4 with validated=false; it is not a promoted compact location",
+                "member_chain": "side+0x2A0/+0x2A8/+0x2B0 group allocation; group+0x08 member vector; group+0x14 member count",
                 "member_cship_join": "CFEXMember+0x08 high u32 ship_instance_id -> CShip+0x08 high u32 instance_id; CShip vtable module+0x2941748",
             },
             "fixture_contract": fixture_contract(),
@@ -683,13 +699,37 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 status = "validated_member_rows_missing_cship_fixture"
             elif member_summary["cship_unresolved_member_count"] > 0:
                 status = "candidate_rejected_cship_member_join"
+        rejected_bridge = ""
+        rejected_member_rows: List[Dict[str, Any]] = []
+        rejected_bridge_row_count = 0
+        rejected_member_bridge_row_count = 0
+        if status in {
+            "candidate_rejected_cship_member_join",
+            "validated_member_rows_missing_cship_fixture",
+        }:
+            rejected_bridge = encode_bridge(rows)
+            rejected_member_rows = list(member_rows)
+            rejected_bridge_row_count = len(rows)
+            rejected_member_bridge_row_count = member_summary["member_bridge_row_count"]
+            rows = []
+            member_rows = []
+            member_summary = summarize_member_bridge_rows(member_rows)
         report.update({
             "status": status,
             "body_hit_count": len(hits),
-            "validated_combat_count": sum(1 for row in validated if row.get("status") == "valid"),
+            "validated_combat_count": 0
+            if status in {
+                "candidate_rejected_cship_member_join",
+                "validated_member_rows_missing_cship_fixture",
+            }
+            else sum(1 for row in validated if row.get("status") == "valid"),
             "bridge_row_count": len(rows),
             "bridge": encode_bridge(rows),
+            "rejected_bridge_row_count": rejected_bridge_row_count,
+            "rejected_bridge": rejected_bridge,
             "member_bridge_row_count": member_summary["member_bridge_row_count"],
+            "rejected_member_bridge_row_count": rejected_member_bridge_row_count,
+            "rejected_member_bridge_rows": rejected_member_rows,
             "non_convoy_member_count": member_summary["non_convoy_member_count"],
             "convoy_member_count": member_summary["convoy_member_count"],
             "cship_resolved_member_count": member_summary["cship_resolved_member_count"],
@@ -704,7 +744,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 }
                 for row in validated[:128]
             ],
-            "address_manifest_policy": "body addresses are written to bridge.txt; member and CShip addresses are written to member_bridge.jsonl when out-dir is supplied",
+            "address_manifest_policy": "bridge.txt and member_bridge.jsonl are written only for status=validated_active_fixture; required CShip join failures may write bridge.REJECTED.txt/member_bridge.REJECTED.jsonl diagnostics only",
         })
         return report
     finally:
@@ -725,15 +765,42 @@ def main() -> int:
     if args.out_dir:
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Bridge artifacts must reflect THIS run only: a stale bridge.txt from
+        # an earlier validated poll must never survive a failed rerun in the
+        # same out-dir (it would be reusable as if the required join passed).
+        for stale in (
+            "bridge.txt",
+            "member_bridge.jsonl",
+            "bridge.REJECTED.txt",
+            "member_bridge.REJECTED.jsonl",
+        ):
+            (out_dir / stale).unlink(missing_ok=True)
         out_path = out_dir / "naval_combat_live_fixture_probe.json"
         out_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-        bridge = report.get("bridge") or ""
-        (out_dir / "bridge.txt").write_text(bridge, encoding="ascii")
-        member_bridge = report.get("member_bridge_rows") or []
-        (out_dir / "member_bridge.jsonl").write_text(
-            encode_member_bridge_jsonl(member_bridge),
-            encoding="utf-8",
-        )
+        if report.get("status") == "validated_active_fixture":
+            bridge = report.get("bridge") or ""
+            (out_dir / "bridge.txt").write_text(bridge, encoding="ascii")
+            member_bridge = report.get("member_bridge_rows") or []
+            (out_dir / "member_bridge.jsonl").write_text(
+                encode_member_bridge_jsonl(member_bridge),
+                encoding="utf-8",
+            )
+        elif report.get("status") in {
+            "candidate_rejected_cship_member_join",
+            "validated_member_rows_missing_cship_fixture",
+        }:
+            rejected_bridge = report.get("rejected_bridge") or ""
+            if rejected_bridge:
+                (out_dir / "bridge.REJECTED.txt").write_text(
+                    rejected_bridge,
+                    encoding="ascii",
+                )
+            rejected_member_bridge = report.get("rejected_member_bridge_rows") or []
+            if rejected_member_bridge:
+                (out_dir / "member_bridge.REJECTED.jsonl").write_text(
+                    encode_member_bridge_jsonl(rejected_member_bridge),
+                    encoding="utf-8",
+                )
 
     summary = {
         "out_path": str(out_path) if out_path else None,
@@ -751,9 +818,7 @@ def main() -> int:
         "fixture_absent",
         "validated_active_fixture",
         "validated_but_not_two_sided",
-        "validated_member_rows_missing_cship_fixture",
         "candidate_rejected",
-        "candidate_rejected_cship_member_join",
     ) else 1
 
 

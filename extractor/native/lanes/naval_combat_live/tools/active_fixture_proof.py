@@ -2,8 +2,9 @@
 """Bounded active-fixture harness for naval combat domains 49/50.
 
 This lane-owned wrapper waits for the first validated CNavalCombat fixture,
-enriches it with static strategic-region and persistent CShip task-force/fleet
-data, then hands an exact JSON fixture to the Rust compact proof binary.
+keeps front+0xA4 as an unpromoted location candidate, enriches member rows with
+persistent CShip task-force/fleet data, then hands an exact JSON fixture to the
+Rust compact proof binary.
 Shared collector/recorder entrypoints are intentionally untouched.
 """
 
@@ -151,7 +152,6 @@ def collect_oob_ships(pid: int) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
 def build_fixture_json(
     report: Dict[str, Any],
     *,
-    region_by_province: Dict[int, int],
     oob_ships: Iterable[Dict[str, Any]],
     oob_summary: Dict[str, Any],
     game_hour_raw: int,
@@ -169,17 +169,21 @@ def build_fixture_json(
 
     snapshots: List[Dict[str, Any]] = []
     cships_by_id: Dict[int, Dict[str, Any]] = {}
+    location_candidates: List[Dict[str, Any]] = []
     for combat in report.get("validated_combats") or []:
         if combat.get("status") != "valid":
             continue
         combat_id = int(combat["combat_id"])
-        location = optional_int(combat.get("location"))
-        region_id = region_by_province.get(location or -1)
+        location_candidate = optional_int(combat.get("location_candidate_front_0xA4"))
+        location_candidates.append(
+            {
+                "combat_id": combat_id,
+                "body_ptr": body_ptr_by_combat.get(combat_id),
+                "location_candidate_front_0xA4": location_candidate,
+                "validated": False,
+            }
+        )
         body_ptr = body_ptr_by_combat.get(combat_id)
-        if location is None:
-            errors.append(f"combat {combat_id} is missing body/front location")
-        if region_id is None:
-            errors.append(f"combat {combat_id} location {location} has no strategic region mapping")
         if body_ptr is None:
             errors.append(f"combat {combat_id} is missing body pointer in bridge/member manifest")
         attacker = combat.get("attacker") or {}
@@ -193,8 +197,8 @@ def build_fixture_json(
                     "combat_id": combat_id,
                     "generation": 1,
                     "body_ptr": body_ptr or 0,
-                    "location_id": location,
-                    "region_id": region_id,
+                    "location_id": None,
+                    "region_id": None,
                     "attacker_member_count": int(attacker.get("member_count") or 0),
                     "defender_member_count": int(defender.get("member_count") or 0),
                     "attacker_positioning_milli": milli(attacker.get("positioning")),
@@ -231,7 +235,13 @@ def build_fixture_json(
             "fixture_report_created_utc": report.get("created_utc"),
             "fixture_probe": report.get("probe"),
             "root": report.get("root"),
+            "build_sha256": (report.get("root") or {}).get("sha256"),
             "oob_summary": oob_summary,
+            "location_candidate_front_0xA4": {
+                "validated": False,
+                "promotion": "manual on-screen verification required before any later code change may promote this to location_id/region_id",
+                "candidates": location_candidates,
+            },
         },
         "game_hour_raw": game_hour_raw,
         "elapsed_wall_ms": 1000,
@@ -398,8 +408,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         "poll_count": len(polls),
         "polls": polls,
         "final_fixture_status": (final_report or {}).get("status"),
-        "bridge_path": str(args.out_dir / "bridge.txt"),
-        "member_bridge_path": str(args.out_dir / "member_bridge.jsonl"),
+        "bridge_path": None,
+        "member_bridge_path": None,
         "fixture_json_path": None,
         "rust_fixture_proof": {"status": "not_run", "reason": "no validated active fixture"},
     }
@@ -416,11 +426,7 @@ def finish_validated_fixture(
     member_rows = report.get("member_bridge_rows") or []
     bridge_path = args.out_dir / "bridge.txt"
     member_bridge_path = args.out_dir / "member_bridge.jsonl"
-    bridge_path.write_text(bridge_text, encoding="ascii")
-    member_bridge_path.write_text(encode_member_bridge_jsonl(member_rows), encoding="utf-8")
 
-    game_root = detect_game_root(report, args.game_root)
-    region_by_province = load_province_regions(game_root)
     oob_ships, oob_summary = collect_oob_ships(args.pid)
     cship_index_path = args.out_dir / "cship_task_force_index.json"
     write_json(
@@ -436,7 +442,6 @@ def finish_validated_fixture(
 
     fixture_payload, fixture_errors = build_fixture_json(
         report,
-        region_by_province=region_by_province,
         oob_ships=oob_ships,
         oob_summary=oob_summary,
         game_hour_raw=args.game_hour_raw,
@@ -444,6 +449,15 @@ def finish_validated_fixture(
     fixture_json_path = args.out_dir / "active_fixture_input.json"
     write_json(fixture_json_path, fixture_payload)
     if fixture_errors:
+        bridge_rejected_path = args.out_dir / "bridge.REJECTED.txt"
+        member_bridge_rejected_path = args.out_dir / "member_bridge.REJECTED.jsonl"
+        if bridge_text:
+            bridge_rejected_path.write_text(bridge_text, encoding="ascii")
+        if member_rows:
+            member_bridge_rejected_path.write_text(
+                encode_member_bridge_jsonl(member_rows),
+                encoding="utf-8",
+            )
         return {
             "harness": "naval_combat_live_active_fixture_proof_v1",
             "created_utc": utc_now(),
@@ -451,8 +465,10 @@ def finish_validated_fixture(
             "pid": args.pid,
             "poll_count": len(polls),
             "polls": polls,
-            "bridge_path": str(bridge_path),
-            "member_bridge_path": str(member_bridge_path),
+            "bridge_path": None,
+            "member_bridge_path": None,
+            "bridge_rejected_path": str(bridge_rejected_path) if bridge_text else None,
+            "member_bridge_rejected_path": str(member_bridge_rejected_path) if member_rows else None,
             "fixture_json_path": str(fixture_json_path),
             "cship_task_force_index_path": str(cship_index_path),
             "fixture_errors": fixture_errors,
@@ -461,6 +477,25 @@ def finish_validated_fixture(
 
     rust_out_dir = args.out_dir / "rust_fixture_proof"
     rust_report = run_rust_fixture_proof(fixture_json_path, rust_out_dir)
+    if rust_report["returncode"] == 0:
+        bridge_path.write_text(bridge_text, encoding="ascii")
+        member_bridge_path.write_text(encode_member_bridge_jsonl(member_rows), encoding="utf-8")
+        bridge_path_value: Optional[str] = str(bridge_path)
+        member_bridge_path_value: Optional[str] = str(member_bridge_path)
+        bridge_rejected_path_value: Optional[str] = None
+        member_bridge_rejected_path_value: Optional[str] = None
+    else:
+        bridge_rejected_path = args.out_dir / "bridge.REJECTED.txt"
+        member_bridge_rejected_path = args.out_dir / "member_bridge.REJECTED.jsonl"
+        bridge_rejected_path.write_text(bridge_text, encoding="ascii")
+        member_bridge_rejected_path.write_text(
+            encode_member_bridge_jsonl(member_rows),
+            encoding="utf-8",
+        )
+        bridge_path_value = None
+        member_bridge_path_value = None
+        bridge_rejected_path_value = str(bridge_rejected_path)
+        member_bridge_rejected_path_value = str(member_bridge_rejected_path)
     return {
         "harness": "naval_combat_live_active_fixture_proof_v1",
         "created_utc": utc_now(),
@@ -470,8 +505,10 @@ def finish_validated_fixture(
         "poll_s": args.poll_s,
         "poll_count": len(polls),
         "polls": polls,
-        "bridge_path": str(bridge_path),
-        "member_bridge_path": str(member_bridge_path),
+        "bridge_path": bridge_path_value,
+        "member_bridge_path": member_bridge_path_value,
+        "bridge_rejected_path": bridge_rejected_path_value,
+        "member_bridge_rejected_path": member_bridge_rejected_path_value,
         "fixture_json_path": str(fixture_json_path),
         "cship_task_force_index_path": str(cship_index_path),
         "rust_fixture_proof": rust_report,
@@ -498,10 +535,6 @@ def main() -> int:
         raise SystemExit("--poll-s must be > 0")
 
     report = run(args)
-    if not (args.out_dir / "bridge.txt").exists():
-        (args.out_dir / "bridge.txt").write_text("", encoding="ascii")
-    if not (args.out_dir / "member_bridge.jsonl").exists():
-        (args.out_dir / "member_bridge.jsonl").write_text("", encoding="utf-8")
     summary_path = args.out_dir / "active_fixture_harness_summary.json"
     write_json(summary_path, report)
     print(

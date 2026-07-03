@@ -18,6 +18,7 @@ pub const MEMBER_ROW_LEN: usize = 88;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
+pub const STATUS_LOCATION_CANDIDATE_UNVALIDATED: u32 = 1 << 11;
 pub const FAILURE_STATUS_MASK: u32 = STATUS_SOURCE_UNAVAILABLE | STATUS_PARTIAL_DATA;
 
 pub const LIFECYCLE_ROW_DELETED: u32 = 1 << 0;
@@ -1086,11 +1087,6 @@ fn validate_decoded_lifecycle_row(
             "offset {offset}: lifecycle row {row_index} has location without flag"
         ));
     }
-    if row.flags & LIFECYCLE_LOCATION_PRESENT == 0 {
-        errors.push(format!(
-            "offset {offset}: lifecycle row {row_index} is missing required location"
-        ));
-    }
     if row.flags & LIFECYCLE_REGION_PRESENT != 0
         && (row.region_id == 0 || row.region_id > MAX_REGION_ID)
     {
@@ -1102,11 +1098,6 @@ fn validate_decoded_lifecycle_row(
     if row.flags & LIFECYCLE_REGION_PRESENT == 0 && row.region_id != 0 {
         errors.push(format!(
             "offset {offset}: lifecycle row {row_index} has region without flag"
-        ));
-    }
-    if row.flags & LIFECYCLE_REGION_PRESENT == 0 {
-        errors.push(format!(
-            "offset {offset}: lifecycle row {row_index} is missing required region"
         ));
     }
     if row.flags & LIFECYCLE_ATTACKER_COUNT_PRESENT == 0 && row.attacker_member_count != 0 {
@@ -1560,8 +1551,8 @@ mod tests {
             generation: 1,
             body_ptr: 0x22aa_0004_000,
             deleted: false,
-            location_id: Some(2799),
-            region_id: Some(18),
+            location_id: None,
+            region_id: None,
             attacker_member_count: Some(1),
             defender_member_count: Some(1),
             attacker_positioning_milli: Some(812),
@@ -1615,7 +1606,8 @@ mod tests {
                 sunk_convoys: None,
             },
         ];
-        let lifecycle_payload = encode_lifecycle_payload(42, STATUS_DELTA_DATA, &lifecycle);
+        let status_flags = STATUS_DELTA_DATA | STATUS_LOCATION_CANDIDATE_UNVALIDATED;
+        let lifecycle_payload = encode_lifecycle_payload(42, status_flags, &lifecycle);
         let member_payload = encode_member_payload(42, STATUS_DELTA_DATA, &members);
         let mut stream = Vec::new();
         stream.extend_from_slice(&compact_record(
@@ -1642,8 +1634,12 @@ mod tests {
         assert_eq!(result.summary.lifecycle_row_count, 1);
         assert_eq!(result.summary.member_row_count, 2);
         assert_eq!(result.summary.two_sided_combat_count, 1);
-        assert_eq!(result.summary.lifecycle_location_row_count, 1);
-        assert_eq!(result.summary.lifecycle_region_row_count, 1);
+        assert_eq!(result.summary.lifecycle_location_row_count, 0);
+        assert_eq!(result.summary.lifecycle_region_row_count, 0);
+        assert_ne!(
+            result.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+            0
+        );
         assert_eq!(result.summary.member_deleted_row_count, 0);
         assert_eq!(result.summary.cship_validated_member_count, 1);
         assert_eq!(result.summary.task_force_linked_member_count, 1);
@@ -1682,14 +1678,14 @@ mod tests {
                 .data_units_total
                 .get("naval_combat_lifecycle_location_rows")
                 .copied(),
-            Some(1)
+            Some(0)
         );
         assert_eq!(
             lifecycle_summary
                 .data_units_total
                 .get("naval_combat_lifecycle_region_rows")
                 .copied(),
-            Some(1)
+            Some(0)
         );
 
         let member_summary = decode_members_data_payload(members.offset, members.payload);

@@ -3,27 +3,32 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::domain49_50_naval_combat_live::{
     compact_record, encode_lifecycle_payload, encode_member_payload, CombatSide, LifecycleRow,
     MemberRow, COMPACT_RECORD_TYPE_DOMAIN_DATA, DOMAIN_NAVAL_COMBAT_LIFECYCLE,
-    DOMAIN_NAVAL_COMBAT_MEMBERS, STATUS_DELTA_DATA,
+    DOMAIN_NAVAL_COMBAT_MEMBERS, STATUS_DELTA_DATA, STATUS_LOCATION_CANDIDATE_UNVALIDATED,
 };
 
+pub const CURRENT_870EBF_BUILD_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+pub const CURRENT_870EBF_PROVENANCE: &str =
+    "extractor/native/runs/naval_combat_fixture_20260703_biscay_v2";
+
 pub const CURRENT_870EBF_OFFSETS: ExtractorOffsets = ExtractorOffsets {
-    naval_combat_body_vtable_rva: 0x29B6660,
-    naval_combat_side_vtable_rva: 0x29BC908,
-    naval_combat_registry_vtable_rva: 0x29B6588,
-    naval_combat_member_vtable_rva: 0x29F9608,
-    body_handle_off: 0x08,
-    body_attacker_side_off: 0x18,
-    body_defender_side_off: 0x20,
-    body_front_off: 0x28,
-    side_registry_off: 0x18,
-    side_group_data_off: 0xC8,
-    side_group_size_off: 0xD4,
+    naval_combat_body_vtable_rva: 0x29C6F18,
+    naval_combat_side_vtable_rva: 0x29CD298,
+    naval_combat_registry_vtable_rva: 0,
+    naval_combat_member_vtable_rva: 0x2A0A228,
+    body_handle_off: 0x18,
+    body_attacker_side_off: 0x28,
+    body_defender_side_off: 0x30,
+    body_front_off: 0x38,
+    side_parent_body_off: 0x18,
+    side_group_begin_off: 0x2A0,
+    side_group_end_off: 0x2A8,
+    side_group_cap_end_off: 0x2B0,
+    side_group_count_off: 0x2B8,
+    side_group_cap_count_off: 0x2C0,
+    group_allocation_len: 0x80,
     side_positioning_off: 0x288,
-    registry_handle_off: 0x18,
-    registry_attacker_side_off: 0x28,
-    registry_defender_side_off: 0x30,
-    registry_front_off: 0x38,
-    front_location_off: 0xA4,
+    front_location_candidate_off: 0xA4,
     group_members_data_off: 0x08,
     group_members_size_off: 0x14,
     member_handle_off: 0x08,
@@ -58,15 +63,15 @@ pub struct ExtractorOffsets {
     pub body_attacker_side_off: u64,
     pub body_defender_side_off: u64,
     pub body_front_off: u64,
-    pub side_registry_off: u64,
-    pub side_group_data_off: u64,
-    pub side_group_size_off: u64,
+    pub side_parent_body_off: u64,
+    pub side_group_begin_off: u64,
+    pub side_group_end_off: u64,
+    pub side_group_cap_end_off: u64,
+    pub side_group_count_off: u64,
+    pub side_group_cap_count_off: u64,
+    pub group_allocation_len: u64,
     pub side_positioning_off: u64,
-    pub registry_handle_off: u64,
-    pub registry_attacker_side_off: u64,
-    pub registry_defender_side_off: u64,
-    pub registry_front_off: u64,
-    pub front_location_off: u64,
+    pub front_location_candidate_off: u64,
     pub group_members_data_off: u64,
     pub group_members_size_off: u64,
     pub member_handle_off: u64,
@@ -193,8 +198,8 @@ pub fn build_capture_frame(
             generation: snapshot.lifecycle.generation,
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: false,
-            location_id: snapshot.lifecycle.location_id,
-            region_id: snapshot.lifecycle.region_id,
+            location_id: None,
+            region_id: None,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
@@ -219,8 +224,9 @@ pub fn build_capture_frame(
         return Err(errors);
     }
 
+    let status_flags = lifecycle_status_flags(&lifecycle_rows);
     let lifecycle_payload =
-        encode_lifecycle_payload(elapsed_wall_ms, STATUS_DELTA_DATA, &lifecycle_rows);
+        encode_lifecycle_payload(elapsed_wall_ms, status_flags, &lifecycle_rows);
     let member_payload = encode_member_payload(elapsed_wall_ms, STATUS_DELTA_DATA, &member_rows);
     let mut compact_stream = Vec::new();
     compact_stream.extend_from_slice(&compact_record(
@@ -242,7 +248,7 @@ pub fn build_capture_frame(
         compact_stream,
         lifecycle_rows,
         member_rows,
-        status_flags: STATUS_DELTA_DATA,
+        status_flags,
     })
 }
 
@@ -283,8 +289,8 @@ pub fn build_transition_capture_frame(
             generation: snapshot.lifecycle.generation,
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: false,
-            location_id: snapshot.lifecycle.location_id,
-            region_id: snapshot.lifecycle.region_id,
+            location_id: None,
+            region_id: None,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
@@ -325,8 +331,8 @@ pub fn build_transition_capture_frame(
             generation: snapshot.lifecycle.generation,
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: true,
-            location_id: snapshot.lifecycle.location_id,
-            region_id: snapshot.lifecycle.region_id,
+            location_id: None,
+            region_id: None,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
@@ -360,8 +366,9 @@ pub fn build_transition_capture_frame(
         return Err(errors);
     }
 
+    let status_flags = lifecycle_status_flags(&lifecycle_rows);
     let lifecycle_payload =
-        encode_lifecycle_payload(elapsed_wall_ms, STATUS_DELTA_DATA, &lifecycle_rows);
+        encode_lifecycle_payload(elapsed_wall_ms, status_flags, &lifecycle_rows);
     let member_payload = encode_member_payload(elapsed_wall_ms, STATUS_DELTA_DATA, &member_rows);
     let mut compact_stream = Vec::new();
     compact_stream.extend_from_slice(&compact_record(
@@ -383,7 +390,7 @@ pub fn build_transition_capture_frame(
         compact_stream,
         lifecycle_rows,
         member_rows,
-        status_flags: STATUS_DELTA_DATA,
+        status_flags,
     })
 }
 
@@ -548,6 +555,17 @@ fn validate_pending_member_cship_joins(
     }
 }
 
+fn lifecycle_status_flags(rows: &[LifecycleRow]) -> u32 {
+    let has_unvalidated_location_candidate = rows
+        .iter()
+        .any(|row| row.location_id.is_none() || row.region_id.is_none());
+    if has_unvalidated_location_candidate {
+        STATUS_DELTA_DATA | STATUS_LOCATION_CANDIDATE_UNVALIDATED
+    } else {
+        STATUS_DELTA_DATA
+    }
+}
+
 fn index_cships(
     cships: &[CshipSnapshotRow],
     errors: &mut Vec<String>,
@@ -680,6 +698,12 @@ mod tests {
     fn builds_compact_frame_from_validated_member_cship_join() {
         let frame = build_capture_frame(&[fixture()], &[cship(1001)], 10, 512, 5).unwrap();
         assert_eq!(frame.lifecycle_rows.len(), 1);
+        assert_eq!(frame.lifecycle_rows[0].location_id, None);
+        assert_eq!(frame.lifecycle_rows[0].region_id, None);
+        assert_ne!(
+            frame.status_flags & STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+            0
+        );
         assert_eq!(frame.member_rows.len(), 2);
         assert!(frame.member_rows.iter().any(|row| row.cship_join_validated));
         assert!(frame
@@ -694,6 +718,8 @@ mod tests {
         let gate = gate_stream(&frame.compact_stream);
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.two_sided_combat_count, 1);
+        assert_eq!(gate.summary.lifecycle_location_row_count, 0);
+        assert_eq!(gate.summary.lifecycle_region_row_count, 0);
         assert_eq!(gate.summary.task_force_linked_member_count, 1);
         assert_eq!(gate.summary.fleet_linked_member_count, 1);
         assert_eq!(gate.summary.hull_telemetry_member_count, 1);
