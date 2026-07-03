@@ -406,24 +406,15 @@ def scan_division_block(tz: Tokenizer, context: str, stats: dict[str, int]) -> N
         stats["division_killed_scalars"] += 1
 
 
-def scan_members_block(tz: Tokenizer, context: str) -> int:
-    unit_refs = 0
-    for key, opener in iter_block_entries_checked(tz, context):
-        if opener is not LBRACE:
-            continue
-        if key != "member":
-            skip_block_checked(tz, f"{context}.{key}")
-            continue
-        member_has_unit = False
-        for member_key, member_opener in iter_block_entries_checked(tz, f"{context}.member"):
-            if member_opener is LBRACE:
-                if member_key == "unit":
-                    member_has_unit = checked_id_block_present(tz, f"{context}.member.unit")
-                else:
-                    skip_block_checked(tz, f"{context}.member.{member_key}")
-        if member_has_unit:
-            unit_refs += 1
-    return unit_refs
+def scan_member_block(tz: Tokenizer, context: str) -> int:
+    member_has_unit = False
+    for member_key, member_opener in iter_block_entries_checked(tz, context):
+        if member_opener is LBRACE:
+            if member_key == "unit":
+                member_has_unit = checked_id_block_present(tz, f"{context}.unit")
+            else:
+                skip_block_checked(tz, f"{context}.{member_key}")
+    return 1 if member_has_unit else 0
 
 
 def scan_orders_group_block(tz: Tokenizer, context: str, stats: dict[str, int]) -> None:
@@ -431,8 +422,10 @@ def scan_orders_group_block(tz: Tokenizer, context: str, stats: dict[str, int]) 
     for key, opener in iter_block_entries_checked(tz, context):
         if opener is not LBRACE:
             continue
-        if key == "members":
-            stats["oob_member_unit_refs"] += scan_members_block(tz, f"{context}.members")
+        if key == "member":
+            # orders_group carries direct member={unit={...}} children
+            # (observed: 1944 D04); this matches parse_oob._parse_orders_group.
+            stats["oob_member_unit_refs"] += scan_member_block(tz, f"{context}.member")
         else:
             skip_block_checked(tz, f"{context}.{key}")
 
@@ -505,7 +498,6 @@ def validate_oracle_shape(
         ("division_id_blocks", "division id blocks"),
         ("division_army_manpower_value_blocks", "army_manpower value blocks"),
         ("division_army_manpower_need_blocks", "army_manpower need blocks"),
-        ("division_killed_scalars", "killed scalars"),
     )
     for key, label in checks:
         observed = structural[key]
@@ -513,6 +505,15 @@ def validate_oracle_shape(
             raise OracleValidationError(
                 f"division_block_malformed: expected {expected} {label}, found {observed}"
             )
+    # the game omits the `killed` scalar for divisions with no cumulative losses
+    # (observed live: 2310/3168 blocks carried it in a 1944 save). The oracle
+    # records those rows as killed=None (absent, not zero), so the shape gate
+    # requires structural/parser agreement on the killed-bearing subset only.
+    killed_scalars = structural["division_killed_scalars"]
+    if killed_scalars > expected:
+        raise OracleValidationError(
+            f"division_block_malformed: found {killed_scalars} killed scalars across {expected} division blocks"
+        )
     if stats["current_manpower_rows"] != expected:
         raise OracleValidationError(
             f"army_manpower_parse_failed: expected {expected} current manpower rows, parsed {stats['current_manpower_rows']}"
@@ -521,13 +522,13 @@ def validate_oracle_shape(
         raise OracleValidationError(
             f"army_manpower_need_parse_failed: expected {expected} manpower need rows, parsed {stats['manpower_need_rows']}"
         )
-    if stats["cumulative_killed_rows"] != expected:
+    if stats["cumulative_killed_rows"] != killed_scalars:
         raise OracleValidationError(
-            f"killed_parse_failed: expected {expected} killed rows, parsed {stats['cumulative_killed_rows']}"
+            f"killed_parse_failed: structural scan found {killed_scalars} killed scalars, parsed {stats['cumulative_killed_rows']}"
         )
     if structural["oob_member_unit_refs"] <= 0:
         raise OracleValidationError(
-            f"oob_army_membership_missing_or_malformed: save has {expected} division blocks but no orders_group.members.member.unit refs"
+            f"oob_army_membership_missing_or_malformed: save has {expected} division blocks but no orders_group.member.unit refs"
         )
     if stats["assignment_rows"] <= 0:
         raise OracleValidationError(
