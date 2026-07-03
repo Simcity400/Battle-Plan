@@ -174,10 +174,16 @@ pub fn compact_status_failure_flags_after_expected_partial_tolerance(
 
 pub const STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG: &str = "templates_equipment_catalog";
 pub const STATIC_ARTIFACT_LOCALISATION_JOIN: &str = "localisation_join";
+pub const STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS: &str = "decisions_static_definitions";
+pub const STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC: &str = "idea_tech_loc_xref_static";
+pub const STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC: &str = "ship_definitions_static";
 
 pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
     STATIC_ARTIFACT_LOCALISATION_JOIN,
+    STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+    STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+    STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
 ];
 
 pub const PRODUCTION_PROFILE_RULE: &str =
@@ -1037,6 +1043,9 @@ mod tests {
             &[
                 STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
                 STATIC_ARTIFACT_LOCALISATION_JOIN,
+                STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+                STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+                STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
             ]
         );
     }

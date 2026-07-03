@@ -79,6 +79,19 @@ Status vocabulary:
 | 59 | `templates_equipment_catalog_live` | strict vanilla+mod static catalog proof passed (2026-07-02); production replay packing shipped (`recorder_host --static-templates-equipment-catalog`: hashed `role="static_artifact"` entry + `index.json` `static_artifacts` roster, fail-closed absence); live template-id joins open | templates/equipment catalog |
 | 1000 | `frame` | compact stream framing/perf records | recorder infrastructure |
 
+## Static Artifacts Packed By Recorder
+
+The production recorder packs pre-built deterministic JSON artifacts as
+`role="static_artifact"` entries and records present/absent status in
+`index.json`. These W2 `game_defs` artifacts are required alongside the existing
+domain-59 templates/equipment catalog and R3 localisation join bundle:
+
+| artifact name | recorder flag | payload path | schema | contents |
+| --- | --- | --- | --- | --- |
+| `decisions_static_definitions` | `--static-decisions-definitions` | `extractor/game_defs/out/decisions_static/decisions_static_definitions/decision_definitions_catalog.json` | `decisions_static_definitions.static_artifact.v1` | Static decision and category definitions for replay enrichment. |
+| `idea_tech_loc_xref_static` | `--static-idea-tech-loc-xref` | `extractor/game_defs/out/idea_tech_loc_xref/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json` | `idea_tech_loc_xref_static.static_artifact.v1` | Idea and technology token cross-reference to localisation keys. |
+| `ship_definitions_static` | `--static-ship-definitions` | `extractor/game_defs/out/ship_definitions_static/ship_definitions_static/ship_definitions_catalog.json` | `ship_definitions_static.static_artifact.v1` | Ship hull and ship module static definitions. |
+
 ## Lane Acceptance Under This Registry
 
 - A lane may not report a new compact domain ID as free unless this registry

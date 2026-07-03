@@ -1056,6 +1056,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut extraction_perf_gate = false;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
+    let mut static_decisions_definitions: Option<PathBuf> = None;
+    let mut static_idea_tech_loc_xref: Option<PathBuf> = None;
+    let mut static_ship_definitions: Option<PathBuf> = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -1164,6 +1167,38 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     "--static-localisation-join",
                 )?));
             }
+            "--static-decisions-definitions" => {
+                if static_decisions_definitions.is_some() {
+                    return Err(
+                        "duplicate --static-decisions-definitions is not allowed".to_string()
+                    );
+                }
+                i += 1;
+                static_decisions_definitions = Some(PathBuf::from(required(
+                    args.get(i),
+                    "--static-decisions-definitions",
+                )?));
+            }
+            "--static-idea-tech-loc-xref" => {
+                if static_idea_tech_loc_xref.is_some() {
+                    return Err("duplicate --static-idea-tech-loc-xref is not allowed".to_string());
+                }
+                i += 1;
+                static_idea_tech_loc_xref = Some(PathBuf::from(required(
+                    args.get(i),
+                    "--static-idea-tech-loc-xref",
+                )?));
+            }
+            "--static-ship-definitions" => {
+                if static_ship_definitions.is_some() {
+                    return Err("duplicate --static-ship-definitions is not allowed".to_string());
+                }
+                i += 1;
+                static_ship_definitions = Some(PathBuf::from(required(
+                    args.get(i),
+                    "--static-ship-definitions",
+                )?));
+            }
             "--help" | "-h" => return Err(usage()),
             other => return Err(format!("unknown argument {other}\n{}", usage())),
         }
@@ -1212,6 +1247,24 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     path,
                 });
             }
+            if let Some(path) = static_decisions_definitions {
+                requested.push(StaticArtifactRequest {
+                    name: STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+                    path,
+                });
+            }
+            if let Some(path) = static_idea_tech_loc_xref {
+                requested.push(StaticArtifactRequest {
+                    name: STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+                    path,
+                });
+            }
+            if let Some(path) = static_ship_definitions {
+                requested.push(StaticArtifactRequest {
+                    name: STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+                    path,
+                });
+            }
             requested
         },
     })
@@ -1224,9 +1277,18 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
 const STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG: &str =
     compact_contract::STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG;
 const STATIC_ARTIFACT_LOCALISATION_JOIN: &str = compact_contract::STATIC_ARTIFACT_LOCALISATION_JOIN;
+const STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS: &str =
+    compact_contract::STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS;
+const STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC: &str =
+    compact_contract::STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC;
+const STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC: &str =
+    compact_contract::STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC;
 const KNOWN_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
     STATIC_ARTIFACT_LOCALISATION_JOIN,
+    STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+    STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+    STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
 ];
 
 fn build_production_profile_summary(cfg: &Config) -> ProductionProfileSummary {
@@ -1314,12 +1376,15 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
     match name {
         STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG => "--static-templates-equipment-catalog",
         STATIC_ARTIFACT_LOCALISATION_JOIN => "--static-localisation-join",
+        STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => "--static-decisions-definitions",
+        STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => "--static-idea-tech-loc-xref",
+        STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "--static-ship-definitions",
         _ => "--unknown-static-artifact",
     }
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -1339,7 +1404,13 @@ fn usage() -> String {
                                                     <game_id>/domain59_static_catalog.json)\n\
        --static-localisation-join path              R3 localisation bundle JSON\n\
                                                     (localisation_gate.py out/ dir:\n\
-                                                    <game_id>/localisation_catalog.json)".to_string()
+                                                    <game_id>/localisation_catalog.json)\n\
+       --static-decisions-definitions path          decisions/categories static definitions JSON\n\
+                                                    (extractor/game_defs/out/decisions_static/decisions_static_definitions/decision_definitions_catalog.json)\n\
+       --static-idea-tech-loc-xref path             idea/technology localisation cross-reference JSON\n\
+                                                    (extractor/game_defs/out/idea_tech_loc_xref/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json)\n\
+       --static-ship-definitions path               ship hull/module definitions JSON\n\
+                                                    (extractor/game_defs/out/ship_definitions_static/ship_definitions_static/ship_definitions_catalog.json)".to_string()
 }
 
 fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
@@ -1449,6 +1520,11 @@ fn expected_static_artifact_schema(name: &str) -> &'static str {
             "templates_equipment_catalog_live.static_artifact.v1"
         }
         STATIC_ARTIFACT_LOCALISATION_JOIN => "static_localisation_join_r3.static_artifact.v1",
+        STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => {
+            "decisions_static_definitions.static_artifact.v1"
+        }
+        STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => "idea_tech_loc_xref_static.static_artifact.v1",
+        STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "ship_definitions_static.static_artifact.v1",
         _ => "unknown.static_artifact.v1",
     }
 }
@@ -1574,6 +1650,64 @@ fn require_object_field<'a>(
         })
 }
 
+fn require_nonempty_object_field<'a>(
+    request: &StaticArtifactRequest,
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    let value = require_object_field(request, object, field)?;
+    if value.is_empty() {
+        return Err(invalid_static_artifact_shape(
+            request,
+            &format!("field {field} must be a non-empty JSON object"),
+        ));
+    }
+    Ok(value)
+}
+
+fn is_json_integer(value: &Value) -> bool {
+    match value {
+        Value::Number(number) => number.is_i64() || number.is_u64(),
+        _ => false,
+    }
+}
+
+fn require_integer_object_key(
+    request: &StaticArtifactRequest,
+    object: &serde_json::Map<String, Value>,
+    field_path: &str,
+    key: &str,
+) -> Result<(), String> {
+    if object.get(key).map_or(false, is_json_integer) {
+        Ok(())
+    } else {
+        Err(invalid_static_artifact_shape(
+            request,
+            &format!("missing field {field_path} or field {field_path} must be an integer"),
+        ))
+    }
+}
+
+fn require_layer_root<'a>(
+    request: &StaticArtifactRequest,
+    layer_object: &'a serde_json::Map<String, Value>,
+    index: usize,
+) -> Result<&'a str, String> {
+    for key in ["root", "root_name"] {
+        if let Some(root) = layer_object
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|root| !root.trim().is_empty())
+        {
+            return Ok(root);
+        }
+    }
+    Err(invalid_static_artifact_shape(
+        request,
+        &format!("field layers[{index}] must carry non-empty root or root_name"),
+    ))
+}
+
 fn require_nonempty_layers<'a>(
     request: &StaticArtifactRequest,
     object: &'a serde_json::Map<String, Value>,
@@ -1602,14 +1736,55 @@ fn require_nonempty_layers<'a>(
             "label",
             &format!("layers[{index}].label"),
         )?;
-        require_nonempty_str_field_named(
-            request,
-            layer_object,
-            "root",
-            &format!("layers[{index}].root"),
-        )?;
+        require_layer_root(request, layer_object, index)?;
     }
     Ok(layers)
+}
+
+fn validate_decisions_static_definitions(
+    request: &StaticArtifactRequest,
+    object: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    require_nonempty_object_field(request, object, "decisions")?;
+    require_nonempty_object_field(request, object, "categories")?;
+    let meta = require_object_field(request, object, "meta")?;
+    require_integer_object_key(request, meta, "meta.decision_count", "decision_count")?;
+    require_integer_object_key(request, meta, "meta.category_count", "category_count")?;
+    require_object_field(request, object, "localisation_source")?;
+    Ok(())
+}
+
+fn validate_idea_tech_loc_xref_static(
+    request: &StaticArtifactRequest,
+    object: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let tokens = require_object_field(request, object, "tokens")?;
+    let ideas = require_object_field(request, tokens, "ideas")?;
+    let technologies = require_object_field(request, tokens, "technologies")?;
+    if ideas.is_empty() && technologies.is_empty() {
+        return Err(invalid_static_artifact_shape(
+            request,
+            "field tokens must contain at least one idea or technology token",
+        ));
+    }
+    let meta = require_object_field(request, object, "meta")?;
+    require_integer_object_key(request, meta, "meta.idea_count", "idea_count")?;
+    require_integer_object_key(request, meta, "meta.tech_count", "tech_count")?;
+    require_object_field(request, object, "localisation_source")?;
+    Ok(())
+}
+
+fn validate_ship_definitions_static(
+    request: &StaticArtifactRequest,
+    object: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    require_nonempty_object_field(request, object, "ship_hulls")?;
+    require_nonempty_object_field(request, object, "ship_modules")?;
+    let meta = require_object_field(request, object, "meta")?;
+    require_integer_object_key(request, meta, "meta.ship_hull_count", "ship_hull_count")?;
+    require_integer_object_key(request, meta, "meta.ship_module_count", "ship_module_count")?;
+    require_object_field(request, object, "localisation_source")?;
+    Ok(())
 }
 
 fn validate_static_artifact_shape(
@@ -1669,6 +1844,15 @@ fn validate_static_artifact_shape(
                 ));
             }
         }
+        STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => {
+            validate_decisions_static_definitions(request, object)?;
+        }
+        STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => {
+            validate_idea_tech_loc_xref_static(request, object)?;
+        }
+        STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => {
+            validate_ship_definitions_static(request, object)?;
+        }
         _ => {
             return Err(invalid_static_artifact_shape(
                 request,
@@ -1707,7 +1891,15 @@ fn whitelisted_layers(catalog: &Value) -> Value {
             if let Some(value) = object.get("label") {
                 carried.insert("label".to_string(), redact_json_strings(value));
             }
-            if let Some(root) = object.get("root").and_then(Value::as_str) {
+            // Same root/root_name selection rule as require_layer_root: an
+            // empty/whitespace "root" must not shadow a valid "root_name",
+            // or provenance would record root_basename: "".
+            if let Some(root) = ["root", "root_name"].iter().find_map(|key| {
+                object
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .filter(|root| !root.trim().is_empty())
+            }) {
                 carried.insert(
                     "root_basename".to_string(),
                     Value::String(redact_root_basename(root)),
@@ -1720,6 +1912,36 @@ fn whitelisted_layers(catalog: &Value) -> Value {
         })
         .collect();
     Value::Array(out)
+}
+
+fn insert_meta_provenance(
+    out: &mut serde_json::Map<String, Value>,
+    object: &serde_json::Map<String, Value>,
+    fields: &[&str],
+) {
+    let meta = object["meta"]
+        .as_object()
+        .expect("static artifact meta validated before provenance build");
+    out.insert(
+        "meta".to_string(),
+        Value::Object(whitelisted_object(meta, fields)),
+    );
+}
+
+fn insert_localisation_source_provenance(
+    out: &mut serde_json::Map<String, Value>,
+    object: &serde_json::Map<String, Value>,
+) {
+    let localisation_source = object["localisation_source"]
+        .as_object()
+        .expect("static artifact localisation source validated before provenance build");
+    out.insert(
+        "localisation_source".to_string(),
+        Value::Object(whitelisted_object(
+            localisation_source,
+            &["key_count", "sha256", "source"],
+        )),
+    );
 }
 
 /// Build the provenance block surfaced into `index.json` for a present artifact.
@@ -1789,6 +2011,55 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
                 )),
             );
         }
+        STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => {
+            insert_meta_provenance(
+                &mut out,
+                object,
+                &[
+                    "category_count",
+                    "decision_count",
+                    "category_files_parsed",
+                    "category_files_total",
+                    "decision_files_parsed",
+                    "decision_files_total",
+                    "decision_mapped",
+                    "decision_omitted_no_loc_key",
+                ],
+            );
+            insert_localisation_source_provenance(&mut out, object);
+        }
+        STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => {
+            insert_meta_provenance(
+                &mut out,
+                object,
+                &[
+                    "idea_count",
+                    "tech_count",
+                    "idea_files_parsed",
+                    "idea_files_total",
+                    "tech_files_parsed",
+                    "tech_files_total",
+                    "idea_mapped",
+                    "idea_omitted_no_loc_key",
+                ],
+            );
+            insert_localisation_source_provenance(&mut out, object);
+        }
+        STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => {
+            insert_meta_provenance(
+                &mut out,
+                object,
+                &[
+                    "ship_hull_count",
+                    "ship_module_count",
+                    "equipment_files_parsed",
+                    "equipment_files_total",
+                    "module_files_parsed",
+                    "module_files_total",
+                ],
+            );
+            insert_localisation_source_provenance(&mut out, object);
+        }
         _ => unreachable!("static artifact name validated before provenance build"),
     }
     Ok(Value::Object(out))
@@ -1800,6 +2071,9 @@ fn static_artifact_file_name(name: &str) -> &'static str {
     match name {
         STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG => "domain59_static_catalog.json",
         STATIC_ARTIFACT_LOCALISATION_JOIN => "localisation_catalog.json",
+        STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => "decision_definitions_catalog.json",
+        STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => "idea_tech_loc_xref_catalog.json",
+        STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "ship_definitions_catalog.json",
         // unreachable for KNOWN_STATIC_ARTIFACTS; defensive default keeps the path
         // safe (no personal path, no separators) if a new name is added without a
         // filename mapping.
@@ -18700,10 +18974,22 @@ mod tests {
                 && line.contains("--static-templates-equipment-catalog")
                 && line.contains("localisation_join")
                 && line.contains("--static-localisation-join")
+                && line.contains("decisions_static_definitions")
+                && line.contains("--static-decisions-definitions")
+                && line.contains("idea_tech_loc_xref_static")
+                && line.contains("--static-idea-tech-loc-xref")
+                && line.contains("ship_definitions_static")
+                && line.contains("--static-ship-definitions")
         }));
         assert_eq!(
             summary.as_json()["missing_required_static_artifacts"],
-            json!(["templates_equipment_catalog", "localisation_join"])
+            json!([
+                "templates_equipment_catalog",
+                "localisation_join",
+                "decisions_static_definitions",
+                "idea_tech_loc_xref_static",
+                "ship_definitions_static"
+            ])
         );
     }
 
@@ -21353,6 +21639,163 @@ mod tests {
         serde_json::to_vec_pretty(&catalog).unwrap()
     }
 
+    fn fake_decisions_static_catalog() -> Value {
+        json!({
+            "schema": "decisions_static_definitions.static_artifact.v1",
+            "artifact_kind": "deterministic_static_replay_enrichment",
+            "artifact_sha256": "decisions-sha",
+            "layers": [
+                { "label": "vanilla", "replace_path": [], "root_name": "the game" },
+            ],
+            "decisions": { "GER_four_year_plan": { "path": r"C:\Users\Example\Documents\mod\test" } },
+            "categories": { "political_actions": {} },
+            "coverage": {},
+            "join_keys": [],
+            "localisation_source": {
+                "key_count": 10,
+                "path": r"C:\Users\Example\Documents\mod\test\localisation",
+                "sha256": "loc-sha",
+                "source": "static_localisation_join_r3",
+                "unlisted": r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV"
+            },
+            "meta": {
+                "category_count": 1,
+                "category_files_parsed": 2,
+                "category_files_total": 3,
+                "decision_count": 1,
+                "decision_files_parsed": 4,
+                "decision_files_total": 5,
+                "decision_mapped": 1,
+                "decision_omitted_no_loc_key": 0,
+                "warnings": ["drop me"]
+            },
+            "omitted": [],
+            "scope": {},
+            "source_files": [r"C:\Users\Example\Documents\mod\test\common\decisions"],
+            "unlisted_top_level": "drop me"
+        })
+    }
+
+    fn fake_idea_tech_loc_xref_static_catalog() -> Value {
+        json!({
+            "schema": "idea_tech_loc_xref_static.static_artifact.v1",
+            "artifact_kind": "deterministic_static_replay_enrichment",
+            "artifact_sha256": "idea-tech-sha",
+            "layers": [
+                { "label": "vanilla", "replace_path": [], "root_name": "the game" },
+            ],
+            "tokens": {
+                "ideas": { "free_trade": {} },
+                "technologies": { "basic_machine_tools": {} }
+            },
+            "coverage": {},
+            "join_keys": [],
+            "localisation_source": {
+                "key_count": 10,
+                "path": r"C:\Users\Example\Documents\mod\test\localisation",
+                "sha256": "loc-sha",
+                "source": "static_localisation_join_r3",
+                "unlisted": r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV"
+            },
+            "meta": {
+                "idea_count": 1,
+                "idea_files_parsed": 2,
+                "idea_files_total": 3,
+                "idea_mapped": 1,
+                "idea_omitted_no_loc_key": 0,
+                "tech_count": 1,
+                "tech_files_parsed": 4,
+                "tech_files_total": 5,
+                "tech_mapped": 1,
+                "tech_omitted_no_loc_key": 0,
+                "warnings": ["drop me"]
+            },
+            "omitted": [],
+            "scope": {},
+            "source_files": [r"C:\Users\Example\Documents\mod\test\common\ideas"],
+            "unlisted_top_level": "drop me"
+        })
+    }
+
+    fn fake_ship_definitions_static_catalog() -> Value {
+        json!({
+            "schema": "ship_definitions_static.static_artifact.v1",
+            "artifact_kind": "deterministic_static_replay_enrichment",
+            "artifact_sha256": "ship-sha",
+            "layers": [
+                { "label": "vanilla", "replace_path": [], "root_name": "the game" },
+            ],
+            "ship_hulls": { "ship_hull_light_1": {} },
+            "ship_modules": { "ship_light_battery_1": {} },
+            "coverage": {},
+            "join_keys": [],
+            "localisation_source": {
+                "key_count": 10,
+                "path": r"C:\Users\Example\Documents\mod\test\localisation",
+                "sha256": "loc-sha",
+                "source": "static_localisation_join_r3",
+                "unlisted": r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV"
+            },
+            "meta": {
+                "equipment_files_parsed": 2,
+                "equipment_files_total": 3,
+                "module_files_parsed": 4,
+                "module_files_total": 5,
+                "ship_hull_count": 1,
+                "ship_module_count": 1,
+                "warnings": ["drop me"]
+            },
+            "scope": {},
+            "source_files": [r"C:\Users\Example\Documents\mod\test\common\units\equipment"],
+            "unlisted_top_level": "drop me"
+        })
+    }
+
+    fn fake_new_static_catalogs() -> Vec<(&'static str, Value)> {
+        vec![
+            (
+                STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+                fake_decisions_static_catalog(),
+            ),
+            (
+                STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+                fake_idea_tech_loc_xref_static_catalog(),
+            ),
+            (
+                STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+                fake_ship_definitions_static_catalog(),
+            ),
+        ]
+    }
+
+    fn static_artifact_shape_request(name: &'static str) -> StaticArtifactRequest {
+        StaticArtifactRequest {
+            name,
+            path: PathBuf::from(format!("{name}.json")),
+        }
+    }
+
+    fn assert_object_keys(value: &Value, expected: &[&str]) {
+        let object = value.as_object().expect("expected JSON object");
+        let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+        let expected: BTreeSet<&str> = expected.iter().copied().collect();
+        assert_eq!(actual, expected);
+    }
+
+    fn expect_invalid_static_artifact_shape(
+        name: &'static str,
+        catalog: Value,
+        expected_detail: &str,
+    ) {
+        let request = static_artifact_shape_request(name);
+        let err = validate_static_artifact_shape(&request, &catalog)
+            .expect_err("catalog should be rejected");
+        assert!(
+            err.contains(expected_detail) && err.contains(name),
+            "error should name artifact and expected detail {expected_detail:?}: {err}"
+        );
+    }
+
     fn container_index_static_artifacts(container: &Container) -> Vec<Value> {
         // The typed Index does not model static_artifacts, so re-read the verified
         // index bytes to inspect the top-level roster.
@@ -21369,6 +21812,172 @@ mod tests {
     }
 
     #[test]
+    fn new_static_artifact_shapes_pass_and_provenance_is_whitelisted() {
+        let cases: Vec<(&'static str, Value, Vec<&str>)> = vec![
+            (
+                STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+                fake_decisions_static_catalog(),
+                vec![
+                    "category_count",
+                    "category_files_parsed",
+                    "category_files_total",
+                    "decision_count",
+                    "decision_files_parsed",
+                    "decision_files_total",
+                    "decision_mapped",
+                    "decision_omitted_no_loc_key",
+                ],
+            ),
+            (
+                STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+                fake_idea_tech_loc_xref_static_catalog(),
+                vec![
+                    "idea_count",
+                    "idea_files_parsed",
+                    "idea_files_total",
+                    "idea_mapped",
+                    "idea_omitted_no_loc_key",
+                    "tech_count",
+                    "tech_files_parsed",
+                    "tech_files_total",
+                ],
+            ),
+            (
+                STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+                fake_ship_definitions_static_catalog(),
+                vec![
+                    "equipment_files_parsed",
+                    "equipment_files_total",
+                    "module_files_parsed",
+                    "module_files_total",
+                    "ship_hull_count",
+                    "ship_module_count",
+                ],
+            ),
+        ];
+
+        for (name, catalog, meta_fields) in cases {
+            let request = static_artifact_shape_request(name);
+            validate_static_artifact_shape(&request, &catalog).unwrap();
+            let provenance = artifact_provenance(&request, &catalog).unwrap();
+            assert_object_keys(
+                &provenance,
+                &[
+                    "artifact_kind",
+                    "artifact_sha256",
+                    "localisation_source",
+                    "meta",
+                    "mod_identity_layers",
+                    "schema",
+                ],
+            );
+            assert_object_keys(&provenance["meta"], &meta_fields);
+            assert_object_keys(
+                &provenance["localisation_source"],
+                &["key_count", "sha256", "source"],
+            );
+
+            let provenance_text = serde_json::to_string(&provenance).unwrap();
+            for dropped in [
+                "\"path\":",
+                "source_files",
+                "unlisted_top_level",
+                "warnings",
+                r"C:\Users",
+                "SteamLibrary",
+            ] {
+                assert!(
+                    !provenance_text.contains(dropped),
+                    "{name} provenance leaked dropped field/string {dropped}: {provenance_text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_static_artifact_shapes_reject_schema_empty_objects_and_noninteger_counts() {
+        for (name, catalog) in fake_new_static_catalogs() {
+            let mut wrong_schema = catalog.clone();
+            wrong_schema["schema"] = json!("wrong.static_artifact.v1");
+            expect_invalid_static_artifact_shape(name, wrong_schema, "field schema expected");
+
+            let mut empty_required_object = catalog.clone();
+            let mut noninteger_count = catalog.clone();
+            let expected_empty_detail = match name {
+                STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => {
+                    empty_required_object["decisions"] = json!({});
+                    noninteger_count["meta"]["decision_count"] = json!("1");
+                    "field decisions must be a non-empty JSON object"
+                }
+                STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => {
+                    empty_required_object["tokens"]["ideas"] = json!({});
+                    empty_required_object["tokens"]["technologies"] = json!({});
+                    noninteger_count["meta"]["idea_count"] = json!("1");
+                    "field tokens must contain at least one idea or technology token"
+                }
+                STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => {
+                    empty_required_object["ship_hulls"] = json!({});
+                    noninteger_count["meta"]["ship_hull_count"] = json!("1");
+                    "field ship_hulls must be a non-empty JSON object"
+                }
+                _ => unreachable!(),
+            };
+            expect_invalid_static_artifact_shape(
+                name,
+                empty_required_object,
+                expected_empty_detail,
+            );
+            expect_invalid_static_artifact_shape(name, noninteger_count, "must be an integer");
+        }
+    }
+
+    #[test]
+    fn new_static_artifact_layers_accept_root_or_root_name_and_reject_missing_identity() {
+        for (name, catalog) in fake_new_static_catalogs() {
+            let mut root_name_only = catalog.clone();
+            root_name_only["layers"] =
+                json!([{ "label": "mod", "replace_path": [], "root_name": "test" }]);
+            let request = static_artifact_shape_request(name);
+            validate_static_artifact_shape(&request, &root_name_only).unwrap();
+            let provenance = artifact_provenance(&request, &root_name_only).unwrap();
+            assert_eq!(
+                provenance["mod_identity_layers"][0]["root_basename"],
+                json!("test")
+            );
+
+            let mut root_only = catalog.clone();
+            root_only["layers"] = json!([{ "label": "mod", "replace_path": [], "root": r"C:\Users\Example\Documents\mod\test" }]);
+            validate_static_artifact_shape(&request, &root_only).unwrap();
+            let provenance = artifact_provenance(&request, &root_only).unwrap();
+            assert_eq!(
+                provenance["mod_identity_layers"][0]["root_basename"],
+                json!("test")
+            );
+
+            // An empty "root" must not shadow a valid "root_name": validation
+            // passes via root_name, so provenance must carry root_name too
+            // (never root_basename: "").
+            let mut empty_root_with_root_name = catalog.clone();
+            empty_root_with_root_name["layers"] =
+                json!([{ "label": "mod", "replace_path": [], "root": "", "root_name": "test" }]);
+            validate_static_artifact_shape(&request, &empty_root_with_root_name).unwrap();
+            let provenance = artifact_provenance(&request, &empty_root_with_root_name).unwrap();
+            assert_eq!(
+                provenance["mod_identity_layers"][0]["root_basename"],
+                json!("test")
+            );
+
+            let mut missing_root = catalog.clone();
+            missing_root["layers"] = json!([{ "label": "mod", "replace_path": [] }]);
+            expect_invalid_static_artifact_shape(name, missing_root, "root or root_name");
+
+            let mut missing_label = catalog;
+            missing_label["layers"] = json!([{ "replace_path": [], "root_name": "test" }]);
+            expect_invalid_static_artifact_shape(name, missing_label, "layers[0].label");
+        }
+    }
+
+    #[test]
     fn static_artifacts_present_are_packed_verified_and_hashed() {
         let session_id = "static present/session";
         let dir = static_artifact_test_dir("present");
@@ -21377,10 +21986,21 @@ mod tests {
 
         let (d59_bytes, _d59) = fake_domain59_catalog();
         let loc_bytes = fake_localisation_catalog();
+        let decisions_bytes = serde_json::to_vec_pretty(&fake_decisions_static_catalog()).unwrap();
+        let idea_tech_bytes =
+            serde_json::to_vec_pretty(&fake_idea_tech_loc_xref_static_catalog()).unwrap();
+        let ship_bytes =
+            serde_json::to_vec_pretty(&fake_ship_definitions_static_catalog()).unwrap();
         let d59_path = dir.join("domain59_static_catalog.json");
         let loc_path = dir.join("localisation_catalog.json");
+        let decisions_path = dir.join("decision_definitions_catalog.json");
+        let idea_tech_path = dir.join("idea_tech_loc_xref_catalog.json");
+        let ship_path = dir.join("ship_definitions_catalog.json");
         fs::write(&d59_path, &d59_bytes).unwrap();
         fs::write(&loc_path, &loc_bytes).unwrap();
+        fs::write(&decisions_path, &decisions_bytes).unwrap();
+        fs::write(&idea_tech_path, &idea_tech_bytes).unwrap();
+        fs::write(&ship_path, &ship_bytes).unwrap();
 
         let mut cfg = test_config(vec!["fuel_live"], None);
         cfg.session_id = session_id.to_string();
@@ -21393,6 +22013,18 @@ mod tests {
             StaticArtifactRequest {
                 name: STATIC_ARTIFACT_LOCALISATION_JOIN,
                 path: loc_path.clone(),
+            },
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+                path: decisions_path.clone(),
+            },
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+                path: idea_tech_path.clone(),
+            },
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+                path: ship_path.clone(),
             },
         ];
 
@@ -21411,9 +22043,13 @@ mod tests {
         container.verify_all().unwrap();
         let game_id = replay_game_id(session_id);
 
-        // both payloads round-trip byte-identically under their role
+        // all payloads round-trip byte-identically under their role
         let role_entries = container.entries_by_role("static_artifact");
-        assert_eq!(role_entries.len(), 2, "two packed static artifacts");
+        assert_eq!(
+            role_entries.len(),
+            KNOWN_STATIC_ARTIFACTS.len(),
+            "all requested static artifacts packed"
+        );
         let d59_stored = container
             .read_entry_bytes(&format!(
                 "payload/{game_id}/static/templates_equipment_catalog/domain59_static_catalog.json"
@@ -21428,6 +22064,33 @@ mod tests {
         assert_eq!(
             loc_stored, loc_bytes,
             "localisation catalog is byte-identical"
+        );
+        let decisions_stored = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/static/decisions_static_definitions/decision_definitions_catalog.json"
+            ))
+            .unwrap();
+        assert_eq!(
+            decisions_stored, decisions_bytes,
+            "decisions static catalog is byte-identical"
+        );
+        let idea_tech_stored = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/static/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json"
+            ))
+            .unwrap();
+        assert_eq!(
+            idea_tech_stored, idea_tech_bytes,
+            "idea/technology xref catalog is byte-identical"
+        );
+        let ship_stored = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/static/ship_definitions_static/ship_definitions_catalog.json"
+            ))
+            .unwrap();
+        assert_eq!(
+            ship_stored, ship_bytes,
+            "ship definitions catalog is byte-identical"
         );
 
         // per-entry sha256 in the manifest == sha256 of the packed bytes
@@ -21517,6 +22180,9 @@ mod tests {
         let names: Vec<&str> = roster.iter().map(|r| r["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"templates_equipment_catalog"));
         assert!(names.contains(&"localisation_join"));
+        assert!(names.contains(&"decisions_static_definitions"));
+        assert!(names.contains(&"idea_tech_loc_xref_static"));
+        assert!(names.contains(&"ship_definitions_static"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -21653,6 +22319,9 @@ mod tests {
         for flag in [
             "--static-templates-equipment-catalog",
             "--static-localisation-join",
+            "--static-decisions-definitions",
+            "--static-idea-tech-loc-xref",
+            "--static-ship-definitions",
         ] {
             let err = match parse_args(vec![
                 "--pid".to_string(),
@@ -21830,8 +22499,14 @@ mod tests {
         fs::write(&dll, b"").unwrap();
         let d59 = dir.join("domain59_static_catalog.json");
         let loc = dir.join("localisation_catalog.json");
+        let decisions = dir.join("decision_definitions_catalog.json");
+        let idea_tech = dir.join("idea_tech_loc_xref_catalog.json");
+        let ship = dir.join("ship_definitions_catalog.json");
         fs::write(&d59, b"{}").unwrap();
         fs::write(&loc, b"{}").unwrap();
+        fs::write(&decisions, b"{}").unwrap();
+        fs::write(&idea_tech, b"{}").unwrap();
+        fs::write(&ship, b"{}").unwrap();
 
         let cfg = parse_args(vec![
             "--pid".to_string(),
@@ -21844,10 +22519,16 @@ mod tests {
             d59.display().to_string(),
             "--static-localisation-join".to_string(),
             loc.display().to_string(),
+            "--static-decisions-definitions".to_string(),
+            decisions.display().to_string(),
+            "--static-idea-tech-loc-xref".to_string(),
+            idea_tech.display().to_string(),
+            "--static-ship-definitions".to_string(),
+            ship.display().to_string(),
         ])
         .unwrap();
 
-        assert_eq!(cfg.static_artifacts.len(), 2);
+        assert_eq!(cfg.static_artifacts.len(), 5);
         assert_eq!(
             cfg.static_artifacts[0].name,
             STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG
@@ -21858,6 +22539,21 @@ mod tests {
             STATIC_ARTIFACT_LOCALISATION_JOIN
         );
         assert_eq!(cfg.static_artifacts[1].path, loc);
+        assert_eq!(
+            cfg.static_artifacts[2].name,
+            STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS
+        );
+        assert_eq!(cfg.static_artifacts[2].path, decisions);
+        assert_eq!(
+            cfg.static_artifacts[3].name,
+            STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC
+        );
+        assert_eq!(cfg.static_artifacts[3].path, idea_tech);
+        assert_eq!(
+            cfg.static_artifacts[4].name,
+            STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC
+        );
+        assert_eq!(cfg.static_artifacts[4].path, ship);
 
         let _ = fs::remove_dir_all(&dir);
     }
