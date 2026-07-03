@@ -343,6 +343,20 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         ],
         shared_recorder_known: true,
     },
+    DomainContract {
+        id: 49,
+        name: "naval_combat_lifecycle_live",
+        requires_data: true,
+        required_units: &["naval_combat_lifecycle_rows"],
+        shared_recorder_known: true,
+    },
+    DomainContract {
+        id: 50,
+        name: "naval_combat_members_live",
+        requires_data: true,
+        required_units: &["naval_combat_member_rows"],
+        shared_recorder_known: true,
+    },
 ];
 
 pub fn validate_run_dir(options: &GateOptions) -> GateReport {

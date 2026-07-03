@@ -33,6 +33,7 @@ use compact_contract::{
 use construction_buildings_state_damage_live_lane as domain48;
 use diplomacy_intel_operatives_live as diplomacy53;
 use land_combat_detail_events_live_lane as land_detail55;
+use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
 use serde_json::{json, Map, Value};
 use session_multiplayer_metadata_live as session57;
@@ -200,6 +201,8 @@ const SCRIPTED_STATE_DOMAIN_ID: u16 = 51;
 const DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID: u16 = diplomacy53::DOMAIN_ID;
 const ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID: u16 = battleplans54::DOMAIN_ID;
 const NAVAL_MISSIONS_STATUS_DOMAIN_ID: u16 = 56;
+const NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID: u16 = naval4950::DOMAIN_NAVAL_COMBAT_LIFECYCLE;
+const NAVAL_COMBAT_MEMBERS_DOMAIN_ID: u16 = naval4950::DOMAIN_NAVAL_COMBAT_MEMBERS;
 const SESSION_MULTIPLAYER_METADATA_DOMAIN_ID: u16 = session57::DOMAIN_ID;
 
 fn compact_expected_partial_tolerance_applies(domain_id: u16, status_flags: u32) -> bool {
@@ -462,7 +465,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 /// The set of domains this fold understands and folds into world state.
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
-    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56, 57,
+    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -539,6 +542,12 @@ pub struct WorldFold {
     army_orders: BTreeMap<ArmyOrderKey, ArmyOrderState>,
     oob_commands: BTreeMap<OobCommandKey, OobCommandState>,
     ships: BTreeMap<u32, ShipState>,
+    /// D49/D50 naval combat lifecycle + members, keyed by (combat_id,
+    /// generation). Cumulative delta state carried across hours; emitted under
+    /// the top-level `naval_combats` snapshot section.
+    naval_combats: BTreeMap<(u32, u64), NavalCombatFoldState>,
+    naval_combat_lifecycle_unknown_this_hour: bool,
+    naval_combat_members_unknown_this_hour: bool,
     /// D56 R2-projected naval task-force status annotations. D28 owns OOB
     /// existence; D56 only annotates validated task-force status under
     /// `order_of_battle.extra.naval_missions_status_live`.
@@ -696,6 +705,9 @@ impl WorldFold {
             army_orders: BTreeMap::new(),
             oob_commands: BTreeMap::new(),
             ships: BTreeMap::new(),
+            naval_combats: BTreeMap::new(),
+            naval_combat_lifecycle_unknown_this_hour: false,
+            naval_combat_members_unknown_this_hour: false,
             naval_missions_status: BTreeMap::new(),
             session_multiplayer_metadata_this_hour: None,
             army_battleplans_depth: BTreeMap::new(),
@@ -948,6 +960,8 @@ impl WorldFold {
         self.army_battleplans_depth_unknown_this_hour = false;
         self.army_battleplans_depth_omitted_non_exact_this_hour = 0;
         self.army_battleplans_depth_path_omitted_this_hour = 0;
+        self.naval_combat_lifecycle_unknown_this_hour = false;
+        self.naval_combat_members_unknown_this_hour = false;
     }
 
     /// Mutable country object for a tag_db_id, created empty on first use.
@@ -1429,6 +1443,8 @@ impl WorldFold {
             53 => self.fold_diplomacy_intel_operatives(payload),
             54 => self.fold_army_battleplans_depth(payload),
             55 => self.fold_land_combat_detail_events(payload),
+            49 => self.fold_naval_combat_lifecycle(payload),
+            50 => self.fold_naval_combat_members(payload),
             56 => self.fold_naval_missions_status(payload),
             57 => self.fold_session_multiplayer_metadata(payload),
             _ => {
@@ -1862,6 +1878,7 @@ impl WorldFold {
             map.insert("_r2_weather_live".into(), weather.to_json());
         }
         let map_value = Value::Object(map);
+        let naval_combats_value = self.build_naval_combats(&mut unresolved);
         let order_of_battle_value = self.build_order_of_battle(&mut unresolved);
         let designs_value = self.build_designs(&mut unresolved);
         let naval_air_value = self.build_naval_air(&mut unresolved);
@@ -1924,6 +1941,7 @@ impl WorldFold {
             "map": map_value,
             "designs": designs_value,
             "order_of_battle": order_of_battle_value,
+            "naval_combats": naval_combats_value,
             "naval_air": naval_air_value,
             "supply": supply_value,
             "strategic_air": strategic_air_value,
@@ -2883,6 +2901,80 @@ impl WorldFold {
             );
         }
         Value::Object(out)
+    }
+
+    // Naval combat (domains 49/50) snapshot section: the current active set of
+    // battles keyed by "combat_id:generation", each with its promoted location
+    // /region, side counts + positioning, and validated member roster. Carried
+    // cumulative state; emitted every hour (empty object once all battles end).
+    fn build_naval_combats(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        let mut battles = Map::new();
+        for combat in self.naval_combats.values() {
+            let mut obj = Map::new();
+            obj.insert("combat_id".into(), json!(combat.combat_id));
+            obj.insert("generation".into(), json!(combat.generation));
+            obj.insert("kind".into(), json!("naval"));
+            obj.insert(
+                "location_province".into(),
+                option_u32_json(combat.location_id),
+            );
+            obj.insert("region_id".into(), option_u32_json(combat.region_id));
+            obj.insert(
+                "attacker_member_count".into(),
+                option_u32_json(combat.attacker_member_count),
+            );
+            obj.insert(
+                "defender_member_count".into(),
+                option_u32_json(combat.defender_member_count),
+            );
+            obj.insert(
+                "attacker_positioning".into(),
+                combat
+                    .attacker_positioning_milli
+                    .map(|milli| json!(f64::from(milli) / 1000.0))
+                    .unwrap_or(Value::Null),
+            );
+            obj.insert(
+                "defender_positioning".into(),
+                combat
+                    .defender_positioning_milli
+                    .map(|milli| json!(f64::from(milli) / 1000.0))
+                    .unwrap_or(Value::Null),
+            );
+            let members = combat
+                .members
+                .values()
+                .map(|member| {
+                    if let Some(owner) = member.owner_tag_db_id {
+                        // Record the owner id for tag-resolution accounting; the
+                        // ref itself is emitted numeric (no country re-key here).
+                        let _ = self.country_ref_json(owner, unresolved);
+                    }
+                    json!({
+                        "side": member.side.name(),
+                        "group_index": member.group_index,
+                        "member_index": member.member_index,
+                        "is_convoy": member.is_convoy,
+                        "ship_instance_id": option_u32_json(member.ship_instance_id),
+                        "cship_join_validated": member.cship_join_validated,
+                        "owner_tag_db_id": option_u32_json(member.owner_tag_db_id),
+                        "task_force_id": option_u32_json(member.task_force_id),
+                        "fleet_id": option_u32_json(member.fleet_id),
+                        "battle_slot_index": member.battle_slot_index_raw,
+                        "state_bitmask": option_u32_json(member.state_bitmask),
+                        "strength": member.strength_raw.map(|v| f64::from(v) / FIXED_SCALE).map(|v| json!(v)).unwrap_or(Value::Null),
+                        "organisation": member.organisation_raw.map(|v| f64::from(v) / FIXED_SCALE).map(|v| json!(v)).unwrap_or(Value::Null),
+                        "sunk_convoys": option_u32_json(member.sunk_convoys),
+                    })
+                })
+                .collect::<Vec<_>>();
+            obj.insert("members".into(), Value::Array(members));
+            battles.insert(
+                format!("{}:{}", combat.combat_id, combat.generation),
+                Value::Object(obj),
+            );
+        }
+        Value::Object(battles)
     }
 
     fn build_naval_air(&self, unresolved: &mut BTreeSet<u32>) -> Value {
@@ -7075,6 +7167,88 @@ impl WorldFold {
         Ok(())
     }
 
+    // --- DOMAIN 49 naval combat lifecycle (cumulative delta) --------------
+    fn fold_naval_combat_lifecycle(&mut self, payload: &[u8]) -> Result<(), String> {
+        let (status_flags, rows) =
+            naval4950::decode_lifecycle_rows(payload).map_err(|errors| errors.join("; "))?;
+        // handle_compact_failure strips domain 49's lane-local bit 11 before the
+        // failure-mask check, so the location-candidate badge is never confused
+        // with COMPACT_STATUS_TRANSITION_BASELINE_RESET. On a real failure the
+        // rows are empty; retain the carried state and emit last-known.
+        if self.handle_compact_failure(
+            NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID,
+            "naval_combat_lifecycle_live",
+            status_flags,
+        ) {
+            self.naval_combat_lifecycle_unknown_this_hour = true;
+            return Ok(());
+        }
+        // Cumulative delta: the collector emits every active row on the first
+        // frame (empty previous baseline) and only changes thereafter, so no
+        // separate baseline record exists to gate on.
+        for row in rows {
+            let key = (row.combat_id, row.generation);
+            if row.deleted {
+                self.naval_combats.remove(&key);
+                continue;
+            }
+            let entry = self
+                .naval_combats
+                .entry(key)
+                .or_insert_with(|| NavalCombatFoldState {
+                    combat_id: row.combat_id,
+                    generation: row.generation,
+                    location_id: None,
+                    region_id: None,
+                    attacker_member_count: None,
+                    defender_member_count: None,
+                    attacker_positioning_milli: None,
+                    defender_positioning_milli: None,
+                    members: BTreeMap::new(),
+                });
+            entry.location_id = row.location_id;
+            entry.region_id = row.region_id;
+            entry.attacker_member_count = row.attacker_member_count;
+            entry.defender_member_count = row.defender_member_count;
+            entry.attacker_positioning_milli = row.attacker_positioning_milli;
+            entry.defender_positioning_milli = row.defender_positioning_milli;
+        }
+        self.mark_fold_domain_success(NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 50 naval combat members (cumulative delta) ----------------
+    fn fold_naval_combat_members(&mut self, payload: &[u8]) -> Result<(), String> {
+        let (status_flags, rows) =
+            naval4950::decode_member_rows(payload).map_err(|errors| errors.join("; "))?;
+        if self.handle_compact_failure(
+            NAVAL_COMBAT_MEMBERS_DOMAIN_ID,
+            "naval_combat_members_live",
+            status_flags,
+        ) {
+            self.naval_combat_members_unknown_this_hour = true;
+            return Ok(());
+        }
+        for row in rows {
+            let combat_key = (row.combat_id, row.generation);
+            let member_key = (row.side.wire_id(), row.group_index, row.member_index);
+            let Some(combat) = self.naval_combats.get_mut(&combat_key) else {
+                // A member for a combat/generation with no active lifecycle row
+                // is a torn stream ordering; skip rather than fabricate a
+                // parentless combat (delete rows for already-removed combats
+                // land here too and are correctly no-ops).
+                continue;
+            };
+            if row.deleted {
+                combat.members.remove(&member_key);
+            } else {
+                combat.members.insert(member_key, row);
+            }
+        }
+        self.mark_fold_domain_success(NAVAL_COMBAT_MEMBERS_DOMAIN_ID);
+        Ok(())
+    }
+
     // --- DOMAIN 48 construction/building/resource damage live sidecar -----
     fn fold_construction_buildings_state_damage(&mut self, payload: &[u8]) -> Result<(), String> {
         let decoded = match domain48::decoder_gate::decode_domain48_compact(payload) {
@@ -8694,6 +8868,24 @@ struct ShipState {
     sunk_convoys: u32,
     owner_tag_db_id: u32,
     definition: Option<String>,
+}
+
+// Domains 49/50 (naval combat lifecycle + members). Persistent cumulative
+// delta state keyed by (combat_id, generation); a body-pointer change starts a
+// new generation on the collector side, so a distinct key is a distinct battle
+// epoch. Lifecycle deletes drop the whole epoch (and its members); member
+// deletes drop a single member.
+#[derive(Clone)]
+struct NavalCombatFoldState {
+    combat_id: u32,
+    generation: u64,
+    location_id: Option<u32>,
+    region_id: Option<u32>,
+    attacker_member_count: Option<u32>,
+    defender_member_count: Option<u32>,
+    attacker_positioning_milli: Option<i32>,
+    defender_positioning_milli: Option<i32>,
+    members: BTreeMap<(u32, u32, u32), naval4950::MemberRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

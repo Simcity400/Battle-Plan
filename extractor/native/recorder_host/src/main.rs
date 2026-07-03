@@ -5,6 +5,7 @@ use characters_leaders_cabinet_live_lane as domain47;
 use construction_buildings_state_damage_live_lane as domain48;
 use diplomacy_intel_operatives_live as diplomacy53;
 use land_combat_detail_events_live_lane as land_detail55;
+use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
 use occupation_resistance_compliance_live_lane as occupation52;
 use recorder_host::compact_domain_registry;
@@ -95,6 +96,8 @@ const COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE: u16 = diplomacy53::DOMAIN_
 const COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE: u16 = battleplans54::DOMAIN_ID;
 const COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE: u16 = 55;
 const COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE: u16 = 56;
+const COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE: u16 = naval4950::DOMAIN_NAVAL_COMBAT_LIFECYCLE;
+const COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE: u16 = naval4950::DOMAIN_NAVAL_COMBAT_MEMBERS;
 const COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE: u16 = session57::DOMAIN_ID;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
@@ -3117,7 +3120,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                 let domain = summary.per_domain.entry(domain_id).or_default();
                 domain.data_record_count += 1;
                 if compact_contract::expected_partial_tolerance(domain_id).is_some()
-                    && compact_payload_status_flags(payload)
+                    && compact_payload_status_flags(domain_id, payload)
                         .map(|status_flags| {
                             domain.effective_failure_status_flags_or |=
                                 compact_domain_effective_failure_flags(domain_id, status_flags);
@@ -3285,6 +3288,20 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE => {
                         decode_compact_naval_missions_status_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE => {
+                        decode_compact_naval_combat_lifecycle_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE => {
+                        decode_compact_naval_combat_members_live_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -8281,6 +8298,57 @@ fn decode_compact_naval_missions_status_live_data_payload(
     }
 }
 
+fn decode_compact_naval_combat_lifecycle_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = naval4950::decode_lifecycle_data_payload(offset, payload);
+    merge_naval_combat_lane_summary(
+        summary,
+        COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE,
+        lane_summary,
+    );
+}
+
+fn decode_compact_naval_combat_members_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = naval4950::decode_members_data_payload(offset, payload);
+    merge_naval_combat_lane_summary(
+        summary,
+        COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE,
+        lane_summary,
+    );
+}
+
+fn merge_naval_combat_lane_summary(
+    summary: &mut CompactSummary,
+    domain_id: u16,
+    lane_summary: naval4950::PayloadDecodeSummary,
+) {
+    // Domain 49 carries a lane-local payload status bit (location-candidate
+    // badge); mask it from the GLOBAL status interpretation while keeping the
+    // raw flags on the per-domain summary (status_flags_scope reports this).
+    add_compact_global_status_flags(summary, domain_id, lane_summary.status_flags_or);
+    summary.parse_errors.extend(lane_summary.parse_errors);
+    if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
+        domain.status_flags_or |= lane_summary.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.row_count);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.row_count);
+        for (name, count) in lane_summary.data_units_total {
+            let entry = domain.data_units_total.entry(name.to_string()).or_default();
+            *entry = entry.saturating_add(count);
+        }
+    }
+}
+
 fn decode_compact_session_multiplayer_metadata_live_data_payload(
     offset: usize,
     payload: &[u8],
@@ -12765,7 +12833,7 @@ fn track_delta_baseline_for_summary(
     if !matches!(domain_id, 20 | 22) {
         return;
     }
-    let Some(status_flags) = compact_payload_status_flags(payload) else {
+    let Some(status_flags) = compact_payload_status_flags(domain_id, payload) else {
         return;
     };
     if compact_contract::compact_status_is_failure(status_flags) {
@@ -12781,8 +12849,16 @@ fn track_delta_baseline_for_summary(
     }
 }
 
-fn compact_payload_status_flags(payload: &[u8]) -> Option<u32> {
-    (payload.len() >= 20).then(|| read_u32_le(payload, 16))
+fn compact_payload_status_flags(domain_id: u16, payload: &[u8]) -> Option<u32> {
+    // Payload-header status offset is domain-specific: the naval combat lane
+    // (49/50) carries status_flags at byte 12 of its payload header
+    // (schema u16, row_len u16, elapsed_wall_ms u64, status u32); the legacy
+    // shared compact header carries it at byte 16.
+    let offset = match domain_id {
+        COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE | COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE => 12,
+        _ => 16,
+    };
+    (payload.len() >= offset + 4).then(|| read_u32_le(payload, offset))
 }
 
 fn compact_domain_problem_count(summary: &CompactSummary, problem: &str) -> u64 {
@@ -18530,11 +18606,11 @@ mod tests {
             &mut raw,
             1,
             100,
-            49,
+            58,
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
             &test_domain_payload(7_500, 11_200, 11_200, 10_100, 10_100),
         );
-        append_test_compact_record(&mut raw, 2, 100, 49, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[]);
+        append_test_compact_record(&mut raw, 2, 100, 58, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[]);
         append_test_compact_record(
             &mut raw,
             3,
@@ -18545,21 +18621,171 @@ mod tests {
         );
 
         let summary = summarize_compact_stream(&raw);
-        let coverage_errors = compact_domain_coverage_errors(&summary, &[49]);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[58]);
         let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
         let manifest = compact_stream_manifest_json(
             &summary,
-            &[49],
+            &[58],
             &coverage_errors,
-            &["naval_combat_lifecycle_live".into()],
+            &["country_economy_counters_live".into()],
         );
 
-        assert!(summary.unfolded_domain_data.contains(&49));
+        assert!(summary.unfolded_domain_data.contains(&58));
         assert!(coverage_errors.is_empty());
         assert!(!problems.contains(&"production_profile_unfolded_domain_data".to_string()));
         assert_eq!(
             manifest["world_fold"]["production_profile_unfolded_domains"],
             json!([])
+        );
+    }
+
+    #[test]
+    fn compact_summary_decodes_and_folds_naval_combat_domains() {
+        let lifecycle_payload = naval4950::encode_lifecycle_payload(
+            5,
+            naval4950::STATUS_DELTA_DATA,
+            &[naval4950::LifecycleRow {
+                combat_id: 240_580,
+                generation: 1,
+                body_ptr: 0x22aa_0004_0000,
+                deleted: false,
+                location_id: Some(6434),
+                region_id: Some(18),
+                attacker_member_count: Some(5),
+                defender_member_count: Some(8),
+                attacker_positioning_milli: Some(812),
+                defender_positioning_milli: Some(765),
+            }],
+        );
+        let member_payload = naval4950::encode_member_payload(
+            5,
+            naval4950::STATUS_DELTA_DATA,
+            &[naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
+                side: naval4950::CombatSide::Attacker,
+                group_index: 0,
+                member_index: 0,
+                unit_type_tag: 51,
+                ship_instance_id: Some(4431),
+                cship_join_validated: true,
+                is_convoy: false,
+                owner_tag_db_id: Some(17),
+                designed_max_strength_raw: Some(10_000_000),
+                battle_slot_index_raw: 3,
+                state_bitmask: Some(1),
+                engagement_weight_raw: Some(1_000),
+                task_force_id: Some(477),
+                fleet_id: Some(88),
+                strength_raw: Some(10_000_000),
+                organisation_raw: Some(9_000_000),
+                experience_raw: Some(100_000),
+                sunk_convoys: Some(0),
+            }],
+        );
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(7_500, 1, 1, 1, 1),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &lifecycle_payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(7_500, 1, 1, 1, 1),
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
+            100,
+            COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &member_payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            5,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let lifecycle = &summary.per_domain[&COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE];
+        assert_eq!(lifecycle.data_rows_total, 1);
+        assert_eq!(
+            lifecycle
+                .data_units_total
+                .get("naval_combat_lifecycle_region_rows"),
+            Some(&1)
+        );
+        let members = &summary.per_domain[&COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE];
+        assert_eq!(members.data_rows_total, 1);
+        assert_eq!(
+            members
+                .data_units_total
+                .get("naval_combat_cship_validated_member_rows"),
+            Some(&1)
+        );
+
+        // Domains 49/50 are production-profile AND world-folded (FOLDED_DOMAIN_IDS
+        // + naval_combats projection), so they must NOT trip the profile-unfolded
+        // escalation problem and must be marked world_folded in the manifest.
+        let expected = [
+            COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE,
+            COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE,
+        ];
+        assert!(!summary
+            .unfolded_domain_data
+            .contains(&COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE));
+        assert!(!summary
+            .unfolded_domain_data
+            .contains(&COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE));
+        let coverage_errors = compact_domain_coverage_errors(&summary, &expected);
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        assert!(!problems.contains(&"production_profile_unfolded_domain_data".to_string()));
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &expected,
+            &coverage_errors,
+            &[
+                "naval_combat_lifecycle_live".into(),
+                "naval_combat_members_live".into(),
+            ],
+        );
+        assert_eq!(
+            manifest["world_fold"]["production_profile_unfolded_domains"],
+            json!([])
+        );
+        assert_eq!(
+            manifest["per_domain"]["naval_combat_lifecycle_live"]["world_folded"],
+            json!(true)
+        );
+        assert_eq!(
+            manifest["per_domain"]["naval_combat_members_live"]["world_folded"],
+            json!(true)
         );
     }
 

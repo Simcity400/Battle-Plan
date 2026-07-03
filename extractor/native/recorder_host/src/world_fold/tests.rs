@@ -1939,11 +1939,13 @@ fn unfolded_domain_data_is_listed_in_provenance() {
     let hi = 16_959_360i64;
     let raw = raw_for(hi);
     let mut stream = Vec::new();
+    // Domain 58 (country_economy_counters_live) is assigned but has no world
+    // fold projection, so its data records surface under provenance.unfolded.
     push_record(
         &mut stream,
         1,
         raw,
-        49,
+        58,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
         &[],
     );
@@ -1966,12 +1968,188 @@ fn unfolded_domain_data_is_listed_in_provenance() {
         .unwrap();
     assert!(unfolded
         .iter()
-        .any(|domain| domain["domain_id"] == json!(49)
-            && domain["domain"] == json!("naval_combat_lifecycle_live")));
+        .any(|domain| domain["domain_id"] == json!(58)
+            && domain["domain"] == json!("country_economy_counters_live")));
     let domains = s["provenance"]["collector"]["domains"].as_array().unwrap();
     assert!(!domains
         .iter()
-        .any(|domain| domain == "naval_combat_lifecycle_live"));
+        .any(|domain| domain == "country_economy_counters_live"));
+}
+
+#[test]
+fn naval_combat_domains_fold_into_naval_combats_section() {
+    use naval_combat_live_lane as naval4950;
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let lifecycle = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 1,
+            body_ptr: 0,
+            deleted: false,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(1),
+            attacker_positioning_milli: Some(812),
+            defender_positioning_milli: Some(765),
+        }],
+    );
+    let members = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[
+            naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
+                side: naval4950::CombatSide::Attacker,
+                group_index: 0,
+                member_index: 0,
+                unit_type_tag: 51,
+                ship_instance_id: Some(4431),
+                cship_join_validated: true,
+                is_convoy: false,
+                owner_tag_db_id: Some(17),
+                designed_max_strength_raw: Some(10_000_000),
+                battle_slot_index_raw: 3,
+                state_bitmask: Some(1),
+                engagement_weight_raw: Some(1_000),
+                task_force_id: Some(477),
+                fleet_id: Some(88),
+                strength_raw: Some(10_000_000),
+                organisation_raw: Some(9_000_000),
+                experience_raw: Some(100_000),
+                sunk_convoys: Some(0),
+            },
+            naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
+                side: naval4950::CombatSide::Defender,
+                group_index: 0,
+                member_index: 0,
+                unit_type_tag: 0,
+                ship_instance_id: None,
+                cship_join_validated: false,
+                is_convoy: true,
+                owner_tag_db_id: Some(18),
+                designed_max_strength_raw: None,
+                battle_slot_index_raw: 4,
+                state_bitmask: Some(1),
+                engagement_weight_raw: None,
+                task_force_id: None,
+                fleet_id: None,
+                strength_raw: None,
+                organisation_raw: None,
+                experience_raw: None,
+                sunk_convoys: None,
+            },
+        ],
+    );
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        49,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &lifecycle,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        50,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &members,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    // A second hour that deletes the battle proves the section empties on teardown.
+    let raw2 = raw_for(hi + 1);
+    let lifecycle_end = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 1,
+            body_ptr: 0,
+            deleted: true,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(1),
+            attacker_positioning_milli: Some(812),
+            defender_positioning_milli: Some(765),
+        }],
+    );
+    let members_empty = naval4950::encode_member_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    push_record(
+        &mut stream,
+        4,
+        raw2,
+        49,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &lifecycle_end,
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw2,
+        50,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &members_empty,
+    );
+    push_record(
+        &mut stream,
+        6,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("naval_combat_fold_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let s0 = parse(&snaps[0].2);
+    let battle = &s0["naval_combats"]["240580:1"];
+    assert_eq!(battle["location_province"], json!(6434));
+    assert_eq!(battle["region_id"], json!(18));
+    assert_eq!(battle["kind"], json!("naval"));
+    let members_json = battle["members"].as_array().unwrap();
+    assert_eq!(members_json.len(), 2);
+    assert!(members_json.iter().any(|m| m["side"] == json!("attacker")
+        && m["ship_instance_id"] == json!(4431)
+        && m["cship_join_validated"] == json!(true)
+        && m["task_force_id"] == json!(477)));
+    assert!(members_json
+        .iter()
+        .any(|m| m["side"] == json!("defender") && m["is_convoy"] == json!(true)));
+
+    // Both domains fold: neither appears in provenance.unfolded_domains.
+    let unfolded = s0["provenance"]["collector"]["unfolded_domains"]
+        .as_array()
+        .unwrap();
+    assert!(!unfolded
+        .iter()
+        .any(|d| d["domain_id"] == json!(49) || d["domain_id"] == json!(50)));
+
+    // Teardown hour: the battle is gone, section is an empty object (not null).
+    let s1 = parse(&snaps[1].2);
+    assert_eq!(s1["naval_combats"], json!({}));
 }
 
 #[test]

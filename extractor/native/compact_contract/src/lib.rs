@@ -65,8 +65,17 @@ pub const DOMAIN51_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN51_STATUS_FLAG_NAMES_PART
     | DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
     | DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED;
 
+// Domain-49 (naval_combat_lifecycle_live) lane-local payload status bit: a
+// lifecycle row is missing the promoted location/region pair (fail-closed
+// missing-field badge, see the naval_combat_live lane). The bit value overlaps
+// the global COMPACT_STATUS_TRANSITION_BASELINE_RESET bit and must be masked
+// before global status interpretation.
+pub const DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED: u32 = 1 << 11;
+pub const DOMAIN49_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED;
+
 pub const fn lane_local_status_mask(domain_id: CompactDomainId) -> u32 {
     match domain_id {
+        49 => DOMAIN49_LANE_LOCAL_STATUS_MASK,
         51 => DOMAIN51_LANE_LOCAL_STATUS_MASK,
         _ => 0,
     }
@@ -130,6 +139,16 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
         domain_id: 48,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "construction_buildings_state_damage_live: transient live-mutation construction-line row skips (invalid line pointer/type/factory/progress), skip-counted; valid construction/building/resource rows retained and sparse fold preserves omitted siblings",
+    },
+    CompactExpectedPartialTolerance {
+        domain_id: 49,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "naval_combat_lifecycle_live: transient live-mutation walk anomalies on an unpaused frame (torn CNavalCombat body/side/front reads, unreadable CFEXGroup owning-side back-refs) fail the whole frame closed with empty rows; the delta baseline is preserved and rows re-emit on the next clean frame",
+    },
+    CompactExpectedPartialTolerance {
+        domain_id: 50,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "naval_combat_members_live: transient live-mutation member-walk anomalies on an unpaused frame (torn CFEXGroup member arrays, unreadable CFEXMember handles/slots, duplicate ship ids from a stale group, missing CShip OOB joins) fail the whole frame closed with empty rows; the delta baseline is preserved and rows re-emit on the next clean frame",
     },
     CompactExpectedPartialTolerance {
         domain_id: 54,
@@ -730,8 +749,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         49,
         "naval_combat_lifecycle_live",
         "naval_combat_lifecycle_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
         true,
         &[],
     ),
@@ -739,8 +758,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         50,
         "naval_combat_members_live",
         "naval_combat_members_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
         true,
         &[],
     ),
@@ -1016,7 +1035,15 @@ mod tests {
             profile_ids.contains(&47),
             "domain 47 is a validated slice with explicit open gaps"
         );
-        for excluded in [1, 18, 49, 50, 59, 1000] {
+        assert!(
+            profile_ids.contains(&49),
+            "domain 49 is a validated slice with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&50),
+            "domain 50 is a validated slice with explicit open gaps"
+        );
+        for excluded in [1, 18, 58, 59, 1000] {
             assert!(
                 !profile_ids.contains(&excluded),
                 "domain {excluded} must stay out of the production profile"
@@ -1063,6 +1090,17 @@ mod tests {
         );
         assert_eq!(lane_local_status_mask(50), 0);
         assert_eq!(
+            lane_local_status_mask(49),
+            DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED
+        );
+        assert_eq!(
+            compact_status_for_global_interpretation(
+                49,
+                DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED | COMPACT_STATUS_DELTA_DATA,
+            ),
+            COMPACT_STATUS_DELTA_DATA
+        );
+        assert_eq!(
             compact_status_for_global_interpretation(
                 51,
                 DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
@@ -1079,7 +1117,7 @@ mod tests {
             .iter()
             .map(|tolerance| tolerance.domain_id)
             .collect::<Vec<_>>();
-        assert_eq!(domains, vec![26, 27, 28, 41, 45, 48, 54]);
+        assert_eq!(domains, vec![26, 27, 28, 41, 45, 48, 49, 50, 54]);
     }
 
     #[test]
@@ -1099,7 +1137,7 @@ mod tests {
         for domain_id in [29, 47, 56] {
             assert_eq!(expected_partial_tolerance(domain_id), None);
         }
-        for domain_id in [26, 27, 28, 41, 45, 48, 54] {
+        for domain_id in [26, 27, 28, 41, 45, 48, 49, 50, 54] {
             assert_eq!(
                 expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
                 Some(COMPACT_STATUS_PARTIAL_DATA)

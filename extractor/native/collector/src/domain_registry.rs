@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn reserved_lane_ids_are_assigned_but_not_scheduled() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
-        for id in [49, 50, 58, 59] {
+        for id in [58, 59] {
             assert!(
                 assigned_descriptor_by_id(id).is_some(),
                 "domain {id} must be assigned in compact_contract"
@@ -182,6 +182,26 @@ mod tests {
             assert!(
                 registry.by_id(id).is_none(),
                 "domain {id} must not schedule"
+            );
+        }
+    }
+
+    #[test]
+    fn naval_combat_lane_ids_schedule_after_shared_integration() {
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            registry.id_for_scheduled_name("naval_combat_lifecycle_live"),
+            Some(49)
+        );
+        assert_eq!(
+            registry.id_for_scheduled_name("naval_combat_members_live"),
+            Some(50)
+        );
+        for id in [49, 50] {
+            assert_eq!(
+                registry.by_id(id).map(|d| d.status),
+                Some(CompactDomainStatus::ValidatedSliceOpenGaps),
+                "domain {id} must schedule with the validated-slice-open-gaps status"
             );
         }
     }

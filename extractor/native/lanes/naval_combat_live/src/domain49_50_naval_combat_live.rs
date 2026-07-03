@@ -400,6 +400,95 @@ pub fn decode_stream(data: &[u8]) -> Result<GateSummary, Vec<String>> {
     }
 }
 
+/// Decoded lifecycle rows for the shared recorder world-fold. Mirrors the
+/// encoder's `LifecycleRow` (present-flag driven Options) so a fold can apply
+/// upsert/delete to a persistent naval-combat state map.
+pub fn decode_lifecycle_rows(payload: &[u8]) -> Result<(u32, Vec<LifecycleRow>), Vec<String>> {
+    let mut errors = Vec::new();
+    let Some((header, rows)) = decode_lifecycle_payload(0, payload, &mut errors) else {
+        return Err(errors);
+    };
+    for (row_index, row) in rows.iter().enumerate() {
+        validate_decoded_lifecycle_row(0, row_index, row, &mut errors);
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let decoded = rows
+        .into_iter()
+        .map(|row| LifecycleRow {
+            combat_id: row.combat_id,
+            generation: row.generation,
+            body_ptr: 0,
+            deleted: row.flags & LIFECYCLE_ROW_DELETED != 0,
+            location_id: (row.flags & LIFECYCLE_LOCATION_PRESENT != 0).then_some(row.location_id),
+            region_id: (row.flags & LIFECYCLE_REGION_PRESENT != 0).then_some(row.region_id),
+            attacker_member_count: (row.flags & LIFECYCLE_ATTACKER_COUNT_PRESENT != 0)
+                .then_some(row.attacker_member_count),
+            defender_member_count: (row.flags & LIFECYCLE_DEFENDER_COUNT_PRESENT != 0)
+                .then_some(row.defender_member_count),
+            attacker_positioning_milli: (row.flags & LIFECYCLE_ATTACKER_POSITIONING_PRESENT != 0)
+                .then_some(row.attacker_positioning_milli),
+            defender_positioning_milli: (row.flags & LIFECYCLE_DEFENDER_POSITIONING_PRESENT != 0)
+                .then_some(row.defender_positioning_milli),
+        })
+        .collect();
+    Ok((header.status_flags, decoded))
+}
+
+/// Decoded member rows for the shared recorder world-fold. Mirrors the
+/// encoder's `MemberRow`.
+pub fn decode_member_rows(payload: &[u8]) -> Result<(u32, Vec<MemberRow>), Vec<String>> {
+    let mut errors = Vec::new();
+    let Some((header, rows)) = decode_member_payload(0, payload, &mut errors) else {
+        return Err(errors);
+    };
+    for (row_index, row) in rows.iter().enumerate() {
+        validate_decoded_member_row(0, row_index, row, &mut errors);
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut decoded = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(side) = CombatSide::from_wire_id(row.side) else {
+            return Err(vec![format!("member row has invalid side {}", row.side)]);
+        };
+        decoded.push(MemberRow {
+            combat_id: row.combat_id,
+            generation: row.generation,
+            deleted: row.flags & MEMBER_ROW_DELETED != 0,
+            side,
+            group_index: row.group_index,
+            member_index: row.member_index,
+            unit_type_tag: row.unit_type_tag,
+            ship_instance_id: (row.flags & MEMBER_SHIP_INSTANCE_PRESENT != 0)
+                .then_some(row.ship_instance_id),
+            cship_join_validated: row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0,
+            is_convoy: row.flags & MEMBER_IS_CONVOY != 0,
+            owner_tag_db_id: (row.flags & MEMBER_OWNER_PRESENT != 0).then_some(row.owner_tag_db_id),
+            designed_max_strength_raw: (row.flags & MEMBER_DESIGNED_MAX_STRENGTH_PRESENT != 0)
+                .then_some(row.designed_max_strength_raw),
+            battle_slot_index_raw: row.battle_slot_index_raw,
+            state_bitmask: (row.flags & MEMBER_STATE_BITMASK_PRESENT != 0)
+                .then_some(row.state_bitmask),
+            engagement_weight_raw: (row.flags & MEMBER_ENGAGEMENT_WEIGHT_PRESENT != 0)
+                .then_some(row.engagement_weight_raw),
+            task_force_id: (row.flags & MEMBER_TASK_FORCE_PRESENT != 0)
+                .then_some(row.task_force_id),
+            fleet_id: (row.flags & MEMBER_FLEET_PRESENT != 0).then_some(row.fleet_id),
+            strength_raw: (row.flags & MEMBER_STRENGTH_PRESENT != 0).then_some(row.strength_raw),
+            organisation_raw: (row.flags & MEMBER_ORGANISATION_PRESENT != 0)
+                .then_some(row.organisation_raw),
+            experience_raw: (row.flags & MEMBER_EXPERIENCE_PRESENT != 0)
+                .then_some(row.experience_raw),
+            sunk_convoys: (row.flags & MEMBER_SUNK_CONVOYS_PRESENT != 0)
+                .then_some(row.sunk_convoys),
+        });
+    }
+    Ok((header.status_flags, decoded))
+}
+
 pub fn decode_lifecycle_data_payload(offset: usize, payload: &[u8]) -> PayloadDecodeSummary {
     let mut errors = Vec::new();
     let mut summary = PayloadDecodeSummary {
