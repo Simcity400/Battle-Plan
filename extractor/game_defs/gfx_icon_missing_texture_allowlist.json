@@ -1,4 +1,747 @@
 {
-  "schema": "gfx_icon_asset_manifest_static.missing_texture_allowlist.v1",
-  "entries": []
+    "schema":  "gfx_icon_asset_manifest_static.missing_texture_allowlist.v1",
+    "entries":  [
+                    {
+                        "sprite":  "GFX_portrait_JAP_yoshio_kodama_scientist",
+                        "texturefile":  "gfx/leaders/JAP/portrait_JAP_yoshio_kodama_scientist.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/_leader_portraits.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_NOR_trygve_lie_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_NOR_trygve_lie_small.dds",
+                        "source_layer":  "dlc/dlc038_arms_against_tyranny",
+                        "source_file":  "interface/aat_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_NOR_rasmus_hatledal",
+                        "texturefile":  "gfx/leaders/NOR/portrait_NOR_rasmus_hatledal.dds",
+                        "source_layer":  "dlc/dlc038_arms_against_tyranny",
+                        "source_file":  "interface/aat_portraits.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_aat_small",
+                        "texturefile":  "gfx/loadingscreens/load_aat_small.dds",
+                        "source_layer":  "dlc/dlc038_arms_against_tyranny",
+                        "source_file":  "interface/aat_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_aat2_small",
+                        "texturefile":  "gfx/loadingscreens/load_aat2_small.dds",
+                        "source_layer":  "dlc/dlc038_arms_against_tyranny",
+                        "source_file":  "interface/aat_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_SWE_medium_ba_scout_1_medium",
+                        "texturefile":  "gfx/interface/technologies/SWE_medium_ba_scout_1.dds",
+                        "source_layer":  "dlc/dlc038_arms_against_tyranny",
+                        "source_file":  "interface/aat_technologies.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_CHI_ace_Liu_Zhesheng",
+                        "texturefile":  "gfx/aces/CHI_Liu_Ch_Sheng_ace.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/aces.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_bba_small",
+                        "texturefile":  "gfx/loadingscreens/load_bba_small.dds",
+                        "source_layer":  "dlc/dlc036_by_blood_alone",
+                        "source_file":  "interface/bba_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_botb_small",
+                        "texturefile":  "gfx/loadingscreens/load_botb_small.dds",
+                        "source_layer":  "dlc/dlc031_battle_for_the_bosporus",
+                        "source_file":  "interface/bftb_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_event_end_bg",
+                        "texturefile":  "gfx/interface/decisionview/event_end_bg.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/countrydecisionview.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_technology_info_bg",
+                        "texturefile":  "gfx/interface/technology_info_bg.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/countrytechtreeview.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_TRADE_resource_overall",
+                        "texturefile":  "gfx/interface/tradeview/resource_overall.tga",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/countrytradeview.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_dod_small",
+                        "texturefile":  "gfx/loadingscreens/load_dod_small.dds",
+                        "source_layer":  "integrated_dlc/dlc020_death_or_dishonor",
+                        "source_file":  "interface/dod_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_focus_FRA_invest_fra",
+                        "texturefile":  "gfx/interface/goals/focus_FRA_soviet_industry.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/FRA_goals.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_goe_small",
+                        "texturefile":  "gfx/loadingscreens/load_goe_small.dds",
+                        "source_layer":  "dlc/dlc046_graveyard_of_empires",
+                        "source_file":  "interface/goe_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_button_transparent",
+                        "texturefile":  "gfx/interface/button_transparent.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/host_tool_scripted_gfx.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_troll",
+                        "texturefile":  "gfx/interface/ideas/idea_troll.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/host_tool_scripted_gfx.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_ENG_arthur_percival_small",
+                        "texturefile":  "gfx/interface/ideas/idea_Britain_arthur_percival_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_generic_helicopter_manufacturer_1",
+                        "texturefile":  "gfx/interface/ideas/idea_generic_helicopter_manufacturer_1.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_Britain_arthur_percival",
+                        "texturefile":  "gfx/interface/ideas/portrait_Britain_arthur_percival.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_SIA_phraya_phahon_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_SIA_phraya_phahon_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_PER_oscar_benavides",
+                        "texturefile":  "gfx/interface/ideas/idea_PER_oscar_benavides.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_AUS_johann_hiedler_small",
+                        "texturefile":  "gfx/leaders/AUS/portrait_AUS_johann_hiedler_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_BRA_mascarenhas_de_morais_1_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_BRA_mascarenhas_de_morais_small_1.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_PLACEHOLDER_2_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_PLACEHOLDER_2_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_USA_mr_hilt_small",
+                        "texturefile":  "gfx/leaders/USA/portrait_USA_mr_hilt_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_lar_small",
+                        "texturefile":  "gfx/loadingscreens/load_lar_small.dds",
+                        "source_layer":  "dlc/dlc028_la_resistance",
+                        "source_file":  "interface/lar_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_mtg_2_small",
+                        "texturefile":  "gfx/loadingscreens/load_mtg_2_small.dds",
+                        "source_layer":  "integrated_dlc/dlc023_man_the_guns",
+                        "source_file":  "interface/mtg_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_mtg_small",
+                        "texturefile":  "gfx/loadingscreens/load_mtg_small.dds",
+                        "source_layer":  "integrated_dlc/dlc023_man_the_guns",
+                        "source_file":  "interface/mtg_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_FOCUS_FILTER_POWER_STRUGGLE",
+                        "texturefile":  "gfx/interface/focusview/filter/decision_category_power_struggle.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/nationalfocusview.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_nsb_small",
+                        "texturefile":  "gfx/loadingscreens/load_nsb_small.dds",
+                        "source_layer":  "dlc/dlc034_no_step_back",
+                        "source_file":  "interface/nsb_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_nsb2_small",
+                        "texturefile":  "gfx/loadingscreens/load_nsb2_small.dds",
+                        "source_layer":  "dlc/dlc034_no_step_back",
+                        "source_file":  "interface/nsb_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_NXM_ma_hongkui_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_NXM_ma_hongkui_small.dds",
+                        "source_layer":  "dlc/dlc049_no_compromise_no_surrender",
+                        "source_file":  "interface/sea_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_sea_small",
+                        "texturefile":  "gfx/loadingscreens/load_sea_small.dds",
+                        "source_layer":  "dlc/dlc049_no_compromise_no_surrender",
+                        "source_file":  "interface/sea_stuff.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_frontend_loading_screen_border_small",
+                        "texturefile":  "gfx/loadingscreens/loading_screen_border_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_1_small",
+                        "texturefile":  "gfx/loadingscreens/load_1_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_2_small",
+                        "texturefile":  "gfx/loadingscreens/load_2_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_3_small",
+                        "texturefile":  "gfx/loadingscreens/load_3_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_4_small",
+                        "texturefile":  "gfx/loadingscreens/load_4_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_5_small",
+                        "texturefile":  "gfx/loadingscreens/load_5_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_6_small",
+                        "texturefile":  "gfx/loadingscreens/load_6_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_7_small",
+                        "texturefile":  "gfx/loadingscreens/load_7_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_8_small",
+                        "texturefile":  "gfx/loadingscreens/load_8_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_9_small",
+                        "texturefile":  "gfx/loadingscreens/load_9_small.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_cult_of_personality",
+                        "texturefile":  "gfx/interface/ideas/SOV_cult_of_personality.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_five_year_plan",
+                        "texturefile":  "gfx/interface/ideas/SOV_five_year_plan.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_five_year_plan_CIC",
+                        "texturefile":  "gfx/interface/ideas/SOV_five_year_plan_CIC.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_five_year_plan_MIL",
+                        "texturefile":  "gfx/interface/ideas/SOV_five_year_plan_MIL.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_gosstandart",
+                        "texturefile":  "gfx/interface/ideas/SOV_gosstandart.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_grigory_zinoviev",
+                        "texturefile":  "gfx/interface/ideas/idea_grigory_zinoviev.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_karl_radek",
+                        "texturefile":  "gfx/interface/ideas/idea_karl_radek.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_komsomol",
+                        "texturefile":  "gfx/interface/ideas/idea_komsomol.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_lavrentiy_beria",
+                        "texturefile":  "gfx/interface/ideas/idea_lavrentiy_beria.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_lev_kamenev",
+                        "texturefile":  "gfx/interface/ideas/idea_lev_kamenev.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_massive_air_production",
+                        "texturefile":  "gfx/interface/ideas/idea_massive_air_production.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_massive_war_production",
+                        "texturefile":  "gfx/interface/ideas/idea_massive_war_production.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_nikolai_voznesensky",
+                        "texturefile":  "gfx/interface/ideas/idea_nikolai_voznesensky.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_nikolai_yezhov",
+                        "texturefile":  "gfx/interface/ideas/idea_nikolai_yezhov.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_nikolaj_bucharin",
+                        "texturefile":  "gfx/interface/ideas/idea_nikolaj_bucharin.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_purge_intellectuals",
+                        "texturefile":  "gfx/interface/ideas/SOV_purge_intellectuals.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_purge_time",
+                        "texturefile":  "gfx/interface/ideas/SOV_purge_time.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_sov_barbarossa",
+                        "texturefile":  "gfx/interface/ideas/SOV_barbarossa.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_sov_factory_use",
+                        "texturefile":  "gfx/interface/ideas/SOV_factory_use.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_soviet_partisans",
+                        "texturefile":  "gfx/interface/ideas/idea_soviet_partisans.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_soviet_propaganda",
+                        "texturefile":  "gfx/interface/ideas/SOV_soviet_propaganda.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_stakanovite",
+                        "texturefile":  "gfx/interface/ideas/SOV_stakanovite.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_stavka",
+                        "texturefile":  "gfx/interface/ideas/idea_stavka.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_tankograd",
+                        "texturefile":  "gfx/interface/ideas/idea_tankograd.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_third_five_year_plan",
+                        "texturefile":  "gfx/interface/ideas/SOV_third_five_year_plan.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_idea_vyacheslav_molotov",
+                        "texturefile":  "gfx/interface/ideas/idea_vyacheslav_molotov.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_news_event_countenance",
+                        "texturefile":  "gfx/event_pictures/news_event_countenance.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_barbarossa",
+                        "texturefile":  "gfx/event_pictures/report_event_barbarossa.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_countenance_1",
+                        "texturefile":  "gfx/event_pictures/report_event_countenance_1.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_countenance_2",
+                        "texturefile":  "gfx/event_pictures/report_event_countenance_2.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_countenance_3",
+                        "texturefile":  "gfx/event_pictures/report_event_countenance_3.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_countenance_4",
+                        "texturefile":  "gfx/event_pictures/report_event_countenance_4.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_countenance_5",
+                        "texturefile":  "gfx/event_pictures/report_event_countenance_5.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_countenance_6",
+                        "texturefile":  "gfx/event_pictures/report_event_countenance_6.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_countenance_7",
+                        "texturefile":  "gfx/event_pictures/report_event_countenance_7.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_potsdam",
+                        "texturefile":  "gfx/event_pictures/report_event_potsdam.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_purge_trial_2",
+                        "texturefile":  "gfx/event_pictures/report_event_purge_trial_2.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_third_five_year_plan",
+                        "texturefile":  "gfx/event_pictures/report_event_third_five_year_plan.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_report_event_vvs_scandal",
+                        "texturefile":  "gfx/event_pictures/report_event_vvs_scandal.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_custom.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_SOV_jet_fighter1_medium",
+                        "texturefile":  "gfx/interface/technologies/SOV_jet_fighter1.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_jets.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_SOV_jet_fighter2_medium",
+                        "texturefile":  "gfx/interface/technologies/SOV_jet_fighter2.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_jets.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_SOV_jet_strategic_bomber1_medium",
+                        "texturefile":  "gfx/interface/technologies/SOV_jet_strategic_bomber1.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_jets.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_SOV_jet_tactical_bomber1_medium",
+                        "texturefile":  "gfx/interface/technologies/SOV_jet_tactical_bomber1.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_jets.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_SOV_jet_tactical_bomber2_medium",
+                        "texturefile":  "gfx/interface/technologies/SOV_jet_tactical_bomber2.dds",
+                        "source_layer":  "AMSB - DEV",
+                        "source_file":  "interface/SOV_jets.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_ungrouped_air_wings",
+                        "texturefile":  "gfx/interface/ungrouped_air_wings.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/strategicairview.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_unit_jungle_pioneers_support_icon_medium_white",
+                        "texturefile":  "gfx/interface/counters/divisions_small/onmap_unit_jungle_pioneers_support_icon_white.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/subuniticons.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_unit_mountaineers_ski_icon_medium",
+                        "texturefile":  "gfx/interface/counters/divisions_large/unit_mountain_ski_icon.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/subuniticons.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_ins_revolution_gui_background",
+                        "texturefile":  "gfx/interface/GFX_ins_revolution_gui_background.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/taog_scripted_gui.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_tfv_small",
+                        "texturefile":  "gfx/loadingscreens/load_tfv_small.dds",
+                        "source_layer":  "integrated_dlc/dlc018_together_for_victory",
+                        "source_file":  "interface/tfv_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_ARG_augustin_pedro_justo_civilian_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_ARG_augustin_pedro_justo_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_BRA_alvaro_alberto_civilian_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_BRA_alvaro_alberto_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_BRA_alvaro_alberto_military_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_BRA_alvaro_alberto_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_PAR_bernardino_caballero_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_PAR_bernardino_caballero_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_PAR_emilio_gardel_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_PAR_emilio_gardel_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_PAR_higino_morinigo_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_PAR_higino_morinigo_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_PAR_ivan_Beliaiev_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_PAR_ivan_Beliaiev_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_PAR_tomas_salomoni_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_PAR_tomas_salomoni_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_URG_andres_puyol_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_URG_andres_puyol_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_portrait_URG_julio_roletti_small",
+                        "texturefile":  "gfx/interface/ideas/portrait_URG_julio_roletti_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_ideas_characters.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_toa_small",
+                        "texturefile":  "gfx/loadingscreens/load_toa_small.dds",
+                        "source_layer":  "dlc/dlc040_trial_of_allegiance",
+                        "source_file":  "interface/toa_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_tiger_small",
+                        "texturefile":  "gfx/loadingscreens/load_tiger_small.dds",
+                        "source_layer":  "integrated_dlc/dlc022_waking_the_tiger",
+                        "source_file":  "interface/wtt_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_load_ww_small",
+                        "texturefile":  "gfx/loadingscreens/load_ww_small.dds",
+                        "source_layer":  "dlc/dlc043_gotterdammerung",
+                        "source_file":  "interface/ww_small_background.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    }
+                ]
 }
