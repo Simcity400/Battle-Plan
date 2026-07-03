@@ -2,9 +2,38 @@
 
 This probe is read-only. It is not a production hot-loop scanner. Its job is to
 turn the remaining naval_combat_live blocker into an exact fixture contract:
-when the user causes an active naval battle, this verifies the candidate
+when the user causes an active naval battle, this verifies the
 CNavalCombat -> CNavalCombatant -> CFEXGroup -> CFEXMember chain and emits a
 bridge row file that can drive the existing DLL bridge.
+
+Member chain (CRACKED 2026-07-03 on the paused D04 fixture; replaces the
+REJECTED side+0x2A0/+0x2A8/+0x2B0 inline group-vector walk that resolved a
+308-element non-CFEXMember allocation):
+
+- Members live in CFEXGroup objects (vtable module+0x2A42D18, RTTI
+  ``.?AVCFEXGroup@@``; the RTTI names of ALL pinned vtables are re-verified at
+  attach and the probe fails closed on any mismatch).
+- AUTHORITATIVE walk: heap-scan for the CFEXGroup vtable and bucket every group
+  by its owning-side back-ref at group+0x38. A group belongs to the
+  CNavalCombatant its +0x38 equals; groups pointing at non-naval objects belong
+  to other combat types and are ignored.
+- ADVISORY cross-check: side+0x20 sometimes leads to a child object holding
+  CFEXGroup pointers whose +0x20 next-chain is CIRCULAR and spans BOTH sides.
+  When reachable, every forward-walked group must already be in the back-ref
+  buckets (a forward-only group means the back-ref scan missed live data =>
+  hard error). The child is absent/unreadable for some live battles, so forward
+  reachability itself is NOT required.
+- Group layout: +0x08 member ptr array begin, +0x10 u32 capacity, +0x14 u32
+  member count (count <= capacity), +0x20 next group, +0x38 owning side.
+  Empty groups (count == 0, begin == null) are valid.
+- Null member slots are skipped (recorded, never counted); a non-null slot that
+  is not a CFEXMember is a hard error. A CFEXMember with packed handle 0 is a
+  CONVOY member (matches save ``convoy={...}`` rows).
+
+Save-oracle validation (D04 1944-02-11, 4 battles): 4/4 combat ids, 4/4
+front+0xA4 locations, 8/8 sides' ship ids, and member state (+0xE0) /
+slot (+0x120) multisets all matched the same-tick melted save
+(extractor/native/runs/nav49_50_port_validation/).
 """
 
 from __future__ import annotations
@@ -35,11 +64,27 @@ EXPECTED_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c6
 # CShip 0x2941748 (unchanged, still valid). CNavalCombatant 0x29cd298 (17 bodies)
 # is the side/participant object; the prior 0x29B6660/0x29BC908/0x29B6588/
 # 0x29F9608 constants predated 870ebf and matched zero live bodies.
+# CFEXGroup 0x2a42d18 rediscovered by RTTI name on the paused D04 fixture
+# (2026-07-03, runs/nav49_50_port_validation/live_backref_precheck.json); ALL
+# pinned RVAs below are re-verified by RTTI name at attach (fail closed).
 NAVAL_COMBAT_VTABLE_RVA = 0x29C6F18
 NAVAL_COMBAT_SIDE_VTABLE_RVA = 0x29CD298
 NAVAL_COMBAT_REGISTRY_VTABLE_RVA = None
 NAVAL_COMBAT_MEMBER_VTABLE_RVA = 0x2A0A228
+NAVAL_COMBAT_GROUP_VTABLE_RVA = 0x2A42D18
+# body+0x38 points at the battle-location CProvince object (RTTI-confirmed on
+# all 4 D04 battles); CProvince+0xA4 is its province id.
+CPROVINCE_VTABLE_RVA = 0x295AF68
 CURRENT_870EBF_CSHIP_VTABLE_RVA = 0x2941748
+
+EXPECTED_VTABLE_RTTI = {
+    "body": (NAVAL_COMBAT_VTABLE_RVA, ".?AVCNavalCombat@@"),
+    "side": (NAVAL_COMBAT_SIDE_VTABLE_RVA, ".?AVCNavalCombatant@@"),
+    "member": (NAVAL_COMBAT_MEMBER_VTABLE_RVA, ".?AVCFEXMember@@"),
+    "group": (NAVAL_COMBAT_GROUP_VTABLE_RVA, ".?AVCFEXGroup@@"),
+    "province": (CPROVINCE_VTABLE_RVA, ".?AVCProvince@@"),
+    "cship": (CURRENT_870EBF_CSHIP_VTABLE_RVA, ".?AVCShip@@"),
+}
 
 NAVAL_COMBAT_TYPE = 0x1269
 CSHIP_TYPE = 51
@@ -50,21 +95,28 @@ OFF_BODY_DEFENDER_SIDE = 0x30
 OFF_BODY_FRONT = 0x38
 
 OFF_SIDE_PARENT_BODY = 0x18
+# side+0x68/+0x74 "country vector" is UNVALIDATED on 870ebf (side+0x68 is also
+# one of the mirrored forward-child pointers); it is reported as a diagnostic
+# candidate only and never gates validation or feeds fixture rows.
 OFF_SIDE_COUNTRY_DATA = 0x68
 OFF_SIDE_COUNTRY_SIZE = 0x74
-OFF_SIDE_GROUP_BEGIN = 0x2A0
-OFF_SIDE_GROUP_END = 0x2A8
-OFF_SIDE_GROUP_CAP_END = 0x2B0
-OFF_SIDE_GROUP_COUNT = 0x2B8
-OFF_SIDE_GROUP_CAP_COUNT = 0x2C0
-GROUP_ALLOCATION_LEN = 0x80
+# Advisory forward route: side child object that may hold CFEXGroup pointers.
+OFF_SIDE_FORWARD_CHILD = 0x20
 OFF_SIDE_LEADER = 0x110
 OFF_SIDE_POSITIONING = 0x288
 
-OFF_FRONT_LOCATION_CANDIDATE = 0xA4
+# body+0x38 -> CProvince (vtable-checked); CProvince+0xA4 u32 = province id.
+# VALIDATED 4/4 against the same-tick D04 save (locations 6434/2804/1032/8819)
+# and PROMOTED to the compact location_id.
+OFF_FRONT_LOCATION = 0xA4
 
 OFF_GROUP_MEMBERS_DATA = 0x08
+OFF_GROUP_MEMBERS_CAP = 0x10
 OFF_GROUP_MEMBERS_SIZE = 0x14
+OFF_GROUP_NEXT = 0x20
+OFF_GROUP_OWNING_SIDE = 0x38
+FORWARD_CHILD_SCAN_LEN = 0x400
+MAX_GROUP_CHAIN_HOPS = 128
 
 OFF_MEMBER_HANDLE = 0x08
 OFF_MEMBER_OWNER_TAG = 0x20
@@ -85,6 +137,7 @@ CSHIP_REF100_RAW = 10_000_000
 HEAP_LO = 0x10000000000
 HEAP_HI = 0x7FF000000000
 MAX_BODY_HITS = 4096
+MAX_GROUP_HITS = 16384
 MAX_GROUPS_PER_SIDE = 64
 MAX_MEMBERS_PER_GROUP = 1000
 MAX_COUNTRIES_PER_SIDE = 64
@@ -196,14 +249,52 @@ class NavalCombatFixtureProbe:
         self.workers = int(workers)
         self.proc = winmem.Process(self.pid, "hoi4.exe")
         self.base = self.proc.module_base
+        self.module_end = self.base + self.proc.module_size
         self.vt_body = self.base + NAVAL_COMBAT_VTABLE_RVA
         self.vt_side = self.base + NAVAL_COMBAT_SIDE_VTABLE_RVA
         self.vt_registry = None
         self.vt_member = self.base + NAVAL_COMBAT_MEMBER_VTABLE_RVA
+        self.vt_group = self.base + NAVAL_COMBAT_GROUP_VTABLE_RVA
+        self.vt_province = self.base + CPROVINCE_VTABLE_RVA
         self.vt_cship = self.base + CURRENT_870EBF_CSHIP_VTABLE_RVA
+        self._rtti_cache: Dict[int, Optional[str]] = {}
 
     def close(self) -> None:
         self.proc.close()
+
+    def rtti_name(self, vtable: int) -> Optional[str]:
+        """MSVC RTTI: vtable[-1] -> complete object locator -> type descriptor name."""
+        if vtable in self._rtti_cache:
+            return self._rtti_cache[vtable]
+        name: Optional[str] = None
+        try:
+            col = self.proc.u64(vtable - 8)
+            if self.base <= col < self.module_end:
+                td_rva = self.proc.u32(col + 0x0C)
+                raw = self.proc.read(self.base + td_rva + 0x10, 64)
+                text = raw.split(b"\x00", 1)[0]
+                if text.startswith(b".?AV") or text.startswith(b".?AU"):
+                    name = text.decode("ascii", "replace")
+        except OSError:
+            name = None
+        self._rtti_cache[vtable] = name
+        return name
+
+    def verify_vtable_rtti(self) -> Dict[str, Any]:
+        """Re-verify every pinned vtable RVA by RTTI class name (fail closed)."""
+        checks: Dict[str, Any] = {}
+        ok = True
+        for label, (rva, expected) in EXPECTED_VTABLE_RTTI.items():
+            got = self.rtti_name(self.base + rva)
+            row_ok = got == expected
+            ok = ok and row_ok
+            checks[label] = {
+                "rva": hex(rva),
+                "expected": expected,
+                "got": got,
+                "ok": row_ok,
+            }
+        return {"ok": ok, "checks": checks}
 
     def root(self) -> Dict[str, Any]:
         fp = self.proc.fingerprint()
@@ -218,7 +309,7 @@ class NavalCombatFixtureProbe:
             "sha256_ok": (fp.get("sha256") or "").lower() == EXPECTED_SHA256,
         }
 
-    def scan_body_vtable(self) -> Dict[str, Any]:
+    def _scan_vtable(self, name: str, rva: int, vtable: int, max_hits: int) -> Dict[str, Any]:
         arena = fastscan.discover_arena(self.pid)
         if arena is None:
             return {"status": "arena_discovery_failed", "hits": []}
@@ -233,7 +324,7 @@ class NavalCombatFixtureProbe:
         finally:
             fastscan._k32.CloseHandle(handle)
 
-        spec = fastscan.make_qword_eq_matcher(self.vt_body)
+        spec = fastscan.make_qword_eq_matcher(vtable)
         started = time.monotonic()
         hits = fastscan.parallel_scan(
             self.pid, lo, hi, workers=self.workers, regions=regions, **spec
@@ -248,15 +339,71 @@ class NavalCombatFixtureProbe:
                 "bytes": sum(size for _, size in regions),
             },
             "target": {
-                "name": "CNavalCombat_vtable",
-                "rva": hex(NAVAL_COMBAT_VTABLE_RVA),
-                "vtable": hx(self.vt_body),
+                "name": name,
+                "rva": hex(rva),
+                "vtable": hx(vtable),
             },
             "elapsed_s": round(elapsed, 3),
             "hit_count": len(hits),
-            "hits": hits[:MAX_BODY_HITS],
-            "truncated": len(hits) > MAX_BODY_HITS,
+            "hits": hits[:max_hits],
+            "truncated": len(hits) > max_hits,
         }
+
+    def scan_body_vtable(self) -> Dict[str, Any]:
+        return self._scan_vtable(
+            "CNavalCombat_vtable", NAVAL_COMBAT_VTABLE_RVA, self.vt_body, MAX_BODY_HITS
+        )
+
+    def scan_group_vtable(self) -> Dict[str, Any]:
+        return self._scan_vtable(
+            "CFEXGroup_vtable", NAVAL_COMBAT_GROUP_VTABLE_RVA, self.vt_group, MAX_GROUP_HITS
+        )
+
+    def bucket_groups_by_owning_side(self, group_hits: List[int]) -> Dict[int, List[int]]:
+        """AUTHORITATIVE side attribution: bucket every CFEXGroup by group+0x38.
+
+        Groups whose back-ref is not one of this battle set's validated
+        CNavalCombatant sides simply never get looked up (they belong to other
+        combat types that share the CFEXGroup container).
+        """
+        buckets: Dict[int, List[int]] = {}
+        for group in group_hits:
+            side_ref = safe_u64(self.proc, group + OFF_GROUP_OWNING_SIDE)
+            if side_ref is None:
+                continue
+            buckets.setdefault(side_ref, []).append(group)
+        for side_ref in buckets:
+            buckets[side_ref].sort()
+        return buckets
+
+    def forward_group_set(self, side: Optional[int]) -> Tuple[set, str]:
+        """Advisory forward route: scan the side+0x20 child for CFEXGroup ptrs
+        and walk the circular +0x20 next-chain (cycle-guarded). The child is
+        absent for some live battles; that alone is not an error."""
+        found: set = set()
+        if not is_heap(side):
+            return found, "no_side"
+        child = safe_u64(self.proc, side + OFF_SIDE_FORWARD_CHILD)
+        if not is_heap(child):
+            return found, "no_child"
+        raw = self.proc.try_read(child, FORWARD_CHILD_SCAN_LEN)
+        if not raw:
+            return found, "child_unreadable"
+        seeds = []
+        for off in range(0, len(raw) - 7, 8):
+            value = int.from_bytes(raw[off:off + 8], "little")
+            if is_heap(value) and safe_u64(self.proc, value) == self.vt_group:
+                seeds.append(value)
+        for seed in seeds:
+            cursor = seed
+            hops = 0
+            while is_heap(cursor) and cursor not in found and hops < MAX_GROUP_CHAIN_HOPS:
+                if safe_u64(self.proc, cursor) != self.vt_group:
+                    break
+                found.add(cursor)
+                cursor = safe_u64(self.proc, cursor + OFF_GROUP_NEXT) or 0
+                hops += 1
+        return found, "ok"
 
     def scan_cship_registry(self) -> Dict[str, Any]:
         arena = fastscan.discover_arena(self.pid)
@@ -398,7 +545,7 @@ class NavalCombatFixtureProbe:
         ]
         return registry
 
-    def validate_body(self, body: int) -> Dict[str, Any]:
+    def validate_body(self, body: int, groups_by_side: Dict[int, List[int]]) -> Dict[str, Any]:
         errors: List[str] = []
         body_vt = safe_u64(self.proc, body)
         packed = safe_u64(self.proc, body + OFF_BODY_HANDLE)
@@ -421,18 +568,58 @@ class NavalCombatFixtureProbe:
             elif safe_u64(self.proc, (side or 0) + OFF_SIDE_PARENT_BODY) != body:
                 errors.append("%s_side_parent_mismatch" % label)
 
-        attacker_stats = self.validate_side(attacker, body)
-        defender_stats = self.validate_side(defender, body)
+        attacker_stats = self.validate_side(attacker, body, groups_by_side)
+        defender_stats = self.validate_side(defender, body, groups_by_side)
         if attacker_stats.get("errors"):
             errors.append("attacker_side_invalid")
         if defender_stats.get("errors"):
             errors.append("defender_side_invalid")
 
-        location_candidate = (
-            safe_u32(self.proc, (front or 0) + OFF_FRONT_LOCATION_CANDIDATE)
-            if is_heap(front)
-            else None
-        )
+        # Advisory forward cross-check: any group reachable via the side child
+        # chain that the back-ref buckets did NOT attribute to this battle
+        # means the authoritative scan missed live data -> fail closed.
+        bucket_union = set()
+        for side in (attacker, defender):
+            if is_heap(side):
+                bucket_union.update(groups_by_side.get(side, []))
+        forward_union = set()
+        forward_status = {}
+        for label, side in (("attacker", attacker), ("defender", defender)):
+            found, status = self.forward_group_set(side)
+            forward_union.update(found)
+            forward_status[label] = {"status": status, "group_count": len(found)}
+        forward_only = sorted(forward_union - bucket_union)
+        if forward_only:
+            errors.append("forward_walk_found_group_missing_from_backref_scan")
+
+        # Stale-group guard: the same ship as a live member of one combat twice
+        # (within or across sides/groups) means the back-ref scan bucketed a
+        # stale/duplicated CFEXGroup -> fail closed.
+        seen_ship_ids: set = set()
+        duplicate_ship_ids: List[int] = []
+        for stats in (attacker_stats, defender_stats):
+            for group_row in stats.get("groups") or []:
+                for member_row in group_row.get("member_rows") or []:
+                    ship_id = int(member_row.get("ship_instance_id") or 0)
+                    if ship_id == 0:
+                        continue
+                    if ship_id in seen_ship_ids:
+                        duplicate_ship_ids.append(ship_id)
+                    seen_ship_ids.add(ship_id)
+        if duplicate_ship_ids:
+            errors.append("duplicate_ship_instance_id_across_member_groups")
+
+        # body+0x38 must be the battle-location CProvince (vtable-checked); a
+        # wrong/stale front object fails the combat closed instead of emitting
+        # a plausible-but-unverified province id.
+        location = None
+        if not is_heap(front) or safe_u64(self.proc, front or 0) != self.vt_province:
+            errors.append("bad_front_province_vtable")
+        else:
+            location = safe_u32(self.proc, front + OFF_FRONT_LOCATION)
+            if not location:
+                errors.append("missing_front_location_province")
+                location = None
         two_sided_members = (
             attacker_stats.get("member_count", 0) > 0
             and defender_stats.get("member_count", 0) > 0
@@ -445,63 +632,59 @@ class NavalCombatFixtureProbe:
             "body_ptr": body,
             "front_ptr": front,
             "front_ptr_hex": hx(front),
-            "location_candidate_front_0xA4": location_candidate,
-            "location_candidate_front_0xA4_validated": False,
+            # PROMOTED: validated 4/4 against the same-tick D04 save oracle.
+            "location_front_0xA4": location,
+            "location_front_0xA4_validated": True,
+            "forward_cross_check": {
+                "sides": forward_status,
+                "forward_group_count": len(forward_union),
+                "backref_group_count": len(bucket_union),
+                "forward_only_groups": [hx(g) for g in forward_only],
+            },
+            "duplicate_ship_instance_ids": sorted(set(duplicate_ship_ids)),
             "attacker": attacker_stats,
             "defender": defender_stats,
             "two_sided_members": two_sided_members,
             "errors": errors,
         }
 
-    def validate_side(self, side: Optional[int], parent_body: int) -> Dict[str, Any]:
+    def validate_side(
+        self,
+        side: Optional[int],
+        parent_body: int,
+        groups_by_side: Dict[int, List[int]],
+    ) -> Dict[str, Any]:
         errors: List[str] = []
         if not is_heap(side) or safe_u64(self.proc, side or 0) != self.vt_side:
             return {"status": "invalid", "member_count": 0, "errors": ["bad_side"]}
         if safe_u64(self.proc, side + OFF_SIDE_PARENT_BODY) != parent_body:
             errors.append("parent_body_mismatch")
 
+        # Diagnostic only: the side+0x68/+0x74 "country vector" interpretation
+        # is UNVALIDATED on 870ebf (side+0x68 doubles as a forward-child
+        # mirror). Report the candidate values, never gate on them, never feed
+        # them into fixture rows.
         country_data = safe_u64(self.proc, side + OFF_SIDE_COUNTRY_DATA)
         country_count = safe_u32(self.proc, side + OFF_SIDE_COUNTRY_SIZE)
         countries: List[int] = []
-        if country_count is None or country_count > MAX_COUNTRIES_PER_SIDE:
-            errors.append("bad_country_count")
-        else:
+        if country_count is not None and country_count <= MAX_COUNTRIES_PER_SIDE:
             handles = read_ptr_array(self.proc, country_data or 0, country_count, MAX_COUNTRIES_PER_SIDE)
-            if handles is None:
-                errors.append("bad_country_vector")
-            else:
+            if handles is not None:
                 countries = [handle & 0xFFFFFFFF for handle in handles]
 
-        group_begin = safe_u64(self.proc, side + OFF_SIDE_GROUP_BEGIN)
-        group_end = safe_u64(self.proc, side + OFF_SIDE_GROUP_END)
-        group_cap_end = safe_u64(self.proc, side + OFF_SIDE_GROUP_CAP_END)
-        group_header_count = safe_u32(self.proc, side + OFF_SIDE_GROUP_COUNT)
-        group_header_cap = safe_u32(self.proc, side + OFF_SIDE_GROUP_CAP_COUNT)
+        # AUTHORITATIVE member walk: CFEXGroups bucketed by group+0x38 back-ref.
+        groups = list(groups_by_side.get(side, []))
         member_count = 0
+        null_slot_count = 0
         group_rows = []
-        groups: List[int] = []
-        if not (is_heap(group_begin) and is_heap(group_end) and is_heap(group_cap_end)):
-            errors.append("bad_group_vector")
-        elif group_end < group_begin or group_cap_end < group_end:
-            errors.append("bad_group_vector_bounds")
-        else:
-            allocation_len = group_end - group_begin
-            if allocation_len == 0:
-                groups = []
-            elif allocation_len % GROUP_ALLOCATION_LEN == 0:
-                groups = [
-                    group_begin + index * GROUP_ALLOCATION_LEN
-                    for index in range(allocation_len // GROUP_ALLOCATION_LEN)
-                ]
-            else:
-                errors.append("bad_group_allocation_len")
         if len(groups) > MAX_GROUPS_PER_SIDE:
             errors.append("bad_group_count")
             groups = []
         for group_index, group in enumerate(groups):
-            row = self.validate_group(group, group_index)
+            row = self.validate_group(group, group_index, side)
             group_rows.append(row)
-            member_count += int(row.get("member_count", 0))
+            member_count += len(row.get("member_rows") or [])
+            null_slot_count += int(row.get("null_slot_count") or 0)
             if row.get("errors"):
                 errors.append("bad_group_%d" % group_index)
 
@@ -509,24 +692,18 @@ class NavalCombatFixtureProbe:
         positioning = safe_f32(self.proc, side + OFF_SIDE_POSITIONING)
         return {
             "status": "valid" if not errors else "invalid",
-            "country_tag_db_ids": countries,
-            "group_begin": group_begin,
-            "group_begin_hex": hx(group_begin),
-            "group_end": group_end,
-            "group_end_hex": hx(group_end),
-            "group_cap_end": group_cap_end,
-            "group_cap_end_hex": hx(group_cap_end),
-            "group_header_count": group_header_count,
-            "group_header_cap": group_header_cap,
+            "country_tag_db_ids_candidate_unvalidated": countries,
+            "group_route": "CFEXGroup heap scan bucketed by group+0x38 owning-side back-ref",
             "group_count": len(groups),
             "member_count": member_count,
+            "null_slot_count": null_slot_count,
             "leader_present": leader_present,
             "positioning": positioning,
             "groups": group_rows,
             "errors": errors,
         }
 
-    def validate_group(self, group: Optional[int], group_index: int) -> Dict[str, Any]:
+    def validate_group(self, group: Optional[int], group_index: int, owning_side: int) -> Dict[str, Any]:
         errors: List[str] = []
         if not is_heap(group):
             return {
@@ -534,31 +711,69 @@ class NavalCombatFixtureProbe:
                 "member_count": 0,
                 "errors": ["bad_group_ptr"],
             }
+        if safe_u64(self.proc, group) != self.vt_group:
+            return {
+                "group_index": group_index,
+                "member_count": 0,
+                "errors": ["bad_group_vtable"],
+            }
+        side_backref = safe_u64(self.proc, group + OFF_GROUP_OWNING_SIDE)
+        if side_backref != owning_side:
+            # The bucket lookup already keyed on +0x38; a mismatch here means
+            # the group mutated between reads -> fail closed.
+            errors.append("group_owning_side_backref_mismatch")
         member_data = safe_u64(self.proc, group + OFF_GROUP_MEMBERS_DATA)
+        member_cap = safe_u32(self.proc, group + OFF_GROUP_MEMBERS_CAP)
         member_count = safe_u32(self.proc, group + OFF_GROUP_MEMBERS_SIZE)
-        if member_count is None or member_count > MAX_MEMBERS_PER_GROUP:
+        next_group = safe_u64(self.proc, group + OFF_GROUP_NEXT)
+        if (
+            member_count is None
+            or member_cap is None
+            or member_count > member_cap
+            or member_cap > MAX_MEMBERS_PER_GROUP
+            or member_count > MAX_MEMBERS_PER_GROUP
+        ):
             return {
                 "group_index": group_index,
                 "member_count": 0,
-                "errors": ["bad_member_count"],
+                "errors": errors + ["bad_member_count"],
             }
-        members = read_ptr_array(self.proc, member_data or 0, member_count, MAX_MEMBERS_PER_GROUP)
-        if members is None:
-            return {
-                "group_index": group_index,
-                "member_count": 0,
-                "errors": ["bad_member_vector"],
-            }
+        if member_count == 0:
+            # Empty CFEXGroups (count == 0, begin == null) are live-observed
+            # and valid (D04 battle 151343 defender).
+            members: List[int] = []
+        else:
+            members_read = read_ptr_array(self.proc, member_data or 0, member_count, MAX_MEMBERS_PER_GROUP)
+            if members_read is None:
+                return {
+                    "group_index": group_index,
+                    "member_count": 0,
+                    "errors": errors + ["bad_member_vector"],
+                }
+            members = members_read
         member_samples = []
         member_rows = []
+        null_slot_count = 0
         for member_index, member in enumerate(members):
+            if member == 0:
+                # Null slots inside count are skipped, never emitted, and never
+                # silently mistaken for convoy/ship members.
+                null_slot_count += 1
+                continue
             if not is_heap(member) or safe_u64(self.proc, member) != self.vt_member:
                 errors.append("bad_member_vtable")
                 continue
-            packed = safe_u64(self.proc, member + OFF_MEMBER_HANDLE) or 0
+            packed = safe_u64(self.proc, member + OFF_MEMBER_HANDLE)
+            if packed is None:
+                # An unreadable handle must fail closed; `or 0` would silently
+                # classify a torn/freed member as a convoy row.
+                errors.append("unreadable_member_handle")
+                continue
             owner_tag = safe_u32(self.proc, member + OFF_MEMBER_OWNER_TAG)
             unit_type_tag = packed & 0xFFFFFFFF
             ship_instance_id = (packed >> 32) & 0xFFFFFFFF
+            # Packed handle 0 == convoy member (matches save convoy={...} rows
+            # on the D04 oracle; ship members carry (ship_id<<32)|51).
             is_convoy = unit_type_tag == 0 and ship_instance_id == 0
             row = {
                 "member_index": member_index,
@@ -580,7 +795,12 @@ class NavalCombatFixtureProbe:
             })
         return {
             "group_index": group_index,
+            "group_ptr_hex": hx(group),
+            "owning_side_backref_hex": hx(side_backref),
+            "next_group_hex": hx(next_group),
             "member_count": member_count,
+            "member_capacity": member_cap,
+            "null_slot_count": null_slot_count,
             "sample_members": member_samples[:8],
             "member_rows": member_rows,
             "errors": errors,
@@ -619,13 +839,15 @@ def fixture_contract() -> Dict[str, Any]:
         ),
         "success_criteria": [
             "root.sha256_ok == true",
-            "scan.status == scanned",
+            "vtable_rtti.ok == true (every pinned vtable RVA re-verified by RTTI class name at attach)",
+            "scan.status == scanned and group_scan.status == scanned",
             "status == validated_active_fixture",
             "bridge_row_count >= 1",
             "member_bridge_row_count >= 2 with attacker and defender CFEXMember rows",
             "non_convoy_member_count >= 1 and cship_unresolved_member_count == 0 when --require-cship-join is active",
-            "each bridge row validates CNavalCombat body vtable, packed type/id, both CNavalCombatant side vtables, side parent back-refs, and CFEXMember vectors",
-            "location_candidate_front_0xA4 may be present only with location_candidate_front_0xA4_validated == false; it is not a promoted location/region",
+            "each bridge row validates CNavalCombat body vtable, packed type/id, both CNavalCombatant side vtables, side parent back-refs, and the CFEXGroup back-ref member walk (group+0x38 owning side, group+0x08/+0x10/+0x14 member array)",
+            "no forward-walked CFEXGroup (side+0x20 child, circular +0x20 chain) is missing from the back-ref buckets",
+            "location_front_0xA4 is the PROMOTED battle location province (validated 4/4 vs the same-tick D04 save oracle)",
             "attacker.member_count > 0 and defender.member_count > 0 when --require-two-sided is used",
             "each non-convoy member resolves CFEXMember+0x08 high u32 ship_instance_id through current CShip module+0x2941748",
         ],
@@ -634,8 +856,10 @@ def fixture_contract() -> Dict[str, Any]:
             "A production acceptance run must emit raw naval_air_combats and naval_combat_members, replay-verify, advance hourly-or-better at current-equivalent speed, skip zero hours, and show naval_combat_ended if the fixture is the ending fixture.",
         ],
         "rejection_criteria": [
+            "any pinned vtable RVA fails the attach-time RTTI class-name check (status vtable_rtti_mismatch)",
             "body vtable hits exist but no candidate passes the side/member validation chain",
             "candidate passes body/side checks but cannot produce member rows for either side under the fleet-vs-fleet fixture",
+            "a forward-walked CFEXGroup is missing from the back-ref buckets (back-ref scan dropped live data)",
             "candidate produces non-convoy CFEXMember rows whose ship_instance_id cannot resolve to current CShip module+0x2941748",
             "validated bridge rows produce DLL gap rows or fail replay verification in the recorder followup",
         ],
@@ -647,7 +871,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     try:
         root = probe.root()
         report: Dict[str, Any] = {
-            "probe": "naval_combat_live_fixture_probe_v1",
+            "probe": "naval_combat_live_fixture_probe_v2_cfexgroup_backref",
             "created_utc": dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
             "read_only": True,
             "root": root,
@@ -656,10 +880,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "side_vtable": "module+0x29CD298",
                 "registry_vtable": None,
                 "member_vtable": "module+0x2A0A228",
+                "group_vtable": "module+0x2A42D18 (CFEXGroup, RTTI-verified at attach)",
                 "cship_vtable": "module+0x2941748",
                 "body_chain": "body+0x28/+0x30 sides; body+0x38 front; side+0x18 parent CNavalCombat back-ref",
-                "location_candidate": "body+0x38 front +0xA4 is reported as location_candidate_front_0xA4 with validated=false; it is not a promoted compact location",
-                "member_chain": "side+0x2A0/+0x2A8/+0x2B0 group allocation; group+0x08 member vector; group+0x14 member count",
+                "location": "body+0x38 front +0xA4 u32 battle location province; PROMOTED (validated 4/4 vs same-tick D04 save oracle)",
+                "member_chain": "heap-scan CFEXGroup vtable; bucket by group+0x38 owning-side back-ref (AUTHORITATIVE); group+0x08 member ptr array; +0x10 cap; +0x14 count; +0x20 circular next-chain used only as an advisory forward cross-check from side+0x20",
                 "member_cship_join": "CFEXMember+0x08 high u32 ship_instance_id -> CShip+0x08 high u32 instance_id; CShip vtable module+0x2941748",
             },
             "fixture_contract": fixture_contract(),
@@ -673,13 +898,53 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "validated_combats": [],
             })
             return report
+        rtti = probe.verify_vtable_rtti()
+        report["vtable_rtti"] = rtti
+        if not rtti["ok"]:
+            report.update({
+                "status": "vtable_rtti_mismatch",
+                "validated_combat_count": 0,
+                "bridge_row_count": 0,
+                "bridge": "",
+                "validated_combats": [],
+            })
+            return report
         scan = probe.scan_body_vtable()
         report["scan"] = {
             k: v for k, v in scan.items()
             if k != "hits"
         }
         hits = list(scan.get("hits") or [])
-        validated = [probe.validate_body(hit) for hit in hits]
+        group_scan = probe.scan_group_vtable()
+        report["group_scan"] = {
+            k: v for k, v in group_scan.items()
+            if k != "hits"
+        }
+        group_hits = list(group_scan.get("hits") or [])
+        groups_by_side = probe.bucket_groups_by_owning_side(group_hits)
+        if scan.get("status") == "scanned" and group_scan.get("status") != "scanned":
+            report.update({
+                "status": "scan_failed",
+                "body_hit_count": len(hits),
+                "validated_combat_count": 0,
+                "bridge_row_count": 0,
+                "bridge": "",
+                "validated_combats": [],
+            })
+            return report
+        if scan.get("truncated") or group_scan.get("truncated"):
+            # A truncated hit list can silently drop live bodies/groups; that
+            # violates fail-closed completeness, so it is terminal.
+            report.update({
+                "status": "scan_truncated",
+                "body_hit_count": len(hits),
+                "validated_combat_count": 0,
+                "bridge_row_count": 0,
+                "bridge": "",
+                "validated_combats": [],
+            })
+            return report
+        validated = [probe.validate_body(hit, groups_by_side) for hit in hits]
         rows = bridge_rows(validated, args.require_two_sided)
         member_rows = member_bridge_rows(validated, args.require_two_sided)
         cship_registry = probe.attach_cship_resolution(member_rows)

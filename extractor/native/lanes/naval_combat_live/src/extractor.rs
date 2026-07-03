@@ -9,28 +9,55 @@ use crate::domain49_50_naval_combat_live::{
 pub const CURRENT_870EBF_BUILD_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub const CURRENT_870EBF_PROVENANCE: &str =
-    "extractor/native/runs/naval_combat_fixture_20260703_biscay_v2";
+    "extractor/native/runs/nav49_d04 + extractor/native/runs/nav49_50_port_validation \
+     (D04 1944-02-11 paused fixture, same-tick save oracle: 4/4 combat ids, 4/4 \
+     front+0xA4 locations, 8/8 sides' ship ids, member state/slot multisets)";
 
+/// Member chain (CRACKED 2026-07-03, replaces the REJECTED side+0x2A0 inline
+/// group-vector walk which resolved a 308-element non-CFEXMember allocation):
+///
+/// - Members live in CFEXGroup objects (vtable rva `naval_combat_group_vtable_rva`,
+///   RTTI `.?AVCFEXGroup@@`; scanners must re-verify the RTTI name at attach and
+///   fail closed on mismatch).
+/// - AUTHORITATIVE walk: heap-scan CFEXGroup vtable hits, bucket each group by its
+///   owning-side back-ref at `group + group_owning_side_off` (+0x38). A group
+///   belongs to the CNavalCombatant its +0x38 equals; groups whose back-ref is not
+///   a validated naval side belong to other combat types and are ignored.
+/// - ADVISORY cross-check: `side + side_forward_child_off` (+0x20) sometimes leads
+///   to a child object holding CFEXGroup pointers; the `group + group_next_off`
+///   (+0x20) chain is CIRCULAR and spans BOTH sides. When reachable, every group
+///   found forward MUST already be in the back-ref buckets (forward-only groups
+///   mean the back-ref scan missed live data => fail closed). The child is absent
+///   or unreadable for some live battles, so forward reachability itself is NOT
+///   required.
+/// - Group layout: `+0x08` member pointer array begin (contiguous CFEXMember*,
+///   8-byte stride), `+0x10` u32 capacity, `+0x14` u32 member count
+///   (count <= capacity), `+0x20` next group, `+0x38` owning side. Empty groups
+///   (count == 0, begin == null) are valid.
+/// - Array slots: null pointers are skipped (never counted as members); a non-null
+///   slot whose vtable is not CFEXMember is a hard error. A CFEXMember whose packed
+///   handle (`+0x08`) is 0 is a CONVOY member (matches save `convoy={...}` rows);
+///   otherwise low u32 == 51 and high u32 == CShip instance id.
 pub const CURRENT_870EBF_OFFSETS: ExtractorOffsets = ExtractorOffsets {
     naval_combat_body_vtable_rva: 0x29C6F18,
     naval_combat_side_vtable_rva: 0x29CD298,
     naval_combat_registry_vtable_rva: 0,
     naval_combat_member_vtable_rva: 0x2A0A228,
+    naval_combat_group_vtable_rva: 0x2A42D18,
+    front_province_vtable_rva: 0x295AF68,
     body_handle_off: 0x18,
     body_attacker_side_off: 0x28,
     body_defender_side_off: 0x30,
     body_front_off: 0x38,
     side_parent_body_off: 0x18,
-    side_group_begin_off: 0x2A0,
-    side_group_end_off: 0x2A8,
-    side_group_cap_end_off: 0x2B0,
-    side_group_count_off: 0x2B8,
-    side_group_cap_count_off: 0x2C0,
-    group_allocation_len: 0x80,
+    side_forward_child_off: 0x20,
     side_positioning_off: 0x288,
-    front_location_candidate_off: 0xA4,
+    front_location_off: 0xA4,
     group_members_data_off: 0x08,
+    group_members_cap_off: 0x10,
     group_members_size_off: 0x14,
+    group_next_off: 0x20,
+    group_owning_side_off: 0x38,
     member_handle_off: 0x08,
     member_owner_tag_off: 0x20,
     member_max_strength_raw_off: 0x30,
@@ -59,26 +86,36 @@ pub struct ExtractorOffsets {
     pub naval_combat_side_vtable_rva: u64,
     pub naval_combat_registry_vtable_rva: u64,
     pub naval_combat_member_vtable_rva: u64,
+    /// CFEXGroup vtable (RTTI `.?AVCFEXGroup@@`); the member-group container.
+    pub naval_combat_group_vtable_rva: u64,
+    /// body+`body_front_off` -> CProvince (RTTI `.?AVCProvince@@`); scanners
+    /// must vtable-check it before reading the location province at
+    /// `front_location_off` (RTTI-confirmed on all 4 D04 battles).
+    pub front_province_vtable_rva: u64,
     pub body_handle_off: u64,
     pub body_attacker_side_off: u64,
     pub body_defender_side_off: u64,
     pub body_front_off: u64,
     pub side_parent_body_off: u64,
-    pub side_group_begin_off: u64,
-    pub side_group_end_off: u64,
-    pub side_group_cap_end_off: u64,
-    pub side_group_count_off: u64,
-    pub side_group_cap_count_off: u64,
-    pub group_allocation_len: u64,
+    /// Advisory forward route: side child object that may hold CFEXGroup ptrs.
+    pub side_forward_child_off: u64,
     pub side_positioning_off: u64,
-    pub front_location_candidate_off: u64,
+    /// front + this = u32 battle location province (VALIDATED 4/4 vs save).
+    pub front_location_off: u64,
     pub group_members_data_off: u64,
+    pub group_members_cap_off: u64,
     pub group_members_size_off: u64,
+    /// Next CFEXGroup in the (circular, side-spanning) battle group list.
+    pub group_next_off: u64,
+    /// AUTHORITATIVE owning CNavalCombatant side back-ref.
+    pub group_owning_side_off: u64,
     pub member_handle_off: u64,
     pub member_owner_tag_off: u64,
     pub member_max_strength_raw_off: u64,
+    /// VALIDATED vs save member `state` (multiset match on all 8 D04 sides).
     pub member_state_off: u64,
     pub member_weight_off: u64,
+    /// VALIDATED vs save member `unique_id` (multiset match on all 8 D04 sides).
     pub member_slot_off: u64,
 }
 
@@ -198,8 +235,8 @@ pub fn build_capture_frame(
             generation: snapshot.lifecycle.generation,
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: false,
-            location_id: None,
-            region_id: None,
+            location_id: snapshot.lifecycle.location_id,
+            region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
@@ -289,8 +326,8 @@ pub fn build_transition_capture_frame(
             generation: snapshot.lifecycle.generation,
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: false,
-            location_id: None,
-            region_id: None,
+            location_id: snapshot.lifecycle.location_id,
+            region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
@@ -331,8 +368,8 @@ pub fn build_transition_capture_frame(
             generation: snapshot.lifecycle.generation,
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: true,
-            location_id: None,
-            region_id: None,
+            location_id: snapshot.lifecycle.location_id,
+            region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
@@ -418,6 +455,7 @@ fn validate_pending_member_cship_joins(
     let mut non_convoy_count = 0usize;
     let mut cship_join_count = 0usize;
     let mut seen = BTreeSet::new();
+    let mut seen_ships = BTreeSet::new();
 
     for pending in members {
         let member = &pending.row;
@@ -438,6 +476,20 @@ fn validate_pending_member_cship_joins(
                 member.member_index
             ));
             continue;
+        }
+        // Stale-group guard: a ship cannot be a live member of one combat
+        // generation twice. A duplicate ship_instance_id means the member walk
+        // picked up a stale/duplicated CFEXGroup -> fail closed.
+        if !pending.deleted {
+            if let Some(ship_id) = member.ship_instance_id {
+                if !seen_ships.insert((member.combat_id, member.generation, ship_id)) {
+                    errors.push(format!(
+                        "duplicate ship_instance_id {ship_id} in combat {}:{} (stale/duplicated member group)",
+                        member.combat_id, member.generation
+                    ));
+                    continue;
+                }
+            }
         }
         let mut cship_join_validated = false;
         if member.is_convoy {
@@ -555,6 +607,11 @@ fn validate_pending_member_cship_joins(
     }
 }
 
+/// `front+0xA4` is PROMOTED (validated 4/4 vs the D04 save oracle): rows are
+/// expected to carry `location_id` (memory-read province) and `region_id`
+/// (static province->strategic-region join). The unvalidated-candidate status
+/// flag now only fires as the fail-closed signal when a row is missing either
+/// promoted field; a fully promoted frame carries plain `STATUS_DELTA_DATA`.
 fn lifecycle_status_flags(rows: &[LifecycleRow]) -> u32 {
     let has_unvalidated_location_candidate = rows
         .iter()
@@ -695,14 +752,15 @@ mod tests {
     }
 
     #[test]
-    fn builds_compact_frame_from_validated_member_cship_join() {
+    fn builds_compact_frame_with_promoted_location_and_region() {
         let frame = build_capture_frame(&[fixture()], &[cship(1001)], 10, 512, 5).unwrap();
         assert_eq!(frame.lifecycle_rows.len(), 1);
-        assert_eq!(frame.lifecycle_rows[0].location_id, None);
-        assert_eq!(frame.lifecycle_rows[0].region_id, None);
-        assert_ne!(
+        assert_eq!(frame.lifecycle_rows[0].location_id, Some(2799));
+        assert_eq!(frame.lifecycle_rows[0].region_id, Some(18));
+        assert_eq!(
             frame.status_flags & STATUS_LOCATION_CANDIDATE_UNVALIDATED,
-            0
+            0,
+            "promoted location/region must clear the unvalidated-candidate flag"
         );
         assert_eq!(frame.member_rows.len(), 2);
         assert!(frame.member_rows.iter().any(|row| row.cship_join_validated));
@@ -718,11 +776,44 @@ mod tests {
         let gate = gate_stream(&frame.compact_stream);
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.two_sided_combat_count, 1);
-        assert_eq!(gate.summary.lifecycle_location_row_count, 0);
-        assert_eq!(gate.summary.lifecycle_region_row_count, 0);
+        assert_eq!(gate.summary.lifecycle_location_row_count, 1);
+        assert_eq!(gate.summary.lifecycle_region_row_count, 1);
         assert_eq!(gate.summary.task_force_linked_member_count, 1);
         assert_eq!(gate.summary.fleet_linked_member_count, 1);
         assert_eq!(gate.summary.hull_telemetry_member_count, 1);
+    }
+
+    #[test]
+    fn missing_location_or_region_sets_unvalidated_status_flag() {
+        let mut snapshot = fixture();
+        snapshot.lifecycle.location_id = None;
+        snapshot.lifecycle.region_id = None;
+        let frame = build_capture_frame(&[snapshot], &[cship(1001)], 10, 512, 5).unwrap();
+        assert_eq!(frame.lifecycle_rows[0].location_id, None);
+        assert_eq!(frame.lifecycle_rows[0].region_id, None);
+        assert_ne!(
+            frame.status_flags & STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+            0,
+            "absent location/region must fail closed via the status flag"
+        );
+        let gate = gate_stream(&frame.compact_stream);
+        assert!(gate.ok, "{:?}", gate.errors);
+        assert_eq!(gate.summary.lifecycle_location_row_count, 0);
+        assert_eq!(gate.summary.lifecycle_region_row_count, 0);
+    }
+
+    #[test]
+    fn rejects_duplicate_ship_instance_across_member_groups() {
+        let mut snapshot = fixture();
+        let mut duplicate = snapshot.members[0].clone();
+        duplicate.group_index = 1;
+        duplicate.member_index = 0;
+        snapshot.members.push(duplicate);
+        snapshot.lifecycle.attacker_member_count = 2;
+        let errors = build_capture_frame(&[snapshot], &[cship(1001)], 10, 512, 5).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("duplicate ship_instance_id 1001")));
     }
 
     #[test]

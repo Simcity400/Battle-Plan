@@ -2,7 +2,9 @@
 """Bounded active-fixture harness for naval combat domains 49/50.
 
 This lane-owned wrapper waits for the first validated CNavalCombat fixture,
-keeps front+0xA4 as an unpromoted location candidate, enriches member rows with
+promotes the validated front+0xA4 battle location (4/4 match vs the same-tick
+D04 save oracle) to the compact lifecycle location_id, joins it to region_id
+via the game's static province->strategic-region map, enriches member rows with
 persistent CShip task-force/fleet data, then hands an exact JSON fixture to the
 Rust compact proof binary.
 Shared collector/recorder entrypoints are intentionally untouched.
@@ -43,7 +45,9 @@ import naval_oob_gap_probe as naval_oob  # noqa: E402
 
 TERMINAL_NON_FIXTURE_STATUSES = {
     "build_mismatch",
+    "vtable_rtti_mismatch",
     "scan_failed",
+    "scan_truncated",
     "candidate_rejected",
     "candidate_rejected_cship_member_join",
     "validated_member_rows_missing_cship_fixture",
@@ -154,6 +158,7 @@ def build_fixture_json(
     *,
     oob_ships: Iterable[Dict[str, Any]],
     oob_summary: Dict[str, Any],
+    province_regions: Dict[int, int],
     game_hour_raw: int,
 ) -> Tuple[Dict[str, Any], List[str]]:
     errors: List[str] = []
@@ -169,18 +174,31 @@ def build_fixture_json(
 
     snapshots: List[Dict[str, Any]] = []
     cships_by_id: Dict[int, Dict[str, Any]] = {}
-    location_candidates: List[Dict[str, Any]] = []
+    location_rows: List[Dict[str, Any]] = []
     for combat in report.get("validated_combats") or []:
         if combat.get("status") != "valid":
             continue
         combat_id = int(combat["combat_id"])
-        location_candidate = optional_int(combat.get("location_candidate_front_0xA4"))
-        location_candidates.append(
+        # PROMOTED: front+0xA4 battle location (validated 4/4 vs the same-tick
+        # D04 save oracle). Absent/zero location or an unmapped province is a
+        # fail-closed error, never a silently absent compact field.
+        location_id = optional_int(combat.get("location_front_0xA4"))
+        region_id: Optional[int] = None
+        if location_id is None:
+            errors.append(f"combat {combat_id} is missing promoted front+0xA4 location")
+        else:
+            region_id = province_regions.get(location_id)
+            if region_id is None:
+                errors.append(
+                    f"combat {combat_id} location province {location_id} has no strategic-region mapping"
+                )
+        location_rows.append(
             {
                 "combat_id": combat_id,
                 "body_ptr": body_ptr_by_combat.get(combat_id),
-                "location_candidate_front_0xA4": location_candidate,
-                "validated": False,
+                "location_front_0xA4": location_id,
+                "region_id": region_id,
+                "validated": True,
             }
         )
         body_ptr = body_ptr_by_combat.get(combat_id)
@@ -197,8 +215,8 @@ def build_fixture_json(
                     "combat_id": combat_id,
                     "generation": 1,
                     "body_ptr": body_ptr or 0,
-                    "location_id": None,
-                    "region_id": None,
+                    "location_id": location_id,
+                    "region_id": region_id,
                     "attacker_member_count": int(attacker.get("member_count") or 0),
                     "defender_member_count": int(defender.get("member_count") or 0),
                     "attacker_positioning_milli": milli(attacker.get("positioning")),
@@ -237,10 +255,10 @@ def build_fixture_json(
             "root": report.get("root"),
             "build_sha256": (report.get("root") or {}).get("sha256"),
             "oob_summary": oob_summary,
-            "location_candidate_front_0xA4": {
-                "validated": False,
-                "promotion": "manual on-screen verification required before any later code change may promote this to location_id/region_id",
-                "candidates": location_candidates,
+            "location_front_0xA4": {
+                "validated": True,
+                "provenance": "front+0xA4 == save naval_combat.location for all 4 battles of the same-tick D04 1944-02-11 oracle (6434/2804/1032/8819); region_id joined via map/strategicregions",
+                "rows": location_rows,
             },
         },
         "game_hour_raw": game_hour_raw,
@@ -440,12 +458,25 @@ def finish_validated_fixture(
         },
     )
 
+    # Static province -> strategic-region join for the promoted location field.
+    # Any failure here must fail the fixture (fail-closed), not skip the field.
+    try:
+        game_root = detect_game_root(report, args.game_root)
+        province_regions = load_province_regions(game_root)
+        region_join_error: Optional[str] = None
+    except (ValueError, OSError) as exc:
+        province_regions = {}
+        region_join_error = f"province-region join unavailable: {exc}"
+
     fixture_payload, fixture_errors = build_fixture_json(
         report,
         oob_ships=oob_ships,
         oob_summary=oob_summary,
+        province_regions=province_regions,
         game_hour_raw=args.game_hour_raw,
     )
+    if region_join_error:
+        fixture_errors.append(region_join_error)
     fixture_json_path = args.out_dir / "active_fixture_input.json"
     write_json(fixture_json_path, fixture_payload)
     if fixture_errors:

@@ -65,17 +65,28 @@ defender CFEXGroup (`+0x38`->defender side) count=9 ids = [0,3064,3099,3114,3051
 
 ## Remaining work to close rows 49 + 50 (code, serial-gated)
 
-1. In `extractor/native/lanes/naval_combat_live/src/extractor.rs`: replace the
-   `side_group_begin_off: 0x2A0` walk with side-child -> CFEXGroup-list (walk `+0x20`),
-   attribute members by `CFEXGroup+0x38`, read count at `+0x14`, array at `+0x08`, elements
-   CFEXMember, join CShip via `+0x08` high-u32. Add the CFEXGroup vtable to the fixture-probe
-   RVA refresh (rediscover by RTTI).
-2. Promote `front+0xA4` as the compact lifecycle `location_id` (drop
-   `STATUS_LOCATION_CANDIDATE_UNVALIDATED`); it is validated by 4/4 save matches.
-3. Re-run `tools/active_fixture_proof.py` against a LIVE battle (the D04 paused fixture works
-   right now) and require `validated_combat_count>0`, `member_bridge_row_count>=2`,
-   `cship_unresolved_member_count==0`, Rust proof `passed`.
-4. Serial-integrate the compact 49/50 rows into the shared collector/recorder (one packet,
-   gated), then flip rows 49 + 50 out of FIXTURE_BLOCKED.
-
-The live D04 battle is available for step 3 ONLY while the game stays paused on this save.
+1. DONE 2026-07-03: `src/extractor.rs` + the fixture probe now use the CFEXGroup chain.
+   The AUTHORITATIVE walk is the CFEXGroup vtable heap scan bucketed by the `+0x38`
+   owning-side back-ref (the `side+0x20` forward child route proved unreliable live —
+   the child is absent/unreadable for some battles — and is kept only as an advisory
+   subset cross-check: any forward-walked group missing from the back-ref buckets is a
+   hard error). CFEXGroup vtable 0x2A42D18 pinned + ALL pinned vtable RVAs RTTI-name
+   verified at attach (fail closed, `vtable_rtti_mismatch`). Null member slots are
+   skipped/recorded; a CFEXMember with packed handle 0 is a CONVOY member (matches the
+   save's `convoy={...}` rows; validated on the 2804 12-convoy defender).
+2. DONE 2026-07-03: `front+0xA4` promoted to compact `location_id` + static
+   `region_id` join (map/strategicregions); `STATUS_LOCATION_CANDIDATE_UNVALIDATED`
+   now only fires as the fail-closed missing-field signal.
+3. DONE 2026-07-03: live gate PASSED on the paused D04 fixture
+   (`runs/nav49_50_port_validation/live_gate/`): `status=passed`,
+   `validated_combat_count=4`, `member_bridge_row_count=117` (== save total),
+   `cship_unresolved_member_count=0` (101/101 joins), Rust proof `passed`,
+   4/4 locations+regions emitted, `.battleplan` byte-verified. Extended oracle
+   cross-check (`runs/nav49_50_port_validation/live_backref_precheck.json`): live
+   combat ids == save `naval_combat.id.id` 4/4; ship-id sets matched on 8/8 sides;
+   member `+0xE0` state and `+0x120` slot multisets matched the save's
+   `state`/`unique_id` on all sides.
+4. OPEN: serial-integrate the compact 49/50 rows into the shared collector/recorder
+   (one packet, gated) — orchestrator-owned. Rows 49/50 moved to
+   SHARED_INTEGRATION_PENDING. Lifecycle-end (teardown) and member join/leave/sinking
+   fixtures plus the speed-five proof also remain.

@@ -96,12 +96,19 @@ class NavalCombatFixtureProbeContractTests(unittest.TestCase):
         self.assertIn("cship_unresolved_member_count == 0", criteria)
         self.assertIn("CShip module+0x2941748", criteria)
 
-    def test_fixture_contract_keeps_location_candidate_unvalidated(self) -> None:
-        criteria = " ".join(fixture_contract()["success_criteria"])
+    def test_fixture_contract_promotes_location_and_pins_backref_walk(self) -> None:
+        contract = fixture_contract()
+        criteria = " ".join(contract["success_criteria"])
 
-        self.assertIn("location_candidate_front_0xA4", criteria)
-        self.assertIn("validated == false", criteria)
-        self.assertNotIn("promoted location/region", criteria.split("location_candidate_front_0xA4")[0])
+        self.assertIn("location_front_0xA4", criteria)
+        self.assertIn("PROMOTED", criteria)
+        self.assertIn("D04 save oracle", criteria)
+        self.assertNotIn("location_candidate_front_0xA4", criteria)
+        self.assertIn("group+0x38 owning side", criteria)
+        self.assertIn("vtable_rtti.ok == true", criteria)
+        rejections = " ".join(contract["rejection_criteria"])
+        self.assertIn("vtable_rtti_mismatch", rejections)
+        self.assertIn("back-ref buckets", rejections)
 
 
 if __name__ == "__main__":

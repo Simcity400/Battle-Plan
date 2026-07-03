@@ -189,9 +189,9 @@ fn main() {
             && gate.summary.lifecycle_started_row_count > 0
             && gate.summary.lifecycle_updated_row_count > 0
             && gate.summary.lifecycle_ended_row_count > 0
-            && gate.summary.lifecycle_location_row_count == 0
-            && gate.summary.lifecycle_region_row_count == 0
-            && (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) != 0
+            && gate.summary.lifecycle_location_row_count == gate.summary.lifecycle_row_count
+            && gate.summary.lifecycle_region_row_count == gate.summary.lifecycle_row_count
+            && (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) == 0
             && gate.summary.member_deleted_row_count > 0
             && gate.summary.task_force_linked_member_count > 0
             && gate.summary.fleet_linked_member_count > 0
@@ -314,9 +314,9 @@ fn run_fixture_json_proof(fixture_path: &PathBuf, out_dir: &PathBuf) -> Result<b
         && gate.summary.lifecycle_row_count > 0
         && gate.summary.member_row_count > 0
         && gate.summary.two_sided_combat_count > 0
-        && gate.summary.lifecycle_location_row_count == 0
-        && gate.summary.lifecycle_region_row_count == 0
-        && (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) != 0
+        && gate.summary.lifecycle_location_row_count == gate.summary.lifecycle_row_count
+        && gate.summary.lifecycle_region_row_count == gate.summary.lifecycle_row_count
+        && (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) == 0
         && gate.summary.cship_validated_member_count > 0
         && gate.summary.task_force_linked_member_count == gate.summary.cship_validated_member_count
         && gate.summary.fleet_linked_member_count == gate.summary.cship_validated_member_count
@@ -412,19 +412,47 @@ fn validate_fixture_source_build(source: &Value) -> Result<(), String> {
 
 impl FixtureSnapshotInput {
     fn to_snapshot(&self) -> Result<ValidatedCombatSnapshot, String> {
-        if self.lifecycle.location_id.is_some() || self.lifecycle.region_id.is_some() {
-            return Err(
-                "fixture-json lifecycle location_id/region_id are unvalidated; keep them absent until manual promotion"
-                    .to_string(),
-            );
+        // front+0xA4 location is PROMOTED (validated 4/4 vs the D04 save
+        // oracle). The live fixture must now supply both the memory-read
+        // location province and the static province->region join; an absent
+        // field is a fail-closed error, never silently emitted as 0.
+        match self.lifecycle.location_id {
+            None => {
+                return Err(format!(
+                    "fixture-json combat {} is missing promoted location_id (front+0xA4)",
+                    self.lifecycle.combat_id
+                ));
+            }
+            Some(0) => {
+                return Err(format!(
+                    "fixture-json combat {} has zero location_id; absent/null != 0",
+                    self.lifecycle.combat_id
+                ));
+            }
+            Some(_) => {}
+        }
+        match self.lifecycle.region_id {
+            None => {
+                return Err(format!(
+                    "fixture-json combat {} is missing promoted region_id (province->strategic-region join)",
+                    self.lifecycle.combat_id
+                ));
+            }
+            Some(0) => {
+                return Err(format!(
+                    "fixture-json combat {} has zero region_id; absent/null != 0",
+                    self.lifecycle.combat_id
+                ));
+            }
+            Some(_) => {}
         }
         Ok(ValidatedCombatSnapshot {
             lifecycle: NavalCombatBodyBridgeRow {
                 combat_id: self.lifecycle.combat_id,
                 generation: self.lifecycle.generation,
                 body_ptr: self.lifecycle.body_ptr,
-                location_id: None,
-                region_id: None,
+                location_id: self.lifecycle.location_id,
+                region_id: self.lifecycle.region_id,
                 attacker_member_count: self.lifecycle.attacker_member_count,
                 defender_member_count: self.lifecycle.defender_member_count,
                 attacker_positioning_milli: self.lifecycle.attacker_positioning_milli,
@@ -575,8 +603,8 @@ fn fixture() -> ValidatedCombatSnapshot {
             combat_id: 240_580,
             generation: 1,
             body_ptr: 0x22aa_0004_000,
-            location_id: None,
-            region_id: None,
+            location_id: Some(2799),
+            region_id: Some(18),
             attacker_member_count: 1,
             defender_member_count: 1,
             attacker_positioning_milli: Some(812),
@@ -699,8 +727,8 @@ mod tests {
     }
 
     #[test]
-    fn fixture_snapshot_rejects_promoted_location_fields() {
-        let fixture: FixtureSnapshotInput = serde_json::from_value(json!({
+    fn fixture_snapshot_requires_promoted_location_and_region() {
+        let missing_region: FixtureSnapshotInput = serde_json::from_value(json!({
             "lifecycle": {
                 "combat_id": 1,
                 "generation": 1,
@@ -713,8 +741,76 @@ mod tests {
             "members": []
         }))
         .expect("fixture parses");
+        let error = missing_region.to_snapshot().unwrap_err();
+        assert!(error.contains("missing promoted region_id"));
 
-        let error = fixture.to_snapshot().unwrap_err();
-        assert!(error.contains("location_id/region_id are unvalidated"));
+        let missing_location: FixtureSnapshotInput = serde_json::from_value(json!({
+            "lifecycle": {
+                "combat_id": 1,
+                "generation": 1,
+                "body_ptr": 4096,
+                "location_id": null,
+                "region_id": 18,
+                "attacker_member_count": 1,
+                "defender_member_count": 1
+            },
+            "members": []
+        }))
+        .expect("fixture parses");
+        let error = missing_location.to_snapshot().unwrap_err();
+        assert!(error.contains("missing promoted location_id"));
+
+        let zero_location: FixtureSnapshotInput = serde_json::from_value(json!({
+            "lifecycle": {
+                "combat_id": 1,
+                "generation": 1,
+                "body_ptr": 4096,
+                "location_id": 0,
+                "region_id": 18,
+                "attacker_member_count": 1,
+                "defender_member_count": 1
+            },
+            "members": []
+        }))
+        .expect("fixture parses");
+        let error = zero_location.to_snapshot().unwrap_err();
+        assert!(error.contains("zero location_id"));
+
+        let zero_region: FixtureSnapshotInput = serde_json::from_value(json!({
+            "lifecycle": {
+                "combat_id": 1,
+                "generation": 1,
+                "body_ptr": 4096,
+                "location_id": 6434,
+                "region_id": 0,
+                "attacker_member_count": 1,
+                "defender_member_count": 1
+            },
+            "members": []
+        }))
+        .expect("fixture parses");
+        let error = zero_region.to_snapshot().unwrap_err();
+        assert!(error.contains("zero region_id"));
+    }
+
+    #[test]
+    fn fixture_snapshot_passes_promoted_location_and_region_through() {
+        let fixture: FixtureSnapshotInput = serde_json::from_value(json!({
+            "lifecycle": {
+                "combat_id": 151596,
+                "generation": 1,
+                "body_ptr": 4096,
+                "location_id": 6434,
+                "region_id": 18,
+                "attacker_member_count": 5,
+                "defender_member_count": 9
+            },
+            "members": []
+        }))
+        .expect("fixture parses");
+
+        let snapshot = fixture.to_snapshot().expect("promoted fields accepted");
+        assert_eq!(snapshot.lifecycle.location_id, Some(6434));
+        assert_eq!(snapshot.lifecycle.region_id, Some(18));
     }
 }
