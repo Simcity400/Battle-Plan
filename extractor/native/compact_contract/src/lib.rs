@@ -764,8 +764,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         53,
         "diplomacy_intel_operatives_live",
         "diplomacy_intel_operatives_live",
-        CompactDomainStatus::ActiveIntegration,
-        false,
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
         true,
         &[],
     ),
@@ -957,7 +957,7 @@ mod tests {
         assert_eq!(id_for_scheduled_name("air_variant_archetypes"), Some(46));
         assert_eq!(
             id_for_scheduled_name("diplomacy_intel_operatives_live"),
-            None
+            Some(53)
         );
         assert_eq!(id_for_scheduled_name("air_variant_archetypes_live"), None);
         assert_eq!(
@@ -991,8 +991,8 @@ mod tests {
             "domain 55 is validated/schedulable"
         );
         assert!(
-            !profile_ids.contains(&53),
-            "domain 53 stays out of production until live root re-validation"
+            profile_ids.contains(&53),
+            "domain 53 is a validated slice with explicit open gaps"
         );
         assert!(
             profile_ids.contains(&56),

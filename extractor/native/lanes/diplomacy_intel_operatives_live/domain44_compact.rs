@@ -35,6 +35,7 @@ pub const STATUS_INTEL_MAP_RESISTED: u32 = 1 << 17;
 pub const STATUS_WAR_ROOT_UNVALIDATED: u32 = 1 << 18;
 pub const STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 = 1 << 19;
 pub const STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 = 1 << 20;
+pub const STATUS_FACTION_GROUP_UNVALIDATED: u32 = 1 << 21;
 
 pub const KNOWN_STATUS_FLAGS: u32 = STATUS_STATE_UNAVAILABLE
     | STATUS_BRIDGE_UNAVAILABLE
@@ -52,7 +53,8 @@ pub const KNOWN_STATUS_FLAGS: u32 = STATUS_STATE_UNAVAILABLE
     | STATUS_INTEL_MAP_RESISTED
     | STATUS_WAR_ROOT_UNVALIDATED
     | STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
-    | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
+    | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
+    | STATUS_FACTION_GROUP_UNVALIDATED;
 
 pub const KIND_COUNTRY_DIPLOMACY: u16 = 1;
 pub const KIND_WAR_RELATION: u16 = 2;
@@ -819,6 +821,14 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     if intel_map_resisted_rows != 0 && status_flags & STATUS_INTEL_MAP_RESISTED == 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel has {intel_map_resisted_rows} resisted intel-map row(s) without STATUS_INTEL_MAP_RESISTED"
+        ));
+    }
+    if status_flags & STATUS_FACTION_GROUP_UNVALIDATED != 0
+        && (decoded_counts.country != 0 || state_event_source_counts.country_faction_group != 0)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel badges faction group unvalidated but emits {} country diplomacy row(s) and {} faction state event row(s)",
+            decoded_counts.country, state_event_source_counts.country_faction_group
         ));
     }
 
@@ -2122,6 +2132,20 @@ mod tests {
         assert!(summary.parse_errors.iter().any(|error| {
             error.contains("STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED")
                 && error.contains("war name/grouping/start-date")
+        }));
+    }
+
+    #[test]
+    fn rejects_faction_rows_while_faction_group_is_badged_unvalidated() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.status_flags |= STATUS_FACTION_GROUP_UNVALIDATED;
+        let payload = encode_payload(&snapshot);
+
+        let summary = decode_payload(0, &payload);
+
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("badges faction group unvalidated")
+                && error.contains("country diplomacy")
         }));
     }
 

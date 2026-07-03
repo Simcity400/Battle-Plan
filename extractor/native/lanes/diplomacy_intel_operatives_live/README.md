@@ -32,9 +32,10 @@ Not owned here:
   and recorder-facing `H4CR` decoder gate without touching shared collector or
   recorder entrypoints.
 - `src/extractor.rs`: DLL-collector-side module shape for typed validated rows.
-  It admits current `870ebf` source proof mask `0x7F` for country, relation,
-  agency, cryptology, operative, and war rows, and fails closed on operation
-  detail, war lifecycle detail, intel-map percentages, and incoming action queue.
+  It admits current `870ebf` source proof mask `0x87F` for build identity,
+  country roots, independently gated faction groups, relation, agency,
+  cryptology, operative, and war rows, and fails closed on operation detail, war
+  lifecycle detail, intel-map percentages, and incoming action queue.
 - `src/decoder_gate.rs`: lane-owned Rust recorder gate for compact domain `53`
   `H4CR` domain-data records.
 - `src/replay_verify.rs`: lane-local `.battleplan` pack/verify path using
@@ -108,6 +109,10 @@ without overloading the old country-row payload.
 ## Exact roots
 
 Current `870ebf` production roots validated by the lane-local probe:
+
+The 2026-07-03 constant-by-constant audit for build
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad` lives in
+`REVALIDATION_870EBF.md`.
 
 - Country roots: `u64[module+0x3316E90] -> game_state`,
   `u64[module+0x33189C8] -> country_database`, `game_state+0x310 -> country_table`,
@@ -345,14 +350,14 @@ slot handoff:
   `49=naval_combat_live`, `50=naval_combat_live_aux`,
   `51=scripted_state_live`, and
   `52=occupation_resistance_compliance_live`;
-- current accepted source proofs are build SHA, country roots, relation roots,
-  agency root, cryptology root, operative root with lifecycle flag cohorts, and
-  war root;
+- current accepted source proofs are build identity, country roots,
+  independently gated country faction groups, relation roots, agency root,
+  cryptology root, operative root with lifecycle flag cohorts, and war root;
 - compact state-event rows require the source proof for the row source:
   relation/opinion/subject events require relation roots, country faction-group
-  events require country roots, agency scalar/capacity events require agency
-  root, operative lifecycle events require operative root, and cryptology
-  events require cryptology root;
+  events require both country roots and `SOURCE_PROOF_FACTION_GROUP_870EBF`,
+  agency scalar/capacity events require agency root, operative lifecycle events
+  require operative root, and cryptology events require cryptology root;
 - war rows and country war/casualty projections require
   `SOURCE_PROOF_WAR_ROOT_870EBF`;
 - war rows and country war/casualty projections remain lifecycle-incomplete

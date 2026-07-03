@@ -4,9 +4,9 @@ use domain44_compact::{
     decode_payload, domain_id_rejection_reason, encode_payload, DiplomacyIntelSnapshot,
     Domain53GateSummary, DOMAIN_ID_PROPOSED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
     STATE_EVENT_SOURCE_AGENCY_SCALAR, STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
-    STATE_EVENT_SOURCE_CRYPTOLOGY,
-    STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE, STATE_EVENT_SOURCE_RELATION_FLAG,
-    STATE_EVENT_SOURCE_RELATION_OPINION, STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
+    STATE_EVENT_SOURCE_CRYPTOLOGY, STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
+    STATE_EVENT_SOURCE_RELATION_FLAG, STATE_EVENT_SOURCE_RELATION_OPINION,
+    STATE_EVENT_SOURCE_SUBJECT_AUTONOMY, STATUS_FACTION_GROUP_UNVALIDATED,
     STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
     STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
     STATUS_WAR_ROOT_UNVALIDATED,
@@ -27,6 +27,7 @@ pub const SOURCE_PROOF_OPERATION_DETAIL_870EBF: u64 = 1 << 7;
 pub const SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF: u64 = 1 << 8;
 pub const SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF: u64 = 1 << 9;
 pub const SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF: u64 = 1 << 10;
+pub const SOURCE_PROOF_FACTION_GROUP_870EBF: u64 = 1 << 11;
 
 pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -38,7 +39,8 @@ pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_OPERATION_DETAIL_870EBF
     | SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF
     | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
-    | SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF;
+    | SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF
+    | SOURCE_PROOF_FACTION_GROUP_870EBF;
 
 pub const CURRENT_VALIDATED_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -46,7 +48,8 @@ pub const CURRENT_VALIDATED_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_AGENCY_ROOT_870EBF
     | SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF
     | SOURCE_PROOF_OPERATIVE_ROOT_870EBF
-    | SOURCE_PROOF_WAR_ROOT_870EBF;
+    | SOURCE_PROOF_WAR_ROOT_870EBF
+    | SOURCE_PROOF_FACTION_GROUP_870EBF;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SlotAdmissionReport {
@@ -84,6 +87,12 @@ pub fn admit_slot_payload(
             source_proofs,
             SOURCE_PROOF_COUNTRY_ROOTS_870EBF,
             "country diplomacy rows require SOURCE_PROOF_COUNTRY_ROOTS_870EBF",
+            &mut errors,
+        );
+        require(
+            source_proofs,
+            SOURCE_PROOF_FACTION_GROUP_870EBF,
+            "country diplomacy rows require SOURCE_PROOF_FACTION_GROUP_870EBF",
             &mut errors,
         );
     }
@@ -146,6 +155,12 @@ pub fn admit_slot_payload(
             source_proofs,
             SOURCE_PROOF_COUNTRY_ROOTS_870EBF,
             "compact state events sourced from country faction rows require SOURCE_PROOF_COUNTRY_ROOTS_870EBF",
+            &mut errors,
+        );
+        require(
+            source_proofs,
+            SOURCE_PROOF_FACTION_GROUP_870EBF,
+            "compact state events sourced from country faction rows require SOURCE_PROOF_FACTION_GROUP_870EBF",
             &mut errors,
         );
     }
@@ -211,6 +226,21 @@ pub fn admit_slot_payload(
         snapshot.status_flags |= STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
     }
 
+    let has_faction_rows = !snapshot.countries.is_empty()
+        || snapshot
+            .state_events
+            .iter()
+            .any(|row| row.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP);
+    if has(source_proofs, SOURCE_PROOF_FACTION_GROUP_870EBF) {
+        snapshot.status_flags &= !STATUS_FACTION_GROUP_UNVALIDATED;
+    } else {
+        snapshot.status_flags |= STATUS_FACTION_GROUP_UNVALIDATED;
+        if has_faction_rows {
+            errors
+                .push("country faction rows require SOURCE_PROOF_FACTION_GROUP_870EBF".to_string());
+        }
+    }
+
     if has(source_proofs, SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF) {
         snapshot.status_flags &= !STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED;
     } else {
@@ -225,7 +255,7 @@ pub fn admit_slot_payload(
         .operation_anchors
         .iter()
         .any(|row| !row.detail_resisted);
-    if has_resisted_operations {
+    if has_resisted_operations || !has(source_proofs, SOURCE_PROOF_OPERATION_DETAIL_870EBF) {
         snapshot.status_flags |= STATUS_OPERATIONS_DETAIL_RESISTED;
     }
     if has_unresisted_operations {
@@ -239,7 +269,7 @@ pub fn admit_slot_payload(
 
     let has_resisted_intel_map = snapshot.intel_map.iter().any(|row| row.resisted);
     let has_unresisted_intel_map = snapshot.intel_map.iter().any(|row| !row.resisted);
-    if has_resisted_intel_map {
+    if has_resisted_intel_map || !has(source_proofs, SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF) {
         snapshot.status_flags |= STATUS_INTEL_MAP_RESISTED;
     }
     if has_unresisted_intel_map {
@@ -319,6 +349,10 @@ mod tests {
         assert!(report.emitted_status_flags & STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED != 0);
         assert!(report.emitted_status_flags & STATUS_OPERATIONS_DETAIL_RESISTED != 0);
         assert!(report.emitted_status_flags & STATUS_INTEL_MAP_RESISTED != 0);
+        assert_eq!(
+            report.emitted_status_flags & STATUS_FACTION_GROUP_UNVALIDATED,
+            0
+        );
         assert_eq!(report.gate_summary.parse_errors.len(), 0);
         assert_eq!(
             report
@@ -359,6 +393,35 @@ mod tests {
                 .get("compact_state_event_country_faction_group_rows")
                 .copied(),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn unresolved_operation_and_intel_gaps_are_flagged_when_rows_are_absent() {
+        let mut snapshot = gap_badged_snapshot();
+        snapshot.operation_anchors.clear();
+        snapshot.intel_map.clear();
+
+        let report = admit_slot_payload(snapshot, CURRENT_VALIDATED_SOURCE_PROOFS);
+
+        assert!(report.ok, "{:?}", report.errors);
+        assert!(report.emitted_status_flags & STATUS_OPERATIONS_DETAIL_RESISTED != 0);
+        assert!(report.emitted_status_flags & STATUS_INTEL_MAP_RESISTED != 0);
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("operation_anchor_rows")
+                .copied(),
+            Some(0)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("intel_map_rows")
+                .copied(),
+            Some(0)
         );
     }
 
@@ -482,9 +545,9 @@ mod tests {
     fn rejects_state_events_without_matching_source_proof() {
         let mut snapshot = gap_badged_snapshot();
         snapshot.operatives.clear();
-        snapshot.state_events.retain(|row| {
-            row.source_kind == STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE
-        });
+        snapshot
+            .state_events
+            .retain(|row| row.source_kind == STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE);
 
         let report = admit_slot_payload(
             snapshot,
@@ -499,12 +562,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_country_faction_rows_without_faction_group_source_proof() {
+        let report = admit_slot_payload(
+            gap_badged_snapshot(),
+            CURRENT_VALIDATED_SOURCE_PROOFS & !SOURCE_PROOF_FACTION_GROUP_870EBF,
+        );
+
+        assert!(!report.ok);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("SOURCE_PROOF_FACTION_GROUP_870EBF")));
+        assert!(report.emitted_status_flags & STATUS_FACTION_GROUP_UNVALIDATED != 0);
+    }
+
+    #[test]
     fn rejects_faction_group_state_event_without_country_source_proof() {
         let mut snapshot = gap_badged_snapshot();
         snapshot.countries.clear();
-        snapshot.state_events.retain(|row| {
-            row.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP
-        });
+        snapshot
+            .state_events
+            .retain(|row| row.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP);
 
         let report = admit_slot_payload(
             snapshot,

@@ -110,9 +110,18 @@ pub const DOMAIN47_CCOUNTRY_LEADER_VTABLE_RVA: usize = 0x296A720;
 pub const DOMAIN47_CADVISOR_RTTI_RVA_BLOCKED_PENDING_REVALIDATION: usize = 0x2990E60;
 pub const DOMAIN47_CUNIT_LEADER_TRAIT_VTABLE_RVA_BLOCKED_PENDING_REVALIDATION: usize = 0x291F3C0;
 
-/// Domain 53 validated diplomacy/intel/operative live roots for the supported
-/// profile. These constants are intentionally raw current-build evidence; lane
-/// code must keep unresolved semantics badged instead of renaming fields early.
+/// Domain 53 diplomacy/intel/operative live roots for supported build
+/// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad.
+///
+/// Provenance: 2026-07-03 live re-validation artifacts under
+/// `extractor/native/runs/domain53_revalidation_870ebf_20260703/`.
+/// Country, agency, cryptology, operative lifecycle, relation/faction
+/// structure, and war row-shape roots are current-build evidence. Operation
+/// detail, spy-network/intel-map percentages, and incoming diplomatic action
+/// queues remain unvalidated and must stay fail-closed. See the lane
+/// `REVALIDATION_870EBF.md` for the constant-by-constant audit table. These
+/// constants are raw layout evidence; lane code must keep unresolved semantics
+/// badged instead of renaming fields early.
 pub const DOMAIN53_CGAMESTATE_COUNTRY_TABLE: usize = 0x310;
 pub const DOMAIN53_CGAMESTATE_COUNTRY_COUNT: usize = 0x31C;
 pub const DOMAIN53_COUNTRY_VTABLE_RVA: usize = 0x27D0E90;

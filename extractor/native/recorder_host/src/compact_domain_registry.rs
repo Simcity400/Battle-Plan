@@ -142,7 +142,7 @@ mod tests {
         );
         assert_eq!(
             id_for_scheduled_name("diplomacy_intel_operatives_live"),
-            None
+            Some(53)
         );
         assert_eq!(
             wire_name_for_id(47),
