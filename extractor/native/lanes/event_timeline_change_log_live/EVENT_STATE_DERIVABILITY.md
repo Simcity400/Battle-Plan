@@ -244,3 +244,69 @@ Promotion rule:
 > Do not promote a delayed-event root until a positive save oracle and live
 > candidate match on owner, event identity, originator/scope, and remaining
 > time or due date. A zero-row fixture is blocked, not a rejection.
+
+## 2026-07-03 live evidence (D04 1944 fixture, build 870ebf)
+
+This session ran the first-pass probe AND a targeted ground-truth 2nd-pass
+decoder against a POSITIVE oracle: the D04 1944 save carries 88 country
+delayed-event records across 17 country blocks (`d04_1944_delayed_event_oracle.json`,
+`summary.validation_status = positive_fixture`), each with a numeric
+`event.id` (type 50) and a days/hours/months countdown (e.g. GER id=42900001
+2d14h, ENG id=28200333 0d9h, CZE id=23801029 6d2h).
+
+- **First pass** (`probe_870ebf_delayed_event_queues.py`): 160 candidate vectors,
+  status `candidates_rejected_no_event_like_rtti`. The owner-matching candidate at
+  `CCountry+0x1B8` points at a `CReferencedDivisionTemplate...` vector — a
+  DIVISION-TEMPLATE container, a coincidental owner match, NOT a delayed-event
+  queue. Recorded rejected for this route.
+- **2nd-pass ground-truth decoder** (`runs/delayed_event_decode/decode_delayed_events.py`,
+  targeted, bounded — no full-heap sweep): searched each of the 13 resolved
+  target countries for its known `event.id` as a raw u32 with `type=50` adjacent.
+  RESULT: ZERO matches. The event.id is not a raw u32 anywhere in the CCountry
+  window (0x8000) or ANY of its 443 level-1 heap children, and a CGameState +
+  360-children bounded scan found only one coincidental hit (the "rounder" id
+  6700000, no type-50 anchor, not clustered). The other ids (42900001, 28200333,
+  23801029, 44000022) appear nowhere in either bounded scope.
+- **Interpretation**: the save `event.id` (the game `namespace*100000+index` token
+  encoding) is NOT stored as the raw numeric token in the delayed-event RECORD in
+  memory. The record almost certainly holds a POINTER to a global event-definition
+  object (or a different hash), so the queue cannot be anchored by the save id
+  from per-country/gamestate roots. Delayed events therefore remain
+  `FIXTURE_BLOCKED`, and the cleanest close is the controlled `ssfv_delayed_probe`
+  fixture (runsheet section 3): schedule a KNOWN event via console, diff live
+  memory before/after to locate the record by its appear/disappear delta rather
+  than by the opaque id. Full close otherwise needs a global event-definition-DB
+  reverse (deferred; heavy heap work).
+
+## 2026-07-03 disposition proposals (orchestrator, pending user ratification)
+
+Empirical results this session let the following rows move from
+`ROOT_DISCOVERY_OPEN` to a PROOF-BACKED PARTIAL REJECTION for the polling-only
+production architecture. Durable replay-visible state is captured; only hook-only
+transient identity/exact-tick is rejected. Ledger edits deferred to the next
+serial slot (avoid concurrent master-contract edits while another lane is live).
+
+- **Mission/decision scripted state** — the 2026-07-03 live probe
+  (`mission_decision_state_probe.json`, status `candidate_found_requires_fixture`)
+  found NO mission-instance container outside the known `CDecisionStatus` vectors:
+  all 9 unknown-vector candidates resolve to `CDecision` / `CDecisionCooldown` /
+  `CTargetedDecision` objects already covered by domain 16/45, and the probe
+  excluded domain-51 variable/flag roots by construction. → No separate root
+  exists; the row's replay-relevant content is fully covered by domains 16/45/51.
+  PARTIAL REJECTION (no separate mission/decision-scripted container).
+- **Direct focus/research/decision events** — prior work rejected every named
+  on-action/callback string anchor (`on_decision*`, `on_focus_complete*`,
+  `on_*research_complete*`), all proven to be registration/catalog args, not
+  runtime callbacks. Durable start/finish/switch is captured by domains 12/13/16/45
+  within the hourly cadence. → Hook-only transient identity + exact intra-hour
+  tick REJECTED for the polling architecture; durable transitions captured.
+- **On-action/effect runtime state** — a transient call leaving no persistent
+  state cannot be captured without inline hooks (no hook mechanism in the
+  production recorder). Effects that mutate variables/flags are domain 51; effects
+  that change a production domain show as that domain's delta; effects that
+  schedule a delayed event fall under the delayed-event row above. → Transient-only
+  calls REJECTED; durable effects captured elsewhere.
+
+`Delayed events` and `scripted GUI open/state` stay `FIXTURE_BLOCKED` (exact
+fixtures: `ssfv_delayed_probe` console-scheduled event; a positive
+`scripted_gui_random` fixture), now with the narrowing evidence above.
