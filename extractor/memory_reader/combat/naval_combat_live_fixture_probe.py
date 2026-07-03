@@ -29,10 +29,16 @@ import winmem  # noqa: E402
 
 EXPECTED_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 
-NAVAL_COMBAT_VTABLE_RVA = 0x29B6660
-NAVAL_COMBAT_SIDE_VTABLE_RVA = 0x29BC908
+# Vtable RVAs refreshed via RTTI complete-object-locator rediscovery against the
+# live Bay-of-Biscay battle on 870ebf (2026-07-03; rtti_vtable_rediscover.py):
+# CNavalCombat 0x29c6f18 (6 live bodies), CFEXMember 0x2a0a228 (64 bodies),
+# CShip 0x2941748 (unchanged, still valid). CNavalCombatant 0x29cd298 (17 bodies)
+# is the side/participant object; the prior 0x29B6660/0x29BC908/0x29B6588/
+# 0x29F9608 constants predated 870ebf and matched zero live bodies.
+NAVAL_COMBAT_VTABLE_RVA = 0x29C6F18
+NAVAL_COMBAT_SIDE_VTABLE_RVA = 0x29CD298
 NAVAL_COMBAT_REGISTRY_VTABLE_RVA = 0x29B6588
-NAVAL_COMBAT_MEMBER_VTABLE_RVA = 0x29F9608
+NAVAL_COMBAT_MEMBER_VTABLE_RVA = 0x2A0A228
 CURRENT_870EBF_CSHIP_VTABLE_RVA = 0x2941748
 
 NAVAL_COMBAT_TYPE = 4713
