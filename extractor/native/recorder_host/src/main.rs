@@ -1059,6 +1059,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut static_decisions_definitions: Option<PathBuf> = None;
     let mut static_idea_tech_loc_xref: Option<PathBuf> = None;
     let mut static_ship_definitions: Option<PathBuf> = None;
+    let mut static_gfx_icon_manifest: Option<PathBuf> = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -1199,6 +1200,16 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     "--static-ship-definitions",
                 )?));
             }
+            "--static-gfx-icon-manifest" => {
+                if static_gfx_icon_manifest.is_some() {
+                    return Err("duplicate --static-gfx-icon-manifest is not allowed".to_string());
+                }
+                i += 1;
+                static_gfx_icon_manifest = Some(PathBuf::from(required(
+                    args.get(i),
+                    "--static-gfx-icon-manifest",
+                )?));
+            }
             "--help" | "-h" => return Err(usage()),
             other => return Err(format!("unknown argument {other}\n{}", usage())),
         }
@@ -1265,6 +1276,12 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     path,
                 });
             }
+            if let Some(path) = static_gfx_icon_manifest {
+                requested.push(StaticArtifactRequest {
+                    name: STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+                    path,
+                });
+            }
             requested
         },
     })
@@ -1283,12 +1300,14 @@ const STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC: &str =
     compact_contract::STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC;
 const STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC: &str =
     compact_contract::STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC;
+const STATIC_ARTIFACT_GFX_ICON_MANIFEST: &str = compact_contract::STATIC_ARTIFACT_GFX_ICON_MANIFEST;
 const KNOWN_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
     STATIC_ARTIFACT_LOCALISATION_JOIN,
     STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
     STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
     STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+    STATIC_ARTIFACT_GFX_ICON_MANIFEST,
 ];
 
 fn build_production_profile_summary(cfg: &Config) -> ProductionProfileSummary {
@@ -1379,12 +1398,13 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
         STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => "--static-decisions-definitions",
         STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => "--static-idea-tech-loc-xref",
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "--static-ship-definitions",
+        STATIC_ARTIFACT_GFX_ICON_MANIFEST => "--static-gfx-icon-manifest",
         _ => "--unknown-static-artifact",
     }
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -1410,7 +1430,9 @@ fn usage() -> String {
        --static-idea-tech-loc-xref path             idea/technology localisation cross-reference JSON\n\
                                                     (extractor/game_defs/out/idea_tech_loc_xref/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json)\n\
        --static-ship-definitions path               ship hull/module definitions JSON\n\
-                                                    (extractor/game_defs/out/ship_definitions_static/ship_definitions_static/ship_definitions_catalog.json)".to_string()
+                                                    (extractor/game_defs/out/ship_definitions_static/ship_definitions_static/ship_definitions_catalog.json)\n\
+       --static-gfx-icon-manifest path              GFX sprite/icon/flag asset manifest JSON\n\
+                                                    (extractor/game_defs/out/gfx_icon_manifest/gfx_icon_asset_manifest_static/gfx_icon_manifest_catalog.json)".to_string()
 }
 
 fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
@@ -1525,6 +1547,7 @@ fn expected_static_artifact_schema(name: &str) -> &'static str {
         }
         STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => "idea_tech_loc_xref_static.static_artifact.v1",
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "ship_definitions_static.static_artifact.v1",
+        STATIC_ARTIFACT_GFX_ICON_MANIFEST => "gfx_icon_asset_manifest_static.static_artifact.v1",
         _ => "unknown.static_artifact.v1",
     }
 }
@@ -1787,6 +1810,74 @@ fn validate_ship_definitions_static(
     Ok(())
 }
 
+/// The GFX manifest may only be packed when its generating gate PASSED: every
+/// texture ref resolved or was explicitly allowlisted, every interface .gfx
+/// file parsed, and no allowlist entry is stale. A manifest that fails any of
+/// these is not ground truth and is rejected here (fail closed), not packed
+/// best-effort.
+fn validate_gfx_icon_manifest(
+    request: &StaticArtifactRequest,
+    object: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    require_nonempty_object_field(request, object, "sprites")?;
+    let flags = require_field(request, object, "flags")?;
+    if !flags.is_array() {
+        return Err(invalid_static_artifact_shape(
+            request,
+            "field flags must be a JSON array",
+        ));
+    }
+    let meta = require_object_field(request, object, "meta")?;
+    // Gate counts must be honest non-negative integers (as_u64): negatives,
+    // floats, and non-numbers are rejected here, never allowed to make two
+    // invalid values compare equal downstream.
+    let mut counts: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for key in [
+        "sprites",
+        "flag_assets",
+        "interface_gfx_files",
+        "interface_gfx_files_parsed",
+        "missing_textures",
+        "allowed_missing_textures",
+        "unresolved_textures",
+        "unused_missing_texture_allowlist_entries",
+    ] {
+        let value = meta.get(key).and_then(Value::as_u64).ok_or_else(|| {
+            invalid_static_artifact_shape(
+                request,
+                &format!("field meta.{key} must be a non-negative integer"),
+            )
+        })?;
+        counts.insert(key, value);
+    }
+    let count = |key: &str| counts.get(key).copied();
+    if count("unresolved_textures") != Some(0) {
+        return Err(invalid_static_artifact_shape(
+            request,
+            "field meta.unresolved_textures must be 0 (gate-passing manifest required)",
+        ));
+    }
+    if count("unused_missing_texture_allowlist_entries") != Some(0) {
+        return Err(invalid_static_artifact_shape(
+            request,
+            "field meta.unused_missing_texture_allowlist_entries must be 0 (stale allowlist)",
+        ));
+    }
+    if count("interface_gfx_files_parsed") != count("interface_gfx_files") {
+        return Err(invalid_static_artifact_shape(
+            request,
+            "field meta.interface_gfx_files_parsed must equal meta.interface_gfx_files",
+        ));
+    }
+    if count("missing_textures") != count("allowed_missing_textures") {
+        return Err(invalid_static_artifact_shape(
+            request,
+            "field meta.missing_textures must equal meta.allowed_missing_textures",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_static_artifact_shape(
     request: &StaticArtifactRequest,
     catalog: &Value,
@@ -1852,6 +1943,9 @@ fn validate_static_artifact_shape(
         }
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => {
             validate_ship_definitions_static(request, object)?;
+        }
+        STATIC_ARTIFACT_GFX_ICON_MANIFEST => {
+            validate_gfx_icon_manifest(request, object)?;
         }
         _ => {
             return Err(invalid_static_artifact_shape(
@@ -2060,6 +2154,22 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
             );
             insert_localisation_source_provenance(&mut out, object);
         }
+        STATIC_ARTIFACT_GFX_ICON_MANIFEST => {
+            insert_meta_provenance(
+                &mut out,
+                object,
+                &[
+                    "sprites",
+                    "flag_assets",
+                    "interface_gfx_files",
+                    "interface_gfx_files_parsed",
+                    "missing_textures",
+                    "allowed_missing_textures",
+                    "unresolved_textures",
+                    "unused_missing_texture_allowlist_entries",
+                ],
+            );
+        }
         _ => unreachable!("static artifact name validated before provenance build"),
     }
     Ok(Value::Object(out))
@@ -2074,6 +2184,7 @@ fn static_artifact_file_name(name: &str) -> &'static str {
         STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => "decision_definitions_catalog.json",
         STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => "idea_tech_loc_xref_catalog.json",
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "ship_definitions_catalog.json",
+        STATIC_ARTIFACT_GFX_ICON_MANIFEST => "gfx_icon_manifest_catalog.json",
         // unreachable for KNOWN_STATIC_ARTIFACTS; defensive default keeps the path
         // safe (no personal path, no separators) if a new name is added without a
         // filename mapping.
@@ -18980,6 +19091,8 @@ mod tests {
                 && line.contains("--static-idea-tech-loc-xref")
                 && line.contains("ship_definitions_static")
                 && line.contains("--static-ship-definitions")
+                && line.contains("gfx_icon_asset_manifest_static")
+                && line.contains("--static-gfx-icon-manifest")
         }));
         assert_eq!(
             summary.as_json()["missing_required_static_artifacts"],
@@ -18988,7 +19101,8 @@ mod tests {
                 "localisation_join",
                 "decisions_static_definitions",
                 "idea_tech_loc_xref_static",
-                "ship_definitions_static"
+                "ship_definitions_static",
+                "gfx_icon_asset_manifest_static"
             ])
         );
     }
@@ -21751,6 +21865,41 @@ mod tests {
         })
     }
 
+    fn fake_gfx_icon_manifest_catalog() -> Value {
+        json!({
+            "schema": "gfx_icon_asset_manifest_static.static_artifact.v1",
+            "artifact_kind": "deterministic_static_replay_enrichment",
+            "artifact_sha256": "gfx-sha",
+            "layers": [
+                { "label": "vanilla", "replace_path": [], "root_name": "the game" },
+            ],
+            "sprites": {
+                "GFX_test_sprite": {
+                    "texturefile": "gfx/interface/test.dds",
+                    "raw": { "path": r"C:\Users\Example\Documents\mod\test" }
+                }
+            },
+            "flags": [ { "relpath": "gfx/flags/GER.tga", "sha256": "flag-sha" } ],
+            "allowed_missing_textures": [],
+            "unresolved_textures": [],
+            "join_keys": {},
+            "meta": {
+                "sprites": 1,
+                "flag_assets": 1,
+                "interface_gfx_files": 2,
+                "interface_gfx_files_parsed": 2,
+                "missing_textures": 0,
+                "allowed_missing_textures": 0,
+                "unresolved_textures": 0,
+                "unused_missing_texture_allowlist_entries": 0,
+                "warnings": ["drop me"]
+            },
+            "scope": {},
+            "source_files": [r"C:\Users\Example\Documents\mod\test\interface"],
+            "unlisted_top_level": "drop me"
+        })
+    }
+
     fn fake_new_static_catalogs() -> Vec<(&'static str, Value)> {
         vec![
             (
@@ -21764,6 +21913,10 @@ mod tests {
             (
                 STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
                 fake_ship_definitions_static_catalog(),
+            ),
+            (
+                STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+                fake_gfx_icon_manifest_catalog(),
             ),
         ]
     }
@@ -21854,28 +22007,47 @@ mod tests {
                     "ship_module_count",
                 ],
             ),
+            (
+                STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+                fake_gfx_icon_manifest_catalog(),
+                vec![
+                    "sprites",
+                    "flag_assets",
+                    "interface_gfx_files",
+                    "interface_gfx_files_parsed",
+                    "missing_textures",
+                    "allowed_missing_textures",
+                    "unresolved_textures",
+                    "unused_missing_texture_allowlist_entries",
+                ],
+            ),
         ];
 
         for (name, catalog, meta_fields) in cases {
+            // The GFX manifest joins no localisation; every other new artifact
+            // carries a whitelisted localisation_source block.
+            let has_localisation_source = name != STATIC_ARTIFACT_GFX_ICON_MANIFEST;
             let request = static_artifact_shape_request(name);
             validate_static_artifact_shape(&request, &catalog).unwrap();
             let provenance = artifact_provenance(&request, &catalog).unwrap();
-            assert_object_keys(
-                &provenance,
-                &[
-                    "artifact_kind",
-                    "artifact_sha256",
-                    "localisation_source",
-                    "meta",
-                    "mod_identity_layers",
-                    "schema",
-                ],
-            );
+            let mut expected_top: Vec<&str> = vec![
+                "artifact_kind",
+                "artifact_sha256",
+                "meta",
+                "mod_identity_layers",
+                "schema",
+            ];
+            if has_localisation_source {
+                expected_top.push("localisation_source");
+            }
+            assert_object_keys(&provenance, &expected_top);
             assert_object_keys(&provenance["meta"], &meta_fields);
-            assert_object_keys(
-                &provenance["localisation_source"],
-                &["key_count", "sha256", "source"],
-            );
+            if has_localisation_source {
+                assert_object_keys(
+                    &provenance["localisation_source"],
+                    &["key_count", "sha256", "source"],
+                );
+            }
 
             let provenance_text = serde_json::to_string(&provenance).unwrap();
             for dropped in [
@@ -21903,22 +22075,39 @@ mod tests {
 
             let mut empty_required_object = catalog.clone();
             let mut noninteger_count = catalog.clone();
-            let expected_empty_detail = match name {
+            let (expected_empty_detail, expected_noninteger_detail) = match name {
                 STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => {
                     empty_required_object["decisions"] = json!({});
                     noninteger_count["meta"]["decision_count"] = json!("1");
-                    "field decisions must be a non-empty JSON object"
+                    (
+                        "field decisions must be a non-empty JSON object",
+                        "must be an integer",
+                    )
                 }
                 STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => {
                     empty_required_object["tokens"]["ideas"] = json!({});
                     empty_required_object["tokens"]["technologies"] = json!({});
                     noninteger_count["meta"]["idea_count"] = json!("1");
-                    "field tokens must contain at least one idea or technology token"
+                    (
+                        "field tokens must contain at least one idea or technology token",
+                        "must be an integer",
+                    )
                 }
                 STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => {
                     empty_required_object["ship_hulls"] = json!({});
                     noninteger_count["meta"]["ship_hull_count"] = json!("1");
-                    "field ship_hulls must be a non-empty JSON object"
+                    (
+                        "field ship_hulls must be a non-empty JSON object",
+                        "must be an integer",
+                    )
+                }
+                STATIC_ARTIFACT_GFX_ICON_MANIFEST => {
+                    empty_required_object["sprites"] = json!({});
+                    noninteger_count["meta"]["sprites"] = json!("1");
+                    (
+                        "field sprites must be a non-empty JSON object",
+                        "must be a non-negative integer",
+                    )
                 }
                 _ => unreachable!(),
             };
@@ -21927,8 +22116,75 @@ mod tests {
                 empty_required_object,
                 expected_empty_detail,
             );
-            expect_invalid_static_artifact_shape(name, noninteger_count, "must be an integer");
+            expect_invalid_static_artifact_shape(
+                name,
+                noninteger_count,
+                expected_noninteger_detail,
+            );
         }
+    }
+
+    #[test]
+    fn gfx_icon_manifest_rejects_non_gate_passing_states() {
+        let name = STATIC_ARTIFACT_GFX_ICON_MANIFEST;
+
+        let mut unresolved = fake_gfx_icon_manifest_catalog();
+        unresolved["meta"]["unresolved_textures"] = json!(3);
+        expect_invalid_static_artifact_shape(
+            name,
+            unresolved,
+            "meta.unresolved_textures must be 0",
+        );
+
+        let mut stale_allowlist = fake_gfx_icon_manifest_catalog();
+        stale_allowlist["meta"]["unused_missing_texture_allowlist_entries"] = json!(1);
+        expect_invalid_static_artifact_shape(
+            name,
+            stale_allowlist,
+            "meta.unused_missing_texture_allowlist_entries must be 0",
+        );
+
+        let mut parse_gap = fake_gfx_icon_manifest_catalog();
+        parse_gap["meta"]["interface_gfx_files_parsed"] = json!(1);
+        expect_invalid_static_artifact_shape(
+            name,
+            parse_gap,
+            "meta.interface_gfx_files_parsed must equal meta.interface_gfx_files",
+        );
+
+        let mut unaccounted_missing = fake_gfx_icon_manifest_catalog();
+        unaccounted_missing["meta"]["missing_textures"] = json!(7);
+        expect_invalid_static_artifact_shape(
+            name,
+            unaccounted_missing,
+            "meta.missing_textures must equal meta.allowed_missing_textures",
+        );
+
+        let mut flags_not_array = fake_gfx_icon_manifest_catalog();
+        flags_not_array["flags"] = json!({});
+        expect_invalid_static_artifact_shape(name, flags_not_array, "flags must be a JSON array");
+
+        // Negative and above-i64::MAX counts must be rejected outright, never
+        // allowed to make two invalid values compare equal.
+        let mut negative_counts = fake_gfx_icon_manifest_catalog();
+        negative_counts["meta"]["missing_textures"] = json!(-1);
+        negative_counts["meta"]["allowed_missing_textures"] = json!(-1);
+        expect_invalid_static_artifact_shape(
+            name,
+            negative_counts,
+            "meta.missing_textures must be a non-negative integer",
+        );
+
+        let mut oversized_counts = fake_gfx_icon_manifest_catalog();
+        oversized_counts["meta"]["interface_gfx_files"] = json!(u64::MAX);
+        oversized_counts["meta"]["interface_gfx_files_parsed"] = json!(u64::MAX - 1);
+        let request = static_artifact_shape_request(name);
+        let err = validate_static_artifact_shape(&request, &oversized_counts)
+            .expect_err("mismatched oversized counts must be rejected");
+        assert!(
+            err.contains("interface_gfx_files"),
+            "oversized count mismatch must fail on the parity check: {err}"
+        );
     }
 
     #[test]
@@ -21991,16 +22247,19 @@ mod tests {
             serde_json::to_vec_pretty(&fake_idea_tech_loc_xref_static_catalog()).unwrap();
         let ship_bytes =
             serde_json::to_vec_pretty(&fake_ship_definitions_static_catalog()).unwrap();
+        let gfx_bytes = serde_json::to_vec_pretty(&fake_gfx_icon_manifest_catalog()).unwrap();
         let d59_path = dir.join("domain59_static_catalog.json");
         let loc_path = dir.join("localisation_catalog.json");
         let decisions_path = dir.join("decision_definitions_catalog.json");
         let idea_tech_path = dir.join("idea_tech_loc_xref_catalog.json");
         let ship_path = dir.join("ship_definitions_catalog.json");
+        let gfx_path = dir.join("gfx_icon_manifest_catalog.json");
         fs::write(&d59_path, &d59_bytes).unwrap();
         fs::write(&loc_path, &loc_bytes).unwrap();
         fs::write(&decisions_path, &decisions_bytes).unwrap();
         fs::write(&idea_tech_path, &idea_tech_bytes).unwrap();
         fs::write(&ship_path, &ship_bytes).unwrap();
+        fs::write(&gfx_path, &gfx_bytes).unwrap();
 
         let mut cfg = test_config(vec!["fuel_live"], None);
         cfg.session_id = session_id.to_string();
@@ -22025,6 +22284,10 @@ mod tests {
             StaticArtifactRequest {
                 name: STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
                 path: ship_path.clone(),
+            },
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+                path: gfx_path.clone(),
             },
         ];
 
@@ -22091,6 +22354,15 @@ mod tests {
         assert_eq!(
             ship_stored, ship_bytes,
             "ship definitions catalog is byte-identical"
+        );
+        let gfx_stored = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/static/gfx_icon_asset_manifest_static/gfx_icon_manifest_catalog.json"
+            ))
+            .unwrap();
+        assert_eq!(
+            gfx_stored, gfx_bytes,
+            "gfx icon manifest catalog is byte-identical"
         );
 
         // per-entry sha256 in the manifest == sha256 of the packed bytes
@@ -22183,6 +22455,7 @@ mod tests {
         assert!(names.contains(&"decisions_static_definitions"));
         assert!(names.contains(&"idea_tech_loc_xref_static"));
         assert!(names.contains(&"ship_definitions_static"));
+        assert!(names.contains(&"gfx_icon_asset_manifest_static"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -22322,6 +22595,7 @@ mod tests {
             "--static-decisions-definitions",
             "--static-idea-tech-loc-xref",
             "--static-ship-definitions",
+            "--static-gfx-icon-manifest",
         ] {
             let err = match parse_args(vec![
                 "--pid".to_string(),
@@ -22502,11 +22776,13 @@ mod tests {
         let decisions = dir.join("decision_definitions_catalog.json");
         let idea_tech = dir.join("idea_tech_loc_xref_catalog.json");
         let ship = dir.join("ship_definitions_catalog.json");
+        let gfx = dir.join("gfx_icon_manifest_catalog.json");
         fs::write(&d59, b"{}").unwrap();
         fs::write(&loc, b"{}").unwrap();
         fs::write(&decisions, b"{}").unwrap();
         fs::write(&idea_tech, b"{}").unwrap();
         fs::write(&ship, b"{}").unwrap();
+        fs::write(&gfx, b"{}").unwrap();
 
         let cfg = parse_args(vec![
             "--pid".to_string(),
@@ -22525,10 +22801,12 @@ mod tests {
             idea_tech.display().to_string(),
             "--static-ship-definitions".to_string(),
             ship.display().to_string(),
+            "--static-gfx-icon-manifest".to_string(),
+            gfx.display().to_string(),
         ])
         .unwrap();
 
-        assert_eq!(cfg.static_artifacts.len(), 5);
+        assert_eq!(cfg.static_artifacts.len(), 6);
         assert_eq!(
             cfg.static_artifacts[0].name,
             STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG
@@ -22554,6 +22832,11 @@ mod tests {
             STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC
         );
         assert_eq!(cfg.static_artifacts[4].path, ship);
+        assert_eq!(
+            cfg.static_artifacts[5].name,
+            STATIC_ARTIFACT_GFX_ICON_MANIFEST
+        );
+        assert_eq!(cfg.static_artifacts[5].path, gfx);
 
         let _ = fs::remove_dir_all(&dir);
     }

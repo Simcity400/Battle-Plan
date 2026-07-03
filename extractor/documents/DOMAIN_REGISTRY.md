@@ -91,6 +91,7 @@ domain-59 templates/equipment catalog and R3 localisation join bundle:
 | `decisions_static_definitions` | `--static-decisions-definitions` | `extractor/game_defs/out/decisions_static/decisions_static_definitions/decision_definitions_catalog.json` | `decisions_static_definitions.static_artifact.v1` | Static decision and category definitions for replay enrichment. |
 | `idea_tech_loc_xref_static` | `--static-idea-tech-loc-xref` | `extractor/game_defs/out/idea_tech_loc_xref/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json` | `idea_tech_loc_xref_static.static_artifact.v1` | Idea and technology token cross-reference to localisation keys. |
 | `ship_definitions_static` | `--static-ship-definitions` | `extractor/game_defs/out/ship_definitions_static/ship_definitions_static/ship_definitions_catalog.json` | `ship_definitions_static.static_artifact.v1` | Ship hull and ship module static definitions. |
+| `gfx_icon_asset_manifest_static` | `--static-gfx-icon-manifest` | `extractor/game_defs/out/gfx_icon_manifest/gfx_icon_asset_manifest_static/gfx_icon_manifest_catalog.json` | `gfx_icon_asset_manifest_static.static_artifact.v1` | Sprite/icon/flag asset manifest over vanilla+integrated_dlc+enabled dlc+mod layers with texture hashes; recorder rejects non-gate-passing manifests (unresolved refs, stale allowlist, parse gaps). |
 
 ## Lane Acceptance Under This Registry
 

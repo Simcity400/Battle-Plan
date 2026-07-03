@@ -177,6 +177,7 @@ pub const STATIC_ARTIFACT_LOCALISATION_JOIN: &str = "localisation_join";
 pub const STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS: &str = "decisions_static_definitions";
 pub const STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC: &str = "idea_tech_loc_xref_static";
 pub const STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC: &str = "ship_definitions_static";
+pub const STATIC_ARTIFACT_GFX_ICON_MANIFEST: &str = "gfx_icon_asset_manifest_static";
 
 pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
@@ -184,6 +185,7 @@ pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
     STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
     STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+    STATIC_ARTIFACT_GFX_ICON_MANIFEST,
 ];
 
 pub const PRODUCTION_PROFILE_RULE: &str =
@@ -1046,6 +1048,7 @@ mod tests {
                 STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
                 STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
                 STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+                STATIC_ARTIFACT_GFX_ICON_MANIFEST,
             ]
         );
     }
