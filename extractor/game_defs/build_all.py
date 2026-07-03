@@ -34,6 +34,7 @@ import parse_characters
 import parse_localisation
 import parse_idea_tech_loc
 import parse_decisions
+import parse_ship_definitions
 
 
 def main():
@@ -67,6 +68,7 @@ def main():
         ("localisation", lambda: parse_localisation.parse_localisation(layers)),
         ("idea_tech_loc_keys", lambda: parse_idea_tech_loc.parse_idea_tech_loc_keys(layers)),
         ("decisions", lambda: parse_decisions.parse_decisions(layers)),
+        ("ship_definitions", lambda: parse_ship_definitions.parse_ship_definitions(layers)),
     ]
     summary = {}
     for name, fn in jobs:

@@ -242,14 +242,8 @@ def _coverage_entry(category: str, items: list[dict[str, Any]], loc_keys: set[st
             if not r.get("loc_key") and not r.get("loc_candidates") and not r.get("candidate_rules")
         ),
     }
-    if len(unresolved) <= 20:
-        out["unresolvable_details"] = unresolved
-    else:
-        out["unresolvable_sample"] = unresolved[:20]
-    if len(runtime_required) <= 20:
-        out["runtime_required_details"] = runtime_required
-    else:
-        out["runtime_required_sample"] = runtime_required[:20]
+    out["unresolvable_details"] = unresolved
+    out["runtime_required_details"] = runtime_required
     return out
 
 

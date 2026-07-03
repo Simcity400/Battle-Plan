@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,7 @@ from extract import Layer  # noqa: E402
 import parse_idea_tech_loc  # noqa: E402
 import parse_decisions  # noqa: E402
 import localisation_gate  # noqa: E402
+import idea_tech_static_gate  # noqa: E402
 
 
 def _write(root: Path, rel: str, text: str):
@@ -115,6 +117,17 @@ political_actions = {
   visible = { always = yes }
   base_decision = { icon = generic_decision }
   explicit_decision = { name = explicit_decision_name icon = explicit_icon }
+  metadata_decision = {
+    icon = metadata_icon
+    cost = 75
+    fire_only_once = yes
+    days_re_enable = 30
+    days_remove = 15
+    country_target = yes
+    visible = { always = yes }
+    available = { has_political_power > 75 }
+    target_trigger = { tag = GER }
+  }
   bad_decision = { name = { bad = yes } }
 }
 """)
@@ -263,9 +276,48 @@ def test_decisions_parser_categories_override_explicit_and_fail_closed(tmp_path)
     assert explicit["loc_key"] == "explicit_decision_name"
     assert explicit["explicit_name"] is True
 
+    metadata = out["decisions"]["metadata_decision"]
+    assert metadata["cost"]["political_power"] == "75"
+    assert metadata["fire_only_once"] is True
+    assert metadata["cooldowns"]["days_re_enable"] == "30"
+    assert metadata["cooldowns"]["days_remove"] == "15"
+    assert metadata["targets"]["target_scope"] == "country"
+    assert metadata["targets"]["has_target_trigger"] is True
+    assert metadata["visibility"]["has_visible"] is True
+    assert metadata["visibility"]["has_available"] is True
+
     assert "visible" not in out["decisions"]
     assert [r["id"] for r in out["omitted"]] == ["bad_decision"]
-    assert out["meta"]["decision_count"] == 3
+    assert out["meta"]["decision_count"] == 4
+
+
+def test_malformed_braces_fail_strict_decisions(tmp_path):
+    vanilla = tmp_path / "vanilla"
+    _write(vanilla, "common/decisions/bad.txt", """
+political_actions = {
+  broken_decision = {
+    icon = broken_icon
+""")
+    with pytest.raises(RuntimeError, match="unbalanced braces"):
+        parse_decisions.parse_decisions([Layer("vanilla", vanilla)])
+
+
+def test_idea_tech_gate_fails_wrapperless_idea_file(tmp_path):
+    vanilla = tmp_path / "vanilla"
+    _write(vanilla, "common/ideas/bad.txt", """
+country = {
+  bad_idea = {}
+}
+""")
+    _write(vanilla, "common/technologies/base.txt", "technologies = {}\n")
+    args = SimpleNamespace(
+        vanilla=str(vanilla),
+        mods=None,
+        userdata=None,
+        localisation_catalog=tmp_path / "missing_localisation_catalog.json",
+    )
+    with pytest.raises(RuntimeError, match="missing expected top-level ideas wrapper"):
+        idea_tech_static_gate.build_catalog(args)
 
 
 def test_localisation_coverage_reports_unresolvable_without_faking(tmp_path):
@@ -310,7 +362,7 @@ def test_localisation_coverage_reports_unresolvable_without_faking(tmp_path):
     assert cats["tech"]["resolved"] == 7
     assert cats["tech"]["resolved_by_rule"]["id"] == 1
     assert cats["tech"]["resolved_by_rule"]["resolved_via_equipment_loc"] == 5
-    assert cats["decision"]["total_seen"] == 3
+    assert cats["decision"]["total_seen"] == 4
     assert cats["decision"]["resolved"] == 1
     assert cats["equipment"]["total_seen"] == 2
     assert cats["equipment"]["resolved"] == 1

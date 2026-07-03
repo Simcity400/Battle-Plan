@@ -25,12 +25,40 @@ import sys
 from pathlib import Path
 
 import resolver as R
-from paradox_parser import Node
+from paradox_parser import Node, parse
 from clausewitz_source_scan import idea_name_token_kinds, technology_name_token_kinds
+from static_artifact_common import (
+    CLAUSEWITZ_SYNTAX_QUIRK_ALLOWLIST,
+    first_scalar,
+    put_present,
+    source_inventory,
+    validate_clausewitz_text,
+)
 
 
 _IDEA_CATEGORY_FLAGS = {"designer", "law", "use_list_view", "ledger"}
 _LOC_KEY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.]+$")
+_EXPECTED_WRAPPER_ALLOWLIST = {
+    "ideas": {
+        "common/ideas/afghanistan.txt": (
+            "Mod-layer removed-country override stub intentionally strips "
+            "dedicated Afghanistan idea content."
+        ),
+        "common/ideas/chile.txt": (
+            "Mod-layer removed-country override stub intentionally strips "
+            "dedicated Chile idea content."
+        ),
+        "common/ideas/comchina.txt": (
+            "Mod-layer removed-country override stub intentionally strips "
+            "dedicated communist China idea content."
+        ),
+        "common/ideas/paraguay.txt": (
+            "Mod-layer removed-country override stub intentionally strips "
+            "dedicated Paraguay idea content."
+        ),
+    },
+    "technologies": {},
+}
 
 
 def _scalar(v):
@@ -55,7 +83,10 @@ def _quoted_literal_name(value: str, name_token_kind: str | None) -> str | None:
 def _explicit_name_or_id(token_id: str, node: Node, name_token_kind: str | None = None):
     """Return (loc_key, explicit_name, omitted_reason, literal_name, loc_rule)."""
     if _field_present(node, "name"):
-        name = _scalar(node.get("name"))
+        names = node.get_all("name")
+        if len(names) > 1:
+            return None, False, "duplicate_name", None, None
+        name = _scalar(names[0]) if names else None
         if name:
             literal_name = _quoted_literal_name(name, name_token_kind)
             return name, True, None, literal_name, "explicit_name"
@@ -69,37 +100,60 @@ def _atoms(node):
     return [v for k, v in node.entries if k == "" and isinstance(v, str)]
 
 
-def _folder_names(node: Node) -> list[str]:
+def _folder_names(node: Node) -> list[str] | None:
+    if not node.get_all("folder"):
+        return None
     out = []
     for folder in node.get_all("folder"):
         if not isinstance(folder, Node):
             continue
-        name = _scalar(folder.get("name"))
+        name = first_scalar(folder, "name")
         if name:
             out.append(name)
     return sorted(set(out))
 
 
-def _list_field_atoms(node: Node, field: str) -> list[str]:
+def _list_field_atoms(node: Node, field: str) -> list[str] | None:
     out = []
     seen = set()
     wanted = field.lower()
+    present = False
     for key, value in node.entries:
         if key.lower() != wanted:
             continue
+        present = True
         for atom in _atoms(value):
             if atom in seen:
                 continue
             seen.add(atom)
             out.append(atom)
-    return out
+    return out if present else None
 
 
 def _source_label(layers, abspath) -> str:
     return layers[R._layer_prio_fn(layers)(abspath)].label
 
 
-def _parse_ideas(layers):
+def _wrapper_allowlist_hit(kind: str, rel: str, source_layer: str) -> dict[str, str] | None:
+    reason = _EXPECTED_WRAPPER_ALLOWLIST.get(kind, {}).get(rel)
+    if not reason:
+        return None
+    return {
+        "kind": kind,
+        "source_file": rel,
+        "source_layer": source_layer,
+        "reason": reason,
+    }
+
+
+def _parse_ideas(
+    layers,
+    *,
+    strict: bool,
+    warnings: list[str],
+    syntax_allowlist_hits: list[dict],
+    wrapper_allowlist_hits: list[dict],
+):
     ideas: dict[str, dict] = {}
     omitted = []
     collisions = []
@@ -108,18 +162,40 @@ def _parse_ideas(layers):
     ordered = R.ordered_files(layers, "common/ideas", (".txt",))
     for rel, abspath in ordered:
         try:
-            name_kinds = idea_name_token_kinds(
-                Path(abspath).read_text(encoding="utf-8-sig", errors="replace")
+            text = R.read_text(abspath)
+            allowlist_hit = validate_clausewitz_text(
+                text,
+                rel,
+                allowlist=CLAUSEWITZ_SYNTAX_QUIRK_ALLOWLIST,
             )
-            root = R.parse_file(abspath)
+            if allowlist_hit:
+                syntax_allowlist_hits.append({"kind": "idea", **allowlist_hit})
+            name_kinds = idea_name_token_kinds(
+                text
+            )
+            root = parse(text)
         except Exception as e:
-            print(f"[idea_tech_loc] WARN ideas {rel}: {e}", file=sys.stderr)
+            msg = f"ideas {rel}: {e}"
+            if strict:
+                raise RuntimeError(f"failed to parse idea loc-key file {msg}") from e
+            warnings.append(msg)
+            print(f"[idea_tech_loc] WARN {msg}", file=sys.stderr)
             continue
+        label = _source_label(layers, abspath)
         ideas_block = root.get("ideas")
         if not isinstance(ideas_block, Node):
+            hit = _wrapper_allowlist_hit("ideas", rel, label)
+            if hit:
+                wrapper_allowlist_hits.append(hit)
+                files_parsed += 1
+                continue
+            msg = f"ideas {rel}: missing expected top-level ideas wrapper"
+            if strict:
+                raise RuntimeError(msg)
+            warnings.append(msg)
+            print(f"[idea_tech_loc] WARN {msg}", file=sys.stderr)
             continue
         files_parsed += 1
-        label = _source_label(layers, abspath)
         for category, catbody in ideas_block.entries:
             if not isinstance(catbody, Node):
                 continue
@@ -150,10 +226,10 @@ def _parse_ideas(layers):
                     "name_token_kind": name_kinds.get((category, iid)),
                     "explicit_name": explicit_name,
                     "category": category,
-                    "picture": _scalar(body.get("picture")),
                     "source_layer": label,
                     "source_file": rel,
                 }
+                put_present(rec, "picture", first_scalar(body, "picture"))
                 if explicit_name:
                     explicit_names += 1
                 if iid in ideas and ideas[iid]["source_file"] != rel:
@@ -166,7 +242,14 @@ def _parse_ideas(layers):
     return ideas, omitted, collisions, files_parsed, explicit_names
 
 
-def _parse_technologies(layers):
+def _parse_technologies(
+    layers,
+    *,
+    strict: bool,
+    warnings: list[str],
+    syntax_allowlist_hits: list[dict],
+    wrapper_allowlist_hits: list[dict],
+):
     techs: dict[str, dict] = {}
     omitted = []
     collisions = []
@@ -175,18 +258,40 @@ def _parse_technologies(layers):
     ordered = R.ordered_files(layers, "common/technologies", (".txt",))
     for rel, abspath in ordered:
         try:
-            name_kinds = technology_name_token_kinds(
-                Path(abspath).read_text(encoding="utf-8-sig", errors="replace")
+            text = R.read_text(abspath)
+            allowlist_hit = validate_clausewitz_text(
+                text,
+                rel,
+                allowlist=CLAUSEWITZ_SYNTAX_QUIRK_ALLOWLIST,
             )
-            root = R.parse_file(abspath)
+            if allowlist_hit:
+                syntax_allowlist_hits.append({"kind": "technology", **allowlist_hit})
+            name_kinds = technology_name_token_kinds(
+                text
+            )
+            root = parse(text)
         except Exception as e:
-            print(f"[idea_tech_loc] WARN technologies {rel}: {e}", file=sys.stderr)
+            msg = f"technologies {rel}: {e}"
+            if strict:
+                raise RuntimeError(f"failed to parse technology loc-key file {msg}") from e
+            warnings.append(msg)
+            print(f"[idea_tech_loc] WARN {msg}", file=sys.stderr)
             continue
+        label = _source_label(layers, abspath)
         block = root.get("technologies")
         if not isinstance(block, Node):
+            hit = _wrapper_allowlist_hit("technologies", rel, label)
+            if hit:
+                wrapper_allowlist_hits.append(hit)
+                files_parsed += 1
+                continue
+            msg = f"technologies {rel}: missing expected top-level technologies wrapper"
+            if strict:
+                raise RuntimeError(msg)
+            warnings.append(msg)
+            print(f"[idea_tech_loc] WARN {msg}", file=sys.stderr)
             continue
         files_parsed += 1
-        label = _source_label(layers, abspath)
         for tid, body in block.entries:
             if tid.startswith("@") or not isinstance(body, Node):
                 continue
@@ -210,14 +315,14 @@ def _parse_technologies(layers):
                 "literal_name": literal_name,
                 "name_token_kind": name_kinds.get(tid),
                 "explicit_name": explicit_name,
-                "categories": _atoms(body.get("categories")),
-                "folders": _folder_names(body),
-                "desc_loc_key": _scalar(body.get("desc")),
-                "enable_equipments": _list_field_atoms(body, "enable_equipments"),
-                "enable_equipment_modules": _list_field_atoms(body, "enable_equipment_modules"),
                 "source_layer": label,
                 "source_file": rel,
             }
+            put_present(rec, "categories", _list_field_atoms(body, "categories"))
+            put_present(rec, "folders", _folder_names(body))
+            put_present(rec, "desc_loc_key", first_scalar(body, "desc"))
+            put_present(rec, "enable_equipments", _list_field_atoms(body, "enable_equipments"))
+            put_present(rec, "enable_equipment_modules", _list_field_atoms(body, "enable_equipment_modules"))
             if explicit_name:
                 explicit_names += 1
             if tid in techs and techs[tid]["source_file"] != rel:
@@ -230,9 +335,26 @@ def _parse_technologies(layers):
     return techs, omitted, collisions, files_parsed, explicit_names
 
 
-def parse_idea_tech_loc_keys(layers) -> dict:
-    ideas, idea_omitted, idea_collisions, idea_files, idea_explicit = _parse_ideas(layers)
-    techs, tech_omitted, tech_collisions, tech_files, tech_explicit = _parse_technologies(layers)
+def parse_idea_tech_loc_keys(layers, *, strict: bool = True) -> dict:
+    warnings: list[str] = []
+    syntax_allowlist_hits: list[dict] = []
+    wrapper_allowlist_hits: list[dict] = []
+    ideas, idea_omitted, idea_collisions, idea_files, idea_explicit = _parse_ideas(
+        layers,
+        strict=strict,
+        warnings=warnings,
+        syntax_allowlist_hits=syntax_allowlist_hits,
+        wrapper_allowlist_hits=wrapper_allowlist_hits,
+    )
+    techs, tech_omitted, tech_collisions, tech_files, tech_explicit = _parse_technologies(
+        layers,
+        strict=strict,
+        warnings=warnings,
+        syntax_allowlist_hits=syntax_allowlist_hits,
+        wrapper_allowlist_hits=wrapper_allowlist_hits,
+    )
+    idea_source_files = R.ordered_files(layers, "common/ideas", (".txt",))
+    tech_source_files = R.ordered_files(layers, "common/technologies", (".txt",))
     return {
         "meta": {
             "idea_count": len(ideas) + len(idea_omitted),
@@ -240,15 +362,30 @@ def parse_idea_tech_loc_keys(layers) -> dict:
             "idea_omitted_no_loc_key": len(idea_omitted),
             "idea_explicit_names": idea_explicit,
             "idea_files_parsed": idea_files,
+            "idea_files_total": len(idea_source_files),
             "tech_count": len(techs) + len(tech_omitted),
             "tech_mapped": len(techs),
             "tech_omitted_no_loc_key": len(tech_omitted),
             "tech_explicit_names": tech_explicit,
             "tech_files_parsed": tech_files,
+            "tech_files_total": len(tech_source_files),
+            "warnings": warnings,
+            "syntax_allowlist_hits": sorted(
+                syntax_allowlist_hits,
+                key=lambda row: (row["kind"], row["source_file"], row["matched_error"]),
+            ),
+            "wrapper_allowlist_hits": sorted(
+                wrapper_allowlist_hits,
+                key=lambda row: (row["kind"], row["source_file"]),
+            ),
             "id_collisions_last_wins": {
                 "ideas": idea_collisions,
                 "technologies": tech_collisions,
             },
+        },
+        "source_files": {
+            "idea_files": source_inventory(idea_source_files),
+            "technology_files": source_inventory(tech_source_files),
         },
         "tokens": {
             "ideas": dict(sorted(ideas.items())),
