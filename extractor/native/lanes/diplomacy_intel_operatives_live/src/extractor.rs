@@ -192,7 +192,17 @@ pub struct ExtractedDomain53Frame {
     pub source_proofs: u64,
     pub observed_rows: u32,
     pub skipped_rows: u32,
+    pub stale_dropped_total: usize,
     pub family_counts: Domain53FamilyCounts,
+}
+
+pub const DOMAIN53_DISCOVERY_DEGRADED: &str = "domain53_discovery_degraded";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Domain53Discovery {
+    pub operative_hits: Vec<u64>,
+    pub war_hits: [Vec<u64>; 2],
+    pub scan_range_count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,9 +234,86 @@ struct AgencyRootRead {
     agency_ptr: u64,
 }
 
+#[derive(Clone, Debug)]
+struct Domain53FrameRoots {
+    module_base: u64,
+    countries: Vec<CountryRoot>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Domain53DiscoveryStaleness {
+    operative_total: usize,
+    operative_stale_dropped: usize,
+    war_total: usize,
+    war_stale_dropped: usize,
+}
+
+impl Domain53DiscoveryStaleness {
+    fn degraded(&self) -> bool {
+        stale_fraction_degraded(self.operative_total, self.operative_stale_dropped)
+            || stale_fraction_degraded(self.war_total, self.war_stale_dropped)
+    }
+
+    fn stale_dropped_total(&self) -> usize {
+        self.operative_stale_dropped
+            .saturating_add(self.war_stale_dropped)
+    }
+}
+
+fn stale_fraction_degraded(total: usize, stale: usize) -> bool {
+    total >= 8 && stale.saturating_mul(2) > total
+}
+
+pub fn discover_domain53_heap_hits<M: Domain53Memory>(
+    mem: &M,
+) -> Result<Domain53Discovery, ExtractError> {
+    let module_base = mem.module_base();
+    if module_base == 0 {
+        return Err(ExtractError::InvalidRoot("module_base_zero"));
+    }
+    verify_domain53_build_identity(mem, module_base)?;
+    discover_domain53_heap_hits_for_module(mem, module_base)
+}
+
+fn discover_domain53_heap_hits_for_module<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+) -> Result<Domain53Discovery, ExtractError> {
+    let ranges = mem.readable_ranges(
+        profile::DOMAIN53_HEAP_LO as u64,
+        profile::DOMAIN53_HEAP_HI as u64,
+    );
+    let operative_vtable = add_addr(module_base, profile::DOMAIN53_OPERATIVE_VTABLE_RVA)?;
+    let date_vtables = domain53_war_date_vtables(module_base)?;
+    Ok(Domain53Discovery {
+        operative_hits: scan_qword_hits(mem, &ranges, operative_vtable)?,
+        war_hits: [
+            scan_qword_hits(mem, &ranges, date_vtables[0])?,
+            scan_qword_hits(mem, &ranges, date_vtables[1])?,
+        ],
+        scan_range_count: ranges.len().min(u32::MAX as usize) as u32,
+    })
+}
+
 pub fn extract_rows_from_current_roots<M: Domain53Memory>(
     mem: &M,
 ) -> Result<ExtractedDomain53Frame, ExtractError> {
+    let roots = resolve_domain53_frame_roots(mem)?;
+    let discovery = discover_domain53_heap_hits_for_module(mem, roots.module_base)?;
+    extract_rows_from_resolved_roots_with_discovery(mem, roots, &discovery)
+}
+
+pub fn extract_rows_from_current_roots_with_discovery<M: Domain53Memory>(
+    mem: &M,
+    discovery: &Domain53Discovery,
+) -> Result<ExtractedDomain53Frame, ExtractError> {
+    let roots = resolve_domain53_frame_roots(mem)?;
+    extract_rows_from_resolved_roots_with_discovery(mem, roots, discovery)
+}
+
+fn resolve_domain53_frame_roots<M: Domain53Memory>(
+    mem: &M,
+) -> Result<Domain53FrameRoots, ExtractError> {
     let module_base = mem.module_base();
     if module_base == 0 {
         return Err(ExtractError::InvalidRoot("module_base_zero"));
@@ -249,21 +336,32 @@ pub fn extract_rows_from_current_roots<M: Domain53Memory>(
         ));
     }
 
+    Ok(Domain53FrameRoots {
+        module_base,
+        countries,
+    })
+}
+
+fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
+    mem: &M,
+    roots: Domain53FrameRoots,
+    discovery: &Domain53Discovery,
+) -> Result<ExtractedDomain53Frame, ExtractError> {
+    let module_base = roots.module_base;
+    let countries = roots.countries;
     let mut acc = RowAccumulator::default();
     let mut source_proofs = SOURCE_PROOF_BUILD_SHA_870EBF | SOURCE_PROOF_COUNTRY_ROOTS_870EBF;
     let mut family_counts = Domain53FamilyCounts {
         country_roots: countries.len().min(u32::MAX as usize) as u32,
         ..Domain53FamilyCounts::default()
     };
+    let mut staleness = Domain53DiscoveryStaleness::default();
 
-    let war_rows = read_war_rows(mem, module_base, &countries, &mut acc)?;
-    family_counts.war_scan_ranges = mem
-        .readable_ranges(
-            profile::DOMAIN53_HEAP_LO as u64,
-            profile::DOMAIN53_HEAP_HI as u64,
-        )
-        .len()
-        .min(u32::MAX as usize) as u32;
+    let war_rows = read_war_rows(mem, module_base, &countries, &discovery.war_hits, &mut acc)?;
+    staleness.war_total = discovery.war_hits.iter().map(Vec::len).sum();
+    staleness.war_stale_dropped = war_rows.1;
+    let war_rows = war_rows.0;
+    family_counts.war_scan_ranges = discovery.scan_range_count;
     source_proofs |= SOURCE_PROOF_WAR_ROOT_870EBF;
     let war_projection = war_projection_by_country(&war_rows);
     let faction_gate = read_faction_groups(mem, &countries)?;
@@ -314,8 +412,16 @@ pub fn extract_rows_from_current_roots<M: Domain53Memory>(
     family_counts.agency_roots = agency_roots.len().min(u32::MAX as usize) as u32;
     source_proofs |= SOURCE_PROOF_AGENCY_ROOT_870EBF;
 
-    let operative_scan_ranges = read_operatives(mem, module_base, &countries, &mut acc)?;
-    family_counts.operative_scan_ranges = operative_scan_ranges;
+    let operative_stale_dropped = read_operatives(
+        mem,
+        module_base,
+        &countries,
+        &discovery.operative_hits,
+        &mut acc,
+    )?;
+    staleness.operative_total = discovery.operative_hits.len();
+    staleness.operative_stale_dropped = operative_stale_dropped;
+    family_counts.operative_scan_ranges = discovery.scan_range_count;
     source_proofs |= SOURCE_PROOF_OPERATIVE_ROOT_870EBF;
 
     for agency in &mut acc.rows.agencies {
@@ -344,11 +450,16 @@ pub fn extract_rows_from_current_roots<M: Domain53Memory>(
 
     acc.rows.wars = war_rows;
 
+    if staleness.degraded() {
+        return Err(ExtractError::InvalidRoot(DOMAIN53_DISCOVERY_DEGRADED));
+    }
+
     Ok(ExtractedDomain53Frame {
         rows: acc.rows,
         source_proofs,
         observed_rows: acc.observed_rows,
         skipped_rows: acc.skipped_rows,
+        stale_dropped_total: staleness.stale_dropped_total(),
         family_counts,
     })
 }
@@ -1066,20 +1177,25 @@ fn read_operatives<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
     countries: &[CountryRoot],
+    hits: &[u64],
     acc: &mut RowAccumulator,
-) -> Result<u32, ExtractError> {
+) -> Result<usize, ExtractError> {
     let valid_owners = countries
         .iter()
         .map(|country| country.tag_db_id)
         .collect::<BTreeSet<_>>();
     let operative_vtable = add_addr(module_base, profile::DOMAIN53_OPERATIVE_VTABLE_RVA)?;
-    let ranges = mem.readable_ranges(
-        profile::DOMAIN53_HEAP_LO as u64,
-        profile::DOMAIN53_HEAP_HI as u64,
-    );
-    let hits = scan_qword_hits(mem, &ranges, operative_vtable)?;
     let mut seen = BTreeSet::new();
+    let mut stale_dropped = 0usize;
     for hit in hits {
+        let hit = *hit;
+        match mem.read_u64(hit) {
+            Ok(vtable) if vtable == operative_vtable => {}
+            Ok(_) | Err(_) => {
+                stale_dropped = stale_dropped.saturating_add(1);
+                continue;
+            }
+        }
         let identity = hit
             .checked_add(profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64)
             .ok_or(ExtractError::InvalidRoot(
@@ -1105,7 +1221,7 @@ fn read_operatives<M: Domain53Memory>(
             Err(_) => acc.skip(),
         }
     }
-    Ok(ranges.len().min(u32::MAX as usize) as u32)
+    Ok(stale_dropped)
 }
 
 fn read_operative_row<M: Domain53Memory>(
@@ -1215,24 +1331,27 @@ fn read_war_rows<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
     countries: &[CountryRoot],
+    war_hits: &[Vec<u64>; 2],
     acc: &mut RowAccumulator,
-) -> Result<Vec<WarRelationRow>, ExtractError> {
+) -> Result<(Vec<WarRelationRow>, usize), ExtractError> {
     let valid_tags = countries
         .iter()
         .map(|country| country.tag_db_id)
         .collect::<BTreeSet<_>>();
-    let date_vtables = [
-        add_addr(module_base, profile::DOMAIN53_WAR_GREGORIAN_DATE_VTABLE_RVA)?,
-        add_addr(module_base, profile::DOMAIN53_WAR_GAME_DATE_VTABLE_RVA)?,
-    ];
-    let ranges = mem.readable_ranges(
-        profile::DOMAIN53_HEAP_LO as u64,
-        profile::DOMAIN53_HEAP_HI as u64,
-    );
+    let date_vtables = domain53_war_date_vtables(module_base)?;
     let mut rows = Vec::new();
     let mut seen = BTreeSet::new();
-    for date_vtable in date_vtables {
-        for hit in scan_qword_hits(mem, &ranges, date_vtable)? {
+    let mut stale_dropped = 0usize;
+    for (date_vtable, hits) in date_vtables.iter().zip(war_hits.iter()) {
+        for hit in hits {
+            let hit = *hit;
+            match mem.read_u64(hit) {
+                Ok(vtable) if vtable == *date_vtable => {}
+                Ok(_) | Err(_) => {
+                    stale_dropped = stale_dropped.saturating_add(1);
+                    continue;
+                }
+            }
             let Some(row_addr) = hit.checked_sub(profile::DOMAIN53_WAR_DATE_VTABLE as u64) else {
                 continue;
             };
@@ -1253,7 +1372,14 @@ fn read_war_rows<M: Domain53Memory>(
             }
         }
     }
-    Ok(rows)
+    Ok((rows, stale_dropped))
+}
+
+fn domain53_war_date_vtables(module_base: u64) -> Result<[u64; 2], ExtractError> {
+    Ok([
+        add_addr(module_base, profile::DOMAIN53_WAR_GREGORIAN_DATE_VTABLE_RVA)?,
+        add_addr(module_base, profile::DOMAIN53_WAR_GAME_DATE_VTABLE_RVA)?,
+    ])
 }
 
 fn read_war_row<M: Domain53Memory>(
@@ -2298,6 +2424,80 @@ mod tests {
         mem
     }
 
+    fn fake_heap_base() -> u64 {
+        profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000
+    }
+
+    fn add_fake_operative(mem: &mut FakeMemory, index: u32) -> u64 {
+        let heap = fake_heap_base();
+        let leader = heap + 0x30_0000 + u64::from(index) * 0x2000;
+        let skill = leader + 0x1000;
+        mem.add_chunk(leader, 0xF00);
+        mem.add_chunk(skill, 0x200);
+        mem.add_range(leader, 0xF00);
+
+        let identity = leader + profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64;
+        mem.write_u64(
+            leader,
+            mem.module_base + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+        );
+        mem.write_u32(identity, profile::DOMAIN53_OPERATIVE_HANDLE_TYPE);
+        mem.write_u32(identity + 4, 20_000 + index);
+        let name = format!("Op{index}");
+        mem.write_inline_string(identity + profile::DOMAIN53_OPERATIVE_NAME as u64, &name);
+        mem.write_inline_string(
+            identity + profile::DOMAIN53_OPERATIVE_NAME_DUPLICATE as u64,
+            &name,
+        );
+        mem.write_u8(identity + profile::DOMAIN53_OPERATIVE_DETECTED as u64, 0);
+        mem.write_u32(
+            identity + profile::DOMAIN53_OPERATIVE_LIFECYCLE_FLAG as u64,
+            47,
+        );
+        mem.write_u32(identity + profile::DOMAIN53_OPERATIVE_OWNER as u64, 1);
+        mem.write_u64(
+            leader + profile::DOMAIN53_OPERATIVE_SKILL_SUBOBJECT as u64,
+            skill,
+        );
+        mem.write_i64(
+            leader + profile::DOMAIN53_OPERATIVE_EXPERIENCE_RAW as u64,
+            70_000_000 + i64::from(index),
+        );
+        mem.write_u32(skill + profile::DOMAIN53_OPERATIVE_SKILL_LEVEL as u64, 2);
+        leader
+    }
+
+    fn add_fake_war(mem: &mut FakeMemory, index: u32) -> u64 {
+        let heap = fake_heap_base();
+        let war = heap + 0x40_0000 + u64::from(index) * 0x100;
+        let second_tag = 10 + index;
+        assert!(second_tag <= FAKE_COUNTRY_ROWS);
+        mem.add_chunk(war, 0x80);
+        mem.add_range(war, 0x80);
+
+        mem.write_u32(war + profile::DOMAIN53_WAR_FIRST_TAG as u64, 1);
+        mem.write_u32(war + profile::DOMAIN53_WAR_SECOND_TAG as u64, second_tag);
+        mem.write_u64(
+            war + profile::DOMAIN53_WAR_DATE_VTABLE as u64,
+            mem.module_base + profile::DOMAIN53_WAR_GAME_DATE_VTABLE_RVA as u64,
+        );
+        mem.write_i32(
+            war + profile::DOMAIN53_WAR_FIRST_CASUALTIES as u64,
+            100 + index as i32,
+        );
+        mem.write_i32(
+            war + profile::DOMAIN53_WAR_SECOND_CASUALTIES as u64,
+            200 + index as i32,
+        );
+        mem.write_u32(war + profile::DOMAIN53_WAR_ECHO_FIRST as u64, 1);
+        mem.write_u32(war + profile::DOMAIN53_WAR_ECHO_SECOND as u64, second_tag);
+        war
+    }
+
+    fn total_war_hits(discovery: &Domain53Discovery) -> usize {
+        discovery.war_hits.iter().map(Vec::len).sum()
+    }
+
     #[test]
     fn reader_extracts_validated_slice_from_fake_memory() {
         let mem = fake_domain53_memory(true, true);
@@ -2347,6 +2547,103 @@ mod tests {
             report.gate_summary.status_flags_or & STATUS_FACTION_GROUP_UNVALIDATED,
             0
         );
+    }
+
+    #[test]
+    fn discovery_extract_matches_uncached_fake_memory() {
+        let mem = fake_domain53_memory(true, true);
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        let cached = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect("cached domain53 extract");
+        let uncached = extract_rows_from_current_roots(&mem).expect("uncached domain53 extract");
+
+        assert_eq!(cached, uncached);
+    }
+
+    #[test]
+    fn cached_operative_stale_hit_drops_only_that_row() {
+        let mut mem = fake_domain53_memory(true, true);
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        assert_eq!(discovery.operative_hits.len(), 1);
+        mem.write_u64(discovery.operative_hits[0], 0);
+
+        let extracted = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect("stale operative hit below degradation threshold");
+
+        assert!(extracted.rows.operatives.is_empty());
+        assert_eq!(extracted.rows.wars.len(), 1);
+        assert_eq!(extracted.skipped_rows, 0);
+        assert_eq!(extracted.stale_dropped_total, 1);
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
+            0
+        );
+    }
+
+    #[test]
+    fn cached_operative_stale_majority_fails_closed() {
+        let mut mem = fake_domain53_memory(true, true);
+        for index in 0..7 {
+            add_fake_operative(&mut mem, index);
+        }
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        assert_eq!(discovery.operative_hits.len(), 8);
+        for hit in discovery.operative_hits.iter().take(5) {
+            mem.write_u64(*hit, 0);
+        }
+
+        let err = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect_err("stale operative majority must fail closed");
+
+        assert_eq!(err, ExtractError::InvalidRoot(DOMAIN53_DISCOVERY_DEGRADED));
+    }
+
+    #[test]
+    fn cached_war_stale_hit_drops_only_that_row() {
+        let mut mem = fake_domain53_memory(true, true);
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        assert_eq!(total_war_hits(&discovery), 1);
+        let hit = discovery
+            .war_hits
+            .iter()
+            .find_map(|hits| hits.first().copied())
+            .expect("fake war hit");
+        mem.write_u64(hit, 0);
+
+        let extracted = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect("stale war hit below degradation threshold");
+
+        assert!(extracted.rows.wars.is_empty());
+        assert_eq!(extracted.rows.operatives.len(), 1);
+        assert_eq!(extracted.skipped_rows, 0);
+        assert_eq!(extracted.stale_dropped_total, 1);
+        assert_ne!(extracted.source_proofs & SOURCE_PROOF_WAR_ROOT_870EBF, 0);
+    }
+
+    #[test]
+    fn cached_war_stale_majority_fails_closed() {
+        let mut mem = fake_domain53_memory(true, true);
+        for index in 0..8 {
+            add_fake_war(&mut mem, index);
+        }
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        assert_eq!(total_war_hits(&discovery), 9);
+        let mut corrupted = 0usize;
+        for hit in discovery
+            .war_hits
+            .iter()
+            .flat_map(|hits| hits.iter())
+            .take(5)
+        {
+            mem.write_u64(*hit, 0);
+            corrupted += 1;
+        }
+        assert_eq!(corrupted, 5);
+
+        let err = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect_err("stale war majority must fail closed");
+
+        assert_eq!(err, ExtractError::InvalidRoot(DOMAIN53_DISCOVERY_DEGRADED));
     }
 
     #[test]

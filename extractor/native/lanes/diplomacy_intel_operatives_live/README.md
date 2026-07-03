@@ -106,6 +106,25 @@ The shared collector already has compact domain `17` for country-level diplomacy
 keeps typed rows separate so the final DLL collector can emit per-domain records
 without overloading the old country-row payload.
 
+## Runtime discovery cache
+
+The shared collector caches domain `53` heap discovery hits for operative and war
+row addresses. Each frame still revalidates every cached address and reads row
+values fresh from `hoi4.exe`; only address discovery is reused. The background
+refresh interval is controlled by `BATTLE_PLAN_D53_DISCOVERY_REFRESH_SECS`, read once at
+DLL runtime. The default is 30 seconds, and values below 5 seconds are clamped to
+5 seconds.
+
+Cached addresses that no longer point at the expected vtable (an object freed or
+relocated between refreshes) are dropped per frame and counted into the
+non-failure perf diagnostic `domain53_stale_dropped_total`; when more than half of
+at least eight cached hits go stale the frame fails closed
+(`domain53_discovery_degraded`) and the collector rediscovers synchronously and
+retries once. A synchronous rediscovery bumps a discovery generation so a slower
+in-flight background scan is still reaped but its now-stale result discarded
+rather than overwriting the fresher cache; the background handle is always joined
+(never detached) so the scan thread cannot outlive the DLL.
+
 ## Exact roots
 
 Current `870ebf` production roots validated by the lane-local probe:
