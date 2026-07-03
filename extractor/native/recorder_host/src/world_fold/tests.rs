@@ -976,7 +976,7 @@ fn chunk3_d26_rowless_partial_marks_unknown_without_clearing_equipment() {
         .unwrap()
         .iter()
         .any(|problem| problem["domain_id"] == json!(26)
-            && problem["problem"] == json!("compact_status_failure")));
+            && problem["problem"] == json!("partial_data_rowless")));
     assert!(snaps[1]["provenance"]["notes"]
         .as_array()
         .unwrap()
@@ -984,7 +984,7 @@ fn chunk3_d26_rowless_partial_marks_unknown_without_clearing_equipment() {
         .any(|note| note
             .as_str()
             .unwrap()
-            .contains("division_equipment state unknown this hour")));
+            .contains("division_equipment rowless partial data")));
     assert_eq!(
         snaps[2]["divisions"][0]["equipment"][0]["equip_id"],
         json!(11),
@@ -1034,7 +1034,7 @@ fn chunk3_d26_sparse_partial_updates_present_rows_and_retains_skipped_prior() {
         .unwrap()
         .iter()
         .any(|problem| problem["domain_id"] == json!(26)
-            && problem["problem"] == json!("compact_status_failure")));
+            && problem["problem"] == json!("partial_data")));
     assert!(snaps[1]["provenance"]["notes"]
         .as_array()
         .unwrap()
@@ -1292,9 +1292,16 @@ fn chunk3_folds_d45_omitted_targets_as_partial_provenance_note() {
 
     let ger = &snapshot["countries"]["GER"];
     assert_eq!(
-        ger["decisions"]["_r2_depth_targets"][0]["target"],
-        json!("SPR")
+        ger["decisions"]["_r2_depth_targets"],
+        Value::Null,
+        "omitted target rows make the country target list incomplete"
     );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(45)
+            && problem["problem"] == json!("partial_data")));
     assert!(snapshot["provenance"]["notes"]
         .as_array()
         .unwrap()
@@ -4646,6 +4653,96 @@ fn d48_no_construction_payload() -> Vec<u8> {
     domain48::encode_lane_frame(&frame)
 }
 
+fn d48_sparse_partial_payload() -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags: COMPACT_STATUS_PARTIAL_DATA,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+            | domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows: vec![domain48::ConstructionQueueRow {
+            tag_db_id: 1,
+            line_id: 77,
+            template_id: Some(20_013),
+            active_factories: 15,
+            cost_raw: 10_000_000,
+            produced_raw: 6_000_000,
+            priority: 0,
+            target_state_id: None,
+        }],
+        building_rows: Vec::new(),
+        resource_rows: Vec::new(),
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+fn d48_construction_row(line_id: u32, produced_raw: i32) -> domain48::ConstructionQueueRow {
+    domain48::ConstructionQueueRow {
+        tag_db_id: 1,
+        line_id,
+        template_id: Some(20_000 + line_id),
+        active_factories: 15,
+        cost_raw: 10_000_000,
+        produced_raw,
+        priority: line_id % 10,
+        target_state_id: None,
+    }
+}
+
+fn d48_state_building(type_id: u32, level: u32) -> domain48::BuildingRow {
+    domain48::BuildingRow {
+        scope: domain48::SCOPE_STATE,
+        location_id: 42,
+        state_id: 42,
+        type_id,
+        level,
+        healthy_level: Some(level),
+    }
+}
+
+fn d48_province_building(type_id: u32, level: u32) -> domain48::BuildingRow {
+    domain48::BuildingRow {
+        scope: domain48::SCOPE_PROVINCE,
+        location_id: 2068,
+        state_id: 42,
+        type_id,
+        level,
+        healthy_level: Some(level),
+    }
+}
+
+fn d48_custom_payload(
+    status_flags: u32,
+    construction_rows: Vec<domain48::ConstructionQueueRow>,
+    building_rows: Vec<domain48::BuildingRow>,
+) -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+            | domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows,
+        building_rows,
+        resource_rows: vec![domain48::StateResourceRow {
+            state_id: 42,
+            resource_id: 0x3e03,
+            amount_raw: 2_500_000,
+        }],
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
 fn d48_failure_payload(status_flags: u32) -> Vec<u8> {
     let frame = domain48::LaneFrame {
         game_hour_raw: raw_for(16_959_360),
@@ -5421,6 +5518,173 @@ fn chunk2_d48_delta_after_baseline_is_unknown_not_full_replace() {
         .iter()
         .any(|problem| problem["domain_id"] == json!(48)
             && problem["problem"] == json!("delta_unsupported")));
+}
+
+#[test]
+fn chunk2_d48_expected_partial_sparse_applies_present_rows_and_retains_siblings() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(48, d48_payload(0, None))],
+        vec![(48, d48_sparse_partial_payload())],
+    ]);
+
+    assert_eq!(
+        snaps[1]["countries"]["1"]["production"]["construction_buildings_state_damage_live"]
+            ["construction_queue"][0]["produced_raw"],
+        json!(6_000_000)
+    );
+    assert_eq!(
+        snaps[1]["states"]["42"]["construction_buildings_state_damage_live"]["state_buildings"]
+            ["type_0x00002fab"]["level"],
+        json!(5),
+        "partial d48 must not fabricate omitted building disappearance"
+    );
+    assert_eq!(
+        snaps[1]["states"]["42"]["construction_buildings_state_damage_live"]
+            ["resource_amount_raw_by_id"]["tid_0x00003e03"],
+        json!(2_500_000),
+        "partial d48 must retain omitted resource siblings"
+    );
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)
+            && problem["problem"] == json!("partial_data")));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("construction_buildings_state_damage_live expected partial tolerance")));
+}
+
+#[test]
+fn chunk2_d48_expected_partial_merges_construction_lines_by_line_id() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            48,
+            d48_custom_payload(
+                0,
+                vec![
+                    d48_construction_row(77, 5_000_000),
+                    d48_construction_row(88, 2_000_000),
+                ],
+                vec![d48_state_building(0x2fab, 5)],
+            ),
+        )],
+        vec![(
+            48,
+            d48_custom_payload(
+                COMPACT_STATUS_PARTIAL_DATA,
+                vec![d48_construction_row(77, 6_000_000)],
+                Vec::new(),
+            ),
+        )],
+    ]);
+
+    let queue = snaps[1]["countries"]["1"]["production"]
+        ["construction_buildings_state_damage_live"]["construction_queue"]
+        .as_array()
+        .unwrap();
+    assert_eq!(queue.len(), 2);
+    let line_a = queue
+        .iter()
+        .find(|row| row["id"] == json!(77))
+        .expect("line 77 retained");
+    let line_b = queue
+        .iter()
+        .find(|row| row["id"] == json!(88))
+        .expect("line 88 retained");
+    assert_eq!(line_a["produced_raw"], json!(6_000_000));
+    assert_eq!(line_b["produced_raw"], json!(2_000_000));
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)
+            && problem["problem"] == json!("partial_data")));
+}
+
+#[test]
+fn chunk2_d48_clean_frame_full_replace_clears_removed_construction_line() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            48,
+            d48_custom_payload(
+                0,
+                vec![
+                    d48_construction_row(77, 5_000_000),
+                    d48_construction_row(88, 2_000_000),
+                ],
+                vec![d48_state_building(0x2fab, 5)],
+            ),
+        )],
+        vec![(
+            48,
+            d48_custom_payload(
+                0,
+                vec![d48_construction_row(77, 6_000_000)],
+                vec![d48_state_building(0x2fab, 5)],
+            ),
+        )],
+    ]);
+
+    let queue = snaps[1]["countries"]["1"]["production"]
+        ["construction_buildings_state_damage_live"]["construction_queue"]
+        .as_array()
+        .unwrap();
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0]["id"], json!(77));
+    assert!(!queue.iter().any(|row| row["id"] == json!(88)));
+}
+
+#[test]
+fn chunk2_d48_expected_partial_merges_building_types_by_container() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            48,
+            d48_custom_payload(
+                0,
+                vec![d48_construction_row(77, 5_000_000)],
+                vec![
+                    d48_state_building(0x2fab, 5),
+                    d48_state_building(0x3000, 7),
+                    d48_province_building(0x4cc1, 2),
+                    d48_province_building(0x4cc2, 4),
+                ],
+            ),
+        )],
+        vec![(
+            48,
+            d48_custom_payload(
+                COMPACT_STATUS_PARTIAL_DATA,
+                Vec::new(),
+                vec![
+                    d48_state_building(0x2fab, 6),
+                    d48_province_building(0x4cc1, 3),
+                ],
+            ),
+        )],
+    ]);
+
+    let state_buildings =
+        &snaps[1]["states"]["42"]["construction_buildings_state_damage_live"]["state_buildings"];
+    assert_eq!(state_buildings["type_0x00002fab"]["level"], json!(6));
+    assert_eq!(
+        state_buildings["type_0x00003000"]["level"],
+        json!(7),
+        "partial d48 must retain omitted state building types"
+    );
+    let province_buildings =
+        &snaps[1]["provinces"]["2068"]["construction_buildings_state_damage_live"]["buildings"];
+    assert_eq!(province_buildings["type_0x00004cc1"]["level"], json!(3));
+    assert_eq!(
+        province_buildings["type_0x00004cc2"]["level"],
+        json!(4),
+        "partial d48 must retain omitted province building types"
+    );
 }
 
 #[test]

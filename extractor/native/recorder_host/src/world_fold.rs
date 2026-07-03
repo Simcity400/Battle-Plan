@@ -524,6 +524,7 @@ pub struct WorldFold {
     frd_research_live: BTreeMap<FrdResearchKey, FrdResearchLiveState>,
     frd_decision_status: BTreeMap<u32, FrdDecisionStatusState>,
     frd_decision_targets: BTreeMap<u32, Vec<FrdDecisionTargetState>>,
+    frd_decision_targets_unknown: BTreeSet<u32>,
     frd_focus_events_this_hour: BTreeMap<u32, Vec<FrdFocusDepthEventState>>,
     frd_decision_events_this_hour: BTreeMap<u32, Vec<FrdDecisionEventState>>,
     frd_depth_badges_this_hour: Vec<FrdDepthBadgeState>,
@@ -684,6 +685,7 @@ impl WorldFold {
             frd_research_live: BTreeMap::new(),
             frd_decision_status: BTreeMap::new(),
             frd_decision_targets: BTreeMap::new(),
+            frd_decision_targets_unknown: BTreeSet::new(),
             frd_focus_events_this_hour: BTreeMap::new(),
             frd_decision_events_this_hour: BTreeMap::new(),
             frd_depth_badges_this_hour: Vec::new(),
@@ -927,6 +929,7 @@ impl WorldFold {
         self.frd_focus_events_this_hour.clear();
         self.frd_decision_events_this_hour.clear();
         self.frd_depth_badges_this_hour.clear();
+        self.frd_decision_targets_unknown.clear();
         self.fold_domains_unknown_this_hour.clear();
         self.land_combats_known_this_hour = false;
         self.land_combats_unknown_note_this_hour = None;
@@ -1252,6 +1255,11 @@ impl WorldFold {
                         .collect(),
                 ),
             );
+        }
+        for tag_db_id in &self.frd_decision_targets_unknown {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            ensure_json_object_mut(country, "decisions")
+                .insert("_r2_depth_targets".into(), Value::Null);
         }
         for (tag_db_id, events) in &self.frd_decision_events_this_hour {
             let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
@@ -5674,13 +5682,24 @@ impl WorldFold {
         let observed_division_rows = read_u32(payload, 28) as usize;
         let equipment_entry_count = read_u32(payload, 32) as usize;
         let observed_equipment_rows = read_u32(payload, 36) as usize;
+        let failure_flags_after_tolerance = compact_failure_flags_after_expected_partial_tolerance(
+            DIVISION_EQUIPMENT_DOMAIN_ID,
+            status_flags,
+        );
+        let tolerance_applies =
+            compact_expected_partial_tolerance_applies(DIVISION_EQUIPMENT_DOMAIN_ID, status_flags);
         let sparse_partial = row_count > 0
-            && compact_failure_flags_after_expected_partial_tolerance(
+            && (failure_flags_after_tolerance == COMPACT_STATUS_PARTIAL_DATA || tolerance_applies);
+        if row_count == 0 && tolerance_applies {
+            self.mark_fold_domain_unknown(
                 DIVISION_EQUIPMENT_DOMAIN_ID,
-                status_flags,
-            ) == COMPACT_STATUS_PARTIAL_DATA;
+                "partial_data_rowless",
+                "division_equipment rowless partial data; equipment unknown this hour",
+            );
+            return Ok(());
+        }
         if sparse_partial {
-            self.record_domain_problem(DIVISION_EQUIPMENT_DOMAIN_ID, "compact_status_failure");
+            self.record_domain_problem(DIVISION_EQUIPMENT_DOMAIN_ID, "partial_data");
             self.note(
                 "division_equipment partial data; sparse rows applied and omitted rows retained",
             );
@@ -6240,6 +6259,7 @@ impl WorldFold {
             );
         }
         if parsed.decision_target_omitted_rows > 0 {
+            self.record_domain_problem(FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID, "partial_data");
             self.note(format!(
                 "focus_research_decisions_depth kept valid decision rows but omitted {} unreadable targeted-timed country target row(s)",
                 parsed.decision_target_omitted_rows
@@ -6286,15 +6306,39 @@ impl WorldFold {
                 row,
             );
         }
+        let mut decision_target_rows_by_tag = BTreeMap::<u32, u32>::new();
+        for row in &parsed.decision_target_rows {
+            let count = decision_target_rows_by_tag
+                .entry(row.tag_db_id)
+                .or_default();
+            *count = count.saturating_add(1);
+        }
         let mut observed_decision_status_tags = BTreeSet::new();
+        let mut omitted_decision_target_tags = BTreeSet::new();
         for row in parsed.decision_status_rows {
+            if parsed.decision_target_omitted_rows > 0
+                && row.targeted_timed_count
+                    > decision_target_rows_by_tag
+                        .get(&row.tag_db_id)
+                        .copied()
+                        .unwrap_or(0)
+            {
+                omitted_decision_target_tags.insert(row.tag_db_id);
+            }
             observed_decision_status_tags.insert(row.tag_db_id);
             self.frd_decision_status.insert(row.tag_db_id, row);
         }
         for tag_db_id in observed_decision_status_tags {
             self.frd_decision_targets.remove(&tag_db_id);
+            self.frd_decision_targets_unknown.remove(&tag_db_id);
+            if omitted_decision_target_tags.contains(&tag_db_id) {
+                self.frd_decision_targets_unknown.insert(tag_db_id);
+            }
         }
         for row in parsed.decision_target_rows {
+            if omitted_decision_target_tags.contains(&row.tag_db_id) {
+                continue;
+            }
             self.frd_decision_targets
                 .entry(row.tag_db_id)
                 .or_default()
@@ -7047,7 +7091,15 @@ impl WorldFold {
             }
         };
         let status_flags = decoded.frame.status_flags;
-        if compact_status_is_failure(status_flags) {
+        let failure_flags = compact_failure_flags_after_expected_partial_tolerance(
+            CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+            status_flags,
+        );
+        let expected_partial = compact_expected_partial_tolerance_applies(
+            CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+            status_flags,
+        );
+        if failure_flags != 0 {
             self.clear_domain48_extras();
             self.domain48_known_this_hour = false;
             self.domain48_unknown_this_hour = true;
@@ -7087,7 +7139,20 @@ impl WorldFold {
             return Ok(());
         }
 
-        self.clear_domain48_extras();
+        if !expected_partial {
+            self.clear_domain48_extras();
+        } else if let Some(tolerance) = compact_contract::expected_partial_tolerance(
+            CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+        ) {
+            self.record_domain_problem(
+                CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+                "partial_data",
+            );
+            self.note(format!(
+                "construction_buildings_state_damage_live expected partial tolerance applied: {}",
+                tolerance.reason
+            ));
+        }
         self.domain48_known_this_hour = true;
         self.domain48_unknown_this_hour = false;
         self.mark_fold_domain_success(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
@@ -7126,7 +7191,7 @@ impl WorldFold {
             let production = ensure_json_object_mut(country, "production");
             let extra =
                 ensure_json_object_mut(production, CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
-            extra.insert("construction_queue".into(), Value::Array(rows));
+            domain48_upsert_construction_queue(extra, rows, expected_partial);
             extra.insert("source".into(), json!("C"));
             if target_state_unavailable {
                 extra.insert("target_state_available".into(), json!(false));
@@ -7154,10 +7219,7 @@ impl WorldFold {
             let state = self.states.entry(state_id.to_string()).or_default();
             let extra =
                 ensure_json_object_mut(state, CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
-            extra.insert(
-                "state_buildings".into(),
-                domain48_building_rows_by_type(rows),
-            );
+            domain48_upsert_building_rows_by_type(extra, "state_buildings", rows, expected_partial);
             extra.insert("source".into(), json!("C"));
         }
         for (province_id, rows) in province_buildings {
@@ -7166,7 +7228,7 @@ impl WorldFold {
             let extra =
                 ensure_json_object_mut(province, CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
             extra.insert("state_id".into(), json!(state_id));
-            extra.insert("buildings".into(), domain48_building_rows_by_type(rows));
+            domain48_upsert_building_rows_by_type(extra, "buildings", rows, expected_partial);
             extra.insert("source".into(), json!("C"));
         }
 
@@ -9703,6 +9765,67 @@ fn string_or_null(s: &str) -> Value {
 
 fn option_u32_json(value: Option<u32>) -> Value {
     value.map(|item| json!(item)).unwrap_or(Value::Null)
+}
+
+fn domain48_upsert_construction_queue(
+    extra: &mut Map<String, Value>,
+    rows: Vec<Value>,
+    expected_partial: bool,
+) {
+    if !expected_partial {
+        extra.insert("construction_queue".into(), Value::Array(rows));
+        return;
+    }
+
+    // D48 compact ConstructionQueueRow carries line_id, emitted as `id`, from
+    // the live construction line. On tolerated partial frames this is the stable
+    // child key: upsert emitted lines and retain non-emitted siblings.
+    let mut pending = rows
+        .into_iter()
+        .filter_map(|row| domain48_construction_queue_key(&row).map(|key| (key, row)))
+        .collect::<BTreeMap<_, _>>();
+    let mut merged = match extra.remove("construction_queue") {
+        Some(Value::Array(existing)) => existing,
+        _ => Vec::new(),
+    };
+    for row in &mut merged {
+        if let Some(key) = domain48_construction_queue_key(row) {
+            if let Some(update) = pending.remove(&key) {
+                *row = update;
+            }
+        }
+    }
+    merged.extend(pending.into_values());
+    extra.insert("construction_queue".into(), Value::Array(merged));
+}
+
+fn domain48_construction_queue_key(row: &Value) -> Option<u32> {
+    let id = row.as_object()?.get("id")?;
+    id.as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| id.as_str()?.parse::<u32>().ok())
+}
+
+fn domain48_upsert_building_rows_by_type(
+    extra: &mut Map<String, Value>,
+    key: &str,
+    rows: Vec<domain48::BuildingRow>,
+    expected_partial: bool,
+) {
+    let Value::Object(updates) = domain48_building_rows_by_type(rows) else {
+        return;
+    };
+    if !expected_partial {
+        extra.insert(key.into(), Value::Object(updates));
+        return;
+    }
+
+    // D48 building rows are scoped by their owning container already
+    // (state_id or province location_id), so type_id is the stable child key.
+    let existing = ensure_json_object_mut(extra, key);
+    for (type_key, detail) in updates {
+        existing.insert(type_key, detail);
+    }
 }
 
 fn domain48_building_rows_by_type(rows: Vec<domain48::BuildingRow>) -> Value {

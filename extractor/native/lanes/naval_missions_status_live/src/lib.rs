@@ -252,15 +252,13 @@ pub fn resolve_naval_roots_with_counters<M: NavalMissionMemory>(
 
     let mut task_forces_by_ptr = BTreeMap::new();
     for fleet in fleets_by_ptr.values() {
-        if let Err(err) = collect_task_force_roots_from_fleet(
+        collect_task_force_roots_from_fleet(
             mem,
             module_base,
             fleet.body_ptr,
             &fleets_by_ptr,
             &mut task_forces_by_ptr,
-        ) {
-            return (Err(err), counters);
-        }
+        );
     }
     counters.task_force_count = task_forces_by_ptr.len().min(u32::MAX as usize) as u32;
 
@@ -481,8 +479,14 @@ fn collect_task_force_roots_from_fleet<M: NavalMissionMemory>(
     fleet_ptr: u64,
     fleets_by_ptr: &BTreeMap<u64, FleetRoot>,
     task_forces_by_ptr: &mut BTreeMap<u64, TaskForceRoot>,
-) -> Result<(), ExtractError> {
-    let blob = mem.read_bytes(fleet_ptr, COMPACT_FLEET_SCAN_SPAN)?;
+) {
+    let Ok(blob) = mem.read_bytes(fleet_ptr, COMPACT_FLEET_SCAN_SPAN) else {
+        return;
+    };
+    // 2026-07-03 live probe provenance: 436 countries, 154 fleets, 176 task
+    // forces; it validated CTaskForce ship vectors at +0x338/+0x344 through
+    // the OOB path. Fleet-body vector candidates are speculative, so unreadable
+    // candidates must not abort valid sibling task-force roots in this lane.
     for offset in (0..blob.len().saturating_sub(8)).step_by(8) {
         let candidate = u64_from(&blob, offset);
         maybe_insert_task_force(
@@ -505,7 +509,9 @@ fn collect_task_force_roots_from_fleet<M: NavalMissionMemory>(
         {
             continue;
         }
-        let raw = mem.read_bytes(vector_data, count as usize * 8)?;
+        let Ok(raw) = mem.read_bytes(vector_data, count as usize * 8) else {
+            continue;
+        };
         for index in 0..count as usize {
             let candidate = u64_from(&raw, index * 8);
             if maybe_insert_task_force(
@@ -544,7 +550,6 @@ fn collect_task_force_roots_from_fleet<M: NavalMissionMemory>(
             }
         }
     }
-    Ok(())
 }
 
 fn maybe_insert_task_force<M: NavalMissionMemory>(
@@ -882,6 +887,24 @@ mod tests {
         assert_eq!(counters.readable_fleet_vector_count, 0);
         assert_eq!(counters.fleet_count, 0);
         assert_eq!(counters.task_force_count, 0);
+    }
+
+    #[test]
+    fn unreadable_speculative_fleet_vector_does_not_drop_valid_task_force_siblings() {
+        let mut mem = fake_memory();
+        let bogus_vector = 0x2200000B000;
+        mem.write_u64(FLEET_615 + 0x100, bogus_vector);
+        mem.write_u32(FLEET_615 + 0x108, 1);
+        mem.write_u32(FLEET_615 + 0x10C, 1);
+        mem.fail_read(bogus_vector);
+
+        let (roots, counters) = resolve_naval_roots_with_counters(&mem);
+        let roots = roots.unwrap();
+
+        assert_eq!(roots.fleets.len(), 1);
+        assert_eq!(roots.task_forces.len(), 1);
+        assert_eq!(counters.fleet_count, 1);
+        assert_eq!(counters.task_force_count, 1);
     }
 
     #[test]

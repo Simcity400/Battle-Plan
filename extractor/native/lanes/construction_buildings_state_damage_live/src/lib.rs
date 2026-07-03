@@ -203,10 +203,54 @@ pub struct GateReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConstructionSkipStats {
+    pub invalid_line_ptr_rows: u32,
+    pub non_construction_line_rows: u32,
+    pub invalid_active_factories_rows: u32,
+    pub invalid_progress_rows: u32,
+}
+
+impl ConstructionSkipStats {
+    pub fn total(self) -> u32 {
+        self.invalid_line_ptr_rows
+            .saturating_add(self.non_construction_line_rows)
+            .saturating_add(self.invalid_active_factories_rows)
+            .saturating_add(self.invalid_progress_rows)
+    }
+
+    fn increment(&mut self, reason: ConstructionSkipReason) {
+        match reason {
+            ConstructionSkipReason::InvalidLinePtr => {
+                self.invalid_line_ptr_rows = self.invalid_line_ptr_rows.saturating_add(1);
+            }
+            ConstructionSkipReason::NonConstructionLine => {
+                self.non_construction_line_rows = self.non_construction_line_rows.saturating_add(1);
+            }
+            ConstructionSkipReason::InvalidActiveFactories => {
+                self.invalid_active_factories_rows =
+                    self.invalid_active_factories_rows.saturating_add(1);
+            }
+            ConstructionSkipReason::InvalidProgressFields => {
+                self.invalid_progress_rows = self.invalid_progress_rows.saturating_add(1);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConstructionSkipReason {
+    InvalidLinePtr,
+    NonConstructionLine,
+    InvalidActiveFactories,
+    InvalidProgressFields,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RowRead<T> {
     pub rows: Vec<T>,
     pub skipped_rows: u32,
+    pub construction_skip_stats: ConstructionSkipStats,
 }
 
 impl<T> RowRead<T> {
@@ -214,6 +258,7 @@ impl<T> RowRead<T> {
         Self {
             rows: Vec::new(),
             skipped_rows: 0,
+            construction_skip_stats: ConstructionSkipStats::default(),
         }
     }
 
@@ -223,6 +268,13 @@ impl<T> RowRead<T> {
 
     fn skip(&mut self) {
         self.skipped_rows = self.skipped_rows.saturating_add(1);
+    }
+}
+
+impl RowRead<ConstructionQueueRow> {
+    fn skip_construction(&mut self, reason: ConstructionSkipReason) {
+        self.skip();
+        self.construction_skip_stats.increment(reason);
     }
 }
 
@@ -292,22 +344,22 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
     for offset in (0..byte_len).step_by(CONSTRUCTION_STRIDE) {
         let line_ptr = read_u64_from_slice(&raw, offset)? as usize;
         if !is_heap_ptr(line_ptr) {
-            read.skip();
+            read.skip_construction(ConstructionSkipReason::InvalidLinePtr);
             continue;
         }
         if mem.read_u32(line_ptr.checked_add(LINE_TYPE)?)? != LINE_TYPE_CONSTRUCTION {
-            read.skip();
+            read.skip_construction(ConstructionSkipReason::NonConstructionLine);
             continue;
         }
         let active_factories = mem.read_i32(line_ptr.checked_add(LINE_ACTIVE_FACTORIES)?)?;
         if !(0..=MAX_ACTIVE_FACTORIES).contains(&active_factories) {
-            read.skip();
+            read.skip_construction(ConstructionSkipReason::InvalidActiveFactories);
             continue;
         }
         let cost_raw = read_production_fixed_raw(mem, line_ptr.checked_add(LINE_COST)?)?;
         let produced_raw = read_production_fixed_raw(mem, line_ptr.checked_add(LINE_PRODUCED)?)?;
         if cost_raw < 0 || produced_raw < 0 {
-            read.skip();
+            read.skip_construction(ConstructionSkipReason::InvalidProgressFields);
             continue;
         }
         let sub_ptr = mem.read_u64(line_ptr.checked_add(LINE_CONSTRUCTION_SUB)?)? as usize;
@@ -496,6 +548,7 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
             })
             .collect(),
         skipped_rows,
+        construction_skip_stats: ConstructionSkipStats::default(),
     })
 }
 
@@ -548,6 +601,7 @@ pub fn read_state_resource_rows<M: LaneMemory>(
             })
             .collect(),
         skipped_rows: 0,
+        construction_skip_stats: ConstructionSkipStats::default(),
     })
 }
 
@@ -699,7 +753,7 @@ pub fn gate_lane_frame(bytes: &[u8]) -> GateReport {
 
 pub fn gate_decoded_frame(frame: &LaneFrame) -> GateReport {
     let mut errors = Vec::new();
-    let blocking_flags = STATUS_WORKER_PANIC | STATUS_SOURCE_UNAVAILABLE | STATUS_PARTIAL_DATA;
+    let blocking_flags = STATUS_WORKER_PANIC | STATUS_SOURCE_UNAVAILABLE;
     if frame.status_flags & blocking_flags != 0 {
         errors.push(format!(
             "blocking status_flags set: {:#x}",
@@ -709,10 +763,11 @@ pub fn gate_decoded_frame(frame: &LaneFrame) -> GateReport {
     if frame.source_flags & SOURCE_FLAG_DLL_NATIVE == 0 {
         errors.push("source_flags missing DLL-native bit".to_string());
     }
-    if frame.building_rows.is_empty() {
+    let clean_full_frame = frame.status_flags & STATUS_PARTIAL_DATA == 0;
+    if clean_full_frame && frame.building_rows.is_empty() {
         errors.push("no building rows emitted".to_string());
     }
-    if frame.resource_rows.is_empty() {
+    if clean_full_frame && frame.resource_rows.is_empty() {
         errors.push("no state resource rows emitted".to_string());
     }
     let construction_rows_with_target_state = frame
@@ -1125,6 +1180,11 @@ mod tests {
         let read = read_construction_queue_from_manager(&mem, manager, 123).unwrap();
 
         assert_eq!(read.skipped_rows, 1);
+        assert_eq!(
+            read.construction_skip_stats.invalid_active_factories_rows,
+            1
+        );
+        assert_eq!(read.construction_skip_stats.total(), 1);
         assert_eq!(read.rows.len(), 1);
         assert_eq!(read.rows[0].tag_db_id, 123);
         assert_eq!(read.rows[0].line_id, 77);
@@ -1135,17 +1195,27 @@ mod tests {
     }
 
     #[test]
-    fn collector_skipped_construction_row_is_rowless_partial() {
+    fn collector_skipped_construction_row_keeps_valid_sibling_rows_partial() {
         let country = 0x1000_0000_0000usize;
         let manager = 0x1000_0000_1000usize;
         let vector = 0x1000_0000_2000usize;
+        let good_line = 0x1000_0000_2800usize;
         let bad_line = 0x1000_0000_3000usize;
+        let sub = 0x1000_0000_4000usize;
         let mut mem = FakeMemory::default();
         mem.write_u64(country + OBJ_PROD_MANAGER, manager as u64);
         mem.write_u64(manager + CONSTRUCTION_BEGIN, vector as u64);
-        mem.write_u32(manager + CONSTRUCTION_CAP, 1);
-        mem.write_u32(manager + CONSTRUCTION_SIZE, 1);
-        mem.write_u64(vector, bad_line as u64);
+        mem.write_u32(manager + CONSTRUCTION_CAP, 2);
+        mem.write_u32(manager + CONSTRUCTION_SIZE, 2);
+        mem.write_u64(vector, good_line as u64);
+        mem.write_u64(vector + 8, bad_line as u64);
+        mem.write_u32(good_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
+        mem.write_u32(good_line + LINE_ID, 77);
+        mem.write_i32(good_line + LINE_ACTIVE_FACTORIES, 15);
+        mem.write_i32(good_line + LINE_COST, 1_450_000_000);
+        mem.write_i32(good_line + LINE_PRODUCED, 5_000_000);
+        mem.write_u64(good_line + LINE_CONSTRUCTION_SUB, sub as u64);
+        mem.write_u32(sub + CONSTRUCTION_TEMPLATE_ID, 20_013);
         mem.write_u32(bad_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
         mem.write_i32(bad_line + LINE_ACTIVE_FACTORIES, -1);
 
@@ -1164,8 +1234,15 @@ mod tests {
         );
 
         assert_eq!(output.stats.skipped_construction_rows, 1);
+        assert_eq!(
+            output
+                .stats
+                .skipped_construction_invalid_active_factories_rows,
+            1
+        );
         assert_ne!(output.frame.status_flags & STATUS_PARTIAL_DATA, 0);
-        assert!(output.frame.construction_rows.is_empty());
+        assert_eq!(output.frame.construction_rows.len(), 1);
+        assert_eq!(output.frame.construction_rows[0].line_id, 77);
         assert!(output.frame.building_rows.is_empty());
         assert!(output.frame.resource_rows.is_empty());
     }

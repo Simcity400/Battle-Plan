@@ -102,6 +102,11 @@ pub struct CompactExpectedPartialTolerance {
 
 pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance] = &[
     CompactExpectedPartialTolerance {
+        domain_id: 26,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "division_equipment: transient live-mutation row skips (observed 0.025% of roots), skip-counted; sparse fold retains prior equipment for skipped divisions",
+    },
+    CompactExpectedPartialTolerance {
         domain_id: 27,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "army_orders: unsupported/validation-failed order-target rows skip-counted (documented fixture-blocked scope)",
@@ -115,6 +120,16 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
         domain_id: 41,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "projects_live: project lifecycle/reward sub-scopes are contract FIXTURE_BLOCKED; affected rows skip-counted",
+    },
+    CompactExpectedPartialTolerance {
+        domain_id: 45,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "focus_research_decisions_depth_live: decision-target rows outside the validated exact slice are omitted and badged (decision_target_omitted_rows), documented fixture-blocked scope",
+    },
+    CompactExpectedPartialTolerance {
+        domain_id: 48,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "construction_buildings_state_damage_live: transient live-mutation construction-line row skips (invalid line pointer/type/factory/progress), skip-counted; valid construction/building/resource rows retained and sparse fold preserves omitted siblings",
     },
     CompactExpectedPartialTolerance {
         domain_id: 54,
@@ -1052,7 +1067,7 @@ mod tests {
             .iter()
             .map(|tolerance| tolerance.domain_id)
             .collect::<Vec<_>>();
-        assert_eq!(domains, vec![27, 28, 41, 54]);
+        assert_eq!(domains, vec![26, 27, 28, 41, 45, 48, 54]);
     }
 
     #[test]
@@ -1069,10 +1084,10 @@ mod tests {
 
     #[test]
     fn expected_partial_tolerance_lookup_rejects_unaccepted_partial_domains() {
-        for domain_id in [26, 47, 48, 56] {
+        for domain_id in [29, 47, 56] {
             assert_eq!(expected_partial_tolerance(domain_id), None);
         }
-        for domain_id in [27, 28, 41, 54] {
+        for domain_id in [26, 27, 28, 41, 45, 48, 54] {
             assert_eq!(
                 expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
                 Some(COMPACT_STATUS_PARTIAL_DATA)
@@ -1104,7 +1119,7 @@ mod tests {
         );
         assert_eq!(
             expected_partial_tolerance_applies(26, COMPACT_STATUS_PARTIAL_DATA),
-            None
+            expected_partial_tolerance(26)
         );
     }
 

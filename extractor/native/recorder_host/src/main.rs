@@ -10429,7 +10429,9 @@ fn decode_compact_air_superiority_inputs_data_payload(
             "offset {offset}: air superiority inputs row_count {row_count} > observed_equipment_rows {observed_equipment_rows}"
         ));
     }
-    if observed_loadout_rows > observed_air_wing_rows {
+    if observed_loadout_rows > observed_air_wing_rows
+        && status_flags & COMPACT_STATUS_FAILURE_MASK == 0
+    {
         summary.parse_errors.push(format!(
             "offset {offset}: air superiority inputs observed_loadout_rows {observed_loadout_rows} > observed_air_wing_rows {observed_air_wing_rows}"
         ));
@@ -13456,7 +13458,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_expected_partial_tolerance_keeps_domain26_partial_failure() {
+    fn compact_expected_partial_tolerance_absorbs_domain26_partial_data() {
         let mut raw = Vec::new();
         append_test_compact_record(
             &mut raw,
@@ -13511,16 +13513,14 @@ mod tests {
         let applied = compact_expected_partial_tolerances_applied_json(&summary);
 
         assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
-        assert!(problems.contains(&"compact_failure_status_seen".to_string()));
-        assert!(problems.contains(&"compact_partial_data".to_string()));
-        assert_eq!(
-            manifest["failure_status_flags_or"],
-            json!(COMPACT_STATUS_PARTIAL_DATA)
-        );
-        assert_eq!(manifest["failure_status_seen"], json!(true));
-        assert_eq!(manifest["partial_data_seen"], json!(true));
-        assert_eq!(applied.as_array().unwrap().len(), 1);
-        assert_eq!(applied[0]["domain"], json!("army_orders"));
+        assert!(!problems.contains(&"compact_failure_status_seen".to_string()));
+        assert!(!problems.contains(&"compact_partial_data".to_string()));
+        assert_eq!(manifest["failure_status_flags_or"], json!(0));
+        assert_eq!(manifest["failure_status_seen"], json!(false));
+        assert_eq!(manifest["partial_data_seen"], json!(false));
+        assert_eq!(applied.as_array().unwrap().len(), 2);
+        assert_eq!(applied[0]["domain"], json!("division_equipment"));
+        assert_eq!(applied[1]["domain"], json!("army_orders"));
     }
 
     #[test]
@@ -13846,7 +13846,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_untolerated_domain26_partial_e2e_fails_gate_and_folds_sparse_rows() {
+    fn compact_tolerated_domain26_partial_e2e_passes_gate_and_folds_sparse_rows() {
         let mut raw = Vec::new();
         let game_hour_raw = 60_759_359;
         append_test_compact_record(
@@ -13939,9 +13939,9 @@ mod tests {
         let snapshot = snapshots.last().unwrap();
 
         assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
-        assert!(problems.contains(&"compact_failure_status_seen".to_string()));
-        assert!(problems.contains(&"compact_partial_data".to_string()));
-        assert_eq!(applied, json!([]));
+        assert!(!problems.contains(&"compact_failure_status_seen".to_string()));
+        assert!(!problems.contains(&"compact_partial_data".to_string()));
+        assert_eq!(applied[0]["domain"], json!("division_equipment"));
 
         let divisions = snapshot["divisions"]
             .as_array()
@@ -13957,7 +13957,7 @@ mod tests {
             .unwrap()
             .iter()
             .any(|problem| problem["domain_id"] == json!(26)
-                && problem["problem"] == json!("compact_status_failure")));
+                && problem["problem"] == json!("partial_data")));
     }
 
     #[test]
@@ -15184,7 +15184,7 @@ mod tests {
     fn compact_summary_reports_domain48_gate_errors_even_on_compact_failure() {
         let frame = domain48::LaneFrame {
             game_hour_raw: 100,
-            status_flags: COMPACT_STATUS_PARTIAL_DATA,
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
             source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
                 | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
                 | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
@@ -17296,6 +17296,51 @@ mod tests {
         );
         assert_eq!(compact_domain_id("air_superiority_inputs"), Some(38));
         assert_eq!(compact_domain_name(38), "air_superiority_inputs");
+    }
+
+    #[test]
+    fn compact_summary_badges_air_superiority_loadout_wing_race_only_when_partial() {
+        let mut partial_payload =
+            test_air_superiority_inputs_data_payload(COMPACT_STATUS_PARTIAL_DATA);
+        partial_payload[20..24].copy_from_slice(&1u32.to_le_bytes());
+        partial_payload[24..28].copy_from_slice(&2u32.to_le_bytes());
+        let mut partial_raw = Vec::new();
+        append_test_compact_record(
+            &mut partial_raw,
+            1,
+            100,
+            38,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &partial_payload,
+        );
+        let partial_summary = summarize_compact_stream(&partial_raw);
+        assert!(
+            partial_summary.parse_errors.is_empty(),
+            "{:?}",
+            partial_summary.parse_errors
+        );
+
+        let mut clean_payload = test_air_superiority_inputs_data_payload(0);
+        clean_payload[20..24].copy_from_slice(&1u32.to_le_bytes());
+        clean_payload[24..28].copy_from_slice(&2u32.to_le_bytes());
+        let mut clean_raw = Vec::new();
+        append_test_compact_record(
+            &mut clean_raw,
+            1,
+            100,
+            38,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &clean_payload,
+        );
+        let clean_summary = summarize_compact_stream(&clean_raw);
+        assert!(
+            clean_summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("observed_loadout_rows 2 > observed_air_wing_rows 1")),
+            "{:?}",
+            clean_summary.parse_errors
+        );
     }
 
     #[test]

@@ -25,6 +25,10 @@ pub struct CollectorStats {
     pub failed_state_resource_roots: u32,
     pub failed_province_building_roots: u32,
     pub skipped_construction_rows: u32,
+    pub skipped_construction_invalid_line_ptr_rows: u32,
+    pub skipped_construction_non_construction_line_rows: u32,
+    pub skipped_construction_invalid_active_factories_rows: u32,
+    pub skipped_construction_invalid_progress_rows: u32,
     pub skipped_building_rows: u32,
     pub skipped_resource_rows: u32,
 }
@@ -71,6 +75,18 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
                 stats.skipped_construction_rows = stats
                     .skipped_construction_rows
                     .saturating_add(read.skipped_rows);
+                stats.skipped_construction_invalid_line_ptr_rows = stats
+                    .skipped_construction_invalid_line_ptr_rows
+                    .saturating_add(read.construction_skip_stats.invalid_line_ptr_rows);
+                stats.skipped_construction_non_construction_line_rows = stats
+                    .skipped_construction_non_construction_line_rows
+                    .saturating_add(read.construction_skip_stats.non_construction_line_rows);
+                stats.skipped_construction_invalid_active_factories_rows = stats
+                    .skipped_construction_invalid_active_factories_rows
+                    .saturating_add(read.construction_skip_stats.invalid_active_factories_rows);
+                stats.skipped_construction_invalid_progress_rows = stats
+                    .skipped_construction_invalid_progress_rows
+                    .saturating_add(read.construction_skip_stats.invalid_progress_rows);
                 construction_rows.append(&mut read.rows);
             }
             None => stats.failed_country_roots = stats.failed_country_roots.saturating_add(1),
@@ -122,9 +138,6 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
     let mut status_flags = 0u32;
     if stats.has_partial_data() {
         status_flags |= STATUS_PARTIAL_DATA;
-        construction_rows.clear();
-        building_rows.clear();
-        resource_rows.clear();
     }
 
     let all_construction_targets_present = !construction_rows.is_empty()
