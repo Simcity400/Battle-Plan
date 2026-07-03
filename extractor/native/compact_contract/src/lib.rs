@@ -48,6 +48,30 @@ pub const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
 pub const COMPACT_STATUS_TRANSITION_BASELINE_RESET: u32 = 1 << 11;
 pub const COMPACT_STATUS_CONTROL_INVALID: u32 = 1 << 12;
 
+// Domain 51 `scripted_state_flags_variables_live` carries lane-local badges in
+// the shared status field for legacy wire compatibility. These bits intentionally
+// overlap global bits and must be masked before global status interpretation.
+pub const DOMAIN51_STATUS_FLAG_NAMES_PARTIAL: u32 = 1 << 11;
+pub const DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED: u32 = 1 << 12;
+pub const DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED: u32 = 1 << 13;
+pub const DOMAIN51_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN51_STATUS_FLAG_NAMES_PARTIAL
+    | DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
+    | DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED;
+
+pub const fn lane_local_status_mask(domain_id: CompactDomainId) -> u32 {
+    match domain_id {
+        51 => DOMAIN51_LANE_LOCAL_STATUS_MASK,
+        _ => 0,
+    }
+}
+
+pub const fn compact_status_for_global_interpretation(
+    domain_id: CompactDomainId,
+    status_flags: u32,
+) -> u32 {
+    status_flags & !lane_local_status_mask(domain_id)
+}
+
 pub const COMPACT_STATUS_FAILURE_MASK: u32 = COMPACT_STATUS_STATE_UNAVAILABLE
     | COMPACT_STATUS_PROFILE_MISMATCH
     | COMPACT_STATUS_NO_CLOCK
@@ -930,6 +954,26 @@ mod tests {
                 STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
                 STATIC_ARTIFACT_LOCALISATION_JOIN,
             ]
+        );
+    }
+
+    #[test]
+    fn domain51_lane_local_status_mask_is_domain_scoped() {
+        assert_eq!(
+            lane_local_status_mask(51),
+            DOMAIN51_STATUS_FLAG_NAMES_PARTIAL
+                | DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
+                | DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED
+        );
+        assert_eq!(lane_local_status_mask(50), 0);
+        assert_eq!(
+            compact_status_for_global_interpretation(
+                51,
+                DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
+                    | DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED
+                    | COMPACT_STATUS_PARTIAL_DATA,
+            ),
+            COMPACT_STATUS_PARTIAL_DATA
         );
     }
 

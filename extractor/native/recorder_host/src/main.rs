@@ -673,6 +673,23 @@ struct CompactDomainSummary {
     problems: BTreeMap<String, u64>,
 }
 
+fn add_compact_global_status_flags(
+    summary: &mut CompactSummary,
+    domain_id: u16,
+    status_flags: u32,
+) {
+    summary.status_flags_or |=
+        compact_contract::compact_status_for_global_interpretation(domain_id, status_flags);
+}
+
+fn compact_domain_status_flags_scope(domain_id: u16) -> &'static str {
+    if compact_contract::lane_local_status_mask(domain_id) == 0 {
+        "global"
+    } else {
+        "raw_global_plus_lane_local"
+    }
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("collector_record: {err}");
@@ -2627,7 +2644,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     let unit_count = read_u32_le(payload, 24) as u64;
                     let changed_unit_count = read_u32_le(payload, 28) as u64;
                     let status_flags = read_u32_le(payload, 32);
-                    summary.status_flags_or |= status_flags;
+                    add_compact_global_status_flags(&mut summary, domain_id, status_flags);
                     *summary
                         .per_hour_perf_domain_counts
                         .entry(game_hour_raw)
@@ -5037,7 +5054,10 @@ fn decode_compact_division_equipment_data_payload(
             "offset {offset}: division equipment delta changed_rows {changed_rows} != emitted row_count {row_count}"
         ));
     }
-    if !delta_data && row_count != observed_division_rows {
+    let rowless_unknown = row_count == 0
+        && (status_flags & (COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE)) != 0
+        && (observed_division_rows != 0 || observed_equipment_rows != 0);
+    if !delta_data && !rowless_unknown && row_count != observed_division_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: division equipment full row_count {row_count} != observed_division_rows {observed_division_rows}"
         ));
@@ -5047,7 +5067,7 @@ fn decode_compact_division_equipment_data_payload(
             "offset {offset}: division equipment observed_division_rows {observed_division_rows} > root_rows {root_rows}"
         ));
     }
-    if !delta_data && equipment_entry_count != observed_equipment_rows {
+    if !delta_data && !rowless_unknown && equipment_entry_count != observed_equipment_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: division equipment full equipment_entry_count {equipment_entry_count} != observed_equipment_rows {observed_equipment_rows}"
         ));
@@ -7583,7 +7603,11 @@ fn decode_compact_scripted_state_flags_variables_data_payload(
     summary: &mut CompactSummary,
 ) {
     let verdict = scripted_state_flags_variables_live_lane::gate_domain51_payload(offset, payload);
-    summary.status_flags_or |= verdict.summary.status_flags_or;
+    add_compact_global_status_flags(
+        summary,
+        COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE,
+        verdict.summary.status_flags_or,
+    );
     summary.parse_errors.extend(verdict.summary.parse_errors);
     if let Some(domain) = summary
         .per_domain
@@ -12209,6 +12233,7 @@ fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
                 "unit_count_total": domain.unit_count_total,
                 "changed_unit_count_total": domain.changed_unit_count_total,
                 "status_flags_or": domain.status_flags_or,
+                "status_flags_scope": compact_domain_status_flags_scope(*domain_id),
                 "world_folded": FOLDED_DOMAIN_IDS.contains(domain_id),
                 "problems": domain.problems,
                 "read_time_us": timing_summary_json(&domain.read_times_us),
@@ -12828,6 +12853,107 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_preserves_non51_control_invalid_status() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(0, 0, 0, 0, 0, COMPACT_STATUS_CONTROL_INVALID),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let problems = compact_hourly_problems(&summary, 0, &[]);
+
+        assert_ne!(summary.status_flags_or & COMPACT_STATUS_CONTROL_INVALID, 0);
+        assert!(compact_contract::compact_status_is_failure(
+            summary.status_flags_or
+        ));
+        assert!(problems.contains(&"collector_control_invalid_scheduled_domains".to_string()));
+    }
+
+    #[test]
+    fn compact_summary_masks_domain51_lane_local_status_from_global_gates() {
+        let mut raw = Vec::new();
+        let status_flags = compact_contract::DOMAIN51_STATUS_FLAG_NAMES_PARTIAL
+            | compact_contract::DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
+            | compact_contract::DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED;
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(0, 2, 2, 2, 2, status_flags),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_domain51_lane_local_status_payload(status_flags),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(
+            &summary,
+            &[COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE],
+        );
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &[COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE],
+            &coverage_errors,
+            &["scripted_state_flags_variables_live".into()],
+        );
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.status_flags_or
+                & (COMPACT_STATUS_CONTROL_INVALID | COMPACT_STATUS_TRANSITION_BASELINE_RESET),
+            0
+        );
+        assert!(!compact_contract::compact_status_is_failure(
+            summary.status_flags_or
+        ));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(manifest["control_invalid_seen"], json!(false));
+        assert_eq!(manifest["transition_baseline_reset_seen"], json!(false));
+        assert_eq!(manifest["failure_status_seen"], json!(false));
+        assert_eq!(
+            manifest["per_domain"]["scripted_state_flags_variables_live"]["status_flags_or"],
+            json!(status_flags)
+        );
+        assert_eq!(
+            manifest["per_domain"]["scripted_state_flags_variables_live"]["status_flags_scope"],
+            json!("raw_global_plus_lane_local")
+        );
+    }
+
+    #[test]
     fn compact_coverage_requires_fuel_data_record_per_frame() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -13316,6 +13442,62 @@ mod tests {
         );
         assert_eq!(compact_domain_id("division_equipment"), Some(26));
         assert_eq!(compact_domain_name(26), "division_equipment");
+    }
+
+    #[test]
+    fn compact_summary_accepts_rowless_partial_division_equipment_unknown() {
+        let mut partial_raw = Vec::new();
+        append_test_compact_record(
+            &mut partial_raw,
+            1,
+            100,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_rowless_division_equipment_data_payload(COMPACT_STATUS_PARTIAL_DATA, 3, 2, 5),
+        );
+        append_test_compact_record(
+            &mut partial_raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let partial_summary = summarize_compact_stream(&partial_raw);
+        assert!(
+            partial_summary.parse_errors.is_empty(),
+            "{:?}",
+            partial_summary.parse_errors
+        );
+
+        let mut full_raw = Vec::new();
+        append_test_compact_record(
+            &mut full_raw,
+            1,
+            100,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_rowless_division_equipment_data_payload(0, 3, 2, 5),
+        );
+        append_test_compact_record(
+            &mut full_raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        assert!(full_summary.parse_errors.iter().any(|err| {
+            err.contains("division equipment full row_count 0 != observed_division_rows 2")
+        }));
+        assert!(full_summary.parse_errors.iter().any(|err| {
+            err.contains(
+                "division equipment full equipment_entry_count 0 != observed_equipment_rows 5",
+            )
+        }));
     }
 
     #[test]
@@ -14142,6 +14324,61 @@ mod tests {
         );
         assert_eq!(compact_domain_id("air_region_activity"), Some(31));
         assert_eq!(compact_domain_name(31), "air_region_activity");
+    }
+
+    #[test]
+    fn compact_summary_accepts_air_region_activity_delta_rows_over_observed_buckets() {
+        let mut delta_raw = Vec::new();
+        append_test_compact_record(
+            &mut delta_raw,
+            1,
+            100,
+            31,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_region_activity_data_payload_with_observed_buckets(
+                COMPACT_STATUS_DELTA_DATA,
+                1,
+            ),
+        );
+        append_test_compact_record(
+            &mut delta_raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let delta_summary = summarize_compact_stream(&delta_raw);
+        assert!(
+            delta_summary.parse_errors.is_empty(),
+            "{:?}",
+            delta_summary.parse_errors
+        );
+
+        let mut full_raw = Vec::new();
+        append_test_compact_record(
+            &mut full_raw,
+            1,
+            100,
+            31,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_region_activity_data_payload_with_observed_buckets(0, 1),
+        );
+        append_test_compact_record(
+            &mut full_raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        assert!(full_summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("air region activity row_count 2 > observed_bucket_rows 1")));
     }
 
     #[test]
@@ -17383,6 +17620,44 @@ mod tests {
         payload
     }
 
+    fn test_domain51_lane_local_status_payload(status_flags: u32) -> Vec<u8> {
+        use scripted_state_flags_variables_live_lane::scripted_state_domain51_gate::compact as d51;
+
+        let rows = vec![
+            d51::ScriptedStateRow {
+                scope_kind: d51::SCOPE_GLOBAL,
+                owner_id: 0,
+                value_kind: d51::VALUE_DELAYED_EVENT_OPAQUE,
+                key: Some(d51::DELAYED_EVENTS_BADGE_KEY.to_string()),
+                token_id: None,
+                value_raw: None,
+                date_hour_raw: None,
+                deleted: false,
+            },
+            d51::ScriptedStateRow {
+                scope_kind: d51::SCOPE_GLOBAL,
+                owner_id: 0,
+                value_kind: d51::VALUE_SCRIPTED_GUI_OPAQUE,
+                key: Some(d51::SCRIPTED_GUI_BADGE_KEY.to_string()),
+                token_id: None,
+                value_raw: None,
+                date_hour_raw: None,
+                deleted: false,
+            },
+        ];
+        d51::encode_payload(
+            &d51::ScriptedStateHeader {
+                elapsed_wall_ms: 0,
+                status_flags,
+                changed_rows: rows.len() as u32,
+                observed_scopes: rows.len() as u32,
+                measured_scopes: 0,
+                rejected_scopes: rows.len() as u32,
+            },
+            &rows,
+        )
+    }
+
     fn test_fuel_data_payload(rows: &[(u32, i64, i64, i64, i64)]) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
@@ -17876,6 +18151,25 @@ mod tests {
         payload
     }
 
+    fn test_rowless_division_equipment_data_payload(
+        status_flags: u32,
+        root_rows: u32,
+        observed_division_rows: u32,
+        observed_equipment_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&root_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_division_rows.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&observed_equipment_rows.to_le_bytes());
+        payload
+    }
+
     fn test_army_orders_data_payload(status_flags: u32) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
@@ -18233,13 +18527,20 @@ mod tests {
     }
 
     fn test_air_region_activity_data_payload(status_flags: u32) -> Vec<u8> {
+        test_air_region_activity_data_payload_with_observed_buckets(status_flags, 2)
+    }
+
+    fn test_air_region_activity_data_payload_with_observed_buckets(
+        status_flags: u32,
+        observed_bucket_rows: u32,
+    ) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
         payload.extend_from_slice(&2u32.to_le_bytes());
         payload.extend_from_slice(&2u32.to_le_bytes());
         payload.extend_from_slice(&status_flags.to_le_bytes());
         payload.extend_from_slice(&3u32.to_le_bytes());
-        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&observed_bucket_rows.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
 

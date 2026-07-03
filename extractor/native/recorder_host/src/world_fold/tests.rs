@@ -652,6 +652,25 @@ fn chunk3_division_equipment_payload(
     out
 }
 
+fn chunk3_rowless_division_equipment_payload(
+    status: u32,
+    root_rows: u32,
+    observed_division_rows: u32,
+    observed_equipment_rows: u32,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u64.to_le_bytes());
+    push_u32(&mut out, 0);
+    push_u32(&mut out, 0);
+    push_u32(&mut out, status);
+    push_u32(&mut out, 100_000);
+    push_u32(&mut out, root_rows);
+    push_u32(&mut out, observed_division_rows);
+    push_u32(&mut out, 0);
+    push_u32(&mut out, observed_equipment_rows);
+    out
+}
+
 fn chunk3_projects_payload(status: u32) -> Vec<u8> {
     let header_extension = 4u32;
     let mut out = vec![
@@ -928,6 +947,49 @@ fn chunk3_folds_d26_equipment_only_on_unique_division_join() {
     assert_eq!(divs[0]["equipment"][0]["equip_id"], json!(11));
     assert_eq!(divs[0]["equipment"][0]["amount"], json!(2.5));
     assert_eq!(divs[0]["equipment"][1]["amount"], json!(7.5));
+}
+
+#[test]
+fn chunk3_d26_rowless_partial_marks_unknown_without_clearing_equipment() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (20, chunk3_division_payload(&[(17, 4713, 47)])),
+            (
+                26,
+                chunk3_division_equipment_payload(0, &[(47, 17, 0, 0, 0, 1)], &[(11, 250_000)]),
+            ),
+        ],
+        vec![(
+            26,
+            chunk3_rowless_division_equipment_payload(COMPACT_STATUS_PARTIAL_DATA, 2, 1, 1),
+        )],
+        vec![],
+    ]);
+
+    assert_eq!(
+        snaps[0]["divisions"][0]["equipment"][0]["equip_id"],
+        json!(11)
+    );
+    assert_eq!(snaps[1]["divisions"][0]["equipment"], Value::Null);
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(26)
+            && problem["problem"] == json!("compact_status_failure")));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("division_equipment state unknown this hour")));
+    assert_eq!(
+        snaps[2]["divisions"][0]["equipment"][0]["equip_id"],
+        json!(11),
+        "rowless partial must retain the prior accumulator for later known hours"
+    );
 }
 
 #[test]
@@ -1262,6 +1324,62 @@ fn chunk3_folds_d51_scripted_state_and_keeps_opaque_status_nonfatal() {
         .as_array()
         .unwrap();
     assert!(problems.is_empty());
+}
+
+#[test]
+fn chunk3_d51_lane_local_bits_preserve_opaque_badges_without_failure() {
+    let rows = vec![
+        Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind: SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE,
+            key: Some("__delayed_events_root_unresolved"),
+            token_id: None,
+            value_raw: None,
+            date_hour_raw: None,
+            deleted: false,
+        },
+        Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind: SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE,
+            key: Some("__scripted_gui_root_unresolved"),
+            token_id: None,
+            value_raw: None,
+            date_hour_raw: None,
+            deleted: false,
+        },
+    ];
+    let status = SCRIPTED_STATE_STATUS_FLAG_NAMES_PARTIAL
+        | SCRIPTED_STATE_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
+        | SCRIPTED_STATE_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED;
+    let snapshot = snapshot_for_domain_records(vec![(51, chunk3_scripted_payload(status, &rows))]);
+
+    let badges = snapshot["world"]["_r2_scripted_state_badges"]
+        .as_array()
+        .unwrap();
+    assert_eq!(badges.len(), 2);
+    assert_eq!(
+        badges[0]["value_kind"],
+        json!(SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE)
+    );
+    assert_eq!(
+        badges[1]["value_kind"],
+        json!(SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE)
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let notes = snapshot["provenance"]["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("delayed-event root unresolved")));
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("scripted-GUI root unresolved")));
 }
 
 // --- the main multi-domain, multi-hour, delta + delete test --------------
