@@ -260,3 +260,52 @@ adds semantic-gap evidence:
   again, and classified current collaboration/GIE save data as fixture-blocked
   because collaboration payloads are empty and `government_in_exile_tag` rows
   are leader scope.
+
+## 2026-07-04 garrison scalar production wiring (wave-3 crack)
+
+The three per-state garrison scalars are now emitted in production domain-52
+rows (`ROW_FLAG_GARRISON_SCALARS = 1 << 15`, row bytes 32/36/40):
+
+- `garrison_manpower_need` = `CStateGarrisonData+0x88` i32 plain manpower count
+  (18/18 discriminating rows, 280/280 all);
+- `garrison_strength_ratio_raw` = `+0xF0` i32 fixed-x100000 (288/288);
+- `garrison_required_raw` = `+0xF8` i32 fixed-x100000 (282/282).
+
+Chain: `CCountryOccupationStatus+0x48` -> occupation-data container ->
+`CCountryOccupationData` (vtable RVA `0x296DD00`, `+0x08` status back-ref,
+`+0x10` occupied grouping tag, `+0xD8` garrison container) ->
+`CStateGarrisonData` (vtable RVA `0x296DCB0`, `+0x50` state join, `+0x58`
+occupation-data back-ref). Containers are walked with the bounded 0x300-byte
+qword pointer scan the validation probe used; every candidate must pass exact
+vtable + back-ref + validated-state-pointer joins from a single blob read.
+The earlier v19/v23 rejections of `0x88/0xF0/0xF8` are explicitly OVERTURNED by
+the wave-3 D04 proof (`extractor/documents/WAVE3_CRACKS_870EBF_D04.md`, item 3:
+clean diagonal, 303 rows, 0 stale).
+
+Join semantics (live-derived): the attach requires only controller equality
+between the walk root and the state row (a 303/303 live invariant). The
+`+0x10` occupied tag is the occupation GROUPING country (original/core owner,
+e.g. colonial garrisons grouped under a never-independent core tag) and is NOT
+required to equal the state owner; garrison rows also legitimately exist for
+states whose owner equals their controller. Conflicting duplicate garrison
+rows for one state are dropped (both) and counted in the new header
+`garrison_anomaly_rows` (byte 48); attached rows are counted in
+`garrison_scalar_rows` (byte 44). States without a validated garrison join
+keep `ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE` when occupied and stay absent
+otherwise (absent != 0).
+
+Paused D04 diagnostic capture (`runs/wire_garrison_native_v3_20260704`,
+gitignored): 1081 state rows, 305 garrison-scalar rows, 1 anomaly row (failed
+closed), no failure flags, stream decodable, `pack_replay verify` OK.
+
+RESIDUALS (documented, unpaused-fixture-gated):
+- One-frame ABA window: the garrison walk runs before the per-state row reads;
+  a controller flip A->B->A landing entirely between the two reads could
+  attach one-frame-stale scalars. Controller flips are game-day-scale events,
+  the window is sub-second, and the lane's own state-row reads carry the same
+  single-read guarantee; adversarial review recorded it as the only refutable
+  path (no generation counter exists to close it).
+- Pre-existing lane-wide property (not introduced by this change): a state row
+  whose read fails transiently is skipped (`invalid_state_rows`) without a
+  per-row unknown tombstone, so the fold retains the last-known row until the
+  next successful read re-emits changed values.

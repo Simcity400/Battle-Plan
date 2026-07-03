@@ -347,13 +347,20 @@ const COMPACT_AIR_WING_LOADOUT_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_WING_LOADOUT_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_WING_LOADOUT_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
 const COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN: usize = 48;
-const COMPACT_AIR_STRENGTH_DELTA_ROW_LEN: usize = 68;
+// Row grew from 68 to 76 bytes with the wave-3 per-wing cumulative scalars
+// (air_accidents u32 @68, experience_raw i32 @72).
+const COMPACT_AIR_STRENGTH_DELTA_ROW_LEN: usize = 76;
 const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_LOSS: u32 = 1;
 const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT: u32 = 1 << 1;
 const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_DELETED: u32 = 1 << 2;
 const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION: u32 = 1 << 3;
 const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK: u32 = 1 << 4;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS: u32 = 1 << 5;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE: u32 = 1 << 6;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALAR_CHANGE: u32 = 1 << 7;
 const COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE: i64 = 100_000;
+// Wing experience is cumulative XP, fixed-x100000 (not a 0..1 ratio).
+const COMPACT_AIR_WING_MAX_EXPERIENCE_RAW: i32 = 1_000_000_000;
 const COMPACT_AIR_VARIANT_DEF_ROW_LEN: usize = 24;
 const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_DISPLAY_NAME: u32 = 1;
 const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_VARIANT_NAME: u32 = 1 << 1;
@@ -7233,6 +7240,9 @@ fn decode_compact_air_combat_losses_live_data_payload(
     let mut decoded_reinforcement_rows = 0usize;
     let mut decoded_deleted_rows = 0usize;
     let mut mission_region_rows = 0usize;
+    let mut baseline_rows = 0usize;
+    let mut wing_scalar_rows = 0usize;
+    let mut scalar_change_rows = 0usize;
     let max_equipment_amount = (COMPACT_AIR_WING_MAX_PLANES as i64)
         .saturating_mul(COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE);
     for row_index in 0..row_count {
@@ -7257,11 +7267,58 @@ fn decode_compact_air_combat_losses_live_data_payload(
         let old_equipment_amount_sum = read_i64_le(payload, cursor + 44);
         let new_equipment_amount_sum = read_i64_le(payload, cursor + 52);
         let equipment_amount_delta = read_i64_le(payload, cursor + 60);
+        let air_accidents = read_u32_le(payload, cursor + 68);
+        let experience_raw = read_i32_le(payload, cursor + 72);
         cursor += COMPACT_AIR_STRENGTH_DELTA_ROW_LEN;
 
         let deleted = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_DELETED) != 0;
         let loss = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_LOSS) != 0;
         let reinforcement = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT) != 0;
+        let baseline = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE) != 0;
+        let wing_scalars = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS) != 0;
+        let scalar_change = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALAR_CHANGE) != 0;
+        if baseline {
+            baseline_rows = baseline_rows.saturating_add(1);
+            if loss || reinforcement || deleted || scalar_change {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live row {row_index} marks baseline with event flags"
+                ));
+            }
+            if count_delta != 0
+                || old_count != new_count
+                || equipment_amount_delta != 0
+                || old_equipment_amount_sum != new_equipment_amount_sum
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live baseline row {row_index} has nonzero deltas"
+                ));
+            }
+        }
+        if wing_scalars {
+            wing_scalar_rows = wing_scalar_rows.saturating_add(1);
+            if air_accidents > COMPACT_AIR_WING_MAX_PLANES {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live row {row_index} has invalid air_accidents {air_accidents}"
+                ));
+            }
+            if !(0..=COMPACT_AIR_WING_MAX_EXPERIENCE_RAW).contains(&experience_raw) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live row {row_index} has invalid experience_raw {experience_raw}"
+                ));
+            }
+        } else if air_accidents != 0 || experience_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has wing scalar values without measured flag"
+            ));
+        }
+        if scalar_change {
+            scalar_change_rows = scalar_change_rows.saturating_add(1);
+            if !wing_scalars {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live row {row_index} marks scalar change without measured scalars"
+                ));
+            }
+        }
         if owner_tag_db_id == 0 || owner_tag_db_id > COMPACT_AIR_WING_MAX_OWNER_TAG_DB_ID {
             summary.parse_errors.push(format!(
                 "offset {offset}: air combat losses live row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
@@ -7288,14 +7345,17 @@ fn decode_compact_air_combat_losses_live_data_payload(
                 | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT
                 | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_DELETED
                 | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION
-                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK)
+                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK
+                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE
+                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALAR_CHANGE)
             != 0
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: air combat losses live row {row_index} has unknown flags {flags}"
             ));
         }
-        if !loss && !reinforcement && !deleted {
+        if !loss && !reinforcement && !deleted && !baseline && !scalar_change {
             summary.parse_errors.push(format!(
                 "offset {offset}: air combat losses live row {row_index} has no event flag"
             ));
@@ -7399,6 +7459,19 @@ fn decode_compact_air_combat_losses_live_data_payload(
         42,
         "air_strength_mission_region_rows",
         mission_region_rows,
+    );
+    add_compact_domain_data_unit(summary, 42, "air_strength_baseline_rows", baseline_rows);
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_wing_scalar_rows",
+        wing_scalar_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_scalar_change_rows",
+        scalar_change_rows,
     );
 }
 
@@ -16193,20 +16266,21 @@ mod tests {
     }
 
     #[test]
-    fn compact_air_combat_losses_live_row_len_is_68_not_64() {
+    fn compact_air_combat_losses_live_row_len_is_76_not_64_or_68() {
         let payload = test_air_combat_losses_live_single_loss_payload(COMPACT_STATUS_DELTA_DATA);
         assert_eq!(
             payload.len(),
             COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN + COMPACT_AIR_STRENGTH_DELTA_ROW_LEN
         );
-        assert_eq!(COMPACT_AIR_STRENGTH_DELTA_ROW_LEN, 68);
+        assert_eq!(COMPACT_AIR_STRENGTH_DELTA_ROW_LEN, 76);
         assert_ne!(COMPACT_AIR_STRENGTH_DELTA_ROW_LEN, 64);
+        assert_ne!(COMPACT_AIR_STRENGTH_DELTA_ROW_LEN, 68);
     }
 
     #[test]
-    fn compact_summary_rejects_stale_air_combat_losses_live_64_byte_row_shape() {
+    fn compact_summary_rejects_stale_air_combat_losses_live_68_byte_row_shape() {
         let payload = test_air_combat_losses_live_single_loss_payload(COMPACT_STATUS_DELTA_DATA);
-        let stale_len = COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN + 64;
+        let stale_len = COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN + 68;
         let summary = summarize_compact_stream(&{
             let mut raw = Vec::new();
             append_test_compact_record(
@@ -16222,7 +16296,7 @@ mod tests {
         assert!(summary
             .parse_errors
             .iter()
-            .any(|error| error.contains("expected 116") && error.contains("112 byte")));
+            .any(|error| error.contains("expected 124") && error.contains("116 byte")));
     }
 
     #[test]
@@ -20597,6 +20671,7 @@ mod tests {
             {
                 flags |= COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
             }
+            flags |= COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS;
             payload.extend_from_slice(&owner_tag_db_id.to_le_bytes());
             payload.extend_from_slice(&wing_id.to_le_bytes());
             payload.extend_from_slice(&generation.to_le_bytes());
@@ -20610,6 +20685,8 @@ mod tests {
             payload.extend_from_slice(&old_equipment_amount_sum.to_le_bytes());
             payload.extend_from_slice(&new_equipment_amount_sum.to_le_bytes());
             payload.extend_from_slice(&equipment_amount_delta.to_le_bytes());
+            payload.extend_from_slice(&5u32.to_le_bytes());
+            payload.extend_from_slice(&37_500i32.to_le_bytes());
         }
         payload
     }

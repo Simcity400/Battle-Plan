@@ -26,6 +26,11 @@ pub const ROW_FLAG_RESISTANCE_SPEED: u32 = 1 << 11;
 pub const ROW_FLAG_COMPLIANCE_SPEED: u32 = 1 << 12;
 pub const ROW_FLAG_OCCUPATION_STATUS_ROOT: u32 = 1 << 13;
 pub const ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN: u32 = 1 << 14;
+/// The three per-state garrison scalars (army_manpower_need, strength_ratio,
+/// garrison_required) were measured from a validated CStateGarrisonData join
+/// this frame. Mutually exclusive with ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE;
+/// rows carrying neither flag have no garrison measurement at all (absent).
+pub const ROW_FLAG_GARRISON_SCALARS: u32 = 1 << 15;
 
 pub const MAX_STATE_ID: u32 = 65_535;
 pub const MAX_TAG_DB_ID: u32 = 1_024;
@@ -41,6 +46,13 @@ pub struct OccupationHeader {
     pub wall_badge_rows: u32,
     pub law_token_rows: u32,
     pub garrison_template_rows: u32,
+    /// Rows in this payload carrying ROW_FLAG_GARRISON_SCALARS (occupies the
+    /// previously reserved header u32 at byte 44; historical payloads carry 0).
+    pub garrison_scalar_rows: u32,
+    /// Frame-scope count of garrison-walk anomalies that failed closed
+    /// (occupies the previously reserved header u32 at byte 48; historical
+    /// payloads carry 0).
+    pub garrison_anomaly_rows: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,9 +65,12 @@ pub struct OccupationStateRow {
     pub compliance_raw: i32,
     pub resistance_speed_raw: i32,
     pub compliance_speed_raw: i32,
-    pub garrison_need_raw: i32,
-    pub garrison_equilibrium_raw: i32,
-    pub garrison_progress_raw: i32,
+    /// Plain i32 manpower count (CStateGarrisonData+0x88), NOT fixed-scaled.
+    pub garrison_manpower_need: i32,
+    /// Fixed-x100000 (CStateGarrisonData+0xF0).
+    pub garrison_strength_ratio_raw: i32,
+    /// Fixed-x100000 (CStateGarrisonData+0xF8).
+    pub garrison_required_raw: i32,
     pub occupation_law_token_id: u32,
     pub garrison_template_id: u32,
     pub flags: u32,
@@ -83,8 +98,8 @@ pub fn encode_payload(header: &OccupationHeader, rows: &[OccupationStateRow]) ->
     payload.extend_from_slice(&FIXED_SCALE_RAW.to_le_bytes());
     payload.extend_from_slice(&header.law_token_rows.to_le_bytes());
     payload.extend_from_slice(&header.garrison_template_rows.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&header.garrison_scalar_rows.to_le_bytes());
+    payload.extend_from_slice(&header.garrison_anomaly_rows.to_le_bytes());
     for row in rows {
         payload.extend_from_slice(&row.state_id.to_le_bytes());
         payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
@@ -94,9 +109,9 @@ pub fn encode_payload(header: &OccupationHeader, rows: &[OccupationStateRow]) ->
         payload.extend_from_slice(&row.compliance_raw.to_le_bytes());
         payload.extend_from_slice(&row.resistance_speed_raw.to_le_bytes());
         payload.extend_from_slice(&row.compliance_speed_raw.to_le_bytes());
-        payload.extend_from_slice(&row.garrison_need_raw.to_le_bytes());
-        payload.extend_from_slice(&row.garrison_equilibrium_raw.to_le_bytes());
-        payload.extend_from_slice(&row.garrison_progress_raw.to_le_bytes());
+        payload.extend_from_slice(&row.garrison_manpower_need.to_le_bytes());
+        payload.extend_from_slice(&row.garrison_strength_ratio_raw.to_le_bytes());
+        payload.extend_from_slice(&row.garrison_required_raw.to_le_bytes());
         payload.extend_from_slice(&row.occupation_law_token_id.to_le_bytes());
         payload.extend_from_slice(&row.garrison_template_id.to_le_bytes());
         payload.extend_from_slice(&row.flags.to_le_bytes());
@@ -125,18 +140,13 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let scale_raw = read_u32_le(payload, 32);
     let law_token_rows = read_u32_le(payload, 36) as usize;
     let garrison_template_rows = read_u32_le(payload, 40) as usize;
-    let reserved0 = read_u32_le(payload, 44);
-    let reserved1 = read_u32_le(payload, 48);
+    let garrison_scalar_rows = read_u32_le(payload, 44) as usize;
+    let garrison_anomaly_rows = read_u32_le(payload, 48) as usize;
     summary.status_flags_or |= status_flags;
 
     if scale_raw != FIXED_SCALE_RAW {
         summary.parse_errors.push(format!(
             "offset {offset}: occupation fixed scale {scale_raw} != {FIXED_SCALE_RAW}"
-        ));
-    }
-    if reserved0 != 0 || reserved1 != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: occupation header reserved field is nonzero"
         ));
     }
     let expected_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
@@ -161,6 +171,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         || wall_badge_rows > row_count
         || law_token_rows > row_count
         || garrison_template_rows > row_count
+        || garrison_scalar_rows > row_count
     {
         summary.parse_errors.push(format!(
             "offset {offset}: occupation counters exceed row_count {row_count}"
@@ -179,6 +190,16 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         "occupation_garrison_template_rows",
         garrison_template_rows,
     );
+    add_unit(
+        &mut summary,
+        "occupation_garrison_scalar_rows",
+        garrison_scalar_rows,
+    );
+    add_unit(
+        &mut summary,
+        "occupation_garrison_anomaly_rows",
+        garrison_anomaly_rows,
+    );
 
     let mut cursor = HEADER_LEN;
     let mut seen_states = BTreeSet::new();
@@ -186,6 +207,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let mut decoded_wall_badges = 0usize;
     let mut decoded_law_tokens = 0usize;
     let mut decoded_garrison_templates = 0usize;
+    let mut decoded_garrison_scalars = 0usize;
     for row_index in 0..row_count {
         let state_id = read_u32_le(payload, cursor);
         let owner_tag_db_id = read_u32_le(payload, cursor + 4);
@@ -195,9 +217,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         let compliance_raw = read_i32_le(payload, cursor + 20);
         let resistance_speed_raw = read_i32_le(payload, cursor + 24);
         let compliance_speed_raw = read_i32_le(payload, cursor + 28);
-        let garrison_need_raw = read_i32_le(payload, cursor + 32);
-        let garrison_equilibrium_raw = read_i32_le(payload, cursor + 36);
-        let garrison_progress_raw = read_i32_le(payload, cursor + 40);
+        let garrison_manpower_need = read_i32_le(payload, cursor + 32);
+        let garrison_strength_ratio_raw = read_i32_le(payload, cursor + 36);
+        let garrison_required_raw = read_i32_le(payload, cursor + 40);
         let occupation_law_token_id = read_u32_le(payload, cursor + 44);
         let garrison_template_id = read_u32_le(payload, cursor + 48);
         let flags = read_u32_le(payload, cursor + 52);
@@ -254,20 +276,26 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             row_index,
             compliance_speed_raw,
         );
-        validate_fixed(offset, &mut summary, "garrison_need", row_index, garrison_need_raw);
         validate_fixed(
             offset,
             &mut summary,
-            "garrison_equilibrium",
+            "garrison_manpower_need",
             row_index,
-            garrison_equilibrium_raw,
+            garrison_manpower_need,
         );
         validate_fixed(
             offset,
             &mut summary,
-            "garrison_progress",
+            "garrison_strength_ratio",
             row_index,
-            garrison_progress_raw,
+            garrison_strength_ratio_raw,
+        );
+        validate_fixed(
+            offset,
+            &mut summary,
+            "garrison_required",
+            row_index,
+            garrison_required_raw,
         );
         if flags & ROW_FLAG_OCCUPIED_STATE != 0 {
             decoded_occupied = decoded_occupied.saturating_add(1);
@@ -304,6 +332,31 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 "offset {offset}: occupation row {row_index} has garrison template id without flag"
             ));
         }
+        if flags & ROW_FLAG_GARRISON_SCALARS != 0 {
+            decoded_garrison_scalars = decoded_garrison_scalars.saturating_add(1);
+            if flags & ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: occupation row {row_index} marks garrison scalars both measured and unavailable"
+                ));
+            }
+            if flags & ROW_FLAG_CONTROLLER == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: occupation row {row_index} has garrison scalars without controller"
+                ));
+            }
+            if garrison_manpower_need < 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: occupation row {row_index} has negative garrison manpower need {garrison_manpower_need}"
+                ));
+            }
+        } else if garrison_manpower_need != 0
+            || garrison_strength_ratio_raw != 0
+            || garrison_required_raw != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation row {row_index} has garrison scalar values without measured flag"
+            ));
+        }
         if flags
             & !(ROW_FLAG_OWNER
                 | ROW_FLAG_CONTROLLER
@@ -319,7 +372,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 | ROW_FLAG_RESISTANCE_SPEED
                 | ROW_FLAG_COMPLIANCE_SPEED
                 | ROW_FLAG_OCCUPATION_STATUS_ROOT
-                | ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN)
+                | ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN
+                | ROW_FLAG_GARRISON_SCALARS)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -354,9 +408,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             ));
         }
         if flags & ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE != 0
-            && (garrison_need_raw != 0
-                || garrison_equilibrium_raw != 0
-                || garrison_progress_raw != 0)
+            && (garrison_manpower_need != 0
+                || garrison_strength_ratio_raw != 0
+                || garrison_required_raw != 0)
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: occupation row {row_index} marks garrison signals unavailable with nonzero garrison values"
@@ -400,6 +454,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     if decoded_garrison_templates != garrison_template_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: occupation garrison_template_rows {garrison_template_rows} != decoded {decoded_garrison_templates}"
+        ));
+    }
+    if decoded_garrison_scalars != garrison_scalar_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation garrison_scalar_rows {garrison_scalar_rows} != decoded {decoded_garrison_scalars}"
         ));
     }
     summary
@@ -471,9 +530,9 @@ mod tests {
             compliance_raw: 5_000_000,
             resistance_speed_raw: -450,
             compliance_speed_raw: 571,
-            garrison_need_raw: 0,
-            garrison_equilibrium_raw: 0,
-            garrison_progress_raw: 0,
+            garrison_manpower_need: 0,
+            garrison_strength_ratio_raw: 0,
+            garrison_required_raw: 0,
             occupation_law_token_id: 0xA11C_E001,
             garrison_template_id: 0,
             flags: ROW_FLAG_OWNER
@@ -504,6 +563,8 @@ mod tests {
             wall_badge_rows: 1,
             law_token_rows: 1,
             garrison_template_rows: 0,
+            garrison_scalar_rows: 0,
+            garrison_anomaly_rows: 0,
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(32, &payload);
@@ -536,9 +597,9 @@ mod tests {
             compliance_raw: 0,
             resistance_speed_raw: 0,
             compliance_speed_raw: 0,
-            garrison_need_raw: 0,
-            garrison_equilibrium_raw: 0,
-            garrison_progress_raw: 0,
+            garrison_manpower_need: 0,
+            garrison_strength_ratio_raw: 0,
+            garrison_required_raw: 0,
             occupation_law_token_id: 0,
             garrison_template_id: 0,
             flags: ROW_FLAG_OWNER
@@ -559,6 +620,8 @@ mod tests {
                 wall_badge_rows: 0,
                 law_token_rows: 0,
                 garrison_template_rows: 0,
+                garrison_scalar_rows: 0,
+                garrison_anomaly_rows: 0,
             },
             &rows,
         );
@@ -570,7 +633,7 @@ mod tests {
     #[test]
     fn rejects_nonzero_garrison_values_when_badged_unavailable() {
         let mut row = occupied_row();
-        row.garrison_need_raw = 10;
+        row.garrison_manpower_need = 10;
         let payload = encode_payload(
             &OccupationHeader {
                 elapsed_wall_ms: 10,
@@ -581,6 +644,8 @@ mod tests {
                 wall_badge_rows: 1,
                 law_token_rows: 1,
                 garrison_template_rows: 0,
+                garrison_scalar_rows: 0,
+                garrison_anomaly_rows: 0,
             },
             &[row],
         );
@@ -610,6 +675,8 @@ mod tests {
                 wall_badge_rows: 1,
                 law_token_rows: 1,
                 garrison_template_rows: 1,
+                garrison_scalar_rows: 0,
+                garrison_anomaly_rows: 0,
             },
             &[row],
         );
@@ -621,6 +688,151 @@ mod tests {
                 .get("occupation_garrison_template_rows")
                 .copied(),
             Some(1)
+        );
+    }
+
+    fn garrison_scalar_row() -> OccupationStateRow {
+        let mut row = occupied_row();
+        row.flags &= !ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE;
+        row.flags |= ROW_FLAG_GARRISON_SCALARS;
+        row.garrison_manpower_need = 14_000;
+        row.garrison_strength_ratio_raw = 87_500;
+        row.garrison_required_raw = 250_000;
+        row
+    }
+
+    fn garrison_scalar_header(anomaly_rows: u32) -> OccupationHeader {
+        OccupationHeader {
+            elapsed_wall_ms: 10,
+            status_flags: 0,
+            changed_rows: 1,
+            observed_state_rows: 1,
+            occupied_state_rows: 1,
+            wall_badge_rows: 1,
+            law_token_rows: 1,
+            garrison_template_rows: 0,
+            garrison_scalar_rows: 1,
+            garrison_anomaly_rows: anomaly_rows,
+        }
+    }
+
+    #[test]
+    fn accepts_measured_garrison_scalar_rows() {
+        let payload = encode_payload(&garrison_scalar_header(2), &[garrison_scalar_row()]);
+        let summary = decode_payload(32, &payload);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("occupation_garrison_scalar_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("occupation_garrison_anomaly_rows")
+                .copied(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn rejects_garrison_scalar_values_without_measured_flag() {
+        let mut row = garrison_scalar_row();
+        row.flags &= !ROW_FLAG_GARRISON_SCALARS;
+        row.flags |= ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE;
+        let mut header = garrison_scalar_header(0);
+        header.garrison_scalar_rows = 0;
+        let summary = decode_payload(32, &encode_payload(&header, &[row]));
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("garrison scalar values without measured flag")),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn rejects_garrison_scalars_marked_both_measured_and_unavailable() {
+        let mut row = garrison_scalar_row();
+        row.flags |= ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE;
+        let summary = decode_payload(32, &encode_payload(&garrison_scalar_header(0), &[row]));
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("both measured and unavailable")),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn rejects_negative_garrison_manpower_need() {
+        let mut row = garrison_scalar_row();
+        row.garrison_manpower_need = -5;
+        let summary = decode_payload(32, &encode_payload(&garrison_scalar_header(0), &[row]));
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("negative garrison manpower need")),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn accepts_garrison_scalars_on_unoccupied_controlled_state() {
+        // Colonial garrisons: the garrison chain groups states under a core
+        // tag even when the state's owner equals its controller, so measured
+        // scalars are legal without the occupied-state derivation.
+        let mut row = garrison_scalar_row();
+        row.flags &= !(ROW_FLAG_OCCUPIED_TAG_DERIVED | ROW_FLAG_OCCUPIED_STATE);
+        row.occupied_country_tag_db_id = 0;
+        row.owner_tag_db_id = 2;
+        let mut header = garrison_scalar_header(0);
+        header.occupied_state_rows = 0;
+        let summary = decode_payload(32, &encode_payload(&header, &[row]));
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+    }
+
+    #[test]
+    fn rejects_garrison_scalars_without_controller() {
+        let mut row = garrison_scalar_row();
+        row.flags &= !(ROW_FLAG_CONTROLLER
+            | ROW_FLAG_OCCUPIED_TAG_DERIVED
+            | ROW_FLAG_OCCUPIED_STATE);
+        row.controller_tag_db_id = 0;
+        row.occupied_country_tag_db_id = 0;
+        let mut header = garrison_scalar_header(0);
+        header.occupied_state_rows = 0;
+        let summary = decode_payload(32, &encode_payload(&header, &[row]));
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("garrison scalars without controller")),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn rejects_garrison_scalar_count_mismatch() {
+        let mut header = garrison_scalar_header(0);
+        header.garrison_scalar_rows = 0;
+        let summary = decode_payload(32, &encode_payload(&header, &[garrison_scalar_row()]));
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("garrison_scalar_rows 0 != decoded 1")),
+            "{:?}",
+            summary.parse_errors
         );
     }
 
@@ -638,6 +850,8 @@ mod tests {
                 wall_badge_rows: 1,
                 law_token_rows: 0,
                 garrison_template_rows: 0,
+                garrison_scalar_rows: 0,
+                garrison_anomaly_rows: 0,
             },
             &[row],
         );

@@ -3674,6 +3674,36 @@ fn push_d52_row(
     out.extend_from_slice(&0u32.to_le_bytes());
 }
 
+#[allow(clippy::too_many_arguments)]
+fn push_d52_garrison_row(
+    out: &mut Vec<u8>,
+    state_id: u32,
+    owner: u32,
+    controller: u32,
+    occupied: u32,
+    garrison_manpower_need: i32,
+    garrison_strength_ratio_raw: i32,
+    garrison_required_raw: i32,
+    flags: u32,
+) {
+    out.extend_from_slice(&state_id.to_le_bytes());
+    out.extend_from_slice(&owner.to_le_bytes());
+    out.extend_from_slice(&controller.to_le_bytes());
+    out.extend_from_slice(&occupied.to_le_bytes());
+    out.extend_from_slice(&2_230_000i32.to_le_bytes());
+    out.extend_from_slice(&6_500_000i32.to_le_bytes());
+    out.extend_from_slice(&2500i32.to_le_bytes());
+    out.extend_from_slice(&(-1200i32).to_le_bytes());
+    out.extend_from_slice(&garrison_manpower_need.to_le_bytes());
+    out.extend_from_slice(&garrison_strength_ratio_raw.to_le_bytes());
+    out.extend_from_slice(&garrison_required_raw.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+}
+
 fn d52_payload(status_flags: u32, rows: impl FnOnce(&mut Vec<u8>) -> u32) -> Vec<u8> {
     let mut row_bytes = Vec::new();
     let row_count = rows(&mut row_bytes);
@@ -4095,6 +4125,88 @@ fn folds_d52_occupation_with_r2_law_token_and_tag_resolution() {
         .unwrap()
         .iter()
         .any(|domain| domain == "occupation_resistance_compliance_live"));
+}
+
+#[test]
+fn folds_d52_measured_garrison_scalars() {
+    let flags = OCC_ROW_FLAG_OWNER
+        | OCC_ROW_FLAG_CONTROLLER
+        | OCC_ROW_FLAG_RESISTANCE
+        | OCC_ROW_FLAG_COMPLIANCE
+        | OCC_ROW_FLAG_OCCUPIED_STATE
+        | OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED
+        | OCC_ROW_FLAG_RESISTANCE_SPEED
+        | OCC_ROW_FLAG_COMPLIANCE_SPEED
+        | OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT
+        | OCC_ROW_FLAG_OCCUPATION_LAW_UNAVAILABLE
+        | OCC_ROW_FLAG_GARRISON_SCALARS;
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload(0, |rows| {
+            push_d52_garrison_row(rows, 5, 1, 2, 1, 14_000, 87_500, 250_000, flags);
+            1
+        }),
+    )]);
+
+    let extra = &snap["states"]["5"]["occupation"]["_r2_occupation_resistance_compliance_live"];
+    assert_eq!(extra["garrison_army_manpower_need"], json!(14_000));
+    assert!((extra["garrison_strength_ratio"].as_f64().unwrap() - 0.875).abs() < 0.000001);
+    assert!((extra["garrison_required"].as_f64().unwrap() - 2.5).abs() < 0.000001);
+    assert_eq!(extra["garrison_signals_status"], Value::Null);
+}
+
+#[test]
+fn d52_garrison_values_without_measured_flag_fail_fold_closed() {
+    let flags = OCC_ROW_FLAG_OWNER
+        | OCC_ROW_FLAG_CONTROLLER
+        | OCC_ROW_FLAG_RESISTANCE
+        | OCC_ROW_FLAG_COMPLIANCE
+        | OCC_ROW_FLAG_OCCUPIED_STATE
+        | OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED
+        | OCC_ROW_FLAG_RESISTANCE_SPEED
+        | OCC_ROW_FLAG_COMPLIANCE_SPEED;
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload(0, |rows| {
+            push_d52_garrison_row(rows, 5, 1, 2, 1, 14_000, 0, 0, flags);
+            1
+        }),
+    )]);
+
+    assert_eq!(snap["states"]["5"]["occupation"], Value::Null);
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("garrison scalar values without measured flag")));
+}
+
+#[test]
+fn d52_unbadged_rows_without_scalars_emit_no_garrison_fields() {
+    let flags = OCC_ROW_FLAG_OWNER
+        | OCC_ROW_FLAG_CONTROLLER
+        | OCC_ROW_FLAG_RESISTANCE
+        | OCC_ROW_FLAG_COMPLIANCE
+        | OCC_ROW_FLAG_RESISTANCE_SPEED
+        | OCC_ROW_FLAG_COMPLIANCE_SPEED
+        | OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT;
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload(0, |rows| {
+            push_d52_garrison_row(rows, 5, 1, 1, 0, 0, 0, 0, flags);
+            1
+        }),
+    )]);
+
+    let extra = &snap["states"]["5"]["occupation"]["_r2_occupation_resistance_compliance_live"];
+    // Absent measurement must stay absent: no fabricated zero garrison values.
+    assert_eq!(extra["garrison_army_manpower_need"], Value::Null);
+    assert_eq!(extra["garrison_strength_ratio"], Value::Null);
+    assert_eq!(extra["garrison_required"], Value::Null);
+    assert_eq!(extra["garrison_signals_status"], Value::Null);
 }
 
 #[test]
@@ -5218,7 +5330,8 @@ fn d42_air_combat_losses_payload(status_flags: u32, changed_rows: u32) -> Vec<u8
         &mut p,
         AIR_STRENGTH_DELTA_ROW_FLAG_LOSS
             | AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION
-            | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK,
+            | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK
+            | AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS,
     );
     c2_u32(&mut p, 7);
     c2_u32(&mut p, 88);
@@ -5229,6 +5342,8 @@ fn d42_air_combat_losses_payload(status_flags: u32, changed_rows: u32) -> Vec<u8
     c2_i64(&mut p, 100_000);
     c2_i64(&mut p, 96_000);
     c2_i64(&mut p, -4_000);
+    c2_u32(&mut p, 3);
+    c2_i32(&mut p, 42_000);
     p
 }
 
@@ -5939,7 +6054,179 @@ fn chunk2_folds_air_sections_and_keeps_d42_out_of_events() {
         snap["strategic_air"]["_r2_air_combat_losses_live"][0]["count_delta"],
         json!(-4)
     );
+    assert_eq!(
+        snap["strategic_air"]["_r2_air_combat_losses_live"][0]["air_accidents"],
+        json!(3)
+    );
+    assert!(
+        (snap["strategic_air"]["_r2_air_combat_losses_live"][0]["experience"]
+            .as_f64()
+            .unwrap()
+            - 0.42)
+            .abs()
+            < 0.000001
+    );
+    let cumulative = &snap["strategic_air"]["_r2_air_wing_cumulative_scalars"];
+    assert_eq!(cumulative[0]["wing_id"], json!(700));
+    assert_eq!(cumulative[0]["air_accidents"], json!(3));
+    assert_eq!(cumulative[0]["experience_raw"], json!(42_000));
     assert_eq!(snap["events"], json!([]));
+}
+
+fn d42_wing_row(
+    p: &mut Vec<u8>,
+    wing_id: u32,
+    flags: u32,
+    old_count: u32,
+    new_count: u32,
+    air_accidents: u32,
+    experience_raw: i32,
+) {
+    let count_delta = new_count as i64 - old_count as i64;
+    c2_u32(p, 1);
+    c2_u32(p, wing_id);
+    c2_u64(p, u64::from(wing_id));
+    c2_u32(p, flags);
+    c2_u32(p, 7);
+    c2_u32(p, 0);
+    c2_u32(p, old_count);
+    c2_u32(p, new_count);
+    c2_i32(p, count_delta as i32);
+    c2_u32(p, 0);
+    c2_i64(p, old_count as i64 * 100_000);
+    c2_i64(p, new_count as i64 * 100_000);
+    c2_i64(p, count_delta * 100_000);
+    c2_u32(p, air_accidents);
+    c2_i32(p, experience_raw);
+}
+
+fn d42_rows_payload(rows: impl FnOnce(&mut Vec<u8>) -> u32) -> Vec<u8> {
+    let mut body = Vec::new();
+    let row_count = rows(&mut body);
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    p.extend_from_slice(&body);
+    p
+}
+
+#[test]
+fn d42_baseline_rows_feed_cumulative_map_without_event_rows() {
+    let baseline_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE
+        | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            42,
+            d42_rows_payload(|rows| {
+                d42_wing_row(rows, 700, baseline_flags, 100, 100, 3, 42_000);
+                d42_wing_row(rows, 701, baseline_flags, 50, 50, 0, 5_000);
+                2
+            }),
+        ),
+    ]);
+    // No loss/reinforcement/delete flags -> no hourly event rows.
+    assert_eq!(
+        snap["strategic_air"]["_r2_air_combat_losses_live"],
+        json!([])
+    );
+    let cumulative = &snap["strategic_air"]["_r2_air_wing_cumulative_scalars"];
+    assert_eq!(cumulative.as_array().unwrap().len(), 2);
+    assert_eq!(cumulative[0]["wing_id"], json!(700));
+    assert_eq!(cumulative[0]["air_accidents"], json!(3));
+    assert_eq!(cumulative[1]["wing_id"], json!(701));
+}
+
+#[test]
+fn d42_deleted_row_removes_wing_from_cumulative_map() {
+    let baseline_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE
+        | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let deleted_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_DELETED
+        | AIR_STRENGTH_DELTA_ROW_FLAG_LOSS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                42,
+                d42_rows_payload(|rows| {
+                    d42_wing_row(rows, 700, baseline_flags, 100, 100, 3, 42_000);
+                    1
+                }),
+            ),
+        ],
+        vec![(
+            42,
+            d42_rows_payload(|rows| {
+                d42_wing_row(rows, 700, deleted_flags, 100, 0, 3, 42_000);
+                1
+            }),
+        )],
+    ]);
+    assert_eq!(
+        snaps[0]["strategic_air"]["_r2_air_wing_cumulative_scalars"][0]["wing_id"],
+        json!(700)
+    );
+    assert_eq!(
+        snaps[1]["strategic_air"]["_r2_air_wing_cumulative_scalars"],
+        json!([])
+    );
+    assert_eq!(
+        snaps[1]["strategic_air"]["_r2_air_combat_losses_live"][0]["wing_id"],
+        json!(700)
+    );
+}
+
+#[test]
+fn d42_wing_scalar_values_without_measured_flag_fail_fold_closed() {
+    let flags = AIR_STRENGTH_DELTA_ROW_FLAG_LOSS | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let snap = chunk1_one_snapshot(vec![(
+        42,
+        d42_rows_payload(|rows| {
+            d42_wing_row(rows, 700, flags, 100, 96, 3, 42_000);
+            1
+        }),
+    )]);
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("wing scalar values without measured flag")));
+}
+
+#[test]
+fn d42_duplicate_wing_id_in_one_payload_fails_fold_closed() {
+    let baseline_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE
+        | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let snap = chunk1_one_snapshot(vec![(
+        42,
+        d42_rows_payload(|rows| {
+            d42_wing_row(rows, 700, baseline_flags, 100, 100, 3, 42_000);
+            d42_wing_row(rows, 700, baseline_flags, 100, 100, 9, 10_000);
+            2
+        }),
+    )]);
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("appears twice in one payload")));
 }
 
 #[test]

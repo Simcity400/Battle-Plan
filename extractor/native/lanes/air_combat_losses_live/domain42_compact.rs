@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const DOMAIN_ID: u16 = 42;
 pub const DOMAIN_NAME: &str = "air_combat_losses_live";
 pub const HEADER_LEN: usize = 48;
-// This row is 68 bytes, not 64: the fixed u32/i32 fields are followed by
-// three i64 equipment amount fields.
-pub const ROW_LEN: usize = 68;
+// This row is 76 bytes: the fixed u32/i32 fields are followed by three i64
+// equipment amount fields plus the wave-3 per-wing cumulative scalars
+// (air_accidents u32 @68, experience_raw i32 @72).
+pub const ROW_LEN: usize = 76;
 pub const STALE_ROW_LEN_64_REJECTION_GUARD: usize = 64;
 pub const EQUIPMENT_AMOUNT_PER_PLANE: i64 = 100_000;
 
@@ -16,11 +17,19 @@ pub const ROW_FLAG_REINFORCEMENT: u32 = 1 << 1;
 pub const ROW_FLAG_DELETED: u32 = 1 << 2;
 pub const ROW_FLAG_MISSION_REGION: u32 = 1 << 3;
 pub const ROW_FLAG_EQUIPMENT_SCALE_OK: u32 = 1 << 4;
+/// air_accidents/experience_raw were measured for this row (absent != 0).
+pub const ROW_FLAG_WING_SCALARS: u32 = 1 << 5;
+/// First observation of this wing body: a state baseline row, not an event.
+pub const ROW_FLAG_STATE_BASELINE: u32 = 1 << 6;
+/// air_accidents or experience_raw changed vs the previous sample.
+pub const ROW_FLAG_WING_SCALAR_CHANGE: u32 = 1 << 7;
 
 pub const MAX_OWNER_TAG_DB_ID: u32 = 1_024;
 pub const MAX_WING_ID: u32 = i32::MAX as u32;
 pub const MAX_PLANES: u32 = 10_000_000;
 pub const MAX_MISSION_REGION_ID: u32 = 65_535;
+// Wing experience is cumulative XP, fixed-x100000 (not a 0..1 ratio).
+pub const MAX_EXPERIENCE_RAW: i32 = 1_000_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AirStrengthDeltaHeader {
@@ -40,6 +49,8 @@ pub struct AirStrengthDeltaRow {
     pub wing_id: u32,
     pub generation: u64,
     pub deleted: bool,
+    pub baseline: bool,
+    pub scalar_change: bool,
     pub mission_mask: u32,
     pub mission_region: Option<u32>,
     pub old_count: u32,
@@ -48,6 +59,8 @@ pub struct AirStrengthDeltaRow {
     pub old_equipment_amount_sum: i64,
     pub new_equipment_amount_sum: i64,
     pub equipment_amount_delta: i64,
+    pub air_accidents: u32,
+    pub experience_raw: i32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -73,7 +86,7 @@ pub fn encode_payload(header: &AirStrengthDeltaHeader, rows: &[AirStrengthDeltaR
     payload.extend_from_slice(&(EQUIPMENT_AMOUNT_PER_PLANE as u32).to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes());
     for row in rows {
-        let mut flags = 0u32;
+        let mut flags = ROW_FLAG_WING_SCALARS;
         if row.count_delta < 0 || row.equipment_amount_delta < 0 {
             flags |= ROW_FLAG_LOSS;
         }
@@ -82,6 +95,12 @@ pub fn encode_payload(header: &AirStrengthDeltaHeader, rows: &[AirStrengthDeltaR
         }
         if row.deleted {
             flags |= ROW_FLAG_DELETED;
+        }
+        if row.baseline {
+            flags |= ROW_FLAG_STATE_BASELINE;
+        }
+        if row.scalar_change {
+            flags |= ROW_FLAG_WING_SCALAR_CHANGE;
         }
         if row.mission_region.is_some() {
             flags |= ROW_FLAG_MISSION_REGION;
@@ -102,6 +121,8 @@ pub fn encode_payload(header: &AirStrengthDeltaHeader, rows: &[AirStrengthDeltaR
         payload.extend_from_slice(&row.old_equipment_amount_sum.to_le_bytes());
         payload.extend_from_slice(&row.new_equipment_amount_sum.to_le_bytes());
         payload.extend_from_slice(&row.equipment_amount_delta.to_le_bytes());
+        payload.extend_from_slice(&row.air_accidents.to_le_bytes());
+        payload.extend_from_slice(&row.experience_raw.to_le_bytes());
     }
     payload
 }
@@ -198,11 +219,52 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain42GateSummary {
         let old_equipment_amount_sum = read_i64_le(payload, cursor + 44);
         let new_equipment_amount_sum = read_i64_le(payload, cursor + 52);
         let equipment_amount_delta = read_i64_le(payload, cursor + 60);
+        let air_accidents = read_u32_le(payload, cursor + 68);
+        let experience_raw = read_i32_le(payload, cursor + 72);
         cursor += ROW_LEN;
 
         let deleted = flags & ROW_FLAG_DELETED != 0;
         let loss = flags & ROW_FLAG_LOSS != 0;
         let reinforcement = flags & ROW_FLAG_REINFORCEMENT != 0;
+        let baseline = flags & ROW_FLAG_STATE_BASELINE != 0;
+        let wing_scalars = flags & ROW_FLAG_WING_SCALARS != 0;
+        let scalar_change = flags & ROW_FLAG_WING_SCALAR_CHANGE != 0;
+        if baseline && (loss || reinforcement || deleted || scalar_change) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} marks baseline with event flags"
+            ));
+        }
+        if baseline
+            && (count_delta != 0
+                || old_count != new_count
+                || equipment_amount_delta != 0
+                || old_equipment_amount_sum != new_equipment_amount_sum)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live baseline row {row_index} has nonzero deltas"
+            ));
+        }
+        if wing_scalars {
+            if air_accidents > MAX_PLANES {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live row {row_index} has invalid air_accidents {air_accidents}"
+                ));
+            }
+            if !(0..=MAX_EXPERIENCE_RAW).contains(&experience_raw) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live row {row_index} has invalid experience_raw {experience_raw}"
+                ));
+            }
+        } else if air_accidents != 0 || experience_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has wing scalar values without measured flag"
+            ));
+        }
+        if scalar_change && !wing_scalars {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} marks scalar change without measured scalars"
+            ));
+        }
         if owner_tag_db_id == 0 || owner_tag_db_id > MAX_OWNER_TAG_DB_ID {
             summary.parse_errors.push(format!(
                 "offset {offset}: air combat losses live row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
@@ -222,14 +284,17 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain42GateSummary {
                 | ROW_FLAG_REINFORCEMENT
                 | ROW_FLAG_DELETED
                 | ROW_FLAG_MISSION_REGION
-                | ROW_FLAG_EQUIPMENT_SCALE_OK)
+                | ROW_FLAG_EQUIPMENT_SCALE_OK
+                | ROW_FLAG_WING_SCALARS
+                | ROW_FLAG_STATE_BASELINE
+                | ROW_FLAG_WING_SCALAR_CHANGE)
             != 0
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: air combat losses live row {row_index} has unknown flags {flags}"
             ));
         }
-        if !loss && !reinforcement && !deleted {
+        if !loss && !reinforcement && !deleted && !baseline && !scalar_change {
             summary.parse_errors.push(format!(
                 "offset {offset}: air combat losses live row {row_index} has no event flag"
             ));
@@ -363,6 +428,8 @@ mod tests {
             wing_id: 10,
             generation: 0,
             deleted: false,
+            baseline: false,
+            scalar_change: false,
             mission_mask: 4,
             mission_region: Some(42),
             old_count: 100,
@@ -371,6 +438,8 @@ mod tests {
             old_equipment_amount_sum: 10_000_000,
             new_equipment_amount_sum: 9_700_000,
             equipment_amount_delta: -300_000,
+            air_accidents: 7,
+            experience_raw: 45_000,
         }
     }
 
@@ -388,8 +457,8 @@ mod tests {
     }
 
     #[test]
-    fn encoded_payload_uses_68_byte_rows_not_64() {
-        assert_eq!(ROW_LEN, 68);
+    fn encoded_payload_uses_76_byte_rows_not_64() {
+        assert_eq!(ROW_LEN, 76);
         assert_ne!(ROW_LEN, STALE_ROW_LEN_64_REJECTION_GUARD);
         let rows = vec![loss_row(), loss_row()];
         let header = AirStrengthDeltaHeader {
@@ -412,7 +481,7 @@ mod tests {
         let stale_payload_len = HEADER_LEN + STALE_ROW_LEN_64_REJECTION_GUARD;
         let summary = decode_payload(64, &payload[..stale_payload_len]);
         assert!(summary.parse_errors.iter().any(|error| {
-            error.contains("expected 116") && error.contains("112 byte")
+            error.contains("expected 124") && error.contains("112 byte")
         }));
     }
 
@@ -425,6 +494,8 @@ mod tests {
                 wing_id: 11,
                 generation: 1,
                 deleted: false,
+                baseline: false,
+                scalar_change: false,
                 mission_mask: 8,
                 mission_region: None,
                 old_count: 80,
@@ -433,12 +504,16 @@ mod tests {
                 old_equipment_amount_sum: 8_000_000,
                 new_equipment_amount_sum: 8_400_000,
                 equipment_amount_delta: 400_000,
+                air_accidents: 0,
+                experience_raw: 12_000,
             },
             AirStrengthDeltaRow {
                 owner_tag_db_id: 2,
                 wing_id: 20,
                 generation: 2,
                 deleted: true,
+                baseline: false,
+                scalar_change: false,
                 mission_mask: 4,
                 mission_region: Some(43),
                 old_count: 12,
@@ -447,6 +522,8 @@ mod tests {
                 old_equipment_amount_sum: 1_200_000,
                 new_equipment_amount_sum: 0,
                 equipment_amount_delta: -1_200_000,
+                air_accidents: 2,
+                experience_raw: 30_000,
             },
         ];
         let header = AirStrengthDeltaHeader {
@@ -517,6 +594,8 @@ mod tests {
             wing_id: 10,
             generation: 0,
             deleted: false,
+            baseline: false,
+            scalar_change: false,
             mission_mask: 4,
             mission_region: None,
             old_count: 100,
@@ -525,6 +604,8 @@ mod tests {
             old_equipment_amount_sum: 10_000_000,
             new_equipment_amount_sum: 9_700_000,
             equipment_amount_delta: -300_000,
+            air_accidents: 0,
+            experience_raw: 0,
         }];
         let header = AirStrengthDeltaHeader {
             elapsed_wall_ms: 100,

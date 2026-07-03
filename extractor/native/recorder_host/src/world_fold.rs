@@ -80,6 +80,7 @@ const OCC_ROW_FLAG_RESISTANCE_SPEED: u32 = 1 << 11;
 const OCC_ROW_FLAG_COMPLIANCE_SPEED: u32 = 1 << 12;
 const OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT: u32 = 1 << 13;
 const OCC_ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN: u32 = 1 << 14;
+const OCC_ROW_FLAG_GARRISON_SCALARS: u32 = 1 << 15;
 const OCC_ROW_KNOWN_FLAGS: u32 = OCC_ROW_FLAG_OWNER
     | OCC_ROW_FLAG_CONTROLLER
     | OCC_ROW_FLAG_RESISTANCE
@@ -94,7 +95,8 @@ const OCC_ROW_KNOWN_FLAGS: u32 = OCC_ROW_FLAG_OWNER
     | OCC_ROW_FLAG_RESISTANCE_SPEED
     | OCC_ROW_FLAG_COMPLIANCE_SPEED
     | OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT
-    | OCC_ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN;
+    | OCC_ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN
+    | OCC_ROW_FLAG_GARRISON_SCALARS;
 
 const SUPPLY_ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
 const SUPPLY_ROW_KIND_DIVISION_SUPPLY: u32 = 2;
@@ -399,7 +401,14 @@ const VARIANT_UPGRADE_HEADER_LEN: usize = 44;
 const VARIANT_UPGRADE_ROW_LEN: usize = 16;
 const VARIANT_UPGRADE_ENTRY_ROW_LEN: usize = 8;
 const AIR_COMBAT_LOSS_HEADER_LEN: usize = 48;
-const AIR_COMBAT_LOSS_ROW_LEN: usize = 68;
+// Row grew from 68 to 76 bytes with the wave-3 per-wing cumulative scalars
+// (air_accidents u32 @68, experience_raw i32 @72).
+const AIR_COMBAT_LOSS_ROW_LEN: usize = 76;
+// Wing experience is cumulative XP, fixed-x100000 (not a 0..1 ratio).
+const AIR_WING_MAX_EXPERIENCE_RAW: i32 = 1_000_000_000;
+// Cumulative per-wing accident counter: keep the fold's bound consistent with the
+// collector (MAX_AIR_WING_PLANES) and the summary decoder (COMPACT_AIR_WING_MAX_PLANES).
+const AIR_WING_MAX_ACCIDENTS: u32 = 10_000_000;
 const AIR_VARIANT_ARCHETYPE_HEADER_LEN: usize = 48;
 const AIR_VARIANT_ARCHETYPE_ROW_LEN: usize = 32;
 
@@ -441,11 +450,17 @@ const AIR_STRENGTH_DELTA_ROW_FLAG_LOSS: u32 = 1;
 const AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT: u32 = 1 << 1;
 const AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION: u32 = 1 << 3;
 const AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK: u32 = 1 << 4;
+const AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS: u32 = 1 << 5;
+const AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE: u32 = 1 << 6;
+const AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALAR_CHANGE: u32 = 1 << 7;
 const AIR_STRENGTH_DELTA_KNOWN_FLAGS: u32 = AIR_STRENGTH_DELTA_ROW_FLAG_LOSS
     | AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT
     | AIR_STRENGTH_DELTA_ROW_FLAG_DELETED
     | AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION
-    | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK
+    | AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+    | AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE
+    | AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALAR_CHANGE;
 const VARIANT_DEF_ROW_FLAG_DISPLAY_NAME: u32 = 1;
 const VARIANT_DEF_ROW_FLAG_VARIANT_NAME: u32 = 1 << 1;
 const VARIANT_DEF_ROW_FLAG_MODULES: u32 = 1 << 2;
@@ -577,6 +592,10 @@ pub struct WorldFold {
     air_variant_reserves: BTreeMap<AirVariantReserveKey, AirVariantReserveState>,
     air_superiority_inputs: BTreeMap<AirSuperiorityInputKey, AirSuperiorityInputState>,
     air_combat_losses_this_hour: Option<Vec<AirCombatLossState>>,
+    /// Persistent per-wing cumulative scalars (wave-3: air_accidents,
+    /// experience), keyed by globally-unique wing_id. Updated by every
+    /// scalar-bearing domain-42 row; deleted rows remove their wing.
+    air_wing_cumulative: BTreeMap<u32, AirWingCumulativeScalars>,
     /// Successful stateful fold domains. Used to distinguish absent-never-seen
     /// from a measured empty baseline when building schema containers.
     successful_fold_domains_seen: BTreeSet<u16>,
@@ -728,6 +747,7 @@ impl WorldFold {
             air_variant_reserves: BTreeMap::new(),
             air_superiority_inputs: BTreeMap::new(),
             air_combat_losses_this_hour: None,
+            air_wing_cumulative: BTreeMap::new(),
             successful_fold_domains_seen: BTreeSet::new(),
             fold_domains_unknown_this_hour: BTreeSet::new(),
             land_combats_known_this_hour: false,
@@ -3090,6 +3110,7 @@ impl WorldFold {
     ) {
         if self.fold_domain_unknown(AIR_COMBAT_LOSSES_DOMAIN_ID) {
             out.insert("_r2_air_combat_losses_live".into(), Value::Null);
+            out.insert("_r2_air_wing_cumulative_scalars".into(), Value::Null);
         } else if let Some(losses) = &self.air_combat_losses_this_hour {
             out.insert(
                 "_r2_air_combat_losses_live".into(),
@@ -3097,6 +3118,25 @@ impl WorldFold {
                     losses
                         .iter()
                         .map(|row| row.to_json(self, unresolved))
+                        .collect(),
+                ),
+            );
+            out.insert(
+                "_r2_air_wing_cumulative_scalars".into(),
+                Value::Array(
+                    self.air_wing_cumulative
+                        .iter()
+                        .map(|(wing_id, state)| {
+                            json!({
+                                "wing_id": wing_id,
+                                "owner": self
+                                    .country_ref_json(state.owner_tag_db_id, unresolved),
+                                "owner_tag_db_id": state.owner_tag_db_id,
+                                "air_accidents": state.air_accidents,
+                                "experience": state.experience_raw as f64 / FIXED_SCALE,
+                                "experience_raw": state.experience_raw,
+                            })
+                        })
                         .collect(),
                 ),
             );
@@ -4930,6 +4970,14 @@ impl WorldFold {
             ));
         }
         let mut rows = Vec::with_capacity(row_count);
+        // Frame-scope identity: a wing_id may carry at most one live
+        // (non-deleted) scalar row per payload; a deleted row plus one live
+        // row is a wing recreated at a new body address (deletion applies
+        // first regardless of payload order). Two live rows for one wing_id
+        // are a torn/stale identity and fail the fold closed.
+        let mut live_wing_rows_this_payload: BTreeSet<u32> = BTreeSet::new();
+        let mut deleted_wing_rows_this_payload: BTreeSet<u32> = BTreeSet::new();
+        let mut cumulative_upserts: Vec<(u32, AirWingCumulativeScalars)> = Vec::new();
         for index in 0..row_count {
             let base = AIR_COMBAT_LOSS_HEADER_LEN + index * AIR_COMBAT_LOSS_ROW_LEN;
             let flags = read_u32(payload, base + 16);
@@ -4940,7 +4988,7 @@ impl WorldFold {
             if reserved != 0 {
                 return Err("air_combat_losses row reserved field is nonzero".into());
             }
-            rows.push(AirCombatLossState {
+            let row = AirCombatLossState {
                 owner_tag_db_id: read_u32(payload, base),
                 wing_id: read_u32(payload, base + 4),
                 generation: read_u64(payload, base + 8),
@@ -4957,8 +5005,73 @@ impl WorldFold {
                 old_equipment_amount_sum: read_i64(payload, base + 44),
                 new_equipment_amount_sum: read_i64(payload, base + 52),
                 equipment_amount_delta: read_i64(payload, base + 60),
+                air_accidents: read_u32(payload, base + 68),
+                experience_raw: read_i32(payload, base + 72),
                 scale_raw,
-            });
+            };
+            let deleted = flags & AIR_STRENGTH_DELTA_ROW_FLAG_DELETED != 0;
+            let baseline = flags & AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE != 0;
+            let wing_scalars = flags & AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS != 0;
+            let event = flags
+                & (AIR_STRENGTH_DELTA_ROW_FLAG_LOSS
+                    | AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT
+                    | AIR_STRENGTH_DELTA_ROW_FLAG_DELETED)
+                != 0;
+            if baseline && event {
+                return Err("air_combat_losses baseline row carries event flags".into());
+            }
+            if !wing_scalars && (row.air_accidents != 0 || row.experience_raw != 0) {
+                return Err(
+                    "air_combat_losses row has wing scalar values without measured flag".into(),
+                );
+            }
+            if wing_scalars
+                && !(0..=AIR_WING_MAX_EXPERIENCE_RAW).contains(&row.experience_raw)
+            {
+                return Err("air_combat_losses row has invalid experience_raw".into());
+            }
+            if wing_scalars && row.air_accidents > AIR_WING_MAX_ACCIDENTS {
+                return Err("air_combat_losses row has invalid air_accidents".into());
+            }
+            if deleted {
+                if !deleted_wing_rows_this_payload.insert(row.wing_id) {
+                    return Err(format!(
+                        "air_combat_losses wing_id {} deleted twice in one payload",
+                        row.wing_id
+                    ));
+                }
+            } else {
+                if !live_wing_rows_this_payload.insert(row.wing_id) {
+                    return Err(format!(
+                        "air_combat_losses wing_id {} appears twice in one payload",
+                        row.wing_id
+                    ));
+                }
+                if wing_scalars {
+                    cumulative_upserts.push((
+                        row.wing_id,
+                        AirWingCumulativeScalars {
+                            owner_tag_db_id: row.owner_tag_db_id,
+                            air_accidents: row.air_accidents,
+                            experience_raw: row.experience_raw,
+                        },
+                    ));
+                }
+            }
+            // The hourly event array keeps its historical meaning: actual
+            // loss/reinforcement/delete events only. Baseline and scalar-only
+            // rows feed the persistent cumulative map below.
+            if event {
+                rows.push(row);
+            }
+        }
+        // Deletions first, then live upserts, so a wing deleted and recreated
+        // in the same payload survives regardless of row ordering.
+        for wing_id in &deleted_wing_rows_this_payload {
+            self.air_wing_cumulative.remove(wing_id);
+        }
+        for (wing_id, state) in cumulative_upserts {
+            self.air_wing_cumulative.insert(wing_id, state);
         }
         self.air_combat_losses_this_hour = Some(rows);
         self.mark_fold_domain_success(AIR_COMBAT_LOSSES_DOMAIN_ID);
@@ -5328,9 +5441,9 @@ impl WorldFold {
             let compliance_raw = read_i32(payload, cursor + 20);
             let resistance_speed_raw = read_i32(payload, cursor + 24);
             let compliance_speed_raw = read_i32(payload, cursor + 28);
-            let garrison_need_raw = read_i32(payload, cursor + 32);
-            let garrison_equilibrium_raw = read_i32(payload, cursor + 36);
-            let garrison_progress_raw = read_i32(payload, cursor + 40);
+            let garrison_manpower_need = read_i32(payload, cursor + 32);
+            let garrison_strength_ratio_raw = read_i32(payload, cursor + 36);
+            let garrison_required_raw = read_i32(payload, cursor + 40);
             let occupation_law_token_id = read_u32(payload, cursor + 44);
             let garrison_template_id = read_u32(payload, cursor + 48);
             let flags = read_u32(payload, cursor + 52);
@@ -5417,20 +5530,37 @@ impl WorldFold {
                 extra.insert("resistance_speed_status".into(), json!("unavailable"));
             }
             if flags & OCC_ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE != 0 {
+                if flags & OCC_ROW_FLAG_GARRISON_SCALARS != 0 {
+                    return Err(format!(
+                        "occupation row {row_index} marks garrison scalars both measured and unavailable"
+                    ));
+                }
                 extra.insert("garrison_signals_status".into(), json!("unavailable"));
-            } else {
+            } else if flags & OCC_ROW_FLAG_GARRISON_SCALARS != 0 {
+                // army_manpower_need is a plain manpower count; the other two
+                // scalars are fixed-x100000 (wave-3 crack, CStateGarrisonData
+                // +0x88/+0xF0/+0xF8).
                 extra.insert(
-                    "garrison_need".into(),
-                    json!(garrison_need_raw as f64 / FIXED_SCALE),
+                    "garrison_army_manpower_need".into(),
+                    json!(garrison_manpower_need),
                 );
                 extra.insert(
-                    "garrison_equilibrium".into(),
-                    json!(garrison_equilibrium_raw as f64 / FIXED_SCALE),
+                    "garrison_strength_ratio".into(),
+                    json!(garrison_strength_ratio_raw as f64 / FIXED_SCALE),
                 );
                 extra.insert(
-                    "garrison_progress".into(),
-                    json!(garrison_progress_raw as f64 / FIXED_SCALE),
+                    "garrison_required".into(),
+                    json!(garrison_required_raw as f64 / FIXED_SCALE),
                 );
+            } else if garrison_manpower_need != 0
+                || garrison_strength_ratio_raw != 0
+                || garrison_required_raw != 0
+            {
+                // Values without a measured badge are torn/foreign data:
+                // fail the fold closed rather than emit them.
+                return Err(format!(
+                    "occupation row {row_index} has garrison scalar values without measured flag"
+                ));
             }
             if flags & OCC_ROW_FLAG_OCCUPATION_LAW_UNAVAILABLE != 0 {
                 extra.insert("occupation_law_status".into(), json!("unavailable"));
@@ -9110,12 +9240,14 @@ struct AirCombatLossState {
     old_equipment_amount_sum: i64,
     new_equipment_amount_sum: i64,
     equipment_amount_delta: i64,
+    air_accidents: u32,
+    experience_raw: i32,
     scale_raw: u32,
 }
 
 impl AirCombatLossState {
     fn to_json(&self, fold: &WorldFold, unresolved: &mut BTreeSet<u32>) -> Value {
-        json!({
+        let mut value = json!({
             "owner": fold.country_ref_json(self.owner_tag_db_id, unresolved),
             "owner_tag_db_id": self.owner_tag_db_id,
             "wing_id": self.wing_id,
@@ -9133,8 +9265,27 @@ impl AirCombatLossState {
             "equipment_amount_delta_raw": self.equipment_amount_delta,
             "flags": self.flags,
             "scale_raw": self.scale_raw,
-        })
+        });
+        if self.flags & AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS != 0 {
+            if let Value::Object(map) = &mut value {
+                map.insert("air_accidents".into(), json!(self.air_accidents));
+                map.insert(
+                    "experience".into(),
+                    json!(self.experience_raw as f64 / FIXED_SCALE),
+                );
+                map.insert("experience_raw".into(), json!(self.experience_raw));
+            }
+        }
+        value
     }
+}
+
+/// Persistent per-wing cumulative scalar state (wave-3 crack: CAirWing+0x74
+/// air_accidents, CAirWing+0x208 experience fixed-x100000).
+struct AirWingCumulativeScalars {
+    owner_tag_db_id: u32,
+    air_accidents: u32,
+    experience_raw: i32,
 }
 
 struct AirVariantArchetypeRawRow {
