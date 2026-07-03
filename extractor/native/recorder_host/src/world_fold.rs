@@ -201,6 +201,21 @@ const DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID: u16 = diplomacy53::DOMAIN_ID;
 const ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID: u16 = battleplans54::DOMAIN_ID;
 const NAVAL_MISSIONS_STATUS_DOMAIN_ID: u16 = 56;
 const SESSION_MULTIPLAYER_METADATA_DOMAIN_ID: u16 = session57::DOMAIN_ID;
+
+fn compact_expected_partial_tolerance_applies(domain_id: u16, status_flags: u32) -> bool {
+    compact_contract::expected_partial_tolerance_applies(domain_id, status_flags).is_some()
+}
+
+fn compact_failure_flags_after_expected_partial_tolerance(
+    domain_id: u16,
+    status_flags: u32,
+) -> u32 {
+    compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+        domain_id,
+        status_flags,
+    )
+}
+
 const DOMAIN47_R2_KEY: &str = "_r2_characters_leaders_cabinet_live";
 const CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY: &str =
     "construction_buildings_state_damage_live";
@@ -815,7 +830,9 @@ impl WorldFold {
         domain_name: &'static str,
         status_flags: u32,
     ) -> bool {
-        if compact_status_is_failure(status_flags) {
+        let failure_flags =
+            compact_failure_flags_after_expected_partial_tolerance(domain_id, status_flags);
+        if failure_flags != 0 {
             self.mark_fold_domain_unknown(
                 domain_id,
                 "compact_status_failure",
@@ -823,6 +840,15 @@ impl WorldFold {
             );
             true
         } else {
+            if compact_expected_partial_tolerance_applies(domain_id, status_flags) {
+                if let Some(tolerance) = compact_contract::expected_partial_tolerance(domain_id) {
+                    self.record_domain_problem(domain_id, "partial_data");
+                    self.note(format!(
+                        "{domain_name} expected partial tolerance applied: {}",
+                        tolerance.reason
+                    ));
+                }
+            }
             false
         }
     }
@@ -851,6 +877,11 @@ impl WorldFold {
 
     fn replace_or_sparse_after_first(&mut self, domain_id: u16, status_flags: u32) -> bool {
         let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        if compact_expected_partial_tolerance_applies(domain_id, status_flags) {
+            // Expected-partial frames carry valid rows plus known omissions. Treat them as
+            // sparse observations so an omitted row is never fabricated as a deletion.
+            return true;
+        }
         if delta || self.delta_baselines_seen.contains(&domain_id) {
             true
         } else {
@@ -2540,7 +2571,7 @@ impl WorldFold {
                 json!({
                     "army_id": order.key.army_id,
                     "generation": order.key.generation,
-                    "slot_index": order.key.slot_index,
+                    "slot_index": order.slot_index,
                     "order_type": order.order_type,
                     "target_states": order.target_states,
                     "path_provinces": order.path_provinces,
@@ -3537,7 +3568,6 @@ impl WorldFold {
             let key = ArmyOrderKey {
                 army_id: row.army_id,
                 generation: row.generation,
-                slot_index: row.slot_index,
             };
             if row.flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
                 self.army_orders.remove(&key);
@@ -5894,6 +5924,22 @@ impl WorldFold {
         }
         if self.handle_compact_failure(SPECIAL_PROJECTS_DOMAIN_ID, "special_projects", status_flags)
         {
+            return Ok(());
+        }
+        if compact_expected_partial_tolerance_applies(SPECIAL_PROJECTS_DOMAIN_ID, status_flags) {
+            // D41 partial conditions are not row-complete:
+            // - read_compact_projects marks partial for invalid program/facility/project-pool
+            //   roots, so facilities/projects and derived project_states may omit live rows.
+            // - scientist/project_state row read shortfalls also mark partial after pinning.
+            // - breakthrough progress partials can omit rows and D41 has no tombstones.
+            // Without deletion evidence, merging would fabricate persistence; replacing would
+            // fabricate disappearance. Keep the D41 leaf unknown for this hour.
+            self.fold_domains_unknown_this_hour
+                .insert(SPECIAL_PROJECTS_DOMAIN_ID);
+            self.note(
+                "special_projects state unknown this hour; expected partial can omit current rows"
+                    .to_string(),
+            );
             return Ok(());
         }
         if facility_count > active_facility_count
@@ -8386,11 +8432,14 @@ struct CombatFoldRow {
     defender_count: usize,
 }
 
+// Keyed by (army, generation) only: generation is globally unique per order
+// instance (collector tracker counter), while slot_index is a mutable attribute.
+// Including the slot in the key let a same-order slot change strand a stale twin
+// under the old key with no tombstone able to remove it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ArmyOrderKey {
     army_id: u32,
     generation: u64,
-    slot_index: u32,
 }
 
 struct ArmyOrderRawRow {
@@ -8415,16 +8464,18 @@ struct ArmyOrderState {
     target_status_code: u32,
 }
 
+// Same identity rationale as ArmyOrderKey: (army, generation) is the stable
+// order identity; slot_index is a mutable attribute kept on the order value.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ArmyBattleplanDepthKey {
     army_id: u32,
     generation: u64,
-    slot_index: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ArmyBattleplanDepthOrder {
     key: ArmyBattleplanDepthKey,
+    slot_index: u32,
     order_type: i32,
     target_states: Vec<u32>,
     path_provinces: Vec<u32>,
@@ -9557,8 +9608,8 @@ fn decode_army_battleplans_depth_payload(
                 key: ArmyBattleplanDepthKey {
                     army_id,
                     generation,
-                    slot_index,
                 },
+                slot_index,
                 order_type,
                 target_states,
                 path_provinces,

@@ -647,6 +647,7 @@ struct CompactSummary {
     per_hour_data_domain_counts: BTreeMap<i32, BTreeMap<u16, usize>>,
     frame_times_us: Vec<u64>,
     status_flags_or: u32,
+    frame_end_status_flags_or: u32,
     unique_hours: Vec<i32>,
     first_hour: Option<i32>,
     last_hour: Option<i32>,
@@ -670,6 +671,8 @@ struct CompactDomainSummary {
     read_times_us: Vec<u64>,
     max_read_time_us: u64,
     status_flags_or: u32,
+    effective_failure_status_flags_or: u32,
+    expected_partial_tolerance_hours: BTreeSet<i32>,
     problems: BTreeMap<String, u64>,
 }
 
@@ -688,6 +691,17 @@ fn compact_domain_status_flags_scope(domain_id: u16) -> &'static str {
     } else {
         "raw_global_plus_lane_local"
     }
+}
+
+fn compact_status_has_expected_partial_tolerance(domain_id: u16, status_flags: u32) -> bool {
+    compact_contract::expected_partial_tolerance_applies(domain_id, status_flags).is_some()
+}
+
+fn compact_domain_effective_failure_flags(domain_id: u16, status_flags: u32) -> u32 {
+    compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+        domain_id,
+        status_flags,
+    )
 }
 
 fn main() {
@@ -772,6 +786,7 @@ fn run() -> Result<(), String> {
                         "met": hourly_met,
                         "problems": hourly_problems,
                     },
+                    "expected_partial_tolerances_applied": [],
                     "collector_control_errors": summary.control_errors.iter().collect::<Vec<_>>(),
                     "parse_errors": summary.parse_errors,
                     "production_path_note": "JSON is debug/proof visibility only; production feasibility must use the compact stream gate",
@@ -783,8 +798,9 @@ fn run() -> Result<(), String> {
             let summary = summarize_compact_stream(&pipe_bytes);
             let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
             let coverage_errors = compact_domain_coverage_errors(&summary, &expected_domain_ids);
+            let gate_status = compact_gate_status(&summary);
             let control_invalid_seen =
-                (summary.status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0;
+                (gate_status.failure_status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0;
             let collector_control_errors = if control_invalid_seen {
                 vec!["scheduled_domains_invalid:compact_status_control_invalid".to_string()]
             } else {
@@ -807,6 +823,8 @@ fn run() -> Result<(), String> {
                 &coverage_errors,
                 &cfg.scheduled_domains,
             );
+            let expected_partial_tolerances_applied =
+                compact_expected_partial_tolerances_applied_json(&summary);
             (
                 json!({
                     "schema": "native_collector_session_v1",
@@ -846,6 +864,7 @@ fn run() -> Result<(), String> {
                         "met": hourly_met,
                         "problems": hourly_problems,
                     },
+                    "expected_partial_tolerances_applied": expected_partial_tolerances_applied,
                     "collector_control_errors": collector_control_errors,
                     "parse_errors": summary.parse_errors,
                     "ordering_errors": summary.ordering_errors,
@@ -906,6 +925,22 @@ fn run() -> Result<(), String> {
     fs::write(&manifest_path, pretty).map_err(|e| format!("write manifest failed: {e}"))?;
     for line in production_profile_summary_lines(&production_profile_summary) {
         eprintln!("{line}");
+    }
+    if let Some(tolerated_domains) = manifest
+        .get("expected_partial_tolerances_applied")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("domain").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+    {
+        eprintln!(
+            "recorder summary: tolerated_expected_partial={}",
+            tolerated_domains.join(",")
+        );
     }
     if let Some(errors) = manifest
         .get("collector_control_errors")
@@ -2663,6 +2698,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     domain.max_read_time_us = domain.max_read_time_us.max(read_time_us);
                     domain.read_times_us.push(read_time_us);
                     domain.status_flags_or |= status_flags;
+                    domain.effective_failure_status_flags_or |=
+                        compact_domain_effective_failure_flags(domain_id, status_flags);
+                    if compact_status_has_expected_partial_tolerance(domain_id, status_flags) {
+                        domain
+                            .expected_partial_tolerance_hours
+                            .insert(game_hour_raw);
+                    }
                 }
             }
             COMPACT_RECORD_TYPE_DOMAIN_DATA => {
@@ -2678,6 +2720,19 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     .or_default() += 1;
                 let domain = summary.per_domain.entry(domain_id).or_default();
                 domain.data_record_count += 1;
+                if compact_contract::expected_partial_tolerance(domain_id).is_some()
+                    && compact_payload_status_flags(payload)
+                        .map(|status_flags| {
+                            domain.effective_failure_status_flags_or |=
+                                compact_domain_effective_failure_flags(domain_id, status_flags);
+                            compact_status_has_expected_partial_tolerance(domain_id, status_flags)
+                        })
+                        .unwrap_or(false)
+                {
+                    domain
+                        .expected_partial_tolerance_hours
+                        .insert(game_hour_raw);
+                }
                 track_delta_baseline_for_summary(
                     &mut summary,
                     &mut delta_baselines_seen,
@@ -2865,7 +2920,9 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         payload.len()
                     ));
                 } else {
-                    summary.status_flags_or |= read_u32_le(payload, 24);
+                    let status_flags = read_u32_le(payload, 24);
+                    summary.status_flags_or |= status_flags;
+                    summary.frame_end_status_flags_or |= status_flags;
                     summary.frame_times_us.push(read_u64_le(payload, 8));
                 }
             }
@@ -12328,6 +12385,82 @@ fn compact_domain_descriptor_list_json(domain_ids: &BTreeSet<u16>) -> Value {
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompactExpectedPartialToleranceApplied {
+    domain_id: u16,
+    domain: &'static str,
+    tolerated_flags: u32,
+    reason: &'static str,
+    frames_affected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompactGateStatus {
+    failure_status_flags_or: u32,
+    expected_partial_tolerances_applied: Vec<CompactExpectedPartialToleranceApplied>,
+}
+
+fn compact_gate_status(summary: &CompactSummary) -> CompactGateStatus {
+    let mut failure_status_flags_or =
+        summary.frame_end_status_flags_or & COMPACT_STATUS_FAILURE_MASK;
+    let mut expected_partial_tolerances_applied = Vec::new();
+
+    for (domain_id, domain) in &summary.per_domain {
+        if !domain.expected_partial_tolerance_hours.is_empty() {
+            let tolerance = compact_contract::expected_partial_tolerance(*domain_id)
+                .expect("applied tolerance hours require a tolerance");
+            expected_partial_tolerances_applied.push(CompactExpectedPartialToleranceApplied {
+                domain_id: *domain_id,
+                domain: compact_domain_name(*domain_id),
+                tolerated_flags: tolerance.tolerated_flags,
+                reason: tolerance.reason,
+                frames_affected: domain.expected_partial_tolerance_hours.len(),
+            });
+        }
+        if compact_contract::expected_partial_tolerance(*domain_id).is_some() {
+            failure_status_flags_or |= domain.effective_failure_status_flags_or;
+        } else {
+            failure_status_flags_or |= compact_contract::compact_status_for_global_interpretation(
+                *domain_id,
+                domain.status_flags_or,
+            ) & COMPACT_STATUS_FAILURE_MASK;
+        }
+    }
+
+    CompactGateStatus {
+        failure_status_flags_or,
+        expected_partial_tolerances_applied,
+    }
+}
+
+fn compact_expected_partial_tolerances_applied_json(summary: &CompactSummary) -> Value {
+    let gate_status = compact_gate_status(summary);
+    Value::Array(
+        gate_status
+            .expected_partial_tolerances_applied
+            .iter()
+            .map(|applied| {
+                json!({
+                    "domain": applied.domain,
+                    "domain_id": applied.domain_id,
+                    "tolerated_flags": applied.tolerated_flags,
+                    "reason": applied.reason,
+                    "frames_affected": applied.frames_affected,
+                })
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+fn compact_expected_partial_tolerance_domain_names(summary: &CompactSummary) -> Vec<&'static str> {
+    compact_gate_status(summary)
+        .expected_partial_tolerances_applied
+        .iter()
+        .map(|applied| applied.domain)
+        .collect()
+}
+
 fn compact_profile_unfolded_domains(summary: &CompactSummary) -> BTreeSet<u16> {
     let profile_ids: BTreeSet<u16> = compact_contract::production_profile_domains()
         .into_iter()
@@ -12346,17 +12479,18 @@ fn compact_stream_manifest_json(
     coverage_errors: &[String],
     scheduled_domains: &[String],
 ) -> Value {
-    let failure_status_flags_or = summary.status_flags_or & COMPACT_STATUS_FAILURE_MASK;
-    let failure_status_seen = compact_contract::compact_status_is_failure(summary.status_flags_or);
-    let worker_panic_seen = (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0;
+    let gate_status = compact_gate_status(summary);
+    let failure_status_flags_or = gate_status.failure_status_flags_or;
+    let failure_status_seen = failure_status_flags_or != 0;
+    let worker_panic_seen = (failure_status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0;
     let bridge_unavailable_seen =
-        (summary.status_flags_or & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0;
+        (failure_status_flags_or & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0;
     let source_unavailable_seen =
-        (summary.status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0;
-    let partial_data_seen = (summary.status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0;
+        (failure_status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0;
+    let partial_data_seen = (failure_status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0;
     let transition_baseline_reset_seen =
         (summary.status_flags_or & COMPACT_STATUS_TRANSITION_BASELINE_RESET) != 0;
-    let control_invalid_seen = (summary.status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0;
+    let control_invalid_seen = (failure_status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0;
     let profile_unfolded = compact_profile_unfolded_domains(summary);
     json!({
         "record_magic": "H4CR",
@@ -12472,6 +12606,8 @@ fn compact_hourly_problems(
     coverage_errors: &[String],
 ) -> Vec<String> {
     let mut problems = Vec::new();
+    let gate_status = compact_gate_status(summary);
+    let failure_status_flags_or = gate_status.failure_status_flags_or;
     if !summary.parse_errors.is_empty() {
         problems.push("compact_stream_not_decodable".to_string());
     }
@@ -12481,22 +12617,22 @@ fn compact_hourly_problems(
     if summary.skipped_hours != 0 {
         problems.push("skipped_game_hours_detected".to_string());
     }
-    if (summary.status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0 {
+    if (failure_status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0 {
         problems.push("collector_control_invalid_scheduled_domains".to_string());
     }
-    if compact_contract::compact_status_is_failure(summary.status_flags_or) {
+    if failure_status_flags_or != 0 {
         problems.push("compact_failure_status_seen".to_string());
     }
-    if (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0 {
+    if (failure_status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0 {
         problems.push("compact_worker_panic_seen".to_string());
     }
-    if (summary.status_flags_or & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0 {
+    if (failure_status_flags_or & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0 {
         problems.push("compact_bridge_unavailable".to_string());
     }
-    if (summary.status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0 {
+    if (failure_status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0 {
         problems.push("compact_source_unavailable".to_string());
     }
-    if (summary.status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0 {
+    if (failure_status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0 {
         problems.push("compact_partial_data".to_string());
     }
     if (summary.status_flags_or & COMPACT_STATUS_TRANSITION_BASELINE_RESET) != 0 {
@@ -12951,6 +13087,570 @@ mod tests {
             manifest["per_domain"]["scripted_state_flags_variables_live"]["status_flags_scope"],
             json!("raw_global_plus_lane_local")
         );
+    }
+
+    #[test]
+    fn compact_expected_partial_tolerance_absorbs_domain27_partial_data() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 2, 2, 3, 2, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_data_payload(COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[27]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &[27],
+            &coverage_errors,
+            &["army_orders".into()],
+        );
+        let applied = compact_expected_partial_tolerances_applied_json(&summary);
+
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(!problems.contains(&"compact_failure_status_seen".to_string()));
+        assert!(!problems.contains(&"compact_partial_data".to_string()));
+        assert_eq!(manifest["failure_status_flags_or"], json!(0));
+        assert_eq!(manifest["failure_status_seen"], json!(false));
+        assert_eq!(manifest["partial_data_seen"], json!(false));
+        assert_eq!(
+            compact_expected_partial_tolerance_domain_names(&summary),
+            vec!["army_orders"]
+        );
+        assert_eq!(applied[0]["domain"], json!("army_orders"));
+        assert_eq!(applied[0]["domain_id"], json!(27));
+        assert_eq!(
+            applied[0]["tolerated_flags"],
+            json!(COMPACT_STATUS_PARTIAL_DATA)
+        );
+        assert_eq!(applied[0]["frames_affected"], json!(1));
+        assert!(applied[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("order-target rows skip-counted"));
+    }
+
+    #[test]
+    fn compact_expected_partial_tolerance_keeps_domain26_partial_failure() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 2, 2, 3, 2, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_data_payload(COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 2, 2, 3, 2, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
+            100,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_division_equipment_data_payload(COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            5,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 2),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[26, 27]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &[26, 27],
+            &coverage_errors,
+            &["division_equipment".into(), "army_orders".into()],
+        );
+        let applied = compact_expected_partial_tolerances_applied_json(&summary);
+
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(problems.contains(&"compact_failure_status_seen".to_string()));
+        assert!(problems.contains(&"compact_partial_data".to_string()));
+        assert_eq!(
+            manifest["failure_status_flags_or"],
+            json!(COMPACT_STATUS_PARTIAL_DATA)
+        );
+        assert_eq!(manifest["failure_status_seen"], json!(true));
+        assert_eq!(manifest["partial_data_seen"], json!(true));
+        assert_eq!(applied.as_array().unwrap().len(), 1);
+        assert_eq!(applied[0]["domain"], json!("army_orders"));
+    }
+
+    #[test]
+    fn compact_expected_partial_tolerance_does_not_cover_source_unavailable() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 0, 0, 0, 0, COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_data_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[27]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &[27],
+            &coverage_errors,
+            &["army_orders".into()],
+        );
+        let applied = compact_expected_partial_tolerances_applied_json(&summary);
+
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(problems.contains(&"compact_failure_status_seen".to_string()));
+        assert!(problems.contains(&"compact_source_unavailable".to_string()));
+        assert!(!problems.contains(&"compact_partial_data".to_string()));
+        assert_eq!(
+            manifest["failure_status_flags_or"],
+            json!(COMPACT_STATUS_SOURCE_UNAVAILABLE)
+        );
+        assert_eq!(manifest["source_unavailable_seen"], json!(true));
+        assert_eq!(applied, json!([]));
+    }
+
+    #[test]
+    fn compact_expected_partial_tolerance_not_applied_with_untolerated_failure_bits() {
+        let mut raw = Vec::new();
+        let status_flags = COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 0, 0, 0, 0, status_flags),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_data_payload(status_flags),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[27]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &[27],
+            &coverage_errors,
+            &["army_orders".into()],
+        );
+        let applied = compact_expected_partial_tolerances_applied_json(&summary);
+
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(problems.contains(&"compact_failure_status_seen".to_string()));
+        assert!(problems.contains(&"compact_source_unavailable".to_string()));
+        assert!(problems.contains(&"compact_partial_data".to_string()));
+        assert_eq!(manifest["failure_status_flags_or"], json!(status_flags));
+        assert_eq!(manifest["source_unavailable_seen"], json!(true));
+        assert_eq!(manifest["partial_data_seen"], json!(true));
+        assert_eq!(applied, json!([]));
+    }
+
+    #[test]
+    fn compact_expected_partial_tolerance_absorbs_domain54_partial_with_delta() {
+        let mut raw = Vec::new();
+        let status_flags = COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_DELTA_DATA;
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 0, 0, 0, 0, status_flags),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &battleplans54::encode_depth_payload(&[], 0, status_flags, 0, 0, 0, 0, 0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors =
+            compact_domain_coverage_errors(&summary, &[COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &[COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE],
+            &coverage_errors,
+            &["army_battleplans_depth_live".into()],
+        );
+        let applied = compact_expected_partial_tolerances_applied_json(&summary);
+
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(!problems.contains(&"compact_failure_status_seen".to_string()));
+        assert!(!problems.contains(&"compact_partial_data".to_string()));
+        assert_eq!(manifest["failure_status_flags_or"], json!(0));
+        assert_eq!(manifest["failure_status_seen"], json!(false));
+        assert_eq!(manifest["partial_data_seen"], json!(false));
+        assert_ne!(summary.status_flags_or & COMPACT_STATUS_DELTA_DATA, 0);
+        assert_eq!(applied[0]["domain"], json!("army_battleplans_depth_live"));
+        assert_eq!(
+            applied[0]["tolerated_flags"],
+            json!(COMPACT_STATUS_PARTIAL_DATA)
+        );
+    }
+
+    #[test]
+    fn compact_expected_partial_e2e_folds_domain27_partial_rows_with_manifest_tolerance() {
+        let mut raw = Vec::new();
+        let game_hour_raw = 60_759_359;
+        append_test_compact_record(
+            &mut raw,
+            1,
+            game_hour_raw,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 2, 2, 3, 2, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            game_hour_raw,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_data_payload(COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            game_hour_raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[27]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let manifest = json!({
+            "compact_stream": compact_stream_manifest_json(
+                &summary,
+                &[27],
+                &coverage_errors,
+                &["army_orders".into()],
+            ),
+            "expected_partial_tolerances_applied": compact_expected_partial_tolerances_applied_json(&summary),
+        });
+        let snapshot = fold_single_compact_snapshot(&raw);
+
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            manifest["expected_partial_tolerances_applied"][0]["domain"],
+            json!("army_orders")
+        );
+        assert_eq!(
+            manifest["expected_partial_tolerances_applied"][0]["domain_id"],
+            json!(27)
+        );
+        assert!(manifest["expected_partial_tolerances_applied"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("order-target rows skip-counted"));
+
+        let orders = snapshot["order_of_battle"]["battle_plan_orders"]
+            .as_array()
+            .expect("D27 tolerated partial should fold valid battle plan rows");
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0]["army"], json!(17));
+        assert_eq!(orders[0]["order_instance"]["states"], json!([118, 119]));
+        assert!(snapshot["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(27)
+                && problem["problem"] == json!("partial_data")));
+        assert!(snapshot["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("expected partial tolerance applied")));
+    }
+
+    #[test]
+    fn compact_expected_partial_e2e_domain41_tolerates_gate_but_folds_unknown() {
+        let mut raw = Vec::new();
+        let game_hour_raw = 60_759_359;
+        append_test_compact_record(
+            &mut raw,
+            1,
+            game_hour_raw,
+            41,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 5, 5, 5, 5, 0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            game_hour_raw,
+            41,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_projects_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            game_hour_raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
+            game_hour_raw + 1,
+            41,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 5, 5, 5, 5, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            5,
+            game_hour_raw + 1,
+            41,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_projects_data_payload(COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            6,
+            game_hour_raw + 1,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[41]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let applied = compact_expected_partial_tolerances_applied_json(&summary);
+        let snapshots = fold_compact_snapshots(&raw);
+
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(applied[0]["domain"], json!("projects_live"));
+        assert_eq!(applied[0]["domain_id"], json!(41));
+        assert_eq!(applied[0]["frames_affected"], json!(1));
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0]["special_projects"]["projects"]["91234"]["id"],
+            json!(91234)
+        );
+        assert_eq!(snapshots[1]["special_projects"], Value::Null);
+        assert!(snapshots[1]["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(41)
+                && problem["problem"] == json!("partial_data")));
+        assert!(snapshots[1]["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("special_projects state unknown this hour")));
+    }
+
+    #[test]
+    fn compact_untolerated_domain26_partial_e2e_fails_gate_and_nulls_fold() {
+        let mut raw = Vec::new();
+        let game_hour_raw = 60_759_359;
+        append_test_compact_record(
+            &mut raw,
+            1,
+            game_hour_raw,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(500, 2, 2, 2, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            game_hour_raw,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            game_hour_raw,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(500, 2, 2, 3, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
+            game_hour_raw,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_division_equipment_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            5,
+            game_hour_raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            6,
+            game_hour_raw + 1,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(500, 2, 2, 2, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            7,
+            game_hour_raw + 1,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            8,
+            game_hour_raw + 1,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 2, 2, 3, 2, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            9,
+            game_hour_raw + 1,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_division_equipment_data_payload(COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            10,
+            game_hour_raw + 1,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 2),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[20, 26]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let applied = compact_expected_partial_tolerances_applied_json(&summary);
+        let snapshots = fold_compact_snapshots(&raw);
+        assert_eq!(snapshots.len(), 2);
+        let snapshot = snapshots.last().unwrap();
+
+        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(problems.contains(&"compact_failure_status_seen".to_string()));
+        assert!(problems.contains(&"compact_partial_data".to_string()));
+        assert_eq!(applied, json!([]));
+
+        let divisions = snapshot["divisions"]
+            .as_array()
+            .expect("D20 baseline should still fold divisions");
+        assert!(divisions
+            .iter()
+            .any(|division| division.get("equipment") == Some(&Value::Null)));
+        assert!(snapshot["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(26)
+                && problem["problem"] == json!("compact_status_failure")));
     }
 
     #[test]
@@ -17599,6 +18299,25 @@ mod tests {
         payload.extend_from_slice(&status_flags.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload
+    }
+
+    fn fold_single_compact_snapshot(raw: &[u8]) -> Value {
+        let snapshots = fold_compact_snapshots(raw);
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "one folded snapshot for the single compact test hour"
+        );
+        snapshots.into_iter().next().unwrap()
+    }
+
+    fn fold_compact_snapshots(raw: &[u8]) -> Vec<Value> {
+        let mut fold = WorldFold::new(replay_game_id("expected-partial/e2e"));
+        fold.ingest_stream(raw);
+        fold.finish()
+            .into_iter()
+            .map(|(_, _, bytes)| serde_json::from_slice(&bytes).unwrap())
+            .collect()
     }
 
     fn test_frame_payload(frame_time_us: u64, emitted_domains: u32) -> Vec<u8> {

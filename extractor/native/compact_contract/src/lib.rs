@@ -86,6 +86,68 @@ pub const fn compact_status_is_failure(status_flags: u32) -> bool {
     (status_flags & COMPACT_STATUS_FAILURE_MASK) != 0
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactExpectedPartialTolerance {
+    pub domain_id: CompactDomainId,
+    pub tolerated_flags: u32,
+    pub reason: &'static str,
+}
+
+pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance] = &[
+    CompactExpectedPartialTolerance {
+        domain_id: 27,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "army_orders: unsupported/validation-failed order-target rows skip-counted (documented fixture-blocked scope)",
+    },
+    CompactExpectedPartialTolerance {
+        domain_id: 28,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "oob_command: invalid root/task-force rows skip-counted (documented fixture-blocked scope)",
+    },
+    CompactExpectedPartialTolerance {
+        domain_id: 41,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "projects_live: project lifecycle/reward sub-scopes are contract FIXTURE_BLOCKED; affected rows skip-counted",
+    },
+    CompactExpectedPartialTolerance {
+        domain_id: 54,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "army_battleplans_depth_live: documented fixture-blocked scopes (redraw/toggle lifecycle, activation/execution, stance) fail closed per-row",
+    },
+];
+
+pub fn expected_partial_tolerance(
+    domain_id: CompactDomainId,
+) -> Option<&'static CompactExpectedPartialTolerance> {
+    COMPACT_EXPECTED_PARTIAL_TOLERANCES
+        .iter()
+        .find(|tolerance| tolerance.domain_id == domain_id)
+}
+
+pub fn expected_partial_tolerance_applies(
+    domain_id: CompactDomainId,
+    status_flags: u32,
+) -> Option<&'static CompactExpectedPartialTolerance> {
+    let tolerance = expected_partial_tolerance(domain_id)?;
+    let failure_flags = compact_status_for_global_interpretation(domain_id, status_flags)
+        & COMPACT_STATUS_FAILURE_MASK;
+    ((failure_flags & tolerance.tolerated_flags) != 0
+        && (failure_flags & !tolerance.tolerated_flags) == 0)
+        .then_some(tolerance)
+}
+
+pub fn compact_status_failure_flags_after_expected_partial_tolerance(
+    domain_id: CompactDomainId,
+    status_flags: u32,
+) -> u32 {
+    let failure_flags = compact_status_for_global_interpretation(domain_id, status_flags)
+        & COMPACT_STATUS_FAILURE_MASK;
+    match expected_partial_tolerance_applies(domain_id, status_flags) {
+        Some(tolerance) => failure_flags & !tolerance.tolerated_flags,
+        None => failure_flags,
+    }
+}
+
 // --- Production profile ------------------------------------------------------
 
 pub const STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG: &str = "templates_equipment_catalog";
@@ -974,6 +1036,86 @@ mod tests {
                     | COMPACT_STATUS_PARTIAL_DATA,
             ),
             COMPACT_STATUS_PARTIAL_DATA
+        );
+    }
+
+    #[test]
+    fn expected_partial_tolerances_are_exactly_documented_domains() {
+        let domains = COMPACT_EXPECTED_PARTIAL_TOLERANCES
+            .iter()
+            .map(|tolerance| tolerance.domain_id)
+            .collect::<Vec<_>>();
+        assert_eq!(domains, vec![27, 28, 41, 54]);
+    }
+
+    #[test]
+    fn expected_partial_tolerances_only_grant_partial_data() {
+        for tolerance in COMPACT_EXPECTED_PARTIAL_TOLERANCES {
+            assert_eq!(
+                tolerance.tolerated_flags, COMPACT_STATUS_PARTIAL_DATA,
+                "domain {} grants unexpected tolerance flags {:#x}",
+                tolerance.domain_id, tolerance.tolerated_flags
+            );
+            assert_eq!(tolerance.tolerated_flags & !COMPACT_STATUS_PARTIAL_DATA, 0);
+        }
+    }
+
+    #[test]
+    fn expected_partial_tolerance_lookup_rejects_unaccepted_partial_domains() {
+        for domain_id in [26, 47, 48, 56] {
+            assert_eq!(expected_partial_tolerance(domain_id), None);
+        }
+        for domain_id in [27, 28, 41, 54] {
+            assert_eq!(
+                expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
+                Some(COMPACT_STATUS_PARTIAL_DATA)
+            );
+        }
+    }
+
+    #[test]
+    fn expected_partial_tolerance_applies_only_without_untolerated_failure_bits() {
+        assert_eq!(
+            expected_partial_tolerance_applies(27, COMPACT_STATUS_PARTIAL_DATA)
+                .map(|tolerance| tolerance.domain_id),
+            Some(27)
+        );
+        assert_eq!(
+            expected_partial_tolerance_applies(
+                27,
+                COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_DELTA_DATA,
+            )
+            .map(|tolerance| tolerance.domain_id),
+            Some(27)
+        );
+        assert_eq!(
+            expected_partial_tolerance_applies(
+                27,
+                COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            ),
+            None
+        );
+        assert_eq!(
+            expected_partial_tolerance_applies(26, COMPACT_STATUS_PARTIAL_DATA),
+            None
+        );
+    }
+
+    #[test]
+    fn expected_partial_tolerance_failure_flags_keep_untolerated_partials() {
+        assert_eq!(
+            compact_status_failure_flags_after_expected_partial_tolerance(
+                27,
+                COMPACT_STATUS_PARTIAL_DATA,
+            ),
+            0
+        );
+        assert_eq!(
+            compact_status_failure_flags_after_expected_partial_tolerance(
+                27,
+                COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            ),
+            COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE
         );
     }
 

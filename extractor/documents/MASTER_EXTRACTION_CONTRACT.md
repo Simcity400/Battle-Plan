@@ -38,7 +38,7 @@ recording path itself is DLL-only and compact.
 | --- | --- |
 | `CONCEPT_COMPLETE` | The whole row is captured, rejected, or blocked with exact proof. This is the only status that means "done" for 1:1 replay coverage. |
 | `PRODUCTION_COMPLETE` | The named runtime infrastructure/domain contract is accepted in the shared DLL/Rust path, but parent gameplay concepts may still have other rows open. |
-| `PRODUCTION_SLICE_DONE` | A scoped production slice passed the DLL/compact/Rust/.battleplan gate at hourly-or-better speed-five/current-equivalent cadence, with zero skipped hours and no partial/source/worker/bridge failures. |
+| `PRODUCTION_SLICE_DONE` | A scoped production slice passed the DLL/compact/Rust/.battleplan gate at hourly-or-better speed-five/current-equivalent cadence, with zero skipped hours and no untolerated partial/source/worker/bridge failures. |
 | `VALIDATED_PARTIAL_SLICE_R4` | A shared validated partial slice is schedulable and folded for its explicitly named fields, but broader domain/category fields remain open or fixture-blocked. |
 | `PARTIAL:PAUSE_VALIDATED_SPEED_OPEN` | Pause state is validated and integrated, while speed/session timing semantics remain open. |
 | `SHARED_INTEGRATION_PENDING` | Lane-local implementation/proof exists, but the shared one-DLL collector and Rust recorder have not accepted it. |
@@ -58,11 +58,21 @@ Captured rows must prove all of the following:
 - `.battleplan` verifies.
 - Hourly-or-better cadence at speed five/current equivalent.
 - Zero skipped game hours.
-- No source-unavailable, partial-data, worker-panic, bridge-unavailable, or
-  equivalent failure flags.
+- No untolerated source-unavailable, partial-data, worker-panic,
+  bridge-unavailable, or equivalent failure flags.
 - Captured rows must be proven under the recorder `--production` profile, not
   only under an ad hoc subset of `--scheduled-domain` flags.
 - Fail-closed behavior for invalid layouts.
+
+### Expected Partial Tolerance Policy
+
+The production gate remains fail-closed. The only expected partials are the
+domain/flag pairs in `compact_contract::COMPACT_EXPECTED_PARTIAL_TOLERANCES`.
+Those entries may absorb `COMPACT_STATUS_PARTIAL_DATA` only for the named
+fixture-blocked, skip-counted sub-scopes; they never absorb source-unavailable,
+control-invalid, worker/bridge, or other failure bits. The recorder manifest
+must surface each applied tolerance with its domain, flags, reason, and affected
+frame count.
 
 ## Current Production / Profile-Scheduled Domains
 
@@ -357,8 +367,8 @@ every affected row above:
    evidence so it is not rediscovered by another lane.
 7. Combined speed-five proof:
    schedule every production domain that is enabled for the current build,
-   require hourly-or-better coverage, zero skipped hours, no failure flags, Rust
-   decode, and `.battleplan` verification.
+   require hourly-or-better coverage, zero skipped hours, no untolerated failure
+   flags, Rust decode, and `.battleplan` verification.
 
 ## Done Means
 
@@ -368,5 +378,5 @@ The extraction app is done only when:
 - the row is explicitly out of scope with proof and that out-of-scope decision
   is accepted in this document, and
 - the final combined speed-five proof passes with all enabled production domains,
-  zero skipped game hours, no source/partial/worker/bridge failures, Rust decode,
-  and `.battleplan` verification.
+  zero skipped game hours, no untolerated source/partial/worker/bridge failures,
+  Rust decode, and `.battleplan` verification.
