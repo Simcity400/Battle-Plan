@@ -8,6 +8,6 @@ pub use domain46_air_variant_archetypes_live::{
     AirVariantArchetypeRow, DOMAIN_ID, DOMAIN_NAME,
 };
 pub use extractor::{
-    build_air_ace_roster_payload, build_air_variant_archetype_payload_with_token_dictionary,
+    build_air_ace_roster_trailer, build_air_variant_archetype_payload_with_token_dictionary,
     LiveAceRosterInput,
 };

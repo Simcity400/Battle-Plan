@@ -1,63 +1,102 @@
+//! Domain-46 air ace roster: the `ACE1` trailer codec.
+//!
+//! The ace roster ships INSIDE the domain-46 `air_variant_archetypes` data
+//! record, appended after the self-delimiting base payload (the MTD1
+//! purchase-contract trailer precedent from domain 43). This preserves the
+//! stream invariant of exactly one data record per domain per frame; trailer
+//! presence is decided by trailing bytes + the `ACE1` magic, which is
+//! unambiguous because the base payload's exact length is derived from its
+//! own header (a legacy no-trailer record decodes exactly to its end).
+//!
+//! Rows are FULL-REPLACE per frame (no delta/tombstones): every valid roster
+//! ace is re-emitted, and the fold replaces its whole ace map whenever a
+//! trailer is present. All fields fail closed: `absent != 0` is enforced by
+//! presence flags, and killer fields are only valid on a confirmed-dead ace
+//! (their content on living aces was never validated).
+
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const DOMAIN_ID: u16 = 46;
-pub const DOMAIN_NAME: &str = "air_variant_archetypes_live";
-pub const RECORD_SCOPE: &str = "air_ace_roster_identity";
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_VERSION: u16 = 1;
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-pub const COMPACT_RECORD_TYPE_ACE_ROSTER_DATA: u16 = 0xACE1;
-pub const HEADER_LEN: usize = 48;
-pub const ROW_LEN: usize = 32;
+pub const ACE_TRAILER_MAGIC: &[u8; 4] = b"ACE1";
+pub const ACE_TRAILER_VERSION: u16 = 1;
+pub const ACE_TRAILER_HEADER_LEN: usize = 40;
+pub const ACE_TRAILER_ROW_LEN: usize = 32;
 
-pub const STATUS_DELTA_DATA: u32 = 1 << 10;
-pub const STATUS_WING_ASSIGNMENT_BLOCKED: u32 = 1 << 11;
+// Trailer-local status flags. These are NEVER fed into the global compact
+// status interpretation (the record-level status stays the base archetype
+// payload's); values are chosen to match the global semantics where one
+// exists so a human reading a dump is not misled.
+pub const ACE_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
+pub const ACE_STATUS_PARTIAL_DATA: u32 = 1 << 9;
+pub const ACE_STATUS_WING_ASSIGNMENT_BLOCKED: u32 = 1 << 13;
+pub const ACE_KNOWN_STATUS_MASK: u32 =
+    ACE_STATUS_SOURCE_UNAVAILABLE | ACE_STATUS_PARTIAL_DATA | ACE_STATUS_WING_ASSIGNMENT_BLOCKED;
 
-pub const ROW_FLAG_DELETED: u32 = 1;
 pub const ROW_FLAG_NAME: u32 = 1 << 1;
 pub const ROW_FLAG_SURNAME: u32 = 1 << 2;
 pub const ROW_FLAG_CALLSIGN: u32 = 1 << 3;
 pub const ROW_FLAG_WING_ID: u32 = 1 << 4;
+/// The alive byte (+0x158) read back a validated boolean; without this flag
+/// the row's death state is UNKNOWN (torn/out-of-domain read), never "alive".
+pub const ROW_FLAG_ALIVE_KNOWN: u32 = 1 << 5;
+/// Requires ROW_FLAG_ALIVE_KNOWN. Set = dead (alive byte 0).
+pub const ROW_FLAG_DEAD: u32 = 1 << 6;
+/// Requires ROW_FLAG_DEAD. Killer ace id (+0x164) present. Independent of
+/// KILLER_COUNTRY: two D04 dead aces carry a killer country but no killer
+/// ace id.
+pub const ROW_FLAG_KILLER_ACE: u32 = 1 << 7;
+/// Requires ROW_FLAG_DEAD. Killer country tag-db-id (+0x168) present.
+pub const ROW_FLAG_KILLER_COUNTRY: u32 = 1 << 8;
 
 pub const SOURCE_LIVE_COUNTRY_ACE_VECTOR: u32 = 1;
 pub const SOURCE_LIVE_ACE_OBJECT_LAYOUT: u32 = 1 << 1;
 pub const SOURCE_DEV_SAVE_LAYOUT_VALIDATION: u32 = 1 << 2;
 pub const SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED: u32 = 1 << 3;
 pub const SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT: u32 = 1 << 4;
+pub const SOURCE_LIVE_ACE_DEATH_RECORD: u32 = 1 << 5;
 
 pub const MAX_TAG_DB_ID: u32 = 4096;
 pub const MAX_ACE_ID: u32 = i32::MAX as u32;
 pub const MAX_COUNTRY_ACE_INDEX: u32 = 4096;
 pub const MAX_WING_ID: u32 = i32::MAX as u32;
-pub const MAX_STRING_LEN: usize = 96;
+/// UTF-8 byte cap. Raw cp1252 strings are capped at 96 bytes at the read
+/// layer; cp1252->UTF-8 can grow each byte to at most 3 bytes.
+pub const MAX_STRING_LEN: usize = 96 * 3;
+pub const MAX_ACE_ROWS: usize = 65_536;
 
-const KNOWN_ROW_FLAGS: u32 =
-    ROW_FLAG_DELETED | ROW_FLAG_NAME | ROW_FLAG_SURNAME | ROW_FLAG_CALLSIGN | ROW_FLAG_WING_ID;
+const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_NAME
+    | ROW_FLAG_SURNAME
+    | ROW_FLAG_CALLSIGN
+    | ROW_FLAG_WING_ID
+    | ROW_FLAG_ALIVE_KNOWN
+    | ROW_FLAG_DEAD
+    | ROW_FLAG_KILLER_ACE
+    | ROW_FLAG_KILLER_COUNTRY;
 const KNOWN_SOURCE_MASK: u32 = SOURCE_LIVE_COUNTRY_ACE_VECTOR
     | SOURCE_LIVE_ACE_OBJECT_LAYOUT
     | SOURCE_DEV_SAVE_LAYOUT_VALIDATION
     | SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED
-    | SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT;
+    | SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT
+    | SOURCE_LIVE_ACE_DEATH_RECORD;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AirAceRosterHeader {
-    pub elapsed_wall_ms: u64,
     pub status_flags: u32,
-    pub changed_rows: u32,
     pub observed_country_rows: u32,
     pub observed_ace_rows: u32,
-    pub identity_rows: u32,
     pub wing_assignment_rows: u32,
-    pub blocked_assignment_rows: u32,
+    pub dead_rows: u32,
+    pub skipped_rows: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AirAceRosterRow {
     pub tag_db_id: u32,
     pub ace_id: u32,
-    pub deleted: bool,
     pub country_ace_index: u32,
     pub wing_id: Option<u32>,
+    pub alive: Option<bool>,
+    pub killer_ace_id: Option<u32>,
+    pub killer_country_tag_db_id: Option<u32>,
     pub source_mask: u32,
     pub name: Option<String>,
     pub surname: Option<String>,
@@ -68,524 +107,490 @@ pub struct AirAceRosterRow {
 pub struct AirAceRosterGateSummary {
     pub status_flags_or: u32,
     pub data_rows_total: u64,
-    pub data_changed_rows_total: u64,
     pub data_units_total: BTreeMap<&'static str, u64>,
     pub parse_errors: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CompactRecordHeader {
-    pub sequence: u64,
-    pub game_hour_raw: i32,
-    pub domain_id: u16,
-    pub record_type: u16,
-    pub payload_len: u32,
-    pub flags: u32,
+fn row_flags(row: &AirAceRosterRow) -> u32 {
+    let mut flags = 0u32;
+    if row.name.is_some() {
+        flags |= ROW_FLAG_NAME;
+    }
+    if row.surname.is_some() {
+        flags |= ROW_FLAG_SURNAME;
+    }
+    if row.callsign.is_some() {
+        flags |= ROW_FLAG_CALLSIGN;
+    }
+    if row.wing_id.is_some() {
+        flags |= ROW_FLAG_WING_ID;
+    }
+    if let Some(alive) = row.alive {
+        flags |= ROW_FLAG_ALIVE_KNOWN;
+        if !alive {
+            flags |= ROW_FLAG_DEAD;
+            if row.killer_ace_id.is_some() {
+                flags |= ROW_FLAG_KILLER_ACE;
+            }
+            if row.killer_country_tag_db_id.is_some() {
+                flags |= ROW_FLAG_KILLER_COUNTRY;
+            }
+        }
+    }
+    flags
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AirAceRosterRecordGateSummary {
-    pub record_count: u64,
-    pub payload_bytes_total: u64,
-    pub status_flags_or: u32,
-    pub data_rows_total: u64,
-    pub data_changed_rows_total: u64,
-    pub data_units_total: BTreeMap<&'static str, u64>,
-    pub parse_errors: Vec<String>,
-}
+/// Encode the `ACE1` trailer bytes to append after a self-delimiting base
+/// archetype payload. The encoder is strict the same way the decoder is:
+/// killer fields on a non-dead row are DROPPED (never encoded), so a
+/// fail-open reader bug upstream cannot produce a decodable fail-open wire
+/// image.
+pub fn encode_trailer(header: &AirAceRosterHeader, rows: &[AirAceRosterRow]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        ACE_TRAILER_HEADER_LEN
+            .saturating_add(rows.len().saturating_mul(ACE_TRAILER_ROW_LEN))
+            .saturating_add(rows.len().saturating_mul(32)),
+    );
+    out.extend_from_slice(ACE_TRAILER_MAGIC);
+    out.extend_from_slice(&ACE_TRAILER_VERSION.to_le_bytes());
+    out.extend_from_slice(&(ACE_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&(ACE_TRAILER_ROW_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&header.status_flags.to_le_bytes());
+    out.extend_from_slice(&header.observed_country_rows.to_le_bytes());
+    out.extend_from_slice(&header.observed_ace_rows.to_le_bytes());
+    out.extend_from_slice(&header.wing_assignment_rows.to_le_bytes());
+    out.extend_from_slice(&header.dead_rows.to_le_bytes());
+    out.extend_from_slice(&header.skipped_rows.to_le_bytes());
 
-pub fn encode_compact_data_record(sequence: u64, game_hour_raw: i32, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(COMPACT_RECORD_HEADER_LEN.saturating_add(payload.len()));
-    out.extend_from_slice(COMPACT_RECORD_MAGIC);
-    out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
-    out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
-    out.extend_from_slice(&sequence.to_le_bytes());
-    out.extend_from_slice(&game_hour_raw.to_le_bytes());
-    out.extend_from_slice(&DOMAIN_ID.to_le_bytes());
-    out.extend_from_slice(&COMPACT_RECORD_TYPE_ACE_ROSTER_DATA.to_le_bytes());
-    out.extend_from_slice(&(payload.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(payload);
+    for row in rows {
+        let flags = row_flags(row);
+        let dead = flags & ROW_FLAG_DEAD != 0;
+        out.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        out.extend_from_slice(&row.ace_id.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(&row.source_mask.to_le_bytes());
+        out.extend_from_slice(&row.country_ace_index.to_le_bytes());
+        out.extend_from_slice(&row.wing_id.unwrap_or(0).to_le_bytes());
+        let killer_ace = if dead {
+            row.killer_ace_id.unwrap_or(0)
+        } else {
+            0
+        };
+        let killer_country = if dead {
+            row.killer_country_tag_db_id.unwrap_or(0)
+        } else {
+            0
+        };
+        out.extend_from_slice(&killer_ace.to_le_bytes());
+        out.extend_from_slice(&killer_country.to_le_bytes());
+    }
+
+    for row in rows {
+        append_compact_string(&mut out, row.name.as_deref());
+        append_compact_string(&mut out, row.surname.as_deref());
+        append_compact_string(&mut out, row.callsign.as_deref());
+    }
+
     out
 }
 
-pub fn decode_compact_data_record(offset: usize, bytes: &[u8]) -> AirAceRosterRecordGateSummary {
-    let mut summary = AirAceRosterRecordGateSummary::default();
-    let Some((header, payload)) = parse_compact_record(offset, bytes, &mut summary) else {
-        return summary;
+/// The decoded `ACE1` trailer: validated header + full-replace rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AceTrailerFrame {
+    pub header: AirAceRosterHeader,
+    pub rows: Vec<AirAceRosterRow>,
+}
+
+/// Strictly decode the `ACE1` trailer at `trailer_offset` within `payload`
+/// into rows. Every wire-validation rule lives HERE (single source of
+/// truth); the gate summary decoder and the world fold both consume this.
+/// Any violation fails the whole trailer (`Err`), never a partial decode.
+/// The trailer must consume `payload` to its exact end.
+pub fn decode_trailer_rows(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<AceTrailerFrame, String> {
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| format!("ace trailer offset {trailer_offset} is beyond payload end"))?;
+    if trailer.len() < ACE_TRAILER_HEADER_LEN {
+        return Err(format!(
+            "ace trailer is {} byte(s), expected at least {ACE_TRAILER_HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    if &trailer[0..4] != ACE_TRAILER_MAGIC {
+        return Err("ace trailer magic is invalid".to_string());
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_len = read_u16_le(trailer, 8) as usize;
+    let reserved = read_u16_le(trailer, 10);
+    if version != ACE_TRAILER_VERSION
+        || header_len != ACE_TRAILER_HEADER_LEN
+        || row_len != ACE_TRAILER_ROW_LEN
+        || reserved != 0
+    {
+        return Err(format!(
+            "ace trailer header shape is invalid (version {version}, header_len {header_len}, row_len {row_len}, reserved {reserved})"
+        ));
+    }
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let header = AirAceRosterHeader {
+        status_flags: read_u32_le(trailer, 16),
+        observed_country_rows: read_u32_le(trailer, 20),
+        observed_ace_rows: read_u32_le(trailer, 24),
+        wing_assignment_rows: read_u32_le(trailer, 28),
+        dead_rows: read_u32_le(trailer, 32),
+        skipped_rows: read_u32_le(trailer, 36),
     };
-    summary.record_count = 1;
-    summary.payload_bytes_total = payload.len() as u64;
 
-    if header.domain_id != DOMAIN_ID {
-        summary.parse_errors.push(format!(
-            "offset {offset}: domain_id {} != {DOMAIN_ID}",
-            header.domain_id
+    if header.status_flags & !ACE_KNOWN_STATUS_MASK != 0 {
+        return Err(format!(
+            "ace trailer has unknown status flags {:#x}",
+            header.status_flags
         ));
-        return summary;
     }
-    if header.record_type != COMPACT_RECORD_TYPE_ACE_ROSTER_DATA {
-        summary.parse_errors.push(format!(
-            "offset {offset}: record_type {} != {COMPACT_RECORD_TYPE_ACE_ROSTER_DATA}",
-            header.record_type
+    if row_count > MAX_ACE_ROWS {
+        return Err(format!(
+            "ace trailer row_count {row_count} exceeds {MAX_ACE_ROWS}"
         ));
-        return summary;
+    }
+    if row_count != header.observed_ace_rows as usize {
+        return Err(format!(
+            "ace trailer row_count {row_count} != observed_ace_rows {} (rows are full-replace)",
+            header.observed_ace_rows
+        ));
+    }
+    if header.wing_assignment_rows as usize > row_count || header.dead_rows as usize > row_count {
+        return Err(format!(
+            "ace trailer assignment/dead counters exceed row_count {row_count}"
+        ));
+    }
+    // SOURCE_UNAVAILABLE is a whole-frame absence: it must carry zero rows
+    // (absent, never zero-filled). PARTIAL (roster incomplete) still carries
+    // the surviving rows for observability; the fold retains prior state on
+    // both. `skipped_rows` is an informational counter and may be nonzero on
+    // a complete frame (ambiguous-assignment-only drops), so it does NOT by
+    // itself require PARTIAL.
+    if header.status_flags & ACE_STATUS_SOURCE_UNAVAILABLE != 0 && row_count != 0 {
+        return Err(format!(
+            "ace trailer SOURCE_UNAVAILABLE carries {row_count} rows (must be empty)"
+        ));
     }
 
-    merge_payload_summary(
-        &mut summary,
-        decode_payload(offset + COMPACT_RECORD_HEADER_LEN, payload),
-    );
-    summary
+    let rows_end = header_len.saturating_add(row_count.saturating_mul(row_len));
+    if trailer.len() < rows_end {
+        return Err(format!(
+            "ace trailer is {} byte(s), expected at least {rows_end}",
+            trailer.len()
+        ));
+    }
+
+    let mut rows = Vec::with_capacity(row_count);
+    let mut seen_aces = BTreeSet::new();
+    let mut decoded_assignment_rows = 0usize;
+    let mut decoded_dead_rows = 0usize;
+    let mut row_cursor = header_len;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, row_cursor);
+        let ace_id = read_u32_le(trailer, row_cursor + 4);
+        let flags = read_u32_le(trailer, row_cursor + 8);
+        let source_mask = read_u32_le(trailer, row_cursor + 12);
+        let country_ace_index = read_u32_le(trailer, row_cursor + 16);
+        let wing_id = read_u32_le(trailer, row_cursor + 20);
+        let killer_ace_id = read_u32_le(trailer, row_cursor + 24);
+        let killer_country = read_u32_le(trailer, row_cursor + 28);
+        row_cursor += row_len;
+
+        if flags & !KNOWN_ROW_FLAGS != 0 {
+            return Err(format!("ace row {row_index} has unknown flags {flags:#x}"));
+        }
+        if source_mask == 0 {
+            return Err(format!("ace row {row_index} has empty source_mask"));
+        }
+        if source_mask & !KNOWN_SOURCE_MASK != 0 {
+            return Err(format!(
+                "ace row {row_index} has unknown source_mask {source_mask:#x}"
+            ));
+        }
+        if tag_db_id == 0 || tag_db_id > MAX_TAG_DB_ID {
+            return Err(format!(
+                "ace row {row_index} has invalid tag_db_id {tag_db_id}"
+            ));
+        }
+        if ace_id == 0 || ace_id > MAX_ACE_ID {
+            return Err(format!("ace row {row_index} has invalid ace_id {ace_id}"));
+        }
+        if !seen_aces.insert((tag_db_id, ace_id)) {
+            return Err(format!(
+                "ace row {row_index} duplicates tag_db_id {tag_db_id} ace_id {ace_id}"
+            ));
+        }
+        if country_ace_index > MAX_COUNTRY_ACE_INDEX {
+            return Err(format!(
+                "ace row {row_index} has invalid country_ace_index {country_ace_index}"
+            ));
+        }
+        let wing = if flags & ROW_FLAG_WING_ID != 0 {
+            if wing_id == 0 || wing_id > MAX_WING_ID {
+                return Err(format!("ace row {row_index} has invalid wing_id {wing_id}"));
+            }
+            decoded_assignment_rows = decoded_assignment_rows.saturating_add(1);
+            Some(wing_id)
+        } else {
+            if wing_id != 0 {
+                return Err(format!("ace row {row_index} has wing_id without flag"));
+            }
+            None
+        };
+
+        let alive_known = flags & ROW_FLAG_ALIVE_KNOWN != 0;
+        let dead = flags & ROW_FLAG_DEAD != 0;
+        if dead && !alive_known {
+            return Err(format!("ace row {row_index} has DEAD without ALIVE_KNOWN"));
+        }
+        if dead {
+            decoded_dead_rows = decoded_dead_rows.saturating_add(1);
+        }
+        let killer_ace = if flags & ROW_FLAG_KILLER_ACE != 0 {
+            if !dead {
+                return Err(format!(
+                    "ace row {row_index} has KILLER_ACE on a non-dead row"
+                ));
+            }
+            if killer_ace_id == 0 || killer_ace_id > MAX_ACE_ID {
+                return Err(format!(
+                    "ace row {row_index} has invalid killer_ace_id {killer_ace_id}"
+                ));
+            }
+            Some(killer_ace_id)
+        } else {
+            if killer_ace_id != 0 {
+                return Err(format!(
+                    "ace row {row_index} has killer_ace_id without flag"
+                ));
+            }
+            None
+        };
+        let killer_country_id = if flags & ROW_FLAG_KILLER_COUNTRY != 0 {
+            if !dead {
+                return Err(format!(
+                    "ace row {row_index} has KILLER_COUNTRY on a non-dead row"
+                ));
+            }
+            if killer_country == 0 || killer_country > MAX_TAG_DB_ID {
+                return Err(format!(
+                    "ace row {row_index} has invalid killer_country {killer_country}"
+                ));
+            }
+            Some(killer_country)
+        } else {
+            if killer_country != 0 {
+                return Err(format!(
+                    "ace row {row_index} has killer_country without flag"
+                ));
+            }
+            None
+        };
+        if source_mask & SOURCE_LIVE_ACE_DEATH_RECORD != 0 && !alive_known {
+            return Err(format!(
+                "ace row {row_index} claims death-record source without ALIVE_KNOWN"
+            ));
+        }
+
+        rows.push(AirAceRosterRow {
+            tag_db_id,
+            ace_id,
+            country_ace_index,
+            wing_id: wing,
+            alive: alive_known.then_some(!dead),
+            killer_ace_id: killer_ace,
+            killer_country_tag_db_id: killer_country_id,
+            source_mask,
+            name: None,
+            surname: None,
+            callsign: None,
+        });
+    }
+
+    let mut cursor = rows_end;
+    for row_index in 0..row_count {
+        let name = read_compact_string(trailer, &mut cursor, "ace name")?;
+        let surname = read_compact_string(trailer, &mut cursor, "ace surname")?;
+        let callsign = read_compact_string(trailer, &mut cursor, "ace callsign")?;
+        let row_flags = read_u32_le(trailer, header_len + row_index * row_len + 8);
+        validate_flagged_string(row_index, "name", name.as_deref(), row_flags, ROW_FLAG_NAME)?;
+        validate_flagged_string(
+            row_index,
+            "surname",
+            surname.as_deref(),
+            row_flags,
+            ROW_FLAG_SURNAME,
+        )?;
+        validate_flagged_string(
+            row_index,
+            "callsign",
+            callsign.as_deref(),
+            row_flags,
+            ROW_FLAG_CALLSIGN,
+        )?;
+        let row = &mut rows[row_index];
+        row.name = name;
+        row.surname = surname;
+        row.callsign = callsign;
+    }
+    if trailer_offset.saturating_add(cursor) != payload.len() {
+        return Err(format!(
+            "ace trailer has {} trailing byte(s)",
+            payload.len().saturating_sub(trailer_offset + cursor)
+        ));
+    }
+    if decoded_assignment_rows != header.wing_assignment_rows as usize {
+        return Err(format!(
+            "ace trailer wing_assignment_rows {} != decoded {decoded_assignment_rows}",
+            header.wing_assignment_rows
+        ));
+    }
+    if decoded_dead_rows != header.dead_rows as usize {
+        return Err(format!(
+            "ace trailer dead_rows {} != decoded {decoded_dead_rows}",
+            header.dead_rows
+        ));
+    }
+
+    Ok(AceTrailerFrame { header, rows })
 }
 
-pub fn encode_payload(header: &AirAceRosterHeader, rows: &[AirAceRosterRow]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(
-        HEADER_LEN
-            .saturating_add(rows.len().saturating_mul(ROW_LEN))
-            .saturating_add(rows.len().saturating_mul(32)),
-    );
-    payload.extend_from_slice(&header.elapsed_wall_ms.to_le_bytes());
-    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&header.changed_rows.to_le_bytes());
-    payload.extend_from_slice(&header.status_flags.to_le_bytes());
-    payload.extend_from_slice(&header.observed_country_rows.to_le_bytes());
-    payload.extend_from_slice(&header.observed_ace_rows.to_le_bytes());
-    payload.extend_from_slice(&header.identity_rows.to_le_bytes());
-    payload.extend_from_slice(&header.wing_assignment_rows.to_le_bytes());
-    payload.extend_from_slice(&header.blocked_assignment_rows.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
-
-    for row in rows {
-        let mut flags = 0u32;
-        if row.deleted {
-            flags |= ROW_FLAG_DELETED;
-        }
-        if row.name.is_some() {
-            flags |= ROW_FLAG_NAME;
-        }
-        if row.surname.is_some() {
-            flags |= ROW_FLAG_SURNAME;
-        }
-        if row.callsign.is_some() {
-            flags |= ROW_FLAG_CALLSIGN;
-        }
-        if row.wing_id.is_some() {
-            flags |= ROW_FLAG_WING_ID;
-        }
-        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
-        payload.extend_from_slice(&row.ace_id.to_le_bytes());
-        payload.extend_from_slice(&flags.to_le_bytes());
-        payload.extend_from_slice(&row.source_mask.to_le_bytes());
-        payload.extend_from_slice(&row.country_ace_index.to_le_bytes());
-        payload.extend_from_slice(&row.wing_id.unwrap_or(0).to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
-    }
-
-    for row in rows {
-        append_compact_string(&mut payload, row.name.as_deref());
-        append_compact_string(&mut payload, row.surname.as_deref());
-        append_compact_string(&mut payload, row.callsign.as_deref());
-    }
-
-    payload
-}
-
-pub fn decode_payload(offset: usize, payload: &[u8]) -> AirAceRosterGateSummary {
+/// Decode + gate the `ACE1` trailer at `trailer_offset` within `payload`,
+/// producing gate units. Thin wrapper over `decode_trailer_rows` (the single
+/// validation source); a violation surfaces as one parse error.
+pub fn decode_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+) -> AirAceRosterGateSummary {
     let mut summary = AirAceRosterGateSummary::default();
-    if payload.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster payload is {} byte(s), expected at least {HEADER_LEN}",
-            payload.len()
-        ));
-        return summary;
-    }
-
-    let row_count = read_u32_le(payload, 8) as usize;
-    let changed_rows = read_u32_le(payload, 12) as usize;
-    let status_flags = read_u32_le(payload, 16);
-    let observed_country_rows = read_u32_le(payload, 20) as usize;
-    let observed_ace_rows = read_u32_le(payload, 24) as usize;
-    let identity_rows = read_u32_le(payload, 28) as usize;
-    let wing_assignment_rows = read_u32_le(payload, 32) as usize;
-    let blocked_assignment_rows = read_u32_le(payload, 36) as usize;
-    let reserved0 = read_u32_le(payload, 40);
-    let reserved1 = read_u32_le(payload, 44);
-    summary.status_flags_or |= status_flags;
-
-    if changed_rows > row_count {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster changed_rows {changed_rows} > row_count {row_count}"
-        ));
-    }
-    if identity_rows > row_count {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster identity_rows {identity_rows} > row_count {row_count}"
-        ));
-    }
-    if wing_assignment_rows > row_count || blocked_assignment_rows > row_count {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster assignment counters exceed row_count {row_count}"
-        ));
-    }
-    if row_count > observed_ace_rows && (status_flags & STATUS_DELTA_DATA) == 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster row_count {row_count} > observed_ace_rows {observed_ace_rows}"
-        ));
-    }
-    if reserved0 != 0 || reserved1 != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster header reserved fields are nonzero"
-        ));
-    }
-
-    let rows_end = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    if payload.len() < rows_end {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster payload is {} byte(s), expected at least {rows_end}",
-            payload.len()
-        ));
-        return summary;
-    }
-
-    summary.data_rows_total = row_count as u64;
-    summary.data_changed_rows_total = changed_rows as u64;
-    add_unit(&mut summary, "air_ace_roster_rows", row_count);
+    let frame = match decode_trailer_rows(payload, trailer_offset) {
+        Ok(frame) => frame,
+        Err(error) => {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: {error}"));
+            return summary;
+        }
+    };
+    summary.status_flags_or |= frame.header.status_flags;
+    summary.data_rows_total = frame.rows.len() as u64;
+    add_unit(&mut summary, "air_ace_roster_rows", frame.rows.len());
     add_unit(
         &mut summary,
         "air_ace_roster_observed_country_rows",
-        observed_country_rows,
+        frame.header.observed_country_rows as usize,
     );
     add_unit(
         &mut summary,
         "air_ace_roster_observed_ace_rows",
-        observed_ace_rows,
+        frame.header.observed_ace_rows as usize,
     );
-    add_unit(&mut summary, "air_ace_roster_identity_rows", identity_rows);
     add_unit(
         &mut summary,
         "air_ace_roster_wing_assignment_rows",
-        wing_assignment_rows,
+        frame.header.wing_assignment_rows as usize,
     );
     add_unit(
         &mut summary,
-        "air_ace_roster_blocked_assignment_rows",
-        blocked_assignment_rows,
-    );
-
-    let mut cursor = HEADER_LEN;
-    let mut seen_aces = BTreeSet::new();
-    let mut row_headers = Vec::with_capacity(row_count);
-    let mut decoded_identity_rows = 0usize;
-    let mut decoded_assignment_rows = 0usize;
-    let mut deleted_rows = 0usize;
-    let mut layout_validated_rows = 0usize;
-    let mut assignment_validated_rows = 0usize;
-    let mut assignment_blocked_rows = 0usize;
-    for row_index in 0..row_count {
-        let tag_db_id = read_u32_le(payload, cursor);
-        let ace_id = read_u32_le(payload, cursor + 4);
-        let flags = read_u32_le(payload, cursor + 8);
-        let source_mask = read_u32_le(payload, cursor + 12);
-        let country_ace_index = read_u32_le(payload, cursor + 16);
-        let wing_id = read_u32_le(payload, cursor + 20);
-        let row_reserved0 = read_u32_le(payload, cursor + 24);
-        let row_reserved1 = read_u32_le(payload, cursor + 28);
-        cursor += ROW_LEN;
-
-        let deleted = flags & ROW_FLAG_DELETED != 0;
-        if deleted {
-            deleted_rows = deleted_rows.saturating_add(1);
-        }
-        if flags & !KNOWN_ROW_FLAGS != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} has unknown flags {flags}"
-            ));
-        }
-        if source_mask == 0 && !deleted {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} has empty source_mask"
-            ));
-        }
-        if source_mask & !KNOWN_SOURCE_MASK != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} has unknown source_mask {source_mask}"
-            ));
-        }
-        if tag_db_id == 0 || tag_db_id > MAX_TAG_DB_ID {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} has invalid tag_db_id {tag_db_id}"
-            ));
-        }
-        if ace_id == 0 || ace_id > MAX_ACE_ID {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} has invalid ace_id {ace_id}"
-            ));
-        } else if !seen_aces.insert((tag_db_id, ace_id)) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} duplicates tag_db_id {tag_db_id} ace_id {ace_id}"
-            ));
-        }
-        if country_ace_index > MAX_COUNTRY_ACE_INDEX {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} has invalid country_ace_index {country_ace_index}"
-            ));
-        }
-        if flags & ROW_FLAG_WING_ID != 0 {
-            if wing_id == 0 || wing_id > MAX_WING_ID {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: air ace roster row {row_index} has invalid wing_id {wing_id}"
-                ));
-            } else {
-                decoded_assignment_rows = decoded_assignment_rows.saturating_add(1);
-            }
-        } else if wing_id != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} has wing_id without flag"
-            ));
-        }
-        if source_mask & SOURCE_LIVE_ACE_OBJECT_LAYOUT != 0 {
-            layout_validated_rows = layout_validated_rows.saturating_add(1);
-        }
-        if source_mask & SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT != 0 {
-            assignment_validated_rows = assignment_validated_rows.saturating_add(1);
-        }
-        if source_mask & SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED != 0 {
-            assignment_blocked_rows = assignment_blocked_rows.saturating_add(1);
-        }
-        if row_reserved0 != 0 || row_reserved1 != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster row {row_index} reserved fields are nonzero"
-            ));
-        }
-        row_headers.push((flags, deleted));
-    }
-
-    let mut name_rows = 0usize;
-    let mut surname_rows = 0usize;
-    let mut callsign_rows = 0usize;
-    for (row_index, (flags, deleted)) in row_headers.iter().enumerate() {
-        let name_len = match skip_compact_string_len(payload, &mut cursor, "air ace name") {
-            Ok(len) => len,
-            Err(err) => {
-                summary.parse_errors.push(format!("offset {offset}: {err}"));
-                return summary;
-            }
-        };
-        let surname_len = match skip_compact_string_len(payload, &mut cursor, "air ace surname") {
-            Ok(len) => len,
-            Err(err) => {
-                summary.parse_errors.push(format!("offset {offset}: {err}"));
-                return summary;
-            }
-        };
-        let callsign_len = match skip_compact_string_len(payload, &mut cursor, "air ace callsign") {
-            Ok(len) => len,
-            Err(err) => {
-                summary.parse_errors.push(format!("offset {offset}: {err}"));
-                return summary;
-            }
-        };
-        validate_flagged_string(
-            &mut summary,
-            offset,
-            row_index,
-            "name",
-            name_len,
-            *flags,
-            ROW_FLAG_NAME,
-        );
-        validate_flagged_string(
-            &mut summary,
-            offset,
-            row_index,
-            "surname",
-            surname_len,
-            *flags,
-            ROW_FLAG_SURNAME,
-        );
-        validate_flagged_string(
-            &mut summary,
-            offset,
-            row_index,
-            "callsign",
-            callsign_len,
-            *flags,
-            ROW_FLAG_CALLSIGN,
-        );
-        if *deleted && (name_len != 0 || surname_len != 0 || callsign_len != 0) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: air ace roster deleted row {row_index} carries strings"
-            ));
-        }
-        if name_len > 0 {
-            name_rows = name_rows.saturating_add(1);
-        }
-        if surname_len > 0 {
-            surname_rows = surname_rows.saturating_add(1);
-        }
-        if callsign_len > 0 {
-            callsign_rows = callsign_rows.saturating_add(1);
-        }
-        if name_len > 0 || surname_len > 0 || callsign_len > 0 {
-            decoded_identity_rows = decoded_identity_rows.saturating_add(1);
-        }
-    }
-    if cursor != payload.len() {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster payload has {} trailing byte(s)",
-            payload.len().saturating_sub(cursor)
-        ));
-    }
-    if decoded_identity_rows != identity_rows {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster identity_rows {identity_rows} != decoded {decoded_identity_rows}"
-        ));
-    }
-    if decoded_assignment_rows != wing_assignment_rows {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster wing_assignment_rows {wing_assignment_rows} != decoded {decoded_assignment_rows}"
-        ));
-    }
-    if assignment_blocked_rows != blocked_assignment_rows {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster blocked_assignment_rows {blocked_assignment_rows} != decoded {assignment_blocked_rows}"
-        ));
-    }
-
-    add_unit(&mut summary, "air_ace_roster_deleted_rows", deleted_rows);
-    add_unit(&mut summary, "air_ace_roster_name_rows", name_rows);
-    add_unit(&mut summary, "air_ace_roster_surname_rows", surname_rows);
-    add_unit(&mut summary, "air_ace_roster_callsign_rows", callsign_rows);
-    add_unit(
-        &mut summary,
-        "air_ace_roster_live_layout_validated_rows",
-        layout_validated_rows,
+        "air_ace_roster_dead_rows",
+        frame.header.dead_rows as usize,
     );
     add_unit(
         &mut summary,
-        "air_ace_roster_live_wing_assignment_validated_rows",
-        assignment_validated_rows,
+        "air_ace_roster_skipped_rows",
+        frame.header.skipped_rows as usize,
     );
     add_unit(
         &mut summary,
-        "air_ace_roster_wing_assignment_scan_blocked_rows",
-        assignment_blocked_rows,
+        "air_ace_roster_identity_rows",
+        frame
+            .rows
+            .iter()
+            .filter(|row| row.name.is_some() || row.surname.is_some() || row.callsign.is_some())
+            .count(),
     );
-
+    add_unit(
+        &mut summary,
+        "air_ace_roster_alive_rows",
+        frame
+            .rows
+            .iter()
+            .filter(|row| row.alive == Some(true))
+            .count(),
+    );
+    add_unit(
+        &mut summary,
+        "air_ace_roster_death_record_rows",
+        frame.rows.iter().filter(|row| row.alive.is_some()).count(),
+    );
+    add_unit(
+        &mut summary,
+        "air_ace_roster_killer_ace_rows",
+        frame
+            .rows
+            .iter()
+            .filter(|row| row.killer_ace_id.is_some())
+            .count(),
+    );
+    add_unit(
+        &mut summary,
+        "air_ace_roster_killer_country_rows",
+        frame
+            .rows
+            .iter()
+            .filter(|row| row.killer_country_tag_db_id.is_some())
+            .count(),
+    );
     summary
 }
 
 fn validate_flagged_string(
-    summary: &mut AirAceRosterGateSummary,
-    offset: usize,
     row_index: usize,
     label: &str,
-    len: usize,
+    value: Option<&str>,
     flags: u32,
     flag: u32,
-) {
-    if len > MAX_STRING_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster row {row_index} {label} string is too long ({len})"
-        ));
+) -> Result<(), String> {
+    match value {
+        Some(text) => {
+            if text.len() > MAX_STRING_LEN {
+                return Err(format!(
+                    "ace row {row_index} {label} string is too long ({})",
+                    text.len()
+                ));
+            }
+            if flags & flag == 0 {
+                return Err(format!(
+                    "ace row {row_index} has {label} string without flag"
+                ));
+            }
+        }
+        None => {
+            if flags & flag != 0 {
+                return Err(format!(
+                    "ace row {row_index} has {label} flag with empty string"
+                ));
+            }
+        }
     }
-    if len == 0 && flags & flag != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster row {row_index} has {label} flag with empty string"
-        ));
-    }
-    if len > 0 && flags & flag == 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air ace roster row {row_index} has {label} string without flag"
-        ));
-    }
+    Ok(())
 }
 
-fn add_unit(summary: &mut AirAceRosterGateSummary, key: &'static str, value: usize) {
-    let entry = summary.data_units_total.entry(key).or_default();
-    *entry = entry.saturating_add(value as u64);
-}
-
-fn parse_compact_record<'a>(
-    offset: usize,
-    bytes: &'a [u8],
-    summary: &mut AirAceRosterRecordGateSummary,
-) -> Option<(CompactRecordHeader, &'a [u8])> {
-    if bytes.len() < COMPACT_RECORD_HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: truncated H4CR header with {} byte(s)",
-            bytes.len()
-        ));
-        return None;
-    }
-    if &bytes[0..4] != COMPACT_RECORD_MAGIC {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: invalid H4CR magic"));
-        return None;
-    }
-    let version = read_u16_le(bytes, 4);
-    if version != COMPACT_RECORD_VERSION {
-        summary.parse_errors.push(format!(
-            "offset {offset}: unsupported H4CR version {version}"
-        ));
-    }
-    let header_len = read_u16_le(bytes, 6) as usize;
-    if header_len != COMPACT_RECORD_HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: unsupported H4CR header length {header_len}"
-        ));
-        return None;
-    }
-    let payload_len = read_u32_le(bytes, 24) as usize;
-    let expected_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
-    if bytes.len() != expected_len {
-        summary.parse_errors.push(format!(
-            "offset {offset}: record length {} != header {COMPACT_RECORD_HEADER_LEN} + payload {payload_len}",
-            bytes.len()
-        ));
-        return None;
-    }
-    let header = CompactRecordHeader {
-        sequence: read_u64_le(bytes, 8),
-        game_hour_raw: read_i32_le(bytes, 16),
-        domain_id: read_u16_le(bytes, 20),
-        record_type: read_u16_le(bytes, 22),
-        payload_len: payload_len as u32,
-        flags: read_u32_le(bytes, 28),
-    };
-    Some((header, &bytes[COMPACT_RECORD_HEADER_LEN..]))
-}
-
-fn merge_payload_summary(
-    record: &mut AirAceRosterRecordGateSummary,
-    payload: AirAceRosterGateSummary,
-) {
-    record.status_flags_or |= payload.status_flags_or;
-    record.data_rows_total = record
-        .data_rows_total
-        .saturating_add(payload.data_rows_total);
-    record.data_changed_rows_total = record
-        .data_changed_rows_total
-        .saturating_add(payload.data_changed_rows_total);
-    for (key, value) in payload.data_units_total {
-        let entry = record.data_units_total.entry(key).or_default();
-        *entry = entry.saturating_add(value);
-    }
-    record.parse_errors.extend(payload.parse_errors);
-}
-
-fn append_compact_string(out: &mut Vec<u8>, value: Option<&str>) {
-    let bytes = value.unwrap_or("").as_bytes();
-    let len = bytes.len().min(u16::MAX as usize);
-    out.extend_from_slice(&(len as u16).to_le_bytes());
-    out.extend_from_slice(&bytes[..len]);
-}
-
-fn skip_compact_string_len(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<usize, String> {
+fn read_compact_string(
+    bytes: &[u8],
+    cursor: &mut usize,
+    label: &str,
+) -> Result<Option<String>, String> {
     if bytes.len().saturating_sub(*cursor) < 2 {
         return Err(format!("{label} string is truncated before length"));
     }
@@ -596,8 +601,26 @@ fn skip_compact_string_len(bytes: &[u8], cursor: &mut usize, label: &str) -> Res
             "{label} string length {len} exceeds remaining payload"
         ));
     }
+    let body = &bytes[*cursor..*cursor + len];
     *cursor += len;
-    Ok(len)
+    if len == 0 {
+        return Ok(None);
+    }
+    String::from_utf8(body.to_vec())
+        .map(Some)
+        .map_err(|_| format!("{label} string is not valid UTF-8"))
+}
+
+fn add_unit(summary: &mut AirAceRosterGateSummary, key: &'static str, value: usize) {
+    let entry = summary.data_units_total.entry(key).or_default();
+    *entry = entry.saturating_add(value as u64);
+}
+
+fn append_compact_string(out: &mut Vec<u8>, value: Option<&str>) {
+    let bytes = value.unwrap_or("").as_bytes();
+    let len = bytes.len().min(u16::MAX as usize);
+    out.extend_from_slice(&(len as u16).to_le_bytes());
+    out.extend_from_slice(&bytes[..len]);
 }
 
 fn read_u16_le(payload: &[u8], offset: usize) -> u16 {
@@ -608,199 +631,272 @@ fn read_u32_le(payload: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(payload[offset..offset + 4].try_into().expect("u32 range"))
 }
 
-fn read_i32_le(payload: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes(payload[offset..offset + 4].try_into().expect("i32 range"))
-}
-
-fn read_u64_le(payload: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(payload[offset..offset + 8].try_into().expect("u64 range"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample_row(ace_id: u32) -> AirAceRosterRow {
+    fn alive_row(ace_id: u32) -> AirAceRosterRow {
         AirAceRosterRow {
             tag_db_id: 1,
             ace_id,
-            deleted: false,
             country_ace_index: ace_id - 5000,
             wing_id: None,
+            alive: Some(true),
+            killer_ace_id: None,
+            killer_country_tag_db_id: None,
             source_mask: SOURCE_LIVE_COUNTRY_ACE_VECTOR
                 | SOURCE_LIVE_ACE_OBJECT_LAYOUT
                 | SOURCE_DEV_SAVE_LAYOUT_VALIDATION
-                | SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED,
+                | SOURCE_LIVE_ACE_DEATH_RECORD,
             name: Some("Tobias".to_string()),
             surname: Some("Ochsenhirt".to_string()),
             callsign: Some("Fighter of Libau".to_string()),
         }
     }
 
+    fn dead_row(ace_id: u32) -> AirAceRosterRow {
+        AirAceRosterRow {
+            alive: Some(false),
+            killer_ace_id: Some(6265),
+            killer_country_tag_db_id: Some(92),
+            ..alive_row(ace_id)
+        }
+    }
+
+    fn header_for(rows: &[AirAceRosterRow]) -> AirAceRosterHeader {
+        AirAceRosterHeader {
+            status_flags: 0,
+            observed_country_rows: 17,
+            observed_ace_rows: rows.len() as u32,
+            wing_assignment_rows: rows.iter().filter(|row| row.wing_id.is_some()).count() as u32,
+            dead_rows: rows.iter().filter(|row| row.alive == Some(false)).count() as u32,
+            skipped_rows: 0,
+        }
+    }
+
     #[test]
-    fn decodes_ace_identity_rows_with_blocked_assignment() {
-        let rows = vec![sample_row(5440), sample_row(6265)];
-        let header = AirAceRosterHeader {
-            elapsed_wall_ms: 500,
-            status_flags: STATUS_DELTA_DATA | STATUS_WING_ASSIGNMENT_BLOCKED,
-            changed_rows: 2,
-            observed_country_rows: 439,
-            observed_ace_rows: 127,
-            identity_rows: 2,
-            wing_assignment_rows: 0,
-            blocked_assignment_rows: 2,
-        };
-        let payload = encode_payload(&header, &rows);
-        let summary = decode_payload(0, &payload);
+    fn round_trips_alive_and_dead_rows() {
+        let mut with_wing = alive_row(5440);
+        with_wing.wing_id = Some(290);
+        with_wing.source_mask |= SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT;
+        let rows = vec![with_wing, dead_row(6265), alive_row(7001)];
+        let trailer = encode_trailer(&header_for(&rows), &rows);
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.data_rows_total, 3);
+        let units = &summary.data_units_total;
+        assert_eq!(units.get("air_ace_roster_rows").copied(), Some(3));
+        assert_eq!(
+            units.get("air_ace_roster_wing_assignment_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(units.get("air_ace_roster_dead_rows").copied(), Some(1));
+        assert_eq!(units.get("air_ace_roster_alive_rows").copied(), Some(2));
+        assert_eq!(
+            units.get("air_ace_roster_killer_ace_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            units.get("air_ace_roster_killer_country_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(units.get("air_ace_roster_identity_rows").copied(), Some(3));
+    }
+
+    #[test]
+    fn dead_row_killer_fields_are_independent() {
+        let mut no_killer_id = dead_row(6265);
+        no_killer_id.killer_ace_id = None;
+        let rows = vec![no_killer_id];
+        let trailer = encode_trailer(&header_for(&rows), &rows);
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_ace_roster_killer_ace_rows")
+                .copied(),
+            Some(0)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_ace_roster_killer_country_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn encoder_drops_killer_fields_on_living_rows() {
+        let mut bad = alive_row(5440);
+        // A buggy upstream reader claims killer fields on a LIVING ace: the
+        // encoder must not let them reach the wire.
+        bad.killer_ace_id = Some(6265);
+        bad.killer_country_tag_db_id = Some(92);
+        let rows = vec![bad];
+        let trailer = encode_trailer(&header_for(&rows), &rows);
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_ace_roster_killer_ace_rows")
+                .copied(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn rejects_killer_flag_on_non_dead_row() {
+        let rows = vec![dead_row(6265)];
+        let mut trailer = encode_trailer(&header_for(&rows), &rows);
+        // Clear DEAD (bit 6) but keep the killer flags: must be rejected.
+        let flags_offset = ACE_TRAILER_HEADER_LEN + 8;
+        let mut flags = read_u32_le(&trailer, flags_offset);
+        flags &= !ROW_FLAG_DEAD;
+        trailer[flags_offset..flags_offset + 4].copy_from_slice(&flags.to_le_bytes());
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("KILLER_ACE on a non-dead row")));
+    }
+
+    #[test]
+    fn rejects_dead_without_alive_known() {
+        let rows = vec![alive_row(5440)];
+        let mut trailer = encode_trailer(&header_for(&rows), &rows);
+        let flags_offset = ACE_TRAILER_HEADER_LEN + 8;
+        let mut flags = read_u32_le(&trailer, flags_offset);
+        flags = (flags & !ROW_FLAG_ALIVE_KNOWN) | ROW_FLAG_DEAD;
+        trailer[flags_offset..flags_offset + 4].copy_from_slice(&flags.to_le_bytes());
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("DEAD without ALIVE_KNOWN")));
+    }
+
+    #[test]
+    fn rejects_wing_id_without_flag() {
+        let rows = vec![alive_row(5440)];
+        let mut trailer = encode_trailer(&header_for(&rows), &rows);
+        let wing_offset = ACE_TRAILER_HEADER_LEN + 20;
+        trailer[wing_offset..wing_offset + 4].copy_from_slice(&357u32.to_le_bytes());
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("wing_id without flag")));
+    }
+
+    #[test]
+    fn source_unavailable_must_carry_zero_rows() {
+        // SOURCE_UNAVAILABLE is whole-frame absence; carrying rows is a
+        // fail-open contradiction (the fold would retain AND the frame claims
+        // rows).
+        let rows = vec![alive_row(5440)];
+        let mut header = header_for(&rows);
+        header.status_flags = ACE_STATUS_SOURCE_UNAVAILABLE;
+        let trailer = encode_trailer(&header, &rows);
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("SOURCE_UNAVAILABLE carries")));
+    }
+
+    #[test]
+    fn partial_frame_carries_surviving_rows_for_observability() {
+        // A partial (incomplete-roster) frame still carries its surviving
+        // rows; skipped_rows is informational and does NOT require any
+        // particular row count relationship beyond the full-replace identity.
+        let rows = vec![alive_row(5440)];
+        let mut header = header_for(&rows);
+        header.skipped_rows = 3;
+        header.status_flags = ACE_STATUS_PARTIAL_DATA;
+        let trailer = encode_trailer(&header, &rows);
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.status_flags_or, ACE_STATUS_PARTIAL_DATA);
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_ace_roster_skipped_rows")
+                .copied(),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn skipped_rows_without_partial_is_allowed_for_ambiguous_only_drops() {
+        // Ambiguous-assignment-only drops count toward skipped_rows but do
+        // NOT force PARTIAL (identity is complete). This must decode clean.
+        let rows = vec![alive_row(5440)];
+        let mut header = header_for(&rows);
+        header.skipped_rows = 2;
+        let trailer = encode_trailer(&header, &rows);
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_after_trailer() {
+        let rows = vec![alive_row(5440)];
+        let mut trailer = encode_trailer(&header_for(&rows), &rows);
+        trailer.push(0);
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("trailing byte")));
+    }
+
+    #[test]
+    fn rejects_invalid_magic() {
+        let rows = vec![alive_row(5440)];
+        let mut trailer = encode_trailer(&header_for(&rows), &rows);
+        trailer[0] = b'X';
+        let summary = decode_trailer(0, &trailer, 0);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("magic is invalid")));
+    }
+
+    #[test]
+    fn decodes_at_nonzero_trailer_offset() {
+        let rows = vec![alive_row(5440), dead_row(6265)];
+        let trailer = encode_trailer(&header_for(&rows), &rows);
+        let mut payload = vec![0u8; 128];
+        payload.extend_from_slice(&trailer);
+        let summary = decode_trailer(7, &payload, 128);
         assert!(
             summary.parse_errors.is_empty(),
             "{:?}",
             summary.parse_errors
         );
         assert_eq!(summary.data_rows_total, 2);
-        assert_eq!(
-            summary
-                .data_units_total
-                .get("air_ace_roster_live_layout_validated_rows")
-                .copied(),
-            Some(2)
-        );
-        assert_eq!(
-            summary
-                .data_units_total
-                .get("air_ace_roster_wing_assignment_scan_blocked_rows")
-                .copied(),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn decodes_ace_identity_rows_with_wing_assignment() {
-        let mut row = sample_row(5440);
-        row.wing_id = Some(290);
-        row.source_mask = SOURCE_LIVE_COUNTRY_ACE_VECTOR
-            | SOURCE_LIVE_ACE_OBJECT_LAYOUT
-            | SOURCE_DEV_SAVE_LAYOUT_VALIDATION
-            | SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT;
-        let header = AirAceRosterHeader {
-            elapsed_wall_ms: 750,
-            status_flags: STATUS_DELTA_DATA,
-            changed_rows: 1,
-            observed_country_rows: 439,
-            observed_ace_rows: 147,
-            identity_rows: 1,
-            wing_assignment_rows: 1,
-            blocked_assignment_rows: 0,
-        };
-        let payload = encode_payload(&header, &[row]);
-        let summary = decode_payload(0, &payload);
-        assert!(
-            summary.parse_errors.is_empty(),
-            "{:?}",
-            summary.parse_errors
-        );
-        assert_eq!(
-            summary
-                .data_units_total
-                .get("air_ace_roster_wing_assignment_rows")
-                .copied(),
-            Some(1)
-        );
-        assert_eq!(
-            summary
-                .data_units_total
-                .get("air_ace_roster_live_wing_assignment_validated_rows")
-                .copied(),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn wraps_and_decodes_compact_data_record() {
-        let mut row = sample_row(5440);
-        row.wing_id = Some(290);
-        row.source_mask |= SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT;
-        row.source_mask &= !SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED;
-        let header = AirAceRosterHeader {
-            elapsed_wall_ms: 750,
-            status_flags: STATUS_DELTA_DATA,
-            changed_rows: 1,
-            observed_country_rows: 439,
-            observed_ace_rows: 147,
-            identity_rows: 1,
-            wing_assignment_rows: 1,
-            blocked_assignment_rows: 0,
-        };
-        let payload = encode_payload(&header, &[row]);
-        let record = encode_compact_data_record(7, 1942110101, &payload);
-        assert_eq!(&record[0..4], COMPACT_RECORD_MAGIC);
-        assert_eq!(
-            u16::from_le_bytes(record[20..22].try_into().unwrap()),
-            DOMAIN_ID
-        );
-        let summary = decode_compact_data_record(0, &record);
-        assert!(
-            summary.parse_errors.is_empty(),
-            "{:?}",
-            summary.parse_errors
-        );
-        assert_eq!(summary.record_count, 1);
-        assert_eq!(summary.data_rows_total, 1);
-        assert_eq!(
-            summary
-                .data_units_total
-                .get("air_ace_roster_live_wing_assignment_validated_rows")
-                .copied(),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn compact_record_rejects_wrong_domain() {
-        let row = sample_row(5440);
-        let header = AirAceRosterHeader {
-            elapsed_wall_ms: 750,
-            status_flags: STATUS_DELTA_DATA,
-            changed_rows: 1,
-            observed_country_rows: 439,
-            observed_ace_rows: 147,
-            identity_rows: 1,
-            wing_assignment_rows: 0,
-            blocked_assignment_rows: 0,
-        };
-        let payload = encode_payload(&header, &[row]);
-        let mut record = encode_compact_data_record(7, 1942110101, &payload);
-        record[20..22].copy_from_slice(&45u16.to_le_bytes());
-        let summary = decode_compact_data_record(0, &record);
-        assert!(summary
-            .parse_errors
-            .iter()
-            .any(|error| error.contains("domain_id 45 != 46")));
-    }
-
-    #[test]
-    fn rejects_wing_id_without_flag() {
-        let mut row = sample_row(5440);
-        row.wing_id = Some(357);
-        let header = AirAceRosterHeader {
-            elapsed_wall_ms: 500,
-            status_flags: STATUS_DELTA_DATA,
-            changed_rows: 1,
-            observed_country_rows: 1,
-            observed_ace_rows: 1,
-            identity_rows: 1,
-            wing_assignment_rows: 1,
-            blocked_assignment_rows: 0,
-        };
-        let mut payload = encode_payload(&header, &[row]);
-        let flags_offset = HEADER_LEN + 8;
-        let mut flags = read_u32_le(&payload, flags_offset);
-        flags &= !ROW_FLAG_WING_ID;
-        payload[flags_offset..flags_offset + 4].copy_from_slice(&flags.to_le_bytes());
-        let summary = decode_payload(17, &payload);
-        assert!(summary
-            .parse_errors
-            .iter()
-            .any(|error| error.contains("wing_id without flag")));
     }
 }

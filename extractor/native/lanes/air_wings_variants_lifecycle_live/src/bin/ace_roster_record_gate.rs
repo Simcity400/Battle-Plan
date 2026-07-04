@@ -1,4 +1,19 @@
+//! Offline gate for the domain-46 `ACE1` air-ace-roster trailer.
+//!
+//! Input: a file holding either raw `ACE1` trailer bytes (starts with the
+//! magic), or a full domain-46 data-record PAYLOAD (base
+//! air-variant-archetypes payload with the trailer appended).
+//!
+//! For a full payload the tool delegates to the base `decode_payload`, which
+//! decodes the self-delimiting base payload to its EXACT computed cursor and
+//! then decodes the trailer there. A false-`ACE1` byte sequence inside the
+//! base payload can therefore never be mistaken for the trailer offset (Codex
+//! NOTE: no magic-scan false negatives). The magic prefix is only used to
+//! recognise a raw-trailer file.
+
 use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as compact;
+use air_wings_variants_lifecycle_live_lane::domain46_air_variant_archetypes_live as archetypes;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -8,7 +23,9 @@ fn main() {
     let record = match args.next() {
         Some(value) => PathBuf::from(value),
         None => {
-            eprintln!("usage: ace_roster_record_gate <air_ace_roster_record.bin> [out.json]");
+            eprintln!(
+                "usage: ace_roster_record_gate <ace_trailer_or_domain46_payload.bin> [out.json]"
+            );
             std::process::exit(2);
         }
     };
@@ -17,8 +34,42 @@ fn main() {
         eprintln!("read {} failed: {err}", record.display());
         std::process::exit(2);
     });
-    let summary = compact::decode_compact_data_record(0, &bytes);
-    let json = summary_json(&record, bytes.len(), &summary);
+
+    let (parse_errors, units, status_flags_or, data_rows_total) =
+        if bytes.starts_with(compact::ACE_TRAILER_MAGIC) {
+            // Raw-trailer file: decode from offset 0.
+            let summary = compact::decode_trailer(0, &bytes, 0);
+            (
+                summary.parse_errors,
+                summary.data_units_total,
+                summary.status_flags_or,
+                summary.data_rows_total,
+            )
+        } else {
+            // Full domain-46 payload: the base decoder locates the trailer at
+            // its exact computed cursor and validates both slices.
+            let summary = archetypes::decode_payload(0, &bytes);
+            let data_rows_total = summary
+                .data_units_total
+                .get("air_ace_roster_rows")
+                .copied()
+                .unwrap_or(0);
+            (
+                summary.parse_errors,
+                summary.data_units_total,
+                summary.status_flags_or,
+                data_rows_total,
+            )
+        };
+
+    let json = summary_json(
+        &record,
+        bytes.len(),
+        status_flags_or,
+        data_rows_total,
+        &units,
+        &parse_errors,
+    );
     if let Some(path) = out {
         fs::write(&path, json.as_bytes()).unwrap_or_else(|err| {
             eprintln!("write {} failed: {err}", path.display());
@@ -26,7 +77,7 @@ fn main() {
         });
     }
     println!("{json}");
-    if !summary.parse_errors.is_empty() {
+    if !parse_errors.is_empty() {
         std::process::exit(1);
     }
 }
@@ -34,17 +85,19 @@ fn main() {
 fn summary_json(
     record: &PathBuf,
     record_bytes: usize,
-    summary: &compact::AirAceRosterRecordGateSummary,
+    status_flags_or: u32,
+    data_rows_total: u64,
+    data_units_total: &BTreeMap<&'static str, u64>,
+    parse_errors: &[String],
 ) -> String {
     let mut units = String::new();
-    for (index, (key, value)) in summary.data_units_total.iter().enumerate() {
+    for (index, (key, value)) in data_units_total.iter().enumerate() {
         if index > 0 {
             units.push_str(",\n");
         }
         units.push_str(&format!("    \"{}\": {}", json_escape(key), value));
     }
-    let errors = summary
-        .parse_errors
+    let errors = parse_errors
         .iter()
         .map(|err| format!("\"{}\"", json_escape(err)))
         .collect::<Vec<_>>()
@@ -52,27 +105,19 @@ fn summary_json(
     format!(
         concat!(
             "{{\n",
-            "  \"schema\": \"air_variant_archetypes_live.ace_roster_record_gate.v1\",\n",
-            "  \"domain_id\": {},\n",
+            "  \"schema\": \"air_variant_archetypes_live.ace_roster_record_gate.v2\",\n",
             "  \"record\": \"{}\",\n",
             "  \"record_bytes\": {},\n",
-            "  \"record_count\": {},\n",
-            "  \"payload_bytes_total\": {},\n",
             "  \"status_flags_or\": {},\n",
             "  \"data_rows_total\": {},\n",
-            "  \"data_changed_rows_total\": {},\n",
             "  \"data_units_total\": {{\n{}\n  }},\n",
             "  \"parse_errors\": [{}]\n",
             "}}"
         ),
-        compact::DOMAIN_ID,
         json_escape(&record.display().to_string()),
         record_bytes,
-        summary.record_count,
-        summary.payload_bytes_total,
-        summary.status_flags_or,
-        summary.data_rows_total,
-        summary.data_changed_rows_total,
+        status_flags_or,
+        data_rows_total,
         units,
         errors
     )

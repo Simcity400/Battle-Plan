@@ -26,7 +26,13 @@ Blockers on sub-fields with no D04 variance: automated_homebase (all no), underw
 
 ### Ace identity + wing assignment + death record  (was FIXTURE_BLOCKED)
 258 roster aces / 28 dead / 162 assigned wings.
-- CAceEntry: `+0x0C` id, `+0xF0/+0x110/+0x130` name/surname/callsign (cp1252 strings), `+0x154` portrait, `+0x158` u8 alive (1/0), `+0x164` killer ace id, `+0x168` killer country tag-db-id.
+- CAceEntry: `+0x0C` id, `+0xF0/+0x110/+0x130` name/surname/callsign, `+0x154` portrait, `+0x158` u8 alive (1/0), `+0x164` killer ace id, `+0x168` killer country tag-db-id.
+- ENCODING CORRECTION (wiring, 2026-07-04, live capture `runs/wire_ace_lifecycle_proof`): the
+  strings are UTF-8 in live memory (byte-identical to the melt), NOT cp1252. The original
+  "cp1252 strings" note came from the discovery oracle JSON being read as latin-1 (its own
+  mojibake); decoding live as cp1252 reproduces exactly that mojibake. Production decodes
+  strict UTF-8 — all 258 names exact vs melt (747 name fields exact, 27 oracle-side
+  double-encodings, 0 unexplained).
 - **`CAirWing+0x2DC` u32 = assigned ace id** (162/162 + 478/478 null) — WITHOUT the 0x2FB5 command fixture.
 - Key by ace id (`+0x0C`), not roster order (Codex). Residual blockers (no D04 variance): kill_type vs handled (both read 1-on-dead), wounded flag (0 wounded in D04).
 

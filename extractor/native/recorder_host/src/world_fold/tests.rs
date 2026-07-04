@@ -2554,7 +2554,14 @@ fn folds_division_primary_order_link_fields() {
     push_div_row(&mut div, 20, 1 << 5, 121, 1, 1, 0, 47);
 
     let mut stream = Vec::new();
-    push_record(&mut stream, 1, raw, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &div);
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div,
+    );
     push_record(
         &mut stream,
         2,
@@ -2596,7 +2603,14 @@ fn division_order_instance_id_without_flag_fails_fold_closed() {
     div[tail..].copy_from_slice(&99u32.to_le_bytes());
 
     let mut stream = Vec::new();
-    push_record(&mut stream, 1, raw, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &div);
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div,
+    );
     push_record(
         &mut stream,
         2,
@@ -2636,7 +2650,14 @@ fn division_delete_row_with_order_flag_fails_fold_closed() {
     push_div_row(&mut del, 17, DIV_FLAG_DELETED | (1 << 14), 0, 0, 0, 0, 0);
 
     let mut stream = Vec::new();
-    push_record(&mut stream, 1, raw_a, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &base);
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &base,
+    );
     push_record(
         &mut stream,
         2,
@@ -2645,7 +2666,14 @@ fn division_delete_row_with_order_flag_fails_fold_closed() {
         COMPACT_RECORD_TYPE_FRAME_END,
         &frame_end_payload(),
     );
-    push_record(&mut stream, 3, raw_b, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &del);
+    push_record(
+        &mut stream,
+        3,
+        raw_b,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &del,
+    );
     push_record(
         &mut stream,
         4,
@@ -6489,7 +6517,10 @@ fn d42_duplicate_wing_id_in_one_payload_fails_fold_closed() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|note| note.as_str().unwrap().contains("appears twice in one payload")));
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("appears twice in one payload")));
 }
 
 #[test]
@@ -6798,6 +6829,201 @@ fn chunk2_failure_nulls_owned_leaf_without_clearing_accumulator() {
         json!(9001),
         "post-baseline empty sparse frame means no changes, not a fabricated empty set"
     );
+}
+
+fn d46_ace_row(
+    tag_db_id: u32,
+    ace_id: u32,
+    wing_id: Option<u32>,
+    alive: Option<bool>,
+    killer_ace_id: Option<u32>,
+    killer_country_tag_db_id: Option<u32>,
+) -> ace46::AirAceRosterRow {
+    let mut source_mask = ace46::SOURCE_LIVE_COUNTRY_ACE_VECTOR
+        | ace46::SOURCE_LIVE_ACE_OBJECT_LAYOUT
+        | ace46::SOURCE_DEV_SAVE_LAYOUT_VALIDATION;
+    if wing_id.is_some() {
+        source_mask |= ace46::SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT;
+    }
+    if alive.is_some() {
+        source_mask |= ace46::SOURCE_LIVE_ACE_DEATH_RECORD;
+    }
+    ace46::AirAceRosterRow {
+        tag_db_id,
+        ace_id,
+        country_ace_index: 0,
+        wing_id,
+        alive,
+        killer_ace_id,
+        killer_country_tag_db_id,
+        source_mask,
+        name: Some("Hans".to_string()),
+        surname: Some("Rudel".to_string()),
+        callsign: Some("Adler".to_string()),
+    }
+}
+
+fn d46_payload_with_ace_trailer(rows: &[ace46::AirAceRosterRow], status_flags: u32) -> Vec<u8> {
+    let header = ace46::AirAceRosterHeader {
+        status_flags,
+        observed_country_rows: 17,
+        observed_ace_rows: rows.len() as u32,
+        wing_assignment_rows: rows.iter().filter(|row| row.wing_id.is_some()).count() as u32,
+        dead_rows: rows.iter().filter(|row| row.alive == Some(false)).count() as u32,
+        skipped_rows: 0,
+    };
+    let mut payload = d46_air_variant_archetypes_payload(DELTA);
+    payload.extend_from_slice(&ace46::encode_trailer(&header, rows));
+    payload
+}
+
+#[test]
+fn chunk2_d46_ace_trailer_annotates_wings_and_builds_country_sidecar() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+        (
+            46,
+            d46_payload_with_ace_trailer(
+                &[
+                    d46_ace_row(1, 5440, Some(700), Some(true), None, None),
+                    d46_ace_row(1, 6265, None, Some(false), Some(5440), Some(92)),
+                ],
+                0,
+            ),
+        ),
+    ]);
+
+    let wing = &snap["order_of_battle"]["air_wings"][0];
+    assert_eq!(wing["id"], json!(700));
+    assert_eq!(wing["ace"]["id"], json!(5440));
+    assert_eq!(wing["ace"]["name"], json!("Hans"));
+    assert_eq!(wing["ace"]["alive"], json!(true));
+
+    let aces = &snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"];
+    assert_eq!(aces.as_array().map(Vec::len), Some(2));
+    assert_eq!(aces[0]["ace_id"], json!(5440));
+    assert_eq!(aces[0]["wing_id"], json!(700));
+    assert_eq!(aces[0]["killer_ace_id"], Value::Null);
+    assert_eq!(aces[1]["ace_id"], json!(6265));
+    assert_eq!(aces[1]["alive"], json!(false));
+    assert_eq!(aces[1]["killer_ace_id"], json!(5440));
+    assert_eq!(aces[1]["killer_country_tag_db_id"], json!(92));
+}
+
+#[test]
+fn chunk2_d46_ace_trailer_ambiguous_wing_claims_drop_the_annotation() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+        (
+            46,
+            d46_payload_with_ace_trailer(
+                &[
+                    d46_ace_row(1, 5440, Some(700), Some(true), None, None),
+                    d46_ace_row(1, 6001, Some(700), Some(true), None, None),
+                ],
+                0,
+            ),
+        ),
+    ]);
+
+    let wing = &snap["order_of_battle"]["air_wings"][0];
+    assert_eq!(wing["id"], json!(700));
+    assert_eq!(wing.get("ace"), None);
+    // The sidecar still carries both rows (the ambiguity only drops the
+    // wing-side join, never the roster identity).
+    let aces = &snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"];
+    assert_eq!(aces.as_array().map(Vec::len), Some(2));
+}
+
+#[test]
+fn chunk2_d46_ace_trailer_source_unavailable_retains_and_badges() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            46,
+            d46_payload_with_ace_trailer(&[], ace46::ACE_STATUS_SOURCE_UNAVAILABLE),
+        ),
+    ]);
+
+    assert_eq!(snap["countries"]["GER"].get("extra"), None);
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(46)
+            && problem["problem"] == json!("ace_roster_source_unavailable")));
+}
+
+#[test]
+fn chunk2_d46_partial_frame_does_not_wipe_a_good_prior_roster() {
+    // Hour 1: a clean complete roster (2 aces, one on wing 700).
+    // Hour 2: a PARTIAL frame that dropped a torn country -> carries fewer
+    // rows. It MUST NOT clear+replace: hour-2 retains hour-1's roster in the
+    // map, and the wing ace annotation is SUPPRESSED (not fresh) so a read
+    // failure is never surfaced as this hour's ground truth.
+    let clean = d46_payload_with_ace_trailer(
+        &[
+            d46_ace_row(1, 5440, Some(700), Some(true), None, None),
+            d46_ace_row(1, 6265, None, Some(false), Some(5440), Some(92)),
+        ],
+        0,
+    );
+    let partial_header = ace46::AirAceRosterHeader {
+        status_flags: ace46::ACE_STATUS_PARTIAL_DATA,
+        observed_country_rows: 17,
+        observed_ace_rows: 1,
+        wing_assignment_rows: 0,
+        dead_rows: 0,
+        skipped_rows: 1,
+    };
+    let partial_rows = vec![d46_ace_row(1, 5440, None, Some(true), None, None)];
+    let mut partial = d46_air_variant_archetypes_payload(DELTA);
+    partial.extend_from_slice(&ace46::encode_trailer(&partial_header, &partial_rows));
+
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+            (46, clean),
+        ],
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+            (46, partial),
+        ],
+    ]);
+
+    let h1 = &snaps[0];
+    assert_eq!(
+        h1["order_of_battle"]["air_wings"][0]["ace"]["id"],
+        json!(5440)
+    );
+    assert_eq!(
+        h1["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+
+    let h2 = &snaps[1];
+    // Partial hour: wing annotation suppressed (not fresh)...
+    assert_eq!(h2["order_of_battle"]["air_wings"][0].get("ace"), None);
+    // ...and the retained sidecar still carries BOTH hour-1 aces (the partial
+    // single-row frame did not wipe the second ace).
+    assert_eq!(
+        h2["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert!(h2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(46)
+            && problem["problem"] == json!("ace_roster_partial")));
 }
 
 #[test]

@@ -1,8 +1,8 @@
 use crate::domain46_air_ace_roster_live::{
-    AirAceRosterHeader, AirAceRosterRow, SOURCE_DEV_SAVE_LAYOUT_VALIDATION,
-    SOURCE_LIVE_ACE_OBJECT_LAYOUT, SOURCE_LIVE_COUNTRY_ACE_VECTOR,
+    AirAceRosterHeader, AirAceRosterRow, ACE_STATUS_PARTIAL_DATA,
+    ACE_STATUS_WING_ASSIGNMENT_BLOCKED, SOURCE_DEV_SAVE_LAYOUT_VALIDATION,
+    SOURCE_LIVE_ACE_DEATH_RECORD, SOURCE_LIVE_ACE_OBJECT_LAYOUT, SOURCE_LIVE_COUNTRY_ACE_VECTOR,
     SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT, SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED,
-    STATUS_DELTA_DATA as ACE_STATUS_DELTA_DATA, STATUS_WING_ASSIGNMENT_BLOCKED,
 };
 use crate::domain46_air_variant_archetypes_live::{
     AirVariantArchetypeHeader, AirVariantArchetypeRow, FIXED_SCALE_RAW, SOURCE_LIVE_STATS,
@@ -55,7 +55,6 @@ pub struct ArchetypeClosure {
 pub struct LiveAceRosterInput {
     pub tag_db_id: u32,
     pub ace_id: u32,
-    pub deleted: bool,
     pub country_ace_index: u32,
     pub wing_id: Option<u32>,
     pub identity_layout_validated: bool,
@@ -65,6 +64,14 @@ pub struct LiveAceRosterInput {
     pub name: Option<String>,
     pub surname: Option<String>,
     pub callsign: Option<String>,
+    /// Validated alive flag (+0x158): `Some(true)`=alive, `Some(false)`=dead,
+    /// `None`=unknown (torn/out-of-domain byte) — never defaulted.
+    pub alive: Option<bool>,
+    /// Killer ace id (+0x164); only meaningful on a dead ace and
+    /// independently present (two D04 dead aces have none).
+    pub killer_ace_id: Option<u32>,
+    /// Killer country tag-db-id (+0x168); only meaningful on a dead ace.
+    pub killer_country_tag_db_id: Option<u32>,
 }
 
 pub fn build_air_variant_archetype_payload(
@@ -99,47 +106,69 @@ pub fn build_air_variant_archetype_payload(
     crate::domain46_air_variant_archetypes_live::encode_payload(&header, &rows)
 }
 
-pub fn build_air_ace_roster_payload(
-    elapsed_wall_ms: u64,
+/// Build the `ACE1` trailer bytes for the domain-46 data record.
+///
+/// Fail-closed replace contract (the fold FULL-REPLACES its ace state only on
+/// a clean, complete frame; PARTIAL and SOURCE_UNAVAILABLE both RETAIN prior
+/// state so a read failure is never written as ground-truth absence):
+/// - `source_unavailable`: the country scalar source was missing entirely
+///   (0 rows carried, absent — never zero-filled) => SOURCE_UNAVAILABLE.
+/// - `roster_incomplete`: at least one country root/ace that DOES exist could
+///   not be read this frame (rejected root, torn vector, wrong vtable,
+///   invalid id), so the emitted full-replace set is missing real rows =>
+///   PARTIAL. The surviving rows are still carried for observability.
+/// - `assignment_scan_blocked`: the wing walk failed/was empty, so no
+///   assignments could be joined => WING_ASSIGNMENT_BLOCKED. This is an
+///   assignment-only anomaly (identity is complete); it does NOT force a
+///   retain on its own.
+///
+/// `skipped_rows` is an informational counter (identity + ambiguous-
+/// assignment skips) and may be nonzero on a complete frame when only
+/// ambiguous wing claims were dropped; PARTIAL is driven by `roster_incomplete`,
+/// not by `skipped_rows`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_air_ace_roster_trailer(
     observed_country_rows: u32,
     observed_ace_rows: u32,
+    skipped_rows: u32,
+    assignment_scan_blocked: bool,
+    source_unavailable: bool,
+    roster_incomplete: bool,
     aces: &[LiveAceRosterInput],
 ) -> Vec<u8> {
     let rows = aces
         .iter()
         .map(build_air_ace_roster_row)
         .collect::<Vec<_>>();
-    let identity_rows = rows
-        .iter()
-        .filter(|row| row.name.is_some() || row.surname.is_some() || row.callsign.is_some())
-        .count()
-        .min(u32::MAX as usize) as u32;
     let wing_assignment_rows = rows
         .iter()
         .filter(|row| row.wing_id.is_some())
         .count()
         .min(u32::MAX as usize) as u32;
-    let blocked_assignment_rows = aces
+    let dead_rows = rows
         .iter()
-        .filter(|row| row.assignment_blocked)
+        .filter(|row| row.alive == Some(false))
         .count()
         .min(u32::MAX as usize) as u32;
-    let mut status_flags = ACE_STATUS_DELTA_DATA;
-    if blocked_assignment_rows > 0 {
-        status_flags |= STATUS_WING_ASSIGNMENT_BLOCKED;
+    let mut status_flags = 0u32;
+    if roster_incomplete {
+        status_flags |= ACE_STATUS_PARTIAL_DATA;
     }
-    let row_count = rows.len().min(u32::MAX as usize) as u32;
+    if assignment_scan_blocked {
+        status_flags |= ACE_STATUS_WING_ASSIGNMENT_BLOCKED;
+    }
+    if source_unavailable {
+        status_flags |= crate::domain46_air_ace_roster_live::ACE_STATUS_SOURCE_UNAVAILABLE;
+    }
     let header = AirAceRosterHeader {
-        elapsed_wall_ms,
         status_flags,
-        changed_rows: row_count,
         observed_country_rows,
         observed_ace_rows,
-        identity_rows,
         wing_assignment_rows,
-        blocked_assignment_rows,
+        dead_rows,
+        skipped_rows,
     };
-    crate::domain46_air_ace_roster_live::encode_payload(&header, &rows)
+    crate::domain46_air_ace_roster_live::encode_trailer(&header, &rows)
 }
 
 pub fn build_air_ace_roster_row(input: &LiveAceRosterInput) -> AirAceRosterRow {
@@ -161,13 +190,25 @@ pub fn build_air_ace_roster_row(input: &LiveAceRosterInput) -> AirAceRosterRow {
     if input.assignment_blocked {
         source_mask |= SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED;
     }
+    if input.alive.is_some() {
+        source_mask |= SOURCE_LIVE_ACE_DEATH_RECORD;
+    }
+    // Killer fields are only trusted on a confirmed-dead ace (fail closed:
+    // their content on living/unknown aces was never validated).
+    let dead = input.alive == Some(false);
 
     AirAceRosterRow {
         tag_db_id: input.tag_db_id,
         ace_id: input.ace_id,
-        deleted: input.deleted,
         country_ace_index: input.country_ace_index,
         wing_id,
+        alive: input.alive,
+        killer_ace_id: if dead { input.killer_ace_id } else { None },
+        killer_country_tag_db_id: if dead {
+            input.killer_country_tag_db_id
+        } else {
+            None
+        },
         source_mask,
         name: input.name.clone(),
         surname: input.surname.clone(),
@@ -411,7 +452,7 @@ const BASE_AIRFRAME_RULES: &[AirframeRule] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain46_air_ace_roster_live::decode_payload as decode_ace_payload;
+    use crate::domain46_air_ace_roster_live::decode_trailer as decode_ace_trailer;
     use crate::domain46_air_variant_archetypes_live::{
         decode_payload, SOURCE_LIVE_TOKEN_DICTIONARY, SOURCE_STATIC_SOURCE_ENUM,
     };
@@ -618,28 +659,30 @@ mod tests {
         );
     }
 
+    fn ace_input(alive: Option<bool>) -> LiveAceRosterInput {
+        LiveAceRosterInput {
+            tag_db_id: 1,
+            ace_id: 17514,
+            country_ace_index: 10,
+            wing_id: Some(290),
+            identity_layout_validated: true,
+            save_layout_validated: true,
+            wing_assignment_validated: true,
+            assignment_blocked: false,
+            name: Some("Adler".to_string()),
+            surname: Some("Driess".to_string()),
+            callsign: Some("Fighter of Libau".to_string()),
+            alive,
+            killer_ace_id: None,
+            killer_country_tag_db_id: None,
+        }
+    }
+
     #[test]
-    fn builds_ace_roster_payload_with_validated_wing_assignment() {
-        let payload = build_air_ace_roster_payload(
-            300,
-            439,
-            147,
-            &[LiveAceRosterInput {
-                tag_db_id: 1,
-                ace_id: 17514,
-                deleted: false,
-                country_ace_index: 10,
-                wing_id: Some(290),
-                identity_layout_validated: true,
-                save_layout_validated: true,
-                wing_assignment_validated: true,
-                assignment_blocked: false,
-                name: Some("Adler".to_string()),
-                surname: Some("Driess".to_string()),
-                callsign: Some("Fighter of Libau".to_string()),
-            }],
-        );
-        let summary = decode_ace_payload(0, &payload);
+    fn builds_ace_roster_trailer_with_validated_wing_assignment() {
+        let trailer =
+            build_air_ace_roster_trailer(439, 1, 0, false, false, false, &[ace_input(Some(true))]);
+        let summary = decode_ace_trailer(0, &trailer, 0);
         assert!(
             summary.parse_errors.is_empty(),
             "{:?}",
@@ -655,34 +698,26 @@ mod tests {
         assert_eq!(
             summary
                 .data_units_total
-                .get("air_ace_roster_live_wing_assignment_validated_rows")
+                .get("air_ace_roster_wing_assignment_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_ace_roster_alive_rows")
                 .copied(),
             Some(1)
         );
     }
 
     #[test]
-    fn ace_roster_payload_drops_unvalidated_wing_assignment() {
-        let payload = build_air_ace_roster_payload(
-            300,
-            439,
-            147,
-            &[LiveAceRosterInput {
-                tag_db_id: 1,
-                ace_id: 17514,
-                deleted: false,
-                country_ace_index: 10,
-                wing_id: Some(290),
-                identity_layout_validated: true,
-                save_layout_validated: true,
-                wing_assignment_validated: false,
-                assignment_blocked: true,
-                name: Some("Adler".to_string()),
-                surname: Some("Driess".to_string()),
-                callsign: None,
-            }],
-        );
-        let summary = decode_ace_payload(0, &payload);
+    fn ace_roster_trailer_drops_unvalidated_wing_assignment() {
+        let mut input = ace_input(Some(true));
+        input.wing_assignment_validated = false;
+        input.assignment_blocked = true;
+        let trailer = build_air_ace_roster_trailer(439, 1, 0, true, false, false, &[input]);
+        let summary = decode_ace_trailer(0, &trailer, 0);
         assert!(
             summary.parse_errors.is_empty(),
             "{:?}",
@@ -696,9 +731,73 @@ mod tests {
             Some(0)
         );
         assert_eq!(
+            summary.status_flags_or,
+            crate::domain46_air_ace_roster_live::ACE_STATUS_WING_ASSIGNMENT_BLOCKED
+        );
+    }
+
+    #[test]
+    fn ace_roster_row_drops_killer_fields_unless_dead() {
+        let mut living = ace_input(Some(true));
+        living.killer_ace_id = Some(6265);
+        living.killer_country_tag_db_id = Some(92);
+        let row = build_air_ace_roster_row(&living);
+        assert_eq!(row.killer_ace_id, None);
+        assert_eq!(row.killer_country_tag_db_id, None);
+
+        let mut unknown = ace_input(None);
+        unknown.killer_ace_id = Some(6265);
+        let row = build_air_ace_roster_row(&unknown);
+        assert_eq!(row.alive, None);
+        assert_eq!(row.killer_ace_id, None);
+
+        let mut dead = ace_input(Some(false));
+        dead.killer_ace_id = Some(6265);
+        dead.killer_country_tag_db_id = Some(92);
+        let row = build_air_ace_roster_row(&dead);
+        assert_eq!(row.killer_ace_id, Some(6265));
+        assert_eq!(row.killer_country_tag_db_id, Some(92));
+    }
+
+    #[test]
+    fn archetype_payload_with_ace_trailer_decodes_both_slices() {
+        let base = build_air_variant_archetype_payload(
+            120,
+            1,
+            &[LiveVariantInput {
+                variant_id: 77,
+                equipment_token_raw: 20378,
+                equipment_type_token_raw: 20378,
+                interface_type_raw: 3,
+                air_superiority_weight_raw: None,
+                equipment_token_name: Some("small_plane_airframe_2".to_string()),
+            }],
+        );
+        let trailer =
+            build_air_ace_roster_trailer(439, 1, 0, false, false, false, &[ace_input(Some(false))]);
+        let mut payload = base;
+        payload.extend_from_slice(&trailer);
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
             summary
                 .data_units_total
-                .get("air_ace_roster_wing_assignment_scan_blocked_rows")
+                .get("air_variant_archetype_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary.data_units_total.get("air_ace_roster_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_ace_roster_dead_rows")
                 .copied(),
             Some(1)
         );

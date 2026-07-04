@@ -410,10 +410,38 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> AirVariantArchetypeGateS
         }
     }
     if cursor != payload.len() {
-        summary.parse_errors.push(format!(
-            "offset {offset}: air variant archetypes payload has {} trailing byte(s)",
-            payload.len().saturating_sub(cursor)
-        ));
+        // Wave-4 ace lifecycle: bytes after the self-delimiting base payload
+        // are the domain-46 `ACE1` air-ace-roster trailer (MTD1 precedent).
+        // Anything else is a parse error, exactly as before. The trailer's
+        // status flags are lane-scoped and are surfaced as data units, NOT
+        // OR-ed into the record status (they must not feed the global
+        // compact-status interpretation).
+        let ace_summary =
+            crate::domain46_air_ace_roster_live::decode_trailer(offset, payload, cursor);
+        summary.parse_errors.extend(ace_summary.parse_errors);
+        for (key, value) in ace_summary.data_units_total {
+            let entry = summary.data_units_total.entry(key).or_default();
+            *entry = entry.saturating_add(value);
+        }
+        // Per-status frame counters (sums stay meaningful across records).
+        if ace_summary.status_flags_or
+            & crate::domain46_air_ace_roster_live::ACE_STATUS_SOURCE_UNAVAILABLE
+            != 0
+        {
+            add_unit(&mut summary, "air_ace_roster_source_unavailable_frames", 1);
+        }
+        if ace_summary.status_flags_or
+            & crate::domain46_air_ace_roster_live::ACE_STATUS_PARTIAL_DATA
+            != 0
+        {
+            add_unit(&mut summary, "air_ace_roster_partial_frames", 1);
+        }
+        if ace_summary.status_flags_or
+            & crate::domain46_air_ace_roster_live::ACE_STATUS_WING_ASSIGNMENT_BLOCKED
+            != 0
+        {
+            add_unit(&mut summary, "air_ace_roster_assignment_blocked_frames", 1);
+        }
     }
     if decoded_classified_rows != classified_rows {
         summary.parse_errors.push(format!(

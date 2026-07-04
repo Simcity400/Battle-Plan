@@ -80,6 +80,12 @@ struct DomainContract {
     name: &'static str,
     requires_data: bool,
     required_units: &'static [&'static str],
+    /// Data-unit counters that MUST be absent-or-zero for the gate to pass.
+    /// A nonzero value means a fail-closed sub-slice health flag fired (e.g.
+    /// the domain-46 ace roster was source-unavailable / partial / had its
+    /// wing-assignment scan blocked on at least one frame). Present but zero
+    /// is fine; nonzero fails unless a tolerated profile is in effect.
+    zero_units: &'static [&'static str],
     shared_recorder_known: bool,
 }
 
@@ -89,6 +95,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "fuel_live",
         requires_data: true,
         required_units: &["fuel_country_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -102,6 +109,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "naval_line_rows",
             "construction_queue_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -109,6 +117,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "focus_live",
         requires_data: true,
         required_units: &["focus_country_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -116,6 +125,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "tech_live",
         requires_data: true,
         required_units: &["tech_country_rows", "active_research_slot_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -123,6 +133,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "politics_live",
         requires_data: true,
         required_units: &["politics_country_rows", "popularity_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -130,6 +141,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "politics_residuals",
         requires_data: true,
         required_units: &["politics_residual_country_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -137,6 +149,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "decisions_live",
         requires_data: true,
         required_units: &["decision_country_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -144,6 +157,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "diplomacy_live",
         requires_data: true,
         required_units: &["diplomacy_country_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -151,6 +165,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "divisions",
         requires_data: true,
         required_units: &["division_rows", "division_root_rows", "division_owner_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -158,6 +173,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "land_combats",
         requires_data: true,
         required_units: &["land_combat_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -165,6 +181,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "map_control",
         requires_data: true,
         required_units: &["map_control_state_rows", "map_control_province_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -172,6 +189,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "map_detail",
         requires_data: true,
         required_units: &["map_detail_state_rows", "map_detail_province_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -179,6 +197,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "weather_live",
         requires_data: true,
         required_units: &["weather_region_rows", "weather_observed_region_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -186,6 +205,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "division_equipment",
         requires_data: true,
         required_units: &["division_equipment_rows", "division_equipment_root_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -193,6 +213,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "army_orders",
         requires_data: true,
         required_units: &["army_order_rows", "army_order_root_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -200,6 +221,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "oob_command",
         requires_data: true,
         required_units: &["oob_command_rows", "oob_command_root_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -207,6 +229,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "ships",
         requires_data: true,
         required_units: &["ship_rows", "ship_observed_ship_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -214,6 +237,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "air_wings",
         requires_data: true,
         required_units: &["air_wing_rows", "air_wing_observed_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -224,6 +248,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_region_activity_rows",
             "air_region_activity_observed_bucket_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -231,6 +256,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "air_wing_loadouts",
         requires_data: true,
         required_units: &["air_wing_loadout_rows", "air_wing_loadout_equipment_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -238,6 +264,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "air_variant_defs",
         requires_data: true,
         required_units: &["air_variant_def_rows", "air_variant_def_module_token_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -248,6 +275,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_base_status_rows",
             "air_base_status_observed_air_base_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -258,6 +286,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_variant_stats_rows",
             "air_variant_stats_observed_variant_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -268,6 +297,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_variant_reserve_rows",
             "air_variant_reserve_observed_stockpile_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -278,6 +308,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "stockpile_variant_def_rows",
             "stockpile_variant_def_module_token_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -288,6 +319,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_superiority_input_rows",
             "air_superiority_input_observed_wing_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -298,6 +330,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_variant_upgrade_rows",
             "air_variant_upgrade_observed_variant_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -308,6 +341,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "stockpile_variant_upgrade_rows",
             "stockpile_variant_upgrade_entry_rows",
         ],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -315,6 +349,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "projects_live",
         requires_data: true,
         required_units: &["project_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -322,6 +357,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "air_combat_losses_live",
         requires_data: true,
         required_units: &["air_strength_delta_rows", "air_strength_observed_wing_rows"],
+        zero_units: &[],
         shared_recorder_known: false,
     },
     DomainContract {
@@ -329,6 +365,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "market_trade_live",
         requires_data: true,
         required_units: &[],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -341,6 +378,30 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "supply_csupply_input_rows",
             "supply_csupply_efficiency_rows",
         ],
+        zero_units: &[],
+        shared_recorder_known: true,
+    },
+    // Domain 46 (`air_variant_archetypes`) carries the wave-4 `ACE1`
+    // ace-roster trailer. Its required units prove the ace slice actually
+    // populated; its zero_units are the fail-closed per-frame health flags —
+    // a nonzero count means the ace roster was source-unavailable, incomplete
+    // (partial), or had its wing-assignment scan blocked on at least one
+    // frame, which must fail the gate (Codex DEFECT: gate could stay green
+    // while the ace slice silently died).
+    DomainContract {
+        id: 46,
+        name: "air_variant_archetypes",
+        requires_data: true,
+        required_units: &[
+            "air_variant_archetype_rows",
+            "air_ace_roster_rows",
+            "air_ace_roster_observed_ace_rows",
+        ],
+        zero_units: &[
+            "air_ace_roster_source_unavailable_frames",
+            "air_ace_roster_partial_frames",
+            "air_ace_roster_assignment_blocked_frames",
+        ],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -348,6 +409,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "naval_combat_lifecycle_live",
         requires_data: true,
         required_units: &["naval_combat_lifecycle_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -355,6 +417,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         name: "naval_combat_members_live",
         requires_data: true,
         required_units: &["naval_combat_member_rows"],
+        zero_units: &[],
         shared_recorder_known: true,
     },
 ];
@@ -761,6 +824,22 @@ fn validate_domain_manifest(
             if !units.contains_key(*key) {
                 errors.push(format!(
                     "domain {} data_units_total is missing required counter {}",
+                    contract.name, key
+                ));
+            }
+        }
+    }
+    // Fail-closed sub-slice health flags: these counters must be absent-or-
+    // zero. A nonzero value means a fail-closed condition fired on at least
+    // one frame (e.g. the domain-46 ace roster was source-unavailable,
+    // partial, or had its wing-assignment scan blocked). Checked unless the
+    // profile explicitly tolerates partial/source failures.
+    if !options.allow_partial_or_source_failure {
+        for key in contract.zero_units {
+            let value = units.get(*key).and_then(Value::as_u64).unwrap_or(0);
+            if value != 0 {
+                errors.push(format!(
+                    "domain {} data_units_total counter {} is {value}, expected 0 (fail-closed sub-slice health flag fired)",
                     contract.name, key
                 ));
             }
@@ -1423,6 +1502,69 @@ mod tests {
         assert_eq!(summary.frame_end_record_count, 2);
         assert_eq!(summary.skipped_hours, 0);
         assert!(compact_domain_coverage_errors(&summary, &[10]).is_empty());
+    }
+
+    fn d46_domain_manifest(units: Value) -> Value {
+        json!({
+            "domain_id": 46,
+            "record_count": 1,
+            "data_record_count": 1,
+            "status_flags_or": 0,
+            "read_time_us": {"count": 1},
+            "data_units_total": units,
+        })
+    }
+
+    #[test]
+    fn d46_zero_unit_health_flag_fails_the_gate() {
+        let contract = contract_by_id(46).expect("domain 46 contract exists");
+        assert!(!contract.zero_units.is_empty());
+        let domain = d46_domain_manifest(json!({
+            "air_variant_archetype_rows": 203,
+            "air_ace_roster_rows": 258,
+            "air_ace_roster_observed_ace_rows": 258,
+            // A partial frame fired: must fail the gate.
+            "air_ace_roster_partial_frames": 1,
+        }));
+        let mut errors = Vec::new();
+        validate_domain_manifest(&domain, contract, 1, &GateOptions::default(), &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("air_ace_roster_partial_frames")
+                    && error.contains("expected 0")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn d46_clean_health_flags_pass_the_gate() {
+        let contract = contract_by_id(46).expect("domain 46 contract exists");
+        let domain = d46_domain_manifest(json!({
+            "air_variant_archetype_rows": 203,
+            "air_ace_roster_rows": 258,
+            "air_ace_roster_observed_ace_rows": 258,
+        }));
+        let mut errors = Vec::new();
+        validate_domain_manifest(&domain, contract, 1, &GateOptions::default(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn d46_missing_required_unit_fails_the_gate() {
+        let contract = contract_by_id(46).expect("domain 46 contract exists");
+        let domain = d46_domain_manifest(json!({
+            "air_variant_archetype_rows": 203,
+            // air_ace_roster_rows missing.
+        }));
+        let mut errors = Vec::new();
+        validate_domain_manifest(&domain, contract, 1, &GateOptions::default(), &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("missing required counter air_ace_roster_rows")),
+            "{errors:?}"
+        );
     }
 
     #[test]

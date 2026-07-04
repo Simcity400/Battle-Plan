@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as ace46;
 use army_battleplans_depth_live_lane as battleplans54;
 use characters_leaders_cabinet_live_lane as domain47;
 use compact_contract::calendar::{date_from_raw, hour_index_from_raw};
@@ -229,6 +230,9 @@ fn compact_failure_flags_after_expected_partial_tolerance(
 }
 
 const DOMAIN47_R2_KEY: &str = "_r2_characters_leaders_cabinet_live";
+/// Wave-4 ace lifecycle: per-country ace-roster sidecar (domain 46 `ACE1`
+/// trailer; full-replace each trailer-bearing hour).
+const DOMAIN46_ACE_R2_KEY: &str = "_r2_air_ace_roster_live";
 const CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY: &str =
     "construction_buildings_state_damage_live";
 const DOMAIN53_EXTRA_KEY: &str = "domain53_extra";
@@ -614,6 +618,17 @@ pub struct WorldFold {
     air_variant_stats: BTreeMap<u32, AirVariantStatsState>,
     air_variant_upgrades: BTreeMap<u32, Vec<VariantUpgradeState>>,
     air_variant_archetypes: BTreeMap<u32, AirVariantArchetypeState>,
+    /// Wave-4 ace lifecycle (domain-46 `ACE1` trailer): full ace roster keyed
+    /// by (owner tag_db_id, ace_id); FULL-REPLACE only on a clean complete
+    /// frame, retained on partial/source-unavailable/failed frames.
+    air_aces: BTreeMap<(u32, u32), ace46::AirAceRosterRow>,
+    /// True only for a game-hour whose D46 record folded successfully AND
+    /// applied a clean (non-partial, non-source-unavailable) ace trailer.
+    /// Gates the D30 snapshot `air_wings[*].ace` join and sidecar emission so
+    /// a hour that could-not-read does not surface stale ace annotations as
+    /// this hour's ground truth (Codex DEFECT: stale ace usable after D46
+    /// failure).
+    air_aces_fresh_this_hour: bool,
     stockpile_variant_defs: BTreeMap<u32, VariantDefState>,
     stockpile_variant_upgrades: BTreeMap<u32, Vec<VariantUpgradeState>>,
     air_variant_reserves: BTreeMap<AirVariantReserveKey, AirVariantReserveState>,
@@ -762,6 +777,8 @@ impl WorldFold {
             army_battleplans_depth_omitted_non_exact_this_hour: 0,
             army_battleplans_depth_path_omitted_this_hour: 0,
             air_wings: BTreeMap::new(),
+            air_aces: BTreeMap::new(),
+            air_aces_fresh_this_hour: false,
             air_wing_loadouts: BTreeMap::new(),
             air_wing_loadout_orphan_check_keys_this_hour: BTreeSet::new(),
             air_region_activity: BTreeMap::new(),
@@ -1010,6 +1027,7 @@ impl WorldFold {
         self.army_battleplans_depth_path_omitted_this_hour = 0;
         self.naval_combat_lifecycle_unknown_this_hour = false;
         self.naval_combat_members_unknown_this_hour = false;
+        self.air_aces_fresh_this_hour = false;
     }
 
     /// Mutable country object for a tag_db_id, created empty on first use.
@@ -2543,6 +2561,26 @@ impl WorldFold {
         if self.fold_domain_unknown(AIR_WINGS_DOMAIN_ID) {
             out.insert("air_wings".into(), Value::Null);
         } else if self.fold_domain_seen(AIR_WINGS_DOMAIN_ID) {
+            // Wave-4 ace lifecycle: (owner, wing) -> ace join from the
+            // domain-46 ace roster. Built ONLY when this hour applied a clean
+            // ace trailer (air_aces_fresh_this_hour) — a retained/stale
+            // roster from a partial/unavailable/failed D46 hour must not be
+            // surfaced as this hour's wing ace (Codex DEFECT: stale ace usable
+            // after D46 failure). An ace resolves onto a wing only when
+            // exactly one roster ace claims it (ambiguity drops the
+            // annotation, fail closed); owner match is enforced by the key.
+            let mut ace_by_wing: BTreeMap<(u32, u32), Option<&ace46::AirAceRosterRow>> =
+                BTreeMap::new();
+            if self.air_aces_fresh_this_hour {
+                for ((tag_db_id, _ace_id), ace) in &self.air_aces {
+                    if let Some(wing_id) = ace.wing_id {
+                        ace_by_wing
+                            .entry((*tag_db_id, wing_id))
+                            .and_modify(|slot| *slot = None)
+                            .or_insert(Some(ace));
+                    }
+                }
+            }
             let mut air_wings = Vec::new();
             for key in self.air_wings.keys() {
                 let mut wing = Map::new();
@@ -2569,6 +2607,18 @@ impl WorldFold {
                         "mission_mask": base.mission_mask,
                     }),
                 );
+                if let Some(Some(ace)) = ace_by_wing.get(&(key.owner_tag_db_id, key.wing_id)) {
+                    wing.insert(
+                        "ace".into(),
+                        json!({
+                            "id": ace.ace_id,
+                            "name": ace.name,
+                            "surname": ace.surname,
+                            "callsign": ace.callsign,
+                            "alive": ace.alive,
+                        }),
+                    );
+                }
                 if let Some(owner) = self.air_wing_owner_key(key, unresolved) {
                     let counts = by_country.entry(owner).or_default();
                     counts.air_wings = counts.air_wings.saturating_add(1);
@@ -5066,9 +5116,7 @@ impl WorldFold {
                     "air_combat_losses row has wing scalar values without measured flag".into(),
                 );
             }
-            if wing_scalars
-                && !(0..=AIR_WING_MAX_EXPERIENCE_RAW).contains(&row.experience_raw)
-            {
+            if wing_scalars && !(0..=AIR_WING_MAX_EXPERIENCE_RAW).contains(&row.experience_raw) {
                 return Err("air_combat_losses row has invalid experience_raw".into());
             }
             if wing_scalars && row.air_accidents > AIR_WING_MAX_ACCIDENTS {
@@ -5205,9 +5253,18 @@ impl WorldFold {
                 "air_variant_archetypes role",
             )?;
         }
-        if cursor != payload.len() {
-            return Err("air_variant_archetypes payload has trailing bytes".into());
-        }
+        // Wave-4 ace lifecycle: bytes after the self-delimiting base payload
+        // are the `ACE1` ace-roster trailer; anything else fails the record
+        // exactly as before. Parsed first (strict), applied after the base
+        // archetype fold below.
+        let ace_frame = if cursor != payload.len() {
+            Some(
+                ace46::decode_trailer_rows(payload, cursor)
+                    .map_err(|error| format!("air_variant_archetypes ace trailer: {error}"))?,
+            )
+        } else {
+            None
+        };
         // D46's lane always sets DELTA_DATA, but the first successful frame is a
         // complete implicit baseline; later frames are sparse upsert/deletes.
         let sparse = self.implicit_delta_baseline_or_sparse(AIR_VARIANT_ARCHETYPES_DOMAIN_ID);
@@ -5243,8 +5300,89 @@ impl WorldFold {
                 },
             );
         }
+        if let Some(frame) = ace_frame {
+            self.apply_air_ace_roster(frame);
+        }
         self.mark_fold_domain_success(AIR_VARIANT_ARCHETYPES_DOMAIN_ID);
         Ok(())
+    }
+
+    /// Apply a decoded `ACE1` ace-roster trailer.
+    ///
+    /// FULL-REPLACE of the ace map + per-country `_r2_air_ace_roster_live`
+    /// sidecars ONLY on a clean, complete frame. A read failure must never be
+    /// written into the replay as ground-truth absence, so:
+    /// - `SOURCE_UNAVAILABLE` (country roots missing entirely) => RETAIN prior
+    ///   ace state, badge the domain problem, do not touch the map/sidecars;
+    /// - `PARTIAL_DATA` (roster incomplete — at least one existing country/ace
+    ///   could not be read this frame) => RETAIN prior state too. A partial
+    ///   frame's full-replace set is missing real rows; clearing+replacing
+    ///   would wipe the un-read country/ace for this hour and flicker it back
+    ///   next clean frame (the Codex/coordinator BLOCKER).
+    /// - `WING_ASSIGNMENT_BLOCKED` alone is an assignment-only anomaly
+    ///   (identity is complete) => still REPLACE, with the badge recorded in
+    ///   every country sidecar.
+    ///
+    /// Only a clean apply sets `air_aces_fresh_this_hour`, which gates the
+    /// D30 snapshot `air_wings[*].ace` join so a retained (stale) roster is
+    /// never surfaced as this hour's ground truth.
+    fn apply_air_ace_roster(&mut self, frame: ace46::AceTrailerFrame) {
+        let status_flags = frame.header.status_flags;
+        if status_flags & ace46::ACE_STATUS_SOURCE_UNAVAILABLE != 0 {
+            self.record_domain_problem(
+                AIR_VARIANT_ARCHETYPES_DOMAIN_ID,
+                "ace_roster_source_unavailable",
+            );
+            self.note(
+                "air_ace_roster country roots unavailable this hour; ace state retained from prior valid hour",
+            );
+            return;
+        }
+        if status_flags & ace46::ACE_STATUS_PARTIAL_DATA != 0 {
+            // Incomplete roster: some country/ace that DOES exist could not be
+            // read. Retain the prior complete roster rather than wiping the
+            // missing rows for this hour (fail closed: absent != could-not-read).
+            self.record_domain_problem(AIR_VARIANT_ARCHETYPES_DOMAIN_ID, "ace_roster_partial");
+            self.note(format!(
+                "air_ace_roster incomplete this hour ({} row(s) unreadable); ace state retained from prior valid hour, not full-replaced",
+                frame.header.skipped_rows
+            ));
+            return;
+        }
+        // Clean, complete frame: full-replace map + sidecars.
+        self.air_aces.clear();
+        for country in self.countries.values_mut() {
+            if let Some(Value::Object(extra)) = country.get_mut("extra") {
+                extra.remove(DOMAIN46_ACE_R2_KEY);
+                if extra.is_empty() {
+                    country.remove("extra");
+                }
+            }
+        }
+        let assignment_blocked = status_flags & ace46::ACE_STATUS_WING_ASSIGNMENT_BLOCKED != 0;
+        for row in frame.rows {
+            let tag_db_id = row.tag_db_id;
+            let sidecar = {
+                let extra = ensure_json_object_mut(self.country_mut(tag_db_id), "extra");
+                ensure_json_object_mut(extra, DOMAIN46_ACE_R2_KEY)
+            };
+            if assignment_blocked {
+                sidecar.insert("wing_assignment_blocked".into(), json!(true));
+            }
+            ensure_json_array_mut(sidecar, "aces").push(json!({
+                "ace_id": row.ace_id,
+                "country_ace_index": row.country_ace_index,
+                "name": row.name,
+                "surname": row.surname,
+                "callsign": row.callsign,
+                "alive": row.alive,
+                "wing_id": row.wing_id,
+                "killer_ace_id": row.killer_ace_id,
+                "killer_country_tag_db_id": row.killer_country_tag_db_id,
+            }));
+            self.air_aces.insert((tag_db_id, row.ace_id), row);
+        }
+        self.air_aces_fresh_this_hour = true;
     }
 
     // --- DOMAIN 47 characters_leaders_cabinet_live (full each frame) ------
@@ -7010,11 +7148,12 @@ impl WorldFold {
                 // seed pair. The due-date is intentionally absent. All three
                 // present-flags are enforced by validate_scripted_state_row so
                 // the seed is never a fabricated 0.
-                let combined_event_id =
-                    row.token_id.expect("validated delayed-event event id token");
-                let scope_tag_db_id = row
-                    .date_hour_raw
-                    .expect("validated delayed-event scope tag") as u32;
+                let combined_event_id = row
+                    .token_id
+                    .expect("validated delayed-event event id token");
+                let scope_tag_db_id =
+                    row.date_hour_raw
+                        .expect("validated delayed-event scope tag") as u32;
                 let scope_random = row
                     .value_raw
                     .expect("validated delayed-event scope random seed")
@@ -7090,9 +7229,7 @@ impl WorldFold {
                     ));
                 }
             } else if order_instance_id != 0 {
-                return Err(
-                    "divisions row has order instance id without army-order flag".into(),
-                );
+                return Err("divisions row has order instance id without army-order flag".into());
             }
             if flags & DIVISION_FLAG_DELETED != 0 {
                 // A deleted row's only permitted flag is DELETED itself; any
@@ -11301,12 +11438,11 @@ fn validate_scripted_state_row(row: &ScriptedStateRow) -> Result<(), String> {
             }
             match row.token_id {
                 Some(id)
-                    if (SCRIPTED_STATE_MIN_DELAYED_EVENT_ID..=SCRIPTED_STATE_MAX_DELAYED_EVENT_ID)
+                    if (SCRIPTED_STATE_MIN_DELAYED_EVENT_ID
+                        ..=SCRIPTED_STATE_MAX_DELAYED_EVENT_ID)
                         .contains(&id) => {}
                 _ => {
-                    return Err(
-                        "scripted_state delayed-event row has invalid event id".to_string()
-                    )
+                    return Err("scripted_state delayed-event row has invalid event id".to_string())
                 }
             }
             // Scope tag_db_id (date_hour_raw slot): present, in country range,
@@ -11320,7 +11456,8 @@ fn validate_scripted_state_row(row: &ScriptedStateRow) -> Result<(), String> {
                         && scope_tag as u32 == row.owner_id => {}
                 _ => {
                     return Err(
-                        "scripted_state delayed-event row scope tag invalid or != owner".to_string(),
+                        "scripted_state delayed-event row scope tag invalid or != owner"
+                            .to_string(),
                     )
                 }
             }
