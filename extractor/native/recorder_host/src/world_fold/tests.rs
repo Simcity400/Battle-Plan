@@ -206,6 +206,28 @@ fn production_payload(tag: u32, stockpile_amount_raw: i64, active_factories: i32
     p
 }
 
+/// Append a `PLIC` production-license trailer to a base production payload.
+/// `countries` is a list of (tag_db_id, license ids) rows; a country with an
+/// empty id list is a proven-empty set.
+fn append_production_license_trailer(p: &mut Vec<u8>, countries: &[(u32, Vec<u32>)]) {
+    let id_rows: usize = countries.iter().map(|(_, ids)| ids.len()).sum();
+    p.extend_from_slice(b"PLIC");
+    p.extend_from_slice(&1u16.to_le_bytes()); // version
+    p.extend_from_slice(&20u16.to_le_bytes()); // header_len
+    p.extend_from_slice(&(countries.len() as u32).to_le_bytes()); // country_rows
+    p.extend_from_slice(&(id_rows as u32).to_le_bytes()); // id_rows
+    p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    for (tag, ids) in countries {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+    }
+    for (_, ids) in countries {
+        for id in ids {
+            p.extend_from_slice(&id.to_le_bytes());
+        }
+    }
+}
+
 const DIV_ROW_LEN: usize = 88;
 const DIV_TYPE: u32 = 4713;
 const DELTA: u32 = 1 << 10;
@@ -6954,6 +6976,56 @@ fn chunk2_d46_ace_trailer_source_unavailable_retains_and_badges() {
         .iter()
         .any(|problem| problem["domain_id"] == json!(46)
             && problem["problem"] == json!("ace_roster_source_unavailable")));
+}
+
+#[test]
+fn chunk2_d11_production_license_trailer_folds_per_country() {
+    // LAT: two licensed variants; ROM: proven-empty set; GER: no trailer row
+    // (unreadable -> production_licenses null, absent != empty).
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    // The base payload's rows are all keyed to tag 1; add license rows for
+    // tags 1 (LAT-like) and 2 (ROM-like empty). Tag 3 gets no trailer row.
+    append_production_license_trailer(&mut prod, &[(1, vec![5132, 5081]), (2, vec![])]);
+
+    let snap = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "LAT"), (2, "ROM"), (3, "GER")]),
+        ),
+        (11, prod),
+    ]);
+
+    // LAT: measured, sorted ids as strings.
+    assert_eq!(
+        snap["countries"]["LAT"]["production"]["production_licenses"],
+        json!(["5081", "5132"])
+    );
+    // ROM: proven-empty set -> [] (distinct from null).
+    assert_eq!(
+        snap["countries"]["ROM"]["production"]["production_licenses"],
+        json!([])
+    );
+    // GER: no production block at all this frame (it had no base production
+    // rows and no license trailer row), so no production object is created.
+    assert!(snap["countries"]
+        .get("GER")
+        .and_then(|c| c.get("production"))
+        .is_none());
+}
+
+#[test]
+fn chunk2_d11_production_without_license_trailer_folds_null() {
+    // A legacy-shaped production record (no PLIC trailer) folds
+    // production_licenses = null (not measured), never [] (empty).
+    let prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "LAT")])),
+        (11, prod),
+    ]);
+    assert_eq!(
+        snap["countries"]["LAT"]["production"]["production_licenses"],
+        Value::Null
+    );
 }
 
 #[test]

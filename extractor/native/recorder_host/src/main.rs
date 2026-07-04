@@ -3546,13 +3546,16 @@ fn decode_compact_production_data_payload(
         ));
     }
     let line_count = military_count.saturating_add(naval_count);
-    let expected_len = 40usize
+    let base_len = 40usize
         .saturating_add(stockpile_count.saturating_mul(16))
         .saturating_add(line_count.saturating_mul(32))
         .saturating_add(construction_count.saturating_mul(32));
-    if payload.len() != expected_len {
+    // Wave-4 production licensing: the base payload is self-delimiting to
+    // base_len; any trailing bytes are the `PLIC` license trailer (parsed
+    // after the base rows). A record with no trailer is exactly base_len.
+    if payload.len() < base_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: production data payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: production data payload is {} byte(s), expected at least {base_len}",
             payload.len()
         ));
         return;
@@ -3661,6 +3664,119 @@ fn decode_compact_production_data_payload(
         }
         cursor += 32;
     }
+    // Wave-4 production licensing: parse the optional `PLIC` license trailer.
+    if cursor != payload.len() {
+        decode_compact_production_license_trailer(offset, payload, cursor, summary);
+    }
+}
+
+/// Decode + gate the domain-11 `PLIC` production-license trailer. The trailer
+/// must consume the payload to its exact end. License db ids are gated
+/// 1..2^24 and per-country id sets are deduped.
+fn decode_compact_production_license_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut CompactSummary,
+) {
+    const MAGIC: &[u8; 4] = b"PLIC";
+    const HEADER_LEN: usize = 20;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production license trailer offset {trailer_offset} beyond payload"
+        ));
+        return;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production license trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+        return;
+    }
+    if &trailer[0..4] != MAGIC {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production license trailer magic is invalid"
+        ));
+        return;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let country_rows = read_u32_le(trailer, 8) as usize;
+    let id_rows = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    if version != 1 || header_len != HEADER_LEN || reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production license trailer header shape invalid (version {version}, header_len {header_len}, reserved {reserved})"
+        ));
+        return;
+    }
+    let expected = HEADER_LEN
+        .saturating_add(country_rows.saturating_mul(8))
+        .saturating_add(id_rows.saturating_mul(4));
+    if trailer.len() != expected {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production license trailer len {} != {expected}",
+            trailer.len()
+        ));
+        return;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen_country = BTreeSet::new();
+    let mut counts = Vec::with_capacity(country_rows);
+    let mut total_ids = 0usize;
+    let mut empty_country_rows = 0usize;
+    for row_index in 0..country_rows {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let count = read_u32_le(trailer, cursor + 4) as usize;
+        cursor += 8;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production license country row {row_index} has zero tag_db_id"
+            ));
+        }
+        if !seen_country.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production license country row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if count == 0 {
+            empty_country_rows = empty_country_rows.saturating_add(1);
+        }
+        total_ids = total_ids.saturating_add(count);
+        counts.push((tag_db_id, count));
+    }
+    if total_ids != id_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production license id total {total_ids} != id_rows {id_rows}"
+        ));
+        return;
+    }
+    for (tag_db_id, count) in &counts {
+        let mut seen_ids = BTreeSet::new();
+        for _ in 0..*count {
+            let variant_id = read_u32_le(trailer, cursor);
+            cursor += 4;
+            if variant_id == 0 || variant_id >= (1 << 24) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production license id {variant_id} for tag {tag_db_id} out of range"
+                ));
+            }
+            if !seen_ids.insert(variant_id) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production license tag {tag_db_id} duplicates variant_id {variant_id}"
+                ));
+            }
+        }
+    }
+    add_compact_domain_data_unit(summary, 11, "production_license_country_rows", country_rows);
+    add_compact_domain_data_unit(summary, 11, "production_license_id_rows", id_rows);
+    add_compact_domain_data_unit(
+        summary,
+        11,
+        "production_license_empty_country_rows",
+        empty_country_rows,
+    );
 }
 
 fn decode_compact_focus_data_payload(offset: usize, payload: &[u8], summary: &mut CompactSummary) {
@@ -13499,6 +13615,82 @@ fn last_error() -> Dword {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn append_plic_trailer(payload: &mut Vec<u8>, countries: &[(u32, Vec<u32>)]) {
+        let id_rows: usize = countries.iter().map(|(_, ids)| ids.len()).sum();
+        payload.extend_from_slice(b"PLIC");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(id_rows as u32).to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for (tag, ids) in countries {
+            payload.extend_from_slice(&tag.to_le_bytes());
+            payload.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+        }
+        for (_, ids) in countries {
+            for id in ids {
+                payload.extend_from_slice(&id.to_le_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn production_decode_accepts_license_trailer_and_counts_units() {
+        let mut payload = test_production_data_payload();
+        append_plic_trailer(&mut payload, &[(100, vec![5081, 5132]), (101, vec![])]);
+        let mut summary = CompactSummary::default();
+        // Ensure per_domain[11] exists so the domain units are recorded.
+        summary.per_domain.entry(11).or_default();
+        decode_compact_production_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain.get(&11).unwrap().data_units_total;
+        assert_eq!(
+            units.get("production_license_country_rows").copied(),
+            Some(2)
+        );
+        assert_eq!(units.get("production_license_id_rows").copied(), Some(2));
+        assert_eq!(
+            units.get("production_license_empty_country_rows").copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn production_decode_rejects_corrupt_license_trailer() {
+        let mut payload = test_production_data_payload();
+        append_plic_trailer(&mut payload, &[(100, vec![5081])]);
+        // Corrupt the id count so total_ids != id_rows.
+        let len = payload.len();
+        // Flip an out-of-range id (0) into the id slot.
+        payload[len - 4..len].copy_from_slice(&0u32.to_le_bytes());
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(11).or_default();
+        decode_compact_production_data_payload(0, &payload, &mut summary);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|e| e.contains("out of range")));
+    }
+
+    #[test]
+    fn production_decode_accepts_legacy_record_without_trailer() {
+        let payload = test_production_data_payload();
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(11).or_default();
+        decode_compact_production_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain.get(&11).unwrap().data_units_total;
+        assert!(units.get("production_license_country_rows").is_none());
+    }
 
     #[test]
     fn summary_detects_contiguous_hours_and_domains() {

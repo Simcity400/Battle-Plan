@@ -3270,9 +3270,14 @@ impl WorldFold {
         let naval_count = read_u32(payload, 32) as usize;
         let construction_count = read_u32(payload, 36) as usize;
         let line_count = military_count + naval_count;
-        let expected = 40 + stockpile_count * 16 + line_count * 32 + construction_count * 32;
-        if payload.len() != expected {
-            return Err(format!("production len {} != {expected}", payload.len()));
+        let base_len = 40 + stockpile_count * 16 + line_count * 32 + construction_count * 32;
+        // Wave-4 production licensing: base payload is self-delimiting to
+        // base_len; any trailing bytes are the `PLIC` license trailer.
+        if payload.len() < base_len {
+            return Err(format!(
+                "production len {} < base {base_len}",
+                payload.len()
+            ));
         }
         let _ = country_count;
 
@@ -3341,8 +3346,27 @@ impl WorldFold {
             cursor += 32;
         }
 
+        // Wave-4 production licensing: parse the optional `PLIC` trailer. A
+        // country present in the trailer gets its measured license set
+        // (proven-empty => `[]`); a country absent from the trailer keeps
+        // `licenses = None` (unreadable/not measured, folded as null — absent
+        // != empty).
+        debug_assert_eq!(cursor, base_len);
+        if cursor != payload.len() {
+            let licenses_by_tag = parse_production_license_trailer(payload, cursor)?;
+            for (tag, ids) in licenses_by_tag {
+                per_tag.entry(tag).or_default().licenses = Some(ids);
+            }
+        }
+
         for (tag, accum) in per_tag {
             let country = self.country_mut(tag);
+            let licenses_value = match accum.licenses {
+                Some(ids) => {
+                    Value::Array(ids.into_iter().map(|id| json!(id.to_string())).collect())
+                }
+                None => Value::Null,
+            };
             country.insert(
                 "production".into(),
                 json!({
@@ -3350,6 +3374,7 @@ impl WorldFold {
                     "military_lines": accum.military_lines,
                     "naval_lines": accum.naval_lines,
                     "construction_queue": accum.construction_queue,
+                    "production_licenses": licenses_value,
                 }),
             );
         }
@@ -9147,6 +9172,11 @@ struct ProductionAccum {
     military_lines: Vec<Value>,
     naval_lines: Vec<Value>,
     construction_queue: Vec<Value>,
+    /// Wave-4 production licensing: `Some(ids)` when this country carried a
+    /// measured license set in the `PLIC` trailer (proven-empty is `Some([])`);
+    /// `None` when no trailer row covered this country (unreadable/not measured
+    /// — absent != empty). Only countries WITH a trailer row get an entry.
+    licenses: Option<Vec<u32>>,
 }
 
 #[derive(Clone)]
@@ -10808,6 +10838,96 @@ fn validate_weather_i32_optional(
         ));
     }
     Ok(())
+}
+
+/// Wave-4 production licensing: parse the domain-11 `PLIC` license trailer
+/// into {tag_db_id -> sorted, deduped license variant db ids}. Strict: the
+/// trailer must consume the payload to its exact end, ids are gated 1..2^24,
+/// and per-country/country dupes fail the whole trailer (fail closed).
+fn parse_production_license_trailer(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<BTreeMap<u32, Vec<u32>>, String> {
+    const MAGIC: &[u8; 4] = b"PLIC";
+    const HEADER_LEN: usize = 20;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "production license trailer offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "production license trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    if &trailer[0..4] != MAGIC {
+        return Err("production license trailer magic is invalid".to_string());
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let country_rows = read_u32(trailer, 8) as usize;
+    let id_rows = read_u32(trailer, 12) as usize;
+    let reserved = read_u32(trailer, 16);
+    if version != 1 || header_len != HEADER_LEN || reserved != 0 {
+        return Err(format!(
+            "production license trailer header shape invalid (version {version}, header_len {header_len}, reserved {reserved})"
+        ));
+    }
+    let expected = HEADER_LEN
+        .saturating_add(country_rows.saturating_mul(8))
+        .saturating_add(id_rows.saturating_mul(4));
+    if trailer.len() != expected {
+        return Err(format!(
+            "production license trailer len {} != {expected}",
+            trailer.len()
+        ));
+    }
+    let mut cursor = HEADER_LEN;
+    let mut counts: Vec<(u32, usize)> = Vec::with_capacity(country_rows);
+    let mut seen_country = BTreeSet::new();
+    let mut total_ids = 0usize;
+    for _ in 0..country_rows {
+        let tag_db_id = read_u32(trailer, cursor);
+        let count = read_u32(trailer, cursor + 4) as usize;
+        cursor += 8;
+        if tag_db_id == 0 {
+            return Err("production license country row has zero tag_db_id".to_string());
+        }
+        if !seen_country.insert(tag_db_id) {
+            return Err(format!(
+                "production license trailer duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        total_ids = total_ids.saturating_add(count);
+        counts.push((tag_db_id, count));
+    }
+    if total_ids != id_rows {
+        return Err(format!(
+            "production license id total {total_ids} != id_rows {id_rows}"
+        ));
+    }
+    let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for (tag_db_id, count) in counts {
+        let mut ids = Vec::with_capacity(count);
+        let mut seen_ids = BTreeSet::new();
+        for _ in 0..count {
+            let variant_id = read_u32(trailer, cursor);
+            cursor += 4;
+            if variant_id == 0 || variant_id >= (1 << 24) {
+                return Err(format!(
+                    "production license id {variant_id} for tag {tag_db_id} out of range"
+                ));
+            }
+            if !seen_ids.insert(variant_id) {
+                return Err(format!(
+                    "production license tag {tag_db_id} duplicates variant_id {variant_id}"
+                ));
+            }
+            ids.push(variant_id);
+        }
+        ids.sort_unstable();
+        out.insert(tag_db_id, ids);
+    }
+    Ok(out)
 }
 
 fn parse_market_trade_detail_trailer(
