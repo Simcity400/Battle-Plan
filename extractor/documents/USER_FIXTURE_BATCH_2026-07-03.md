@@ -44,6 +44,13 @@ active land combat. The save has 50 active land combats.
 
 ## B. Need a controlled in-game change on this session
 
+### B0. Game-speed toggle (speed root — 10 seconds, cheapest fixture on this list)
+- Action: while PAUSED, tap the game-speed +/- key ONCE (change the speed number by one step),
+  tell me old->new (e.g. "4->3"), and leave it there until I say done.
+- I diff the banked CInGameIdler/globals snapshots (runs/speed_root_probe/) against a re-read;
+  the speed field falls out immediately. Unblocks replay request R4 (playback pacing).
+
+
 ### B1. Offmap factory delta (economy row 58)
 - Action: change ONE country's offmap factory count by a known amount (e.g. a decision/console
   that adds N civilian factories to IRE) WITHOUT changing state buildings/occupation/trade.
