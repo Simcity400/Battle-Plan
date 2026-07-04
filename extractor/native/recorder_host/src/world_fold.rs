@@ -715,6 +715,8 @@ struct Domain53WorldOverlay {
     status_flags: u32,
     wars: Vec<diplomacy53::compact::WarRelationRow>,
     subjects: Vec<diplomacy53::compact::SubjectRow>,
+    /// Wave-5 running-operation instances (world-scoped provisional sidecar).
+    operation_instances: Vec<diplomacy53::compact::OperationInstanceRow>,
 }
 
 #[derive(Default, Clone)]
@@ -2390,6 +2392,48 @@ impl WorldFold {
                                 "subject_tag_db_id": row.subject_tag_db_id,
                                 "autonomy_state_hash": row.autonomy_state_hash,
                                 "autonomy_ratio_raw": row.autonomy_ratio_raw,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        // Wave-5 running-operation instances (world-scoped provisional
+        // sidecar). Each row: {instance_id, def_ref_ok, associated_country}
+        // where the country is badged PROVISIONAL — semantics are
+        // associated-country; target-vs-operative-location is undistinguished
+        // (all 8 coincided on D04). The owner (+0x10) is REJECTED and absent.
+        //
+        // BLOCKED-ADDITIVE (build 870ebf): this emission path is NOT reachable
+        // live yet. The D53 base extract is fail-closed on 870ebf (its live
+        // root offsets are unvalidated, so build_domain53_payload emits an
+        // empty SOURCE_UNAVAILABLE record — see DOMAIN_REGISTRY.md D53). The
+        // operations wiring is complete, unit-proven, and rides the validated
+        // discovery cache, but this fold branch stays dark until the d53 base
+        // root source-availability is resolved. Do NOT read a green live proof
+        // of operations here as validation until that lands; the unit tests +
+        // the offset-verify (8/8 targets) are the current proof.
+        if !self
+            .domain53_world_overlay_this_hour
+            .operation_instances
+            .is_empty()
+        {
+            extra.insert(
+                "operation_instance_rows".into(),
+                Value::Array(
+                    self.domain53_world_overlay_this_hour
+                        .operation_instances
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "instance_id": row.instance_id,
+                                "def_ref_ok": row.def_ref_ok,
+                                "associated_country": row
+                                    .associated_country_tag_db_id
+                                    .map(|tag| self.country_ref_json(tag, unresolved))
+                                    .unwrap_or(Value::Null),
+                                "associated_country_tag_db_id": row.associated_country_tag_db_id,
+                                "associated_country_semantics": "provisional_target_vs_location_undistinguished",
                             })
                         })
                         .collect(),
@@ -8094,6 +8138,9 @@ impl WorldFold {
             status_flags,
             wars: decoded.wars,
             subjects: decoded.subjects,
+            // Wave-5 running-operation instances (world-scoped: the +0x10 owner
+            // is rejected, so instances are not per-country keyed).
+            operation_instances: decoded.operation_instances,
         };
         self.domain53_known_this_hour = true;
         self.mark_fold_domain_success(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);

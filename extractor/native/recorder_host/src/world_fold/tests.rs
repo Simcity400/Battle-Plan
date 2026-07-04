@@ -590,6 +590,28 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
             .iter()
             .any(|value| value == "operation_detail_fixture_blocked")
     );
+    // Wave-5: the proof-fixture carries 2 operation instances in the OPIN
+    // trailer -> folded as a world-scoped provisional sidecar.
+    let ops = &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["operation_instance_rows"];
+    let ops = ops.as_array().unwrap();
+    assert_eq!(ops.len(), 2);
+    // instance 129014 has associated_country tag 3 -> resolves to POL.
+    let with_country = ops
+        .iter()
+        .find(|row| row["instance_id"] == json!(129_014))
+        .unwrap();
+    assert_eq!(with_country["def_ref_ok"], json!(true));
+    assert_eq!(with_country["associated_country"], json!("POL"));
+    assert_eq!(
+        with_country["associated_country_semantics"],
+        json!("provisional_target_vs_location_undistinguished")
+    );
+    // instance 128904 has no country -> null (absent != zero).
+    let no_country = ops
+        .iter()
+        .find(|row| row["instance_id"] == json!(128_904))
+        .unwrap();
+    assert_eq!(no_country["associated_country"], Value::Null);
     assert!(snapshot["provenance"]["collector"]["domains"]
         .as_array()
         .unwrap()

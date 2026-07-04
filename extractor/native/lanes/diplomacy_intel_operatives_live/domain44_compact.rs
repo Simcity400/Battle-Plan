@@ -148,6 +148,16 @@ const ROW_OPERATION_ANCHOR_LEN: usize = 32;
 const ROW_INTEL_MAP_LEN: usize = 32;
 const ROW_COMPACT_STATE_EVENT_LEN: usize = 32;
 
+// Wave-5 running-operations `OPIN` trailer (tail-appended after the base
+// self-delimiting payload; MTD1/ACE1/PLIC/PLCF precedent).
+const OPERATION_INSTANCE_TRAILER_MAGIC: &[u8; 4] = b"OPIN";
+const OPERATION_INSTANCE_TRAILER_VERSION: u16 = 1;
+const OPERATION_INSTANCE_TRAILER_HEADER_LEN: usize = 12;
+const OPERATION_INSTANCE_TRAILER_ROW_LEN: usize = 12;
+const OPERATION_INSTANCE_FLAG_DEF_REF_OK: u32 = 1;
+const OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT: u32 = 1 << 1;
+pub const MAX_OPERATION_INSTANCE_ROWS: usize = 4_096;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyIntelSnapshot {
     pub elapsed_wall_ms: u64,
@@ -165,6 +175,11 @@ pub struct DiplomacyIntelSnapshot {
     pub operation_anchors: Vec<OperationAnchorRow>,
     pub intel_map: Vec<IntelMapRow>,
     pub state_events: Vec<StateEventRow>,
+    /// Wave-5 running-operation instances (COperationInstance {instance_id,
+    /// def_ref_ok, associated_country}). Carried in the `OPIN` trailer AFTER
+    /// the self-delimiting base payload — NOT counted in `row_count()` (the
+    /// base row loop must not see them). Absent trailer => empty (not measured).
+    pub operation_instances: Vec<OperationInstanceRow>,
 }
 
 impl DiplomacyIntelSnapshot {
@@ -298,6 +313,20 @@ pub struct OperationAnchorRow {
     pub slot_count: u32,
     pub phase_count: u32,
     pub detail_resisted: bool,
+}
+
+/// Wave-5 running-operation instance row: {instance_id, def_ref_ok,
+/// associated_country}. The `owner` (+0x10) field is REJECTED and NOT carried.
+/// `associated_country` is PROVISIONAL — semantics are associated-country;
+/// target-vs-operative-location is undistinguished (all 8 coincided on D04).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationInstanceRow {
+    pub instance_id: u32,
+    /// The operation-def ptr (@+0x48) passed the COperation vtable check.
+    pub def_ref_ok: bool,
+    /// Resolved associated-country tag_db_id (@+0x50 -> CCountry). `None` when
+    /// the pointer was null/invalid (absent, never zero).
+    pub associated_country_tag_db_id: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -522,7 +551,143 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         payload.extend_from_slice(&row.value_hash.to_le_bytes());
         payload.extend_from_slice(&row.value_raw.to_le_bytes());
     }
+    append_operation_instance_trailer(&mut payload, &snapshot.operation_instances);
     payload
+}
+
+/// Wave-5: append the `OPIN` running-operation-instance trailer after the
+/// self-delimiting base payload. Trailer layout (header_len = 12):
+///   magic "OPIN" (4) | version u16 | header_len u16 (=12) | row_count u32
+/// then per instance: {instance_id u32, flags u32, associated_country u32}
+/// (flags: DEF_REF_OK bit0, COUNTRY_PRESENT bit1). Emitted only when at least
+/// one instance is present; no rows => no trailer (legacy-shaped record).
+///
+/// BLOCKED-ADDITIVE (build 870ebf): the D53 base extract is fail-closed on
+/// 870ebf (unvalidated live root offsets → empty SOURCE_UNAVAILABLE record),
+/// so `rows` is always empty in production today and this trailer is not
+/// live-emitted. The encode/decode is fully exercised by unit tests; it lights
+/// up when the d53 base root source-availability lands.
+fn append_operation_instance_trailer(payload: &mut Vec<u8>, rows: &[OperationInstanceRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    payload.extend_from_slice(OPERATION_INSTANCE_TRAILER_MAGIC);
+    payload.extend_from_slice(&OPERATION_INSTANCE_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(OPERATION_INSTANCE_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    for row in rows {
+        let mut flags = 0u32;
+        if row.def_ref_ok {
+            flags |= OPERATION_INSTANCE_FLAG_DEF_REF_OK;
+        }
+        if row.associated_country_tag_db_id.is_some() {
+            flags |= OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT;
+        }
+        payload.extend_from_slice(&row.instance_id.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&row.associated_country_tag_db_id.unwrap_or(0).to_le_bytes());
+    }
+}
+
+/// Decode + gate the `OPIN` trailer at `trailer_offset`. Returns the decoded
+/// rows and appends any parse errors to `errors`. Strict: exact-end
+/// consumption, unique instance ids, flag/country consistency.
+fn decode_operation_instance_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    errors: &mut Vec<String>,
+) -> Vec<OperationInstanceRow> {
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        errors.push(format!(
+            "offset {offset}: operation-instance trailer offset {trailer_offset} beyond payload"
+        ));
+        return Vec::new();
+    };
+    if trailer.len() < OPERATION_INSTANCE_TRAILER_HEADER_LEN {
+        errors.push(format!(
+            "offset {offset}: operation-instance trailer is {} byte(s), expected at least {}",
+            trailer.len(),
+            OPERATION_INSTANCE_TRAILER_HEADER_LEN
+        ));
+        return Vec::new();
+    }
+    if &trailer[0..4] != OPERATION_INSTANCE_TRAILER_MAGIC {
+        errors.push(format!(
+            "offset {offset}: operation-instance trailer magic is invalid"
+        ));
+        return Vec::new();
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_count = read_u32_le(trailer, 8) as usize;
+    if version != OPERATION_INSTANCE_TRAILER_VERSION
+        || header_len != OPERATION_INSTANCE_TRAILER_HEADER_LEN
+    {
+        errors.push(format!(
+            "offset {offset}: operation-instance trailer header shape invalid (version {version}, header_len {header_len})"
+        ));
+        return Vec::new();
+    }
+    if row_count > MAX_OPERATION_INSTANCE_ROWS {
+        errors.push(format!(
+            "offset {offset}: operation-instance trailer row_count {row_count} exceeds {MAX_OPERATION_INSTANCE_ROWS}"
+        ));
+        return Vec::new();
+    }
+    let expected = OPERATION_INSTANCE_TRAILER_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(OPERATION_INSTANCE_TRAILER_ROW_LEN));
+    if trailer.len() != expected {
+        errors.push(format!(
+            "offset {offset}: operation-instance trailer len {} != {expected}",
+            trailer.len()
+        ));
+        return Vec::new();
+    }
+    let mut rows = Vec::with_capacity(row_count);
+    let mut seen = BTreeSet::new();
+    let mut cursor = OPERATION_INSTANCE_TRAILER_HEADER_LEN;
+    for _ in 0..row_count {
+        let instance_id = read_u32_le(trailer, cursor);
+        let flags = read_u32_le(trailer, cursor + 4);
+        let country = read_u32_le(trailer, cursor + 8);
+        cursor += OPERATION_INSTANCE_TRAILER_ROW_LEN;
+        if instance_id == 0 {
+            errors.push(format!(
+                "offset {offset}: operation-instance row has zero instance_id"
+            ));
+        }
+        if flags & !(OPERATION_INSTANCE_FLAG_DEF_REF_OK | OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT)
+            != 0
+        {
+            errors.push(format!(
+                "offset {offset}: operation-instance row has unknown flags {flags:#x}"
+            ));
+        }
+        let country_present = flags & OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT != 0;
+        if country_present {
+            if country == 0 || country > MAX_TAG_DB_ID {
+                errors.push(format!(
+                    "offset {offset}: operation-instance row has invalid associated_country {country}"
+                ));
+            }
+        } else if country != 0 {
+            errors.push(format!(
+                "offset {offset}: operation-instance row has country without present flag"
+            ));
+        }
+        if !seen.insert(instance_id) {
+            errors.push(format!(
+                "offset {offset}: operation-instance trailer duplicates instance_id {instance_id}"
+            ));
+        }
+        rows.push(OperationInstanceRow {
+            instance_id,
+            def_ref_ok: flags & OPERATION_INSTANCE_FLAG_DEF_REF_OK != 0,
+            associated_country_tag_db_id: country_present.then_some(country),
+        });
+    }
+    rows
 }
 
 pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
@@ -784,12 +949,38 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         cursor += row_len;
     }
 
+    // Wave-5: any bytes after the self-delimiting base payload are the `OPIN`
+    // running-operation-instance trailer; anything else is a trailing-byte
+    // error exactly as before.
+    let mut operation_instance_rows = 0usize;
+    let mut operation_instance_country_rows = 0usize;
+    let mut operation_instance_def_ref_ok_rows = 0usize;
     if cursor != payload.len() {
-        summary.parse_errors.push(format!(
-            "offset {offset}: diplomacy/intel payload has {} trailing byte(s)",
-            payload.len().saturating_sub(cursor)
-        ));
+        let trailer_rows =
+            decode_operation_instance_trailer(offset, payload, cursor, &mut summary.parse_errors);
+        operation_instance_rows = trailer_rows.len();
+        operation_instance_country_rows = trailer_rows
+            .iter()
+            .filter(|row| row.associated_country_tag_db_id.is_some())
+            .count();
+        operation_instance_def_ref_ok_rows =
+            trailer_rows.iter().filter(|row| row.def_ref_ok).count();
     }
+    add_unit(
+        &mut summary,
+        "operation_instance_rows",
+        operation_instance_rows,
+    );
+    add_unit(
+        &mut summary,
+        "operation_instance_country_rows",
+        operation_instance_country_rows,
+    );
+    add_unit(
+        &mut summary,
+        "operation_instance_def_ref_ok_rows",
+        operation_instance_def_ref_ok_rows,
+    );
     if decoded_counts != expected_counts {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel per-kind counts decoded {:?} != header {:?}",
@@ -1038,6 +1229,16 @@ pub fn decode_snapshot_payload(
             _ => unreachable!("decode_payload already validated row kind"),
         }
         cursor += row_len(kind).expect("decode_payload already validated row kind");
+    }
+    // Wave-5: parse the `OPIN` running-operation-instance trailer (validated
+    // above by decode_payload, whose parse errors already gated this call).
+    if cursor != payload.len() {
+        let mut trailer_errors = Vec::new();
+        snapshot.operation_instances =
+            decode_operation_instance_trailer(offset, payload, cursor, &mut trailer_errors);
+        if !trailer_errors.is_empty() {
+            return Err(trailer_errors);
+        }
     }
     Ok(snapshot)
 }
@@ -2238,6 +2439,119 @@ mod tests {
             .any(|error| error.contains("unknown bits")));
     }
 
+    #[test]
+    fn operation_instance_trailer_round_trips() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.operation_instances = vec![
+            OperationInstanceRow {
+                instance_id: 129_014,
+                def_ref_ok: true,
+                associated_country_tag_db_id: Some(3),
+            },
+            OperationInstanceRow {
+                instance_id: 128_904,
+                def_ref_ok: false,
+                associated_country_tag_db_id: None,
+            },
+        ];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("operation_instance_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("operation_instance_country_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("operation_instance_def_ref_ok_rows")
+                .copied(),
+            Some(1)
+        );
+        // Snapshot decode restores the rows.
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert_eq!(decoded.operation_instances, snapshot.operation_instances);
+    }
+
+    #[test]
+    fn operation_instance_trailer_rejects_duplicate_instance_id() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.operation_instances = vec![
+            OperationInstanceRow {
+                instance_id: 42,
+                def_ref_ok: true,
+                associated_country_tag_db_id: None,
+            },
+            OperationInstanceRow {
+                instance_id: 42,
+                def_ref_ok: true,
+                associated_country_tag_db_id: None,
+            },
+        ];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("duplicates instance_id 42")));
+    }
+
+    #[test]
+    fn operation_instance_trailer_rejects_country_without_flag() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.operation_instances = vec![OperationInstanceRow {
+            instance_id: 7,
+            def_ref_ok: true,
+            associated_country_tag_db_id: None,
+        }];
+        let mut payload = encode_payload(&snapshot);
+        // Force a nonzero country field on a row whose flag says absent.
+        let len = payload.len();
+        payload[len - 4..len].copy_from_slice(&5u32.to_le_bytes());
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("country without present flag")));
+    }
+
+    #[test]
+    fn no_operation_instances_emits_no_trailer() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.operation_instances.clear();
+        let payload = encode_payload(&snapshot);
+        assert!(!payload
+            .windows(4)
+            .any(|window| window == OPERATION_INSTANCE_TRAILER_MAGIC));
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("operation_instance_rows")
+                .copied(),
+            Some(0)
+        );
+    }
+
     fn fixture_snapshot() -> DiplomacyIntelSnapshot {
         DiplomacyIntelSnapshot {
             elapsed_wall_ms: 123,
@@ -2401,6 +2715,7 @@ mod tests {
                     value_raw: 960_000_000,
                 },
             ],
+            operation_instances: Vec::new(),
         }
     }
 }

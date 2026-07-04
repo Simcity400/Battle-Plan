@@ -240,6 +240,21 @@ pub const DOMAIN53_WAR_ECHO_FIRST: usize = 0x68;
 pub const DOMAIN53_WAR_ECHO_SECOND: usize = 0x6C;
 pub const DOMAIN53_WAR_GREGORIAN_DATE_VTABLE_RVA: usize = 0x2702190;
 pub const DOMAIN53_WAR_GAME_DATE_VTABLE_RVA: usize = 0x2702388;
+// Wave-5 running-operations (validated live 870ebf, paused D04, melt oracle;
+// runs/attemptcrack_operations_intel/EVIDENCE_v2 + wave5_independent_verify:
+// exactly 8 COperationInstance, target@+0x50 8/8 exact SOV/DEN/ITA/POR/BRA/
+// ENG/CHL/PER). COperationInstance heap object (vtable RVA below), handle u64
+// @+0x08 with id=HI32 / type=LO32 MUST==4713; operation-def ptr @+0x48 ->
+// COperation (vtable RVA below, def_ref vtable-check); associated country ptr
+// @+0x50 -> CCountry (resolve to tag_db_id at +0x08). The +0x10 owner field is
+// REJECTED (independent re-read: low byte=1 on all 8, polluted high bytes) and
+// is NOT read.
+pub const DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA: usize = 0x29A76C0;
+pub const DOMAIN53_OPERATION_DEF_VTABLE_RVA: usize = 0x2928C98;
+pub const DOMAIN53_OPERATION_INSTANCE_HANDLE: usize = 0x08;
+pub const DOMAIN53_OPERATION_INSTANCE_HANDLE_TYPE: u32 = 4_713;
+pub const DOMAIN53_OPERATION_INSTANCE_DEF: usize = 0x48;
+pub const DOMAIN53_OPERATION_INSTANCE_TARGET_COUNTRY: usize = 0x50;
 pub const DOMAIN53_HEAP_LO: usize = 0x10000000000;
 pub const DOMAIN53_HEAP_HI: usize = 0x7FF000000000;
 pub const DOMAIN53_MAX_COUNTRY_TABLE_SLOTS: u32 = 4_096;

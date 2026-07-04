@@ -1,21 +1,22 @@
 use crate::compact::{
     decode_payload, encode_payload, AgencyCapacityClusterRow, AgencyRow, CountryDiplomacyRow,
     CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, IntelMapRow, OperationAnchorRow,
-    OperativeRow, OpinionRow, RelationFlagRow, StateEventRow, SubjectRow, WarRelationRow,
-    DOMAIN_ID_PROPOSED, MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES, MAX_CRYPTO_AMOUNT_RAW,
-    MAX_FIXED_RAW, MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL,
-    MAX_OPINION_ABS, MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE,
-    REL_KIND_DOCKING_RIGHTS, REL_KIND_EMBARGO, REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION,
-    REL_KIND_GUARANTEE, REL_KIND_IMPROVE_RELATIONS, REL_KIND_LICENCE_PRODUCTION,
-    REL_KIND_MARKET_ACCESS_RIGHTS, REL_KIND_MILITARY_ACCESS, REL_KIND_NAVAL_BLOCKADE,
-    REL_KIND_NON_AGGRESSION_PACT, REL_KIND_PUPPET, STATE_EVENT_KIND_OBSERVED,
-    STATE_EVENT_SOURCE_AGENCY_CAPACITY, STATE_EVENT_SOURCE_AGENCY_SCALAR,
-    STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP, STATE_EVENT_SOURCE_CRYPTOLOGY,
-    STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE, STATE_EVENT_SOURCE_RELATION_FLAG,
-    STATE_EVENT_SOURCE_RELATION_OPINION, STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
-    STATUS_FACTION_GROUP_UNVALIDATED, STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED,
-    STATUS_INTEL_MAP_RESISTED, STATUS_OPERATIONS_DETAIL_RESISTED,
-    STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED, STATUS_WAR_ROOT_UNVALIDATED,
+    OperationInstanceRow, OperativeRow, OpinionRow, RelationFlagRow, StateEventRow, SubjectRow,
+    WarRelationRow, DOMAIN_ID_PROPOSED, MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES,
+    MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW, MAX_OPERATION_ID, MAX_OPERATIVE_ID,
+    MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL, MAX_OPINION_ABS, MAX_TAG_DB_ID, MAX_XP_RAW,
+    REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE, REL_KIND_DOCKING_RIGHTS, REL_KIND_EMBARGO,
+    REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION, REL_KIND_GUARANTEE, REL_KIND_IMPROVE_RELATIONS,
+    REL_KIND_LICENCE_PRODUCTION, REL_KIND_MARKET_ACCESS_RIGHTS, REL_KIND_MILITARY_ACCESS,
+    REL_KIND_NAVAL_BLOCKADE, REL_KIND_NON_AGGRESSION_PACT, REL_KIND_PUPPET,
+    STATE_EVENT_KIND_OBSERVED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+    STATE_EVENT_SOURCE_AGENCY_SCALAR, STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
+    STATE_EVENT_SOURCE_CRYPTOLOGY, STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
+    STATE_EVENT_SOURCE_RELATION_FLAG, STATE_EVENT_SOURCE_RELATION_OPINION,
+    STATE_EVENT_SOURCE_SUBJECT_AUTONOMY, STATUS_FACTION_GROUP_UNVALIDATED,
+    STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
+    STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
+    STATUS_WAR_ROOT_UNVALIDATED,
 };
 use compact_contract::build_profile as profile;
 use std::collections::{BTreeMap, BTreeSet};
@@ -125,6 +126,8 @@ pub struct ExtractedDomain53Rows {
     pub operation_anchors: Vec<OperationAnchorRow>,
     pub intel_map: Vec<IntelMapRow>,
     pub state_events: Vec<StateEventRow>,
+    /// Wave-5 running-operation instances (heap-discovered COperationInstance).
+    pub operation_instances: Vec<OperationInstanceRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,6 +205,10 @@ pub const DOMAIN53_DISCOVERY_DEGRADED: &str = "domain53_discovery_degraded";
 pub struct Domain53Discovery {
     pub operative_hits: Vec<u64>,
     pub war_hits: [Vec<u64>; 2],
+    /// Wave-5 running-operations: COperationInstance vtable hits from the same
+    /// background heap pass (no extra thread — rides the existing discovery
+    /// cache). Consumed and revalidated fresh each frame.
+    pub operation_instance_hits: Vec<u64>,
     pub scan_range_count: u32,
 }
 
@@ -246,17 +253,32 @@ struct Domain53DiscoveryStaleness {
     operative_stale_dropped: usize,
     war_total: usize,
     war_stale_dropped: usize,
+    // Wave-5 running operations: SEPARATELY attributed staleness. Operations
+    // churn on a different cadence than operatives (running ops start/complete
+    // frequently on a live game, so their cached heap hits legitimately go
+    // stale between background refreshes). Folding this into `operative_*`
+    // would let operations churn trip the operative majority gate (and vice
+    // versa), fail-closing valid operatives for reasons unrelated to
+    // operatives. Kept distinct so each family degrades on its OWN majority.
+    operation_total: usize,
+    operation_stale_dropped: usize,
 }
 
 impl Domain53DiscoveryStaleness {
     fn degraded(&self) -> bool {
         stale_fraction_degraded(self.operative_total, self.operative_stale_dropped)
             || stale_fraction_degraded(self.war_total, self.war_stale_dropped)
+            // Operations feed the shared d53 fail-closed majority gate on their
+            // OWN separate counters — a stale-majority of operations degrades
+            // the whole d53 frame, but operations and operatives never
+            // cross-contaminate each other's majority test.
+            || stale_fraction_degraded(self.operation_total, self.operation_stale_dropped)
     }
 
     fn stale_dropped_total(&self) -> usize {
         self.operative_stale_dropped
             .saturating_add(self.war_stale_dropped)
+            .saturating_add(self.operation_stale_dropped)
     }
 }
 
@@ -285,12 +307,17 @@ fn discover_domain53_heap_hits_for_module<M: Domain53Memory>(
     );
     let operative_vtable = add_addr(module_base, profile::DOMAIN53_OPERATIVE_VTABLE_RVA)?;
     let date_vtables = domain53_war_date_vtables(module_base)?;
+    let operation_instance_vtable =
+        add_addr(module_base, profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA)?;
     Ok(Domain53Discovery {
         operative_hits: scan_qword_hits(mem, &ranges, operative_vtable)?,
         war_hits: [
             scan_qword_hits(mem, &ranges, date_vtables[0])?,
             scan_qword_hits(mem, &ranges, date_vtables[1])?,
         ],
+        // Wave-5: same heap pass, one more needle (the COperationInstance
+        // vtable). Consumed by read_operations, revalidated fresh per frame.
+        operation_instance_hits: scan_qword_hits(mem, &ranges, operation_instance_vtable)?,
         scan_range_count: ranges.len().min(u32::MAX as usize) as u32,
     })
 }
@@ -423,6 +450,22 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     staleness.operative_stale_dropped = operative_stale_dropped;
     family_counts.operative_scan_ranges = discovery.scan_range_count;
     source_proofs |= SOURCE_PROOF_OPERATIVE_ROOT_870EBF;
+
+    // Wave-5 running operations: consume the COperationInstance hits from the
+    // same background discovery pass (revalidate the cached vtable fresh; a
+    // stale hit is dropped). Staleness is attributed to the SEPARATE
+    // operation_* counters — NOT the operative counters — so operations churn
+    // degrades only the operations majority, never suppressing valid
+    // operatives (and vice versa).
+    let (operation_instances, operation_stale_dropped) = read_operations(
+        mem,
+        module_base,
+        &countries,
+        &discovery.operation_instance_hits,
+    )?;
+    acc.rows.operation_instances = operation_instances;
+    staleness.operation_total = discovery.operation_instance_hits.len();
+    staleness.operation_stale_dropped = operation_stale_dropped;
 
     for agency in &mut acc.rows.agencies {
         agency.operative_count = acc
@@ -1173,6 +1216,119 @@ fn read_cryptology_rows<M: Domain53Memory>(
     Ok(())
 }
 
+/// Wave-5 running operations: consume the COperationInstance heap hits from
+/// the background discovery, revalidate each fresh, and emit
+/// {instance_id, def_ref_ok, associated_country} rows.
+///
+/// Fail-closed per instance (the hit is DROPPED, counted as stale, on any
+/// failure): the cached address must still carry the COperationInstance
+/// vtable; the handle @+0x08 type (LO32) MUST == 4713 (else drop); the
+/// operation-def ptr @+0x48 is vtable-checked as COperation to set
+/// `def_ref_ok`; the associated-country ptr @+0x50 is vtable-checked as
+/// CCountry and its tag_db_id read at +0x08 (a valid, in-range tag; else the
+/// country is absent, NOT zero). Duplicate instance ids are dropped. The
+/// +0x10 owner field is REJECTED and never read.
+///
+/// Returns (rows, stale_dropped). The caller folds stale_dropped into the
+/// shared d53 staleness gate so a stale-majority degrades the whole frame.
+fn read_operations<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    countries: &[CountryRoot],
+    hits: &[u64],
+) -> Result<(Vec<OperationInstanceRow>, usize), ExtractError> {
+    let instance_vtable = add_addr(module_base, profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA)?;
+    let def_vtable = add_addr(module_base, profile::DOMAIN53_OPERATION_DEF_VTABLE_RVA)?;
+    let country_vtable = add_addr(module_base, profile::DOMAIN53_COUNTRY_VTABLE_RVA)?;
+    let valid_countries = countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect::<BTreeSet<_>>();
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut stale_dropped = 0usize;
+    for hit in hits {
+        let hit = *hit;
+        // Revalidate the cached vtable fresh (stale-drop on any mismatch).
+        match mem.read_u64(hit) {
+            Ok(vtable) if vtable == instance_vtable => {}
+            Ok(_) | Err(_) => {
+                stale_dropped = stale_dropped.saturating_add(1);
+                continue;
+            }
+        }
+        // Handle @+0x08: id = HI32, type = LO32 (MUST == 4713).
+        let Ok(handle) = mem.read_u64(add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_HANDLE)?)
+        else {
+            stale_dropped = stale_dropped.saturating_add(1);
+            continue;
+        };
+        let handle_type = (handle & 0xFFFF_FFFF) as u32;
+        if handle_type != profile::DOMAIN53_OPERATION_INSTANCE_HANDLE_TYPE {
+            stale_dropped = stale_dropped.saturating_add(1);
+            continue;
+        }
+        let instance_id = (handle >> 32) as u32;
+        if instance_id == 0 || instance_id > MAX_OPERATION_ID {
+            stale_dropped = stale_dropped.saturating_add(1);
+            continue;
+        }
+        if !seen.insert(instance_id) {
+            stale_dropped = stale_dropped.saturating_add(1);
+            continue;
+        }
+        // Def ptr @+0x48: vtable-check as COperation.
+        let def_ref_ok =
+            match mem.read_u64(add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_DEF)?) {
+                Ok(def_ptr) if is_heap_ptr(def_ptr) => {
+                    matches!(mem.read_u64(def_ptr), Ok(vt) if vt == def_vtable)
+                }
+                _ => false,
+            };
+        // Associated country @+0x50: vtable-check as CCountry, read tag at +0x08.
+        // PROVISIONAL (associated-country; target-vs-location undistinguished).
+        let associated_country_tag_db_id = read_operation_associated_country(
+            mem,
+            add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_TARGET_COUNTRY)?,
+            country_vtable,
+            &valid_countries,
+        );
+        rows.push(OperationInstanceRow {
+            instance_id,
+            def_ref_ok,
+            associated_country_tag_db_id,
+        });
+    }
+    rows.sort_by_key(|row| row.instance_id);
+    Ok((rows, stale_dropped))
+}
+
+/// Resolve a COperationInstance's associated-country pointer (@+0x50) to a
+/// tag_db_id. Returns `None` (absent, not zero) when the pointer is
+/// null/invalid, fails the CCountry vtable check, or its tag is out of the
+/// known-country set.
+fn read_operation_associated_country<M: Domain53Memory>(
+    mem: &M,
+    country_ptr_addr: u64,
+    country_vtable: u64,
+    valid_countries: &BTreeSet<u32>,
+) -> Option<u32> {
+    let country_ptr = mem.read_u64(country_ptr_addr).ok()?;
+    if !is_heap_ptr(country_ptr) {
+        return None;
+    }
+    if mem.read_u64(country_ptr).ok()? != country_vtable {
+        return None;
+    }
+    let tag_db_id = mem
+        .read_u32(country_ptr.checked_add(profile::DOMAIN53_OBJ_TAG_DB_ID as u64)?)
+        .ok()?;
+    if !valid_tag_db_id(tag_db_id) || !valid_countries.contains(&tag_db_id) {
+        return None;
+    }
+    Some(tag_db_id)
+}
+
 fn read_operatives<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
@@ -1660,6 +1816,7 @@ pub fn build_domain53_payload(
         operation_anchors: rows.operation_anchors,
         intel_map: rows.intel_map,
         state_events: rows.state_events,
+        operation_instances: rows.operation_instances,
     };
     let mut errors = Vec::new();
 
@@ -1967,6 +2124,18 @@ pub fn proof_fixture_rows() -> ExtractedDomain53Rows {
         operation_anchors: Vec::new(),
         intel_map: Vec::new(),
         state_events: validated_state_event_rows(),
+        operation_instances: vec![
+            OperationInstanceRow {
+                instance_id: 129_014,
+                def_ref_ok: true,
+                associated_country_tag_db_id: Some(3),
+            },
+            OperationInstanceRow {
+                instance_id: 128_904,
+                def_ref_ok: true,
+                associated_country_tag_db_id: None,
+            },
+        ],
     }
 }
 
@@ -2596,6 +2765,195 @@ mod tests {
             .expect_err("stale operative majority must fail closed");
 
         assert_eq!(err, ExtractError::InvalidRoot(DOMAIN53_DISCOVERY_DEGRADED));
+    }
+
+    /// Add a COperationInstance to the scene: vtable, handle {id, type=4713},
+    /// def ptr (COperation vtable when `def_ok`), country ptr @+0x50. Returns
+    /// the instance address (a discovery hit). `country_ptr` may be 0 for the
+    /// absent-country case.
+    fn add_fake_operation_instance(
+        mem: &mut FakeMemory,
+        index: u32,
+        instance_id: u32,
+        def_ok: bool,
+        country_ptr: u64,
+    ) -> u64 {
+        let heap = fake_heap_base();
+        let instance = heap + 0x50_0000 + u64::from(index) * 0x2000;
+        let def = instance + 0x1000;
+        mem.add_chunk(instance, 0x100);
+        mem.add_chunk(def, 0x10);
+        mem.add_range(instance, 0x100);
+        mem.write_u64(
+            instance,
+            mem.module_base + profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA as u64,
+        );
+        // Handle @+0x08: id = HI32, type = LO32 = 4713.
+        let handle = (u64::from(instance_id) << 32)
+            | u64::from(profile::DOMAIN53_OPERATION_INSTANCE_HANDLE_TYPE);
+        mem.write_u64(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_HANDLE as u64,
+            handle,
+        );
+        // Def ptr @+0x48 -> COperation vtable (only when def_ok).
+        mem.write_u64(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_DEF as u64,
+            def,
+        );
+        let def_vtable = if def_ok {
+            mem.module_base + profile::DOMAIN53_OPERATION_DEF_VTABLE_RVA as u64
+        } else {
+            mem.module_base + 0x1234
+        };
+        mem.write_u64(def, def_vtable);
+        // Country ptr @+0x50.
+        mem.write_u64(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_TARGET_COUNTRY as u64,
+            country_ptr,
+        );
+        // +0x10 owner is REJECTED: write garbage to prove it is never read.
+        mem.write_u64(instance + 0x10, 0x593B_0001);
+        instance
+    }
+
+    #[test]
+    fn read_operations_validates_instances_and_resolves_country() {
+        let mut mem = fake_domain53_memory(true, true);
+        let module = mem.module_base;
+        // country3 (tag 3) address in the scene: heap + 0x5_0000.
+        let country3 = fake_heap_base() + 0x5_0000;
+        // Instance A: valid, def ok, target country 3.
+        let inst_a = add_fake_operation_instance(&mut mem, 0, 129_014, true, country3);
+        // Instance B: valid, def NOT ok, no country.
+        let inst_b = add_fake_operation_instance(&mut mem, 1, 128_904, false, 0);
+        // Instance C: wrong handle type -> dropped as stale.
+        let inst_c = add_fake_operation_instance(&mut mem, 2, 7, true, country3);
+        mem.write_u64(
+            inst_c + profile::DOMAIN53_OPERATION_INSTANCE_HANDLE as u64,
+            (7u64 << 32) | 9999, // type != 4713
+        );
+
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        assert!(discovery.operation_instance_hits.contains(&inst_a));
+        assert!(discovery.operation_instance_hits.contains(&inst_b));
+        assert!(discovery.operation_instance_hits.contains(&inst_c));
+
+        let countries =
+            resolve_country_roots(&mem, module, fake_heap_base()).expect("country roots");
+        let (rows, stale_dropped) =
+            read_operations(&mem, module, &countries, &discovery.operation_instance_hits)
+                .expect("read_operations");
+
+        // C dropped (bad handle type); A and B kept, sorted by instance_id.
+        assert_eq!(stale_dropped, 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].instance_id, 128_904);
+        assert!(!rows[0].def_ref_ok);
+        assert_eq!(rows[0].associated_country_tag_db_id, None);
+        assert_eq!(rows[1].instance_id, 129_014);
+        assert!(rows[1].def_ref_ok);
+        assert_eq!(rows[1].associated_country_tag_db_id, Some(3));
+    }
+
+    #[test]
+    fn operation_and_operative_staleness_do_not_cross_contaminate() {
+        // A stale-MAJORITY of operations must NOT degrade the frame via the
+        // operative gate, and vice versa. Each family degrades only on its OWN
+        // majority (Codex Q4 fix: operations churn on a different cadence than
+        // operatives and must not suppress valid operatives).
+
+        // Operations stale-majority (5 of 8), operatives clean: degraded (via
+        // the operations gate) but the operative counters stay untouched.
+        let ops_majority = Domain53DiscoveryStaleness {
+            operative_total: 8,
+            operative_stale_dropped: 0,
+            war_total: 0,
+            war_stale_dropped: 0,
+            operation_total: 8,
+            operation_stale_dropped: 5,
+        };
+        assert!(ops_majority.degraded());
+        assert!(!stale_fraction_degraded(
+            ops_majority.operative_total,
+            ops_majority.operative_stale_dropped
+        ));
+
+        // Operatives clean, operations clean below the threshold: NOT degraded
+        // even though the combined stale-dropped total is nonzero — proving the
+        // gates are separate, not summed.
+        let both_minor = Domain53DiscoveryStaleness {
+            operative_total: 8,
+            operative_stale_dropped: 3,
+            war_total: 0,
+            war_stale_dropped: 0,
+            operation_total: 8,
+            operation_stale_dropped: 3,
+        };
+        assert!(!both_minor.degraded());
+        // ...yet both contribute to the VISIBLE stale total.
+        assert_eq!(both_minor.stale_dropped_total(), 6);
+
+        // Operative stale-majority alone still degrades (operations clean) —
+        // the operation counters do not mask an operative majority.
+        let operatives_majority = Domain53DiscoveryStaleness {
+            operative_total: 8,
+            operative_stale_dropped: 5,
+            war_total: 0,
+            war_stale_dropped: 0,
+            operation_total: 8,
+            operation_stale_dropped: 0,
+        };
+        assert!(operatives_majority.degraded());
+        assert!(!stale_fraction_degraded(
+            operatives_majority.operation_total,
+            operatives_majority.operation_stale_dropped
+        ));
+    }
+
+    #[test]
+    fn cached_operation_stale_majority_fails_closed_without_touching_operatives() {
+        // Integration: a stale-majority of live operation hits degrades the
+        // whole d53 frame, but this is driven purely by the operation gate —
+        // the operative rows are clean and would themselves pass.
+        let mut mem = fake_domain53_memory(true, true);
+        let country3 = fake_heap_base() + 0x5_0000;
+        for index in 0..8 {
+            add_fake_operation_instance(&mut mem, index, 100 + index, true, country3);
+        }
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        assert_eq!(discovery.operation_instance_hits.len(), 8);
+        assert_eq!(discovery.operative_hits.len(), 1);
+        // Stale 5 of 8 operation hits (a majority); leave the operative clean.
+        for hit in discovery.operation_instance_hits.iter().take(5) {
+            mem.write_u64(*hit, 0);
+        }
+
+        let err = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect_err("operation stale majority must fail closed");
+        assert_eq!(err, ExtractError::InvalidRoot(DOMAIN53_DISCOVERY_DEGRADED));
+    }
+
+    #[test]
+    fn cached_operation_stale_hit_below_majority_does_not_degrade_operatives() {
+        // A single stale operation hit (below the majority threshold) drops
+        // only that operation row and does NOT fail the frame or the operative
+        // family — the operatives extract cleanly.
+        let mut mem = fake_domain53_memory(true, true);
+        let country3 = fake_heap_base() + 0x5_0000;
+        for index in 0..8 {
+            add_fake_operation_instance(&mut mem, index, 100 + index, true, country3);
+        }
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        // Stale exactly 1 of 8 operation hits (well below majority).
+        mem.write_u64(discovery.operation_instance_hits[0], 0);
+
+        let extracted = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect("single stale operation hit is below degradation threshold");
+        // Operatives untouched.
+        assert_eq!(extracted.rows.operatives.len(), 1);
+        // 7 of 8 operations survived.
+        assert_eq!(extracted.rows.operation_instances.len(), 7);
+        assert_eq!(extracted.stale_dropped_total, 1);
     }
 
     #[test]
