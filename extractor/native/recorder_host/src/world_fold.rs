@@ -2149,6 +2149,44 @@ impl WorldFold {
                         Value::Array(detail.participant_events.clone()),
                     );
                 }
+                // E2: per-side CCombatSide detail is ALL-OR-NOTHING per combat.
+                // If EITHER side failed its read (None), emit NEITHER side's
+                // detail — a consumer must never see one-sided detail and read
+                // the missing side as zero/complete. An explicit
+                // `side_detail_completeness` badge records why detail is
+                // present or absent so absence is never ambiguous.
+                match (&detail.attacker_detail, &detail.defender_detail) {
+                    (Some(attacker), Some(defender)) => {
+                        detail_obj.insert("attacker".into(), Self::side_detail_json(attacker));
+                        detail_obj.insert("defender".into(), Self::side_detail_json(defender));
+                        // If either side's stable count triple was inconsistent
+                        // (a mid-combat transient), badge the pair complete-but-
+                        // counts-incomplete rather than fully authoritative.
+                        let counts_incomplete =
+                            attacker.counts_incomplete || defender.counts_incomplete;
+                        detail_obj.insert(
+                            "side_detail_completeness".into(),
+                            json!(if counts_incomplete {
+                                "both_counts_incomplete"
+                            } else {
+                                "both"
+                            }),
+                        );
+                    }
+                    (Some(_), None) => {
+                        detail_obj.insert(
+                            "side_detail_completeness".into(),
+                            json!("attacker_only_suppressed"),
+                        );
+                    }
+                    (None, Some(_)) => {
+                        detail_obj.insert(
+                            "side_detail_completeness".into(),
+                            json!("defender_only_suppressed"),
+                        );
+                    }
+                    (None, None) => {}
+                }
                 if !detail_obj.is_empty() {
                     obj.insert(
                         "land_combat_detail_events_live".into(),
@@ -7828,7 +7866,57 @@ impl WorldFold {
                 _ => {}
             }
         }
+        // E2: per-side current-state detail scalars, keyed by
+        // (combat_id, generation) exactly like the event rows.
+        for row in decoded.side_detail_rows {
+            let entry = self
+                .combat_detail_events_this_hour
+                .entry((row.combat_id, row.generation))
+                .or_default();
+            match row.side {
+                land_detail55::CombatSide::Attacker => entry.attacker_detail = Some(row.detail),
+                land_detail55::CombatSide::Defender => entry.defender_detail = Some(row.detail),
+            }
+        }
         Ok(())
+    }
+
+    /// JSON for one side's CCombatSide detail. Damage raws are i64 ×1e5;
+    /// tactic and losses are DELIBERATELY absent (unresolved / not
+    /// disambiguable on this build — see the lane badges).
+    fn side_detail_json(detail: &land_detail55::SideDetail) -> Value {
+        let scale = land_detail55::SIDE_DETAIL_FIXED_SCALE as f64;
+        json!({
+            "units": detail.units,
+            "committed": detail.committed,
+            "reserve": detail.reserve,
+            "air_kills": detail.air_kills,
+            "org_loss_summary_index": detail.org_loss_summary_index,
+            "num_org_losses": detail.num_org_losses,
+            "anti_air_attack": detail.anti_air_attack_raw as f64 / scale,
+            "air_damage_str": detail.air_damage_str_raw as f64 / scale,
+            "air_damage_org": detail.air_damage_org_raw as f64 / scale,
+            "ground_damage_str": detail.ground_damage_str_raw as f64 / scale,
+            "ground_damage_org": detail.ground_damage_org_raw as f64 / scale,
+            "prevented_damage_str": detail.prevented_damage_str_raw as f64 / scale,
+            "prevented_damage_org": detail.prevented_damage_org_raw as f64 / scale,
+            "anti_air_attack_raw": detail.anti_air_attack_raw,
+            "air_damage_str_raw": detail.air_damage_str_raw,
+            "air_damage_org_raw": detail.air_damage_org_raw,
+            "ground_damage_str_raw": detail.ground_damage_str_raw,
+            "ground_damage_org_raw": detail.ground_damage_org_raw,
+            "prevented_damage_str_raw": detail.prevented_damage_str_raw,
+            "prevented_damage_org_raw": detail.prevented_damage_org_raw,
+            // Unresolved / omitted fields, badged so a consumer never treats
+            // their absence as zero.
+            "tactic": Value::Null,
+            "tactic_status": "unresolved_pointer_table_backed",
+            "losses_status": "omitted_all_zero_oracle",
+            // True when committed+reserve != units on a STABLE read (a genuine
+            // mid-combat transient — the counts are momentarily inconsistent,
+            // not authoritative). The damage/kill accumulators are still valid.
+            "counts_incomplete": detail.counts_incomplete,
+        })
     }
 
     // --- DOMAIN 49 naval combat lifecycle (cumulative delta) --------------
@@ -10025,6 +10113,10 @@ struct CombatDetailEnrichment {
     day: Option<u32>,
     duration: Option<u32>,
     participant_events: Vec<Value>,
+    /// E2: per-side CCombatSide current-state detail scalars. Absent side =
+    /// no detail row emitted this hour (fail closed; never zero-filled).
+    attacker_detail: Option<land_detail55::SideDetail>,
+    defender_detail: Option<land_detail55::SideDetail>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

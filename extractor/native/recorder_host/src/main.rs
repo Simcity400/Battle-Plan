@@ -8848,6 +8848,13 @@ fn decode_compact_land_combat_detail_events_live_data_payload(
         "land_combat_detail_participant_left_unclassified_rows",
         participant_left_unclassified_rows,
     );
+    // E2: per-side CCombatSide detail rows.
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_side_detail_rows",
+        decoded.side_detail_rows.len(),
+    );
 }
 
 fn decode_compact_air_variant_upgrades_data_payload(

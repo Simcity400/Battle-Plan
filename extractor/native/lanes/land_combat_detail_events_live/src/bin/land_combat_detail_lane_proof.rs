@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use land_combat_detail_events_live_lane::{
-    build_transition_capture_frame, gate_stream, result_json, LandCombatSnapshot,
+    build_transition_capture_frame, gate_stream, result_json, LandCombatSnapshot, SideDetail,
     DOMAIN_LAND_COMBAT_DETAIL_EVENTS, DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME,
 };
 use serde_json::json;
@@ -31,8 +31,26 @@ fn main() {
         std::process::exit(1);
     }
 
-    let start = vec![snapshot(240_100, 1, 12_740, &[8_001, 8_002], &[9_001])];
-    let update = vec![snapshot(240_100, 1, 12_740, &[8_001], &[9_001, 9_002])];
+    // Attacker: 2 divisions front (committed 2, reserve 0). Detail carries the
+    // validated CCombatSide scalars; defender likewise.
+    let start = vec![snapshot(
+        240_100,
+        1,
+        12_740,
+        &[8_001, 8_002],
+        &[9_001],
+        Some(side_detail(2, 0)),
+        Some(side_detail(1, 0)),
+    )];
+    let update = vec![snapshot(
+        240_100,
+        1,
+        12_740,
+        &[8_001],
+        &[9_001, 9_002],
+        Some(side_detail(1, 0)),
+        Some(side_detail(2, 0)),
+    )];
     let frame1 = match build_transition_capture_frame(&[], &start, 1, 60_787_539, 11) {
         Ok(frame) => frame,
         Err(errors) => fail(errors),
@@ -81,17 +99,16 @@ fn main() {
         "status": if gate.ok { "passed" } else { "failed" },
         "domain_id": DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
         "domain_name": DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME,
-        "scope": "phase lifecycle plus participant join/leave events from validated domain21 CLandCombat roots",
+        "scope": "phase lifecycle plus participant join/leave events, PLUS per-side CCombatSide detail scalars (committed/reserve/units, air_kills, org-loss, i64x1e5 damage accumulators) from validated domain21 CLandCombat roots",
         "not_closed": [
-            "casualty amounts",
-            "equipment loss amounts",
+            "losses (all-zero oracle on this save; not disambiguable)",
             "retreat versus overrun classification",
-            "tactics",
-            "reserves",
+            "tactics (pointer/table-backed; PARTIAL)",
             "width",
             "terrain",
             "modifiers"
         ],
+        "side_detail_rows": gate.summary.side_detail_rows,
         "compact_path": compact_path,
         "gate_path": gate_path,
         "replay_path": replay_path,
@@ -129,12 +146,15 @@ fn main() {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn snapshot(
     combat_id: u32,
     generation: u64,
     location: u32,
     attackers: &[u32],
     defenders: &[u32],
+    attacker_detail: Option<SideDetail>,
+    defender_detail: Option<SideDetail>,
 ) -> LandCombatSnapshot {
     LandCombatSnapshot {
         combat_id,
@@ -144,6 +164,27 @@ fn snapshot(
         duration: Some(4),
         attacker_divisions: attackers.to_vec(),
         defender_divisions: defenders.to_vec(),
+        attacker_detail,
+        defender_detail,
+    }
+}
+
+fn side_detail(committed: u32, reserve: u32) -> SideDetail {
+    SideDetail {
+        units: committed + reserve,
+        committed,
+        reserve,
+        air_kills: 3,
+        org_loss_summary_index: 0,
+        num_org_losses: 4,
+        anti_air_attack_raw: 434_710,
+        air_damage_str_raw: 8_961_046,
+        air_damage_org_raw: 18_464_611,
+        ground_damage_str_raw: 11_248_500,
+        ground_damage_org_raw: 15_443_824,
+        prevented_damage_str_raw: 111_654,
+        prevented_damage_org_raw: 245_433,
+        counts_incomplete: false,
     }
 }
 

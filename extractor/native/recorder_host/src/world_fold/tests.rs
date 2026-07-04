@@ -3408,6 +3408,274 @@ fn folds_land_combat_detail_events_onto_matching_combat_only() {
     assert_eq!(combat["modifiers"], Value::Null);
 }
 
+fn capwar_side_detail(committed: u32, reserve: u32) -> land_detail55::SideDetail {
+    land_detail55::SideDetail {
+        units: committed + reserve,
+        committed,
+        reserve,
+        air_kills: 8,
+        org_loss_summary_index: 0,
+        num_org_losses: 192,
+        anti_air_attack_raw: 434_710,
+        air_damage_str_raw: 8_961_046,
+        air_damage_org_raw: 18_464_611,
+        ground_damage_str_raw: 11_248_500,
+        ground_damage_org_raw: 15_443_824,
+        prevented_damage_str_raw: 111_654,
+        prevented_damage_org_raw: 245_433,
+        counts_incomplete: false,
+    }
+}
+
+#[test]
+fn folds_land_combat_side_detail_onto_combat() {
+    // E2: per-side CCombatSide detail scalars attach under
+    // land_combat_detail_events_live.{attacker,defender}. A side with no detail
+    // (None) gets NO key (fail closed).
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 21381,
+        generation: 7,
+        location: 3236,
+        attackers: vec![101, 102, 103, 104],
+        defenders: vec![201, 202],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+
+    let att = capwar_side_detail(2, 2);
+    let def = capwar_side_detail(2, 0);
+    let side_rows = vec![
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Attacker,
+            detail: att,
+        },
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Defender,
+            detail: def,
+        },
+    ];
+    let detail = land_detail55::encode_detail_events_payload_v2(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &side_rows,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("side_detail_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let combat = &s["combats"].as_array().unwrap()[0];
+    let dl = &combat["land_combat_detail_events_live"];
+    // Both sides present (all-or-nothing) with the validated scalars.
+    assert_eq!(dl["side_detail_completeness"], json!("both"));
+    assert_eq!(dl["attacker"]["units"], json!(4));
+    assert_eq!(dl["attacker"]["committed"], json!(2));
+    assert_eq!(dl["attacker"]["reserve"], json!(2));
+    assert_eq!(dl["attacker"]["air_kills"], json!(8));
+    assert_eq!(dl["attacker"]["num_org_losses"], json!(192));
+    assert_eq!(dl["attacker"]["counts_incomplete"], json!(false));
+    assert!(
+        (dl["attacker"]["ground_damage_str"].as_f64().unwrap() - 112.485).abs() < 1e-6,
+        "ground_damage_str decodes from i64x1e5"
+    );
+    assert_eq!(dl["attacker"]["ground_damage_str_raw"], json!(11_248_500));
+    // tactic/losses badged, never a fabricated value.
+    assert_eq!(dl["attacker"]["tactic"], Value::Null);
+    assert_eq!(
+        dl["attacker"]["tactic_status"],
+        json!("unresolved_pointer_table_backed")
+    );
+    // Defender present too.
+    assert_eq!(dl["defender"]["units"], json!(2));
+    assert_eq!(dl["defender"]["reserve"], json!(0));
+}
+
+#[test]
+fn side_detail_is_all_or_nothing_per_combat() {
+    // A combat whose defender detail is absent (None → no row) must emit
+    // NEITHER side (all-or-nothing) with an explicit completeness badge — a
+    // consumer must never see one-sided detail and read the other as zero.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 21453,
+        generation: 7,
+        location: 3236,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+    // Only an attacker side-detail row (defender torn/absent upstream).
+    let side_rows = vec![land_detail55::SideDetailRow {
+        combat_id: 21453,
+        generation: 7,
+        side: land_detail55::CombatSide::Attacker,
+        detail: capwar_side_detail(1, 0),
+    }];
+    let detail = land_detail55::encode_detail_events_payload_v2(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &side_rows,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("side_detail_absent");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let dl = &s["combats"].as_array().unwrap()[0]["land_combat_detail_events_live"];
+    // NEITHER side emitted (all-or-nothing); the badge explains why.
+    assert!(dl.get("attacker").is_none());
+    assert!(dl.get("defender").is_none());
+    assert_eq!(
+        dl["side_detail_completeness"],
+        json!("attacker_only_suppressed")
+    );
+}
+
+#[test]
+fn side_detail_counts_incomplete_is_retained_and_badged() {
+    // A stably-read but committed+reserve!=units side (a mid-combat transient)
+    // is RETAINED, badged counts_incomplete, and folded on both sides.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 21381,
+        generation: 7,
+        location: 3236,
+        attackers: vec![101, 102],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+    // Attacker transient: units=3 but committed 2 + reserve 0 = 2 != 3.
+    let mut att = capwar_side_detail(2, 0);
+    att.units = 3;
+    att.counts_incomplete = true;
+    let def = capwar_side_detail(1, 0);
+    let side_rows = vec![
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Attacker,
+            detail: att,
+        },
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Defender,
+            detail: def,
+        },
+    ];
+    let detail = land_detail55::encode_detail_events_payload_v2(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &side_rows,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("side_detail_incomplete");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let dl = &s["combats"].as_array().unwrap()[0]["land_combat_detail_events_live"];
+    assert!(
+        dl["attacker"].is_object(),
+        "transient side is retained, not dropped"
+    );
+    assert_eq!(dl["attacker"]["counts_incomplete"], json!(true));
+    assert_eq!(dl["defender"]["counts_incomplete"], json!(false));
+    assert_eq!(
+        dl["side_detail_completeness"],
+        json!("both_counts_incomplete")
+    );
+    // Damage accumulators are still valid on the transient side.
+    assert_eq!(dl["attacker"]["ground_damage_str_raw"], json!(11_248_500));
+}
+
 #[test]
 fn folds_land_combat_detail_events_that_arrive_before_domain21() {
     let hi = 16_959_360i64;

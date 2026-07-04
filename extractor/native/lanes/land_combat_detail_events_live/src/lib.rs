@@ -8,9 +8,62 @@ pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS: u16 = 55;
 pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME: &str = "land_combat_detail_events_live";
 
-pub const SCHEMA_VERSION: u16 = 1;
-pub const PAYLOAD_HEADER_LEN: usize = 28;
+// Schema v2 (E2) appends a per-side combat DETAIL row family AFTER the event
+// rows, extending the header with a side-detail count. v1 payloads (no side
+// detail) remain decodable: a v1 header omits the trailing count field, so the
+// version gate selects the header/parse shape (never a payload-byte sniff).
+pub const SCHEMA_VERSION: u16 = 2;
+pub const SCHEMA_VERSION_V1_NO_SIDE_DETAIL: u16 = 1;
+/// v1 header (event rows only). Kept for decoding older streams.
+pub const PAYLOAD_HEADER_LEN_V1: usize = 28;
+/// v2 header adds a u32 side_detail_row_count after the event-row count block.
+pub const PAYLOAD_HEADER_LEN: usize = 32;
 pub const DETAIL_EVENT_ROW_LEN: usize = 52;
+
+// --- Per-side combat DETAIL row (E2, CCombatSide scalars) -----------------
+//
+// Current-state (NOT delta): one row per active combat per side, emitted every
+// frame for every live combat, so the fold always has the latest per-side
+// scalars regardless of whether the participant/phase delta changed this hour.
+// Offsets validated 50/50 on both sides vs the melt (FINAL_SWEEP §T2). Damage
+// fields are i64 fixed-point ×100000; counts are u32. `tactic` is PARTIAL
+// (pointer/table-backed, no inline offset) and `losses` is not disambiguable
+// on this all-zero-loss save — both are DELIBERATELY OMITTED (badged).
+/// Side-detail row wire length. Layout (all little-endian):
+///   combat_id u32 | generation u64 | side u32 | flags u32           (20)
+///   units u32 | committed u32 | reserve u32 | air_kills u32
+///     | org_loss_summary_index u32 | num_org_losses u32             (+24 = 44)
+///   7 × i64 damage raws: anti_air, air_str, air_org, ground_str,
+///     ground_org, prevented_str, prevented_org                      (+56 = 100)
+pub const SIDE_DETAIL_ROW_LEN: usize = 100;
+pub const SIDE_DETAIL_FIXED_SCALE: i64 = 100_000;
+
+pub const SIDE_DETAIL_FLAG_ATTACKER: u32 = 1 << 0;
+pub const SIDE_DETAIL_FLAG_DEFENDER: u32 = 1 << 1;
+/// The CCombatSide vtable + registry back-ref revalidated for this side.
+pub const SIDE_DETAIL_FLAG_SIDE_VALIDATED: u32 = 1 << 2;
+/// tactic is unresolved (pointer/table-backed) — never emitted as a value.
+pub const SIDE_DETAIL_FLAG_TACTIC_UNRESOLVED: u32 = 1 << 3;
+/// losses is not disambiguable on this save (all-zero oracle) — omitted.
+pub const SIDE_DETAIL_FLAG_LOSSES_OMITTED: u32 = 1 << 4;
+/// The count triple was read STABLY (each field double-read agreed) but the
+/// `committed + reserve == units` invariant did not hold — i.e. a genuine
+/// mid-combat transient (a division joining/leaving between the engine's own
+/// bookkeeping), NOT a torn read. The row is retained (dropping it would lose
+/// the side exactly at the interesting transition) but badged so a consumer
+/// treats the count triple as momentarily inconsistent, not authoritative.
+pub const SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE: u32 = 1 << 5;
+pub const SIDE_DETAIL_KNOWN_FLAG_MASK: u32 = SIDE_DETAIL_FLAG_ATTACKER
+    | SIDE_DETAIL_FLAG_DEFENDER
+    | SIDE_DETAIL_FLAG_SIDE_VALIDATED
+    | SIDE_DETAIL_FLAG_TACTIC_UNRESOLVED
+    | SIDE_DETAIL_FLAG_LOSSES_OMITTED
+    | SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE;
+
+/// Sanity ceiling on a fixed-point damage accumulator (±~9.2e12 raw = ±92M
+/// after the /1e5 scale — generous for a single combat, still rejects garbage).
+pub const MAX_SIDE_DETAIL_DAMAGE_RAW: i64 = 9_200_000_000_000;
+pub const MAX_SIDE_DETAIL_COUNT: u32 = 100_000;
 
 pub const STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
@@ -49,6 +102,8 @@ pub const MAX_DIVISION_ID: u32 = 0x7fff_ffff;
 pub const MAX_LOCATION_ID: u32 = 1_000_000;
 pub const MAX_AGE_DAYS: u32 = 100_000;
 pub const MAX_SIDE_UNITS: usize = 128;
+/// Two sides per combat; bound the side-detail family the same as MAX_LAND_COMBATS.
+pub const MAX_LAND_COMBATS_SIDE_DETAIL: usize = 8_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CombatSide {
@@ -65,6 +120,42 @@ impl CombatSide {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SideDetail {
+    /// Total units on the side (side+0x2C = committed + reserve). 100/100.
+    pub units: u32,
+    /// Committed (front-line) count (side+0xD4). 100/100, values 1..6.
+    pub committed: u32,
+    /// Reserve count (side+0xEC). 100/100.
+    pub reserve: u32,
+    /// Air-to-ground kills (side+0x140). u32.
+    pub air_kills: u32,
+    /// Org-loss summary index (side+0x1A8). u32.
+    pub org_loss_summary_index: u32,
+    /// Number of org losses = combat day count (side+0x1AC). u32.
+    pub num_org_losses: u32,
+    /// i64 ×1e5 damage accumulators (side+0x138..+0x170).
+    pub anti_air_attack_raw: i64,
+    pub air_damage_str_raw: i64,
+    pub air_damage_org_raw: i64,
+    pub ground_damage_str_raw: i64,
+    pub ground_damage_org_raw: i64,
+    pub prevented_damage_str_raw: i64,
+    pub prevented_damage_org_raw: i64,
+    /// True when the stably-read count triple violated committed+reserve==units
+    /// (a genuine mid-combat transient). The row is still emitted, badged.
+    pub counts_incomplete: bool,
+}
+
+/// A per-side current-state detail row for one combat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SideDetailRow {
+    pub combat_id: u32,
+    pub generation: u64,
+    pub side: CombatSide,
+    pub detail: SideDetail,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LandCombatSnapshot {
     pub combat_id: u32,
@@ -74,6 +165,10 @@ pub struct LandCombatSnapshot {
     pub duration: Option<u32>,
     pub attacker_divisions: Vec<u32>,
     pub defender_divisions: Vec<u32>,
+    /// E2: per-side CCombatSide detail scalars. `None` when the side object
+    /// failed revalidation (fail closed — absent, never zero-filled).
+    pub attacker_detail: Option<SideDetail>,
+    pub defender_detail: Option<SideDetail>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +196,7 @@ pub struct GateSummary {
     pub participant_joined_rows: u64,
     pub participant_left_unclassified_rows: u64,
     pub unclassified_rows: u64,
+    pub side_detail_rows: u64,
     pub domains_seen: BTreeSet<u16>,
     pub status_flags_or: u32,
 }
@@ -116,6 +212,8 @@ pub struct GateResult {
 pub struct CaptureFrame {
     pub compact_stream: Vec<u8>,
     pub rows: Vec<DetailEventRow>,
+    /// E2: per-side current-state detail rows (one per active combat per side).
+    pub side_detail_rows: Vec<SideDetailRow>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -150,10 +248,16 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
 ) -> Result<CaptureFrame, Vec<String>> {
     let current = memory.land_combat_snapshots()?;
     if tracker.pending_rebaseline {
-        let payload = encode_detail_events_payload(
+        // The transition BASELINE reset zeroes the event-delta history so no
+        // synthetic join/leave events are fabricated across the gap. Per-side
+        // detail is CURRENT-STATE, not a delta, so it is still emitted on the
+        // rebaseline frame — the fold needs the live scalars every hour.
+        let side_detail_rows = side_detail_rows_from_snapshots(&current);
+        let payload = encode_detail_events_payload_v2(
             elapsed_wall_ms,
             STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_TRANSITION_BASELINE_RESET,
             &[],
+            &side_detail_rows,
         );
         let mut compact_stream = Vec::new();
         append_compact_record(
@@ -171,6 +275,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         return Ok(CaptureFrame {
             compact_stream,
             rows: Vec::new(),
+            side_detail_rows,
         });
     }
     let frame = build_transition_capture_frame(
@@ -185,11 +290,39 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
     Ok(frame)
 }
 
+/// Build the per-side current-state detail rows for every active combat that
+/// carries validated CCombatSide detail. A side whose detail failed
+/// revalidation contributes NO row (fail closed; absent, not zero).
+pub fn side_detail_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec<SideDetailRow> {
+    let mut rows = Vec::new();
+    for snapshot in current {
+        if let Some(detail) = snapshot.attacker_detail {
+            rows.push(SideDetailRow {
+                combat_id: snapshot.combat_id,
+                generation: snapshot.generation,
+                side: CombatSide::Attacker,
+                detail,
+            });
+        }
+        if let Some(detail) = snapshot.defender_detail {
+            rows.push(SideDetailRow {
+                combat_id: snapshot.combat_id,
+                generation: snapshot.generation,
+                side: CombatSide::Defender,
+                detail,
+            });
+        }
+    }
+    rows
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedDetailEventsPayload {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub rows: Vec<DetailEventRow>,
+    /// E2: per-side current-state detail rows (empty for v1 streams).
+    pub side_detail_rows: Vec<SideDetailRow>,
 }
 
 pub fn build_transition_capture_frame(
@@ -200,7 +333,13 @@ pub fn build_transition_capture_frame(
     elapsed_wall_ms: u64,
 ) -> Result<CaptureFrame, Vec<String>> {
     let rows = build_detail_event_rows(previous, current)?;
-    let payload = encode_detail_events_payload(elapsed_wall_ms, STATUS_DELTA_DATA, &rows);
+    let side_detail_rows = side_detail_rows_from_snapshots(current);
+    let payload = encode_detail_events_payload_v2(
+        elapsed_wall_ms,
+        STATUS_DELTA_DATA,
+        &rows,
+        &side_detail_rows,
+    );
     let mut compact_stream = Vec::new();
     append_compact_record(
         &mut compact_stream,
@@ -214,6 +353,7 @@ pub fn build_transition_capture_frame(
     Ok(CaptureFrame {
         compact_stream,
         rows,
+        side_detail_rows,
     })
 }
 
@@ -272,19 +412,56 @@ pub fn build_detail_event_rows(
     Ok(rows)
 }
 
+/// v1 encoder (event rows only, no side detail). Retained for the legacy wire
+/// shape and older tests; writes SCHEMA_VERSION_V1 and the 28-byte header.
 pub fn encode_detail_events_payload(
     elapsed_wall_ms: u64,
     status_flags: u32,
     rows: &[DetailEventRow],
 ) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(PAYLOAD_HEADER_LEN + rows.len() * DETAIL_EVENT_ROW_LEN);
-    payload.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    let mut payload = Vec::with_capacity(PAYLOAD_HEADER_LEN_V1 + rows.len() * DETAIL_EVENT_ROW_LEN);
+    payload.extend_from_slice(&SCHEMA_VERSION_V1_NO_SIDE_DETAIL.to_le_bytes());
     payload.extend_from_slice(&(DETAIL_EVENT_ROW_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     payload.extend_from_slice(&status_flags.to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes());
+    append_event_rows(&mut payload, rows);
+    payload
+}
+
+/// v2 encoder (E2): event rows PLUS a per-side detail row family. The 32-byte
+/// header appends a u32 side_detail_row_count after the event-row count block;
+/// the side-detail rows follow the event rows.
+pub fn encode_detail_events_payload_v2(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    rows: &[DetailEventRow],
+    side_detail_rows: &[SideDetailRow],
+) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(
+        PAYLOAD_HEADER_LEN
+            + rows.len() * DETAIL_EVENT_ROW_LEN
+            + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN,
+    );
+    payload.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(DETAIL_EVENT_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes()); // string_count
+    payload
+        .extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    append_event_rows(&mut payload, rows);
+    for row in side_detail_rows {
+        append_side_detail_row(&mut payload, row);
+    }
+    payload
+}
+
+fn append_event_rows(payload: &mut Vec<u8>, rows: &[DetailEventRow]) {
     for row in rows {
         validate_row(row).expect("invalid detail event row");
         payload.extend_from_slice(&row.combat_id.to_le_bytes());
@@ -305,7 +482,37 @@ pub fn encode_detail_events_payload(
         payload.extend_from_slice(&row.new_side_count.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
     }
-    payload
+}
+
+/// Encode one side-detail row (SIDE_DETAIL_ROW_LEN bytes; layout on the const).
+fn append_side_detail_row(payload: &mut Vec<u8>, row: &SideDetailRow) {
+    let mut flags = SIDE_DETAIL_FLAG_SIDE_VALIDATED
+        | SIDE_DETAIL_FLAG_TACTIC_UNRESOLVED
+        | SIDE_DETAIL_FLAG_LOSSES_OMITTED;
+    flags |= match row.side {
+        CombatSide::Attacker => SIDE_DETAIL_FLAG_ATTACKER,
+        CombatSide::Defender => SIDE_DETAIL_FLAG_DEFENDER,
+    };
+    if row.detail.counts_incomplete {
+        flags |= SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE;
+    }
+    payload.extend_from_slice(&row.combat_id.to_le_bytes());
+    payload.extend_from_slice(&row.generation.to_le_bytes());
+    payload.extend_from_slice(&row.side.wire_id().to_le_bytes());
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&row.detail.units.to_le_bytes());
+    payload.extend_from_slice(&row.detail.committed.to_le_bytes());
+    payload.extend_from_slice(&row.detail.reserve.to_le_bytes());
+    payload.extend_from_slice(&row.detail.air_kills.to_le_bytes());
+    payload.extend_from_slice(&row.detail.org_loss_summary_index.to_le_bytes());
+    payload.extend_from_slice(&row.detail.num_org_losses.to_le_bytes());
+    payload.extend_from_slice(&row.detail.anti_air_attack_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.air_damage_str_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.air_damage_org_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.ground_damage_str_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.ground_damage_org_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.prevented_damage_str_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.prevented_damage_org_raw.to_le_bytes());
 }
 
 pub fn gate_stream(data: &[u8]) -> GateResult {
@@ -412,22 +619,39 @@ pub fn decode_detail_events_payload(
     payload: &[u8],
 ) -> Result<DecodedDetailEventsPayload, Vec<String>> {
     let mut errors = Vec::new();
-    if payload.len() < PAYLOAD_HEADER_LEN {
-        errors.push(format!("offset {offset}: detail payload too short"));
-        return Err(errors);
+    // The version selects the header/parse shape (framing-level, never a
+    // payload-byte sniff). v1 = 28-byte header, event rows only. v2 = 32-byte
+    // header (adds side_detail_row_count) + a trailing per-side detail family.
+    if payload.len() < 4 {
+        return Err(vec![format!("offset {offset}: detail payload too short")]);
     }
     let version = read_u16(payload, 0);
+    let (header_len, side_detail_row_count) = match version {
+        SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (PAYLOAD_HEADER_LEN_V1, 0usize),
+        SCHEMA_VERSION => {
+            if payload.len() < PAYLOAD_HEADER_LEN {
+                return Err(vec![format!(
+                    "offset {offset}: detail v2 payload too short"
+                )]);
+            }
+            (PAYLOAD_HEADER_LEN, read_u32(payload, 24) as usize)
+        }
+        other => {
+            return Err(vec![format!(
+                "offset {offset}: detail schema version {other} unsupported"
+            )]);
+        }
+    };
+    if payload.len() < header_len {
+        return Err(vec![format!("offset {offset}: detail payload too short")]);
+    }
     let row_len = read_u16(payload, 2) as usize;
     let elapsed_wall_ms = read_u64(payload, 4);
     let status_flags = read_u32(payload, 12);
     let row_count = read_u32(payload, 16) as usize;
     let string_count = read_u32(payload, 20);
-    let reserved = read_u32(payload, 24);
-    if version != SCHEMA_VERSION {
-        errors.push(format!(
-            "offset {offset}: detail schema version {version} != {SCHEMA_VERSION}"
-        ));
-    }
+    // The final u32 of each header is a reserved-zero field (v1 @24, v2 @28).
+    let reserved = read_u32(payload, header_len - 4);
     if row_len != DETAIL_EVENT_ROW_LEN {
         errors.push(format!(
             "offset {offset}: detail row_len {row_len} != {DETAIL_EVENT_ROW_LEN}"
@@ -438,7 +662,14 @@ pub fn decode_detail_events_payload(
             "offset {offset}: detail payload header reserved/string fields nonzero"
         ));
     }
-    let expected_len = PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(row_len));
+    if side_detail_row_count > MAX_LAND_COMBATS_SIDE_DETAIL {
+        errors.push(format!(
+            "offset {offset}: side_detail_row_count {side_detail_row_count} exceeds max"
+        ));
+    }
+    let expected_len = header_len
+        .saturating_add(row_count.saturating_mul(row_len))
+        .saturating_add(side_detail_row_count.saturating_mul(SIDE_DETAIL_ROW_LEN));
     if payload.len() != expected_len {
         errors.push(format!(
             "offset {offset}: detail payload len {} != expected {expected_len}",
@@ -448,7 +679,7 @@ pub fn decode_detail_events_payload(
     }
     let mut seen = BTreeSet::new();
     let mut rows = Vec::with_capacity(row_count);
-    let mut cursor = PAYLOAD_HEADER_LEN;
+    let mut cursor = header_len;
     for row_index in 0..row_count {
         let row = DecodedRow {
             combat_id: read_u32(payload, cursor),
@@ -500,15 +731,159 @@ pub fn decode_detail_events_payload(
             flags: row.flags,
         });
     }
+
+    // v2 per-side detail family (empty for v1).
+    let mut side_detail_rows = Vec::with_capacity(side_detail_row_count);
+    let mut seen_side = BTreeSet::new();
+    for row_index in 0..side_detail_row_count {
+        match decode_side_detail_row(offset, row_index, payload, cursor, &mut seen_side) {
+            Ok(row) => side_detail_rows.push(row),
+            Err(err) => errors.push(err),
+        }
+        cursor += SIDE_DETAIL_ROW_LEN;
+    }
+
     if errors.is_empty() {
         Ok(DecodedDetailEventsPayload {
             elapsed_wall_ms,
             status_flags,
             rows,
+            side_detail_rows,
         })
     } else {
         Err(errors)
     }
+}
+
+fn decode_side_detail_row(
+    offset: usize,
+    row_index: usize,
+    payload: &[u8],
+    cursor: usize,
+    seen: &mut BTreeSet<(u32, u64, u32)>,
+) -> Result<SideDetailRow, String> {
+    let combat_id = read_u32(payload, cursor);
+    let generation = read_u64(payload, cursor + 4);
+    let side_wire = read_u32(payload, cursor + 12);
+    let flags = read_u32(payload, cursor + 16);
+    let units = read_u32(payload, cursor + 20);
+    let committed = read_u32(payload, cursor + 24);
+    let reserve = read_u32(payload, cursor + 28);
+    let air_kills = read_u32(payload, cursor + 32);
+    let org_loss_summary_index = read_u32(payload, cursor + 36);
+    let num_org_losses = read_u32(payload, cursor + 40);
+    let anti_air_attack_raw = read_i64(payload, cursor + 44);
+    let air_damage_str_raw = read_i64(payload, cursor + 52);
+    let air_damage_org_raw = read_i64(payload, cursor + 60);
+    let ground_damage_str_raw = read_i64(payload, cursor + 68);
+    let ground_damage_org_raw = read_i64(payload, cursor + 76);
+    let prevented_damage_str_raw = read_i64(payload, cursor + 84);
+    let prevented_damage_org_raw = read_i64(payload, cursor + 92);
+
+    if combat_id == 0 || combat_id > MAX_COMBAT_ID {
+        return Err(format!(
+            "offset {offset}: side detail row {row_index} invalid combat_id"
+        ));
+    }
+    if flags & !SIDE_DETAIL_KNOWN_FLAG_MASK != 0 {
+        return Err(format!(
+            "offset {offset}: side detail row {row_index} unknown flags {}",
+            flags & !SIDE_DETAIL_KNOWN_FLAG_MASK
+        ));
+    }
+    if flags & SIDE_DETAIL_FLAG_SIDE_VALIDATED == 0 {
+        return Err(format!(
+            "offset {offset}: side detail row {row_index} lacks side-validated flag"
+        ));
+    }
+    let side = match side_wire {
+        SIDE_ATTACKER => {
+            if flags & SIDE_DETAIL_FLAG_ATTACKER == 0 {
+                return Err(format!(
+                    "offset {offset}: side detail row {row_index} attacker side/flag mismatch"
+                ));
+            }
+            CombatSide::Attacker
+        }
+        SIDE_DEFENDER => {
+            if flags & SIDE_DETAIL_FLAG_DEFENDER == 0 {
+                return Err(format!(
+                    "offset {offset}: side detail row {row_index} defender side/flag mismatch"
+                ));
+            }
+            CombatSide::Defender
+        }
+        other => {
+            return Err(format!(
+                "offset {offset}: side detail row {row_index} invalid side {other}"
+            ));
+        }
+    };
+    for (label, value) in [
+        ("units", units),
+        ("committed", committed),
+        ("reserve", reserve),
+        ("air_kills", air_kills),
+        ("org_loss_summary_index", org_loss_summary_index),
+        ("num_org_losses", num_org_losses),
+    ] {
+        if value > MAX_SIDE_DETAIL_COUNT {
+            return Err(format!(
+                "offset {offset}: side detail row {row_index} {label} {value} exceeds max"
+            ));
+        }
+    }
+    // The committed+reserve==units invariant is REQUIRED unless the row is
+    // explicitly badged COUNTS_INCOMPLETE (a genuine mid-combat transient the
+    // collector observed with a stable double-read). Without the badge, a
+    // violation is a corrupt/torn payload and is rejected.
+    let counts_incomplete = flags & SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE != 0;
+    if !counts_incomplete && committed.saturating_add(reserve) != units {
+        return Err(format!(
+            "offset {offset}: side detail row {row_index} committed+reserve != units without incomplete badge"
+        ));
+    }
+    for (label, raw) in [
+        ("anti_air_attack", anti_air_attack_raw),
+        ("air_damage_str", air_damage_str_raw),
+        ("air_damage_org", air_damage_org_raw),
+        ("ground_damage_str", ground_damage_str_raw),
+        ("ground_damage_org", ground_damage_org_raw),
+        ("prevented_damage_str", prevented_damage_str_raw),
+        ("prevented_damage_org", prevented_damage_org_raw),
+    ] {
+        if !(0..=MAX_SIDE_DETAIL_DAMAGE_RAW).contains(&raw) {
+            return Err(format!(
+                "offset {offset}: side detail row {row_index} {label} raw {raw} out of range"
+            ));
+        }
+    }
+    if !seen.insert((combat_id, generation, side_wire)) {
+        return Err(format!(
+            "offset {offset}: side detail row {row_index} duplicates (combat,generation,side)"
+        ));
+    }
+    Ok(SideDetailRow {
+        combat_id,
+        generation,
+        side,
+        detail: SideDetail {
+            units,
+            committed,
+            reserve,
+            air_kills,
+            org_loss_summary_index,
+            num_org_losses,
+            anti_air_attack_raw,
+            air_damage_str_raw,
+            air_damage_org_raw,
+            ground_damage_str_raw,
+            ground_damage_org_raw,
+            prevented_damage_str_raw,
+            prevented_damage_org_raw,
+            counts_incomplete,
+        },
+    })
 }
 
 fn decode_detail_events_payload_into_summary(
@@ -528,6 +903,9 @@ fn decode_detail_events_payload_into_summary(
         }
     };
     summary.row_count = summary.row_count.saturating_add(decoded.rows.len() as u64);
+    summary.side_detail_rows = summary
+        .side_detail_rows
+        .saturating_add(decoded.side_detail_rows.len() as u64);
     for row in decoded.rows {
         match row.event_kind {
             EVENT_PHASE_STARTED => summary.phase_started_rows += 1,
@@ -843,6 +1221,10 @@ fn read_u64(data: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
 }
 
+fn read_i64(data: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+}
+
 fn json_str(value: &str) -> String {
     serde_json::to_string(value).expect("string serialization failed")
 }
@@ -945,6 +1327,186 @@ mod tests {
             duration: Some(3),
             attacker_divisions: attackers.to_vec(),
             defender_divisions: defenders.to_vec(),
+            attacker_detail: None,
+            defender_detail: None,
         }
+    }
+
+    fn sample_side_detail(committed: u32, reserve: u32) -> SideDetail {
+        SideDetail {
+            units: committed + reserve,
+            committed,
+            reserve,
+            air_kills: 8,
+            org_loss_summary_index: 0,
+            num_org_losses: 192,
+            anti_air_attack_raw: 434_710,
+            air_damage_str_raw: 8_961_046,
+            air_damage_org_raw: 18_464_611,
+            ground_damage_str_raw: 11_248_500,
+            ground_damage_org_raw: 15_443_824,
+            prevented_damage_str_raw: 111_654,
+            prevented_damage_org_raw: 245_433,
+            counts_incomplete: false,
+        }
+    }
+
+    fn snapshot_with_detail(
+        combat_id: u32,
+        generation: u64,
+        attackers: &[u32],
+        defenders: &[u32],
+        attacker_detail: Option<SideDetail>,
+        defender_detail: Option<SideDetail>,
+    ) -> LandCombatSnapshot {
+        LandCombatSnapshot {
+            combat_id,
+            generation,
+            location: Some(3236),
+            day: Some(192),
+            duration: Some(192),
+            attacker_divisions: attackers.to_vec(),
+            defender_divisions: defenders.to_vec(),
+            attacker_detail,
+            defender_detail,
+        }
+    }
+
+    #[test]
+    fn side_detail_rows_roundtrip_through_v2_payload() {
+        let att = sample_side_detail(2, 2);
+        let def = sample_side_detail(2, 0);
+        let current = vec![snapshot_with_detail(
+            21381,
+            7,
+            &[8001, 8002, 8003, 8004],
+            &[9001, 9002],
+            Some(att),
+            Some(def),
+        )];
+        let frame = build_transition_capture_frame(&[], &current, 1, 60_787_539, 1).unwrap();
+        assert_eq!(frame.side_detail_rows.len(), 2);
+        let payload = &frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
+        let decoded = decode_detail_events_payload(COMPACT_RECORD_HEADER_LEN, payload).unwrap();
+        assert_eq!(decoded.side_detail_rows.len(), 2);
+        let attacker = decoded
+            .side_detail_rows
+            .iter()
+            .find(|row| row.side == CombatSide::Attacker)
+            .unwrap();
+        assert_eq!(attacker.combat_id, 21381);
+        assert_eq!(attacker.detail, att);
+        assert_eq!(attacker.detail.units, 4);
+        assert_eq!(attacker.detail.committed, 2);
+        assert_eq!(attacker.detail.reserve, 2);
+        let defender = decoded
+            .side_detail_rows
+            .iter()
+            .find(|row| row.side == CombatSide::Defender)
+            .unwrap();
+        assert_eq!(defender.detail, def);
+
+        // Gate still accepts the v2 stream and counts side-detail rows.
+        let gate = gate_stream(&frame.compact_stream);
+        assert!(gate.ok, "{:?}", gate.errors);
+        assert_eq!(gate.summary.side_detail_rows, 2);
+    }
+
+    #[test]
+    fn side_missing_detail_emits_no_row_fail_closed() {
+        // A side whose detail failed revalidation (None) must contribute NO
+        // row — absent, never zero-filled.
+        let current = vec![snapshot_with_detail(
+            21453,
+            7,
+            &[8001],
+            &[9001],
+            Some(sample_side_detail(1, 0)),
+            None,
+        )];
+        let rows = side_detail_rows_from_snapshots(&current);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].side, CombatSide::Attacker);
+    }
+
+    #[test]
+    fn v1_payload_still_decodes_with_no_side_detail() {
+        // The legacy v1 encoder path (event rows only) must still decode.
+        let start = [snapshot(42, 7, 1000, &[1001, 1002], &[2001])];
+        let update = [snapshot(42, 7, 1000, &[1001], &[2001, 2002])];
+        let rows = build_detail_event_rows(&start, &update).unwrap();
+        let payload = encode_detail_events_payload(1, STATUS_DELTA_DATA, &rows);
+        assert_eq!(read_u16(&payload, 0), SCHEMA_VERSION_V1_NO_SIDE_DETAIL);
+        let decoded = decode_detail_events_payload(0, &payload).unwrap();
+        assert!(decoded.side_detail_rows.is_empty());
+        assert_eq!(decoded.rows.len(), rows.len());
+    }
+
+    #[test]
+    fn side_detail_committed_plus_reserve_must_equal_units_without_badge() {
+        // An invariant violation WITHOUT the incomplete badge is a corrupt/torn
+        // payload and must be rejected.
+        let mut bad = sample_side_detail(2, 2);
+        bad.units = 5; // committed+reserve = 4 != 5
+        bad.counts_incomplete = false;
+        let current = vec![snapshot_with_detail(
+            21381,
+            7,
+            &[8001],
+            &[9001],
+            Some(bad),
+            None,
+        )];
+        let frame = build_transition_capture_frame(&[], &current, 1, 60_787_539, 1).unwrap();
+        let payload = &frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
+        let err = decode_detail_events_payload(0, payload).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|e| e.contains("committed+reserve != units without incomplete badge")));
+    }
+
+    #[test]
+    fn side_detail_invariant_violation_accepted_when_incomplete_badged() {
+        // The SAME violation WITH the incomplete badge (a genuine mid-combat
+        // transient the collector observed with a stable double-read) is
+        // RETAINED and round-trips — the row is not dropped.
+        let mut transient = sample_side_detail(2, 0);
+        transient.units = 3; // committed 2 + reserve 0 = 2 != 3
+        transient.counts_incomplete = true;
+        let current = vec![snapshot_with_detail(
+            21381,
+            7,
+            &[8001],
+            &[9001],
+            Some(transient),
+            None,
+        )];
+        let frame = build_transition_capture_frame(&[], &current, 1, 60_787_539, 1).unwrap();
+        assert_eq!(frame.side_detail_rows.len(), 1);
+        let payload = &frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
+        let decoded = decode_detail_events_payload(0, payload).expect("incomplete row decodes");
+        assert_eq!(decoded.side_detail_rows.len(), 1);
+        assert!(decoded.side_detail_rows[0].detail.counts_incomplete);
+        assert_eq!(decoded.side_detail_rows[0].detail.units, 3);
+        // The flag round-trips in the wire flags.
+        let gate = gate_stream(&frame.compact_stream);
+        assert!(gate.ok, "{:?}", gate.errors);
+    }
+
+    #[test]
+    fn side_detail_damage_out_of_range_is_rejected() {
+        let mut bad = sample_side_detail(1, 0);
+        bad.ground_damage_str_raw = MAX_SIDE_DETAIL_DAMAGE_RAW + 1;
+        let current = vec![snapshot_with_detail(
+            21381,
+            7,
+            &[8001],
+            &[9001],
+            Some(bad),
+            None,
+        )];
+        let frame = build_transition_capture_frame(&[], &current, 1, 60_787_539, 1).unwrap();
+        let payload = &frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
+        assert!(decode_detail_events_payload(0, payload).is_err());
     }
 }
