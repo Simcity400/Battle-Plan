@@ -177,6 +177,23 @@ queued, before user-fixture items — except N3 which can join any wiring batch)
   day-boundary "hour 24" (`Y.M.D.24`) renders as next-day hour 0 — same raw
   instant; consumers comparing against melt text must normalize.
 
+## Schema delta shipped by E13 (measured-country observability, infra)
+
+- `measured_countries` (NEW top-level snapshot field): the set of countries the
+  capture RESOLVED this frame (domain-18 full-replace roster). Shape:
+  `{known: bool, source: "country_identity", count: N, tag_db_ids: [..],
+  tags: [..], note}` when a proven domain-18 record landed this frame; else
+  `{known: false, source, reason}` — the measured set is UNKNOWN, never
+  reported as empty/complete. This is DISTINCT from `tag_db_id_index` (which
+  reports whether the ids REFERENCED this hour resolved to TAGs). Consumer
+  rule: with `known: true`, a country ABSENT from a domain's rows but PRESENT
+  in `tag_db_ids`/`tags` has NO DATA for that domain (it was measured); a
+  country absent from `tag_db_ids` was NOT RESOLVED this frame (the systemic
+  country-roots bound excludes dynamic observers e.g. D01/D02/D03 — ~356 of
+  ~437 measured). With `known: false`, neither can be inferred this frame.
+  Additive (existing snapshot fields unchanged); consumers on older
+  containers see the field absent.
+
 ## Messages back to the replay layer (stale statuses to update on their side)
 
 1. R1 is shipped — compact production recordings contain hourly

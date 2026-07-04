@@ -4304,6 +4304,203 @@ fn country_identity_unmapped_id_stays_numeric_and_unresolved() {
     assert!(notes.iter().any(|n| n.as_str().unwrap().contains("48")));
 }
 
+// --- E13 measured-country observability -----------------------------------
+
+#[test]
+fn measured_countries_known_lists_the_resolved_set() {
+    // A proven domain-18 frame => measured_countries.known=true with the exact
+    // resolved country set (count + tag_db_ids + tags).
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+    push(
+        &mut stream,
+        &mut seq,
+        18,
+        &country_identity_payload(&[(47, "GER"), (3, "FRA"), (2, "ENG")]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("mc");
+    fold.ingest_stream(&stream);
+    let s = parse(&fold.finish()[0].2);
+    let mc = &s["measured_countries"];
+    assert_eq!(mc["known"], json!(true));
+    assert_eq!(mc["source"], json!("country_identity"));
+    assert_eq!(mc["count"], json!(3));
+    // tag_db_ids are the BTreeMap keys (sorted): 2, 3, 47.
+    assert_eq!(mc["tag_db_ids"], json!([2, 3, 47]));
+    // tags follow the same key order: ENG(2), FRA(3), GER(47).
+    assert_eq!(mc["tags"], json!(["ENG", "FRA", "GER"]));
+}
+
+#[test]
+fn measured_countries_unknown_when_no_domain18_this_hour() {
+    // No domain-18 record this hour => known=false (measured set UNKNOWN, not
+    // reported as empty/complete) with an explanatory reason and NO count/list.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    // Only a fuel row (a country-rooted domain) — no domain 18.
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        10,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &fuel_payload(&[(47, 100, 200, 0, 0)]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("mc");
+    fold.ingest_stream(&stream);
+    let s = parse(&fold.finish()[0].2);
+    let mc = &s["measured_countries"];
+    assert_eq!(mc["known"], json!(false));
+    assert!(mc.get("count").is_none());
+    assert!(mc.get("tag_db_ids").is_none());
+    assert!(mc["reason"].as_str().unwrap().contains("unknown"));
+}
+
+#[test]
+fn measured_countries_distinguishes_no_data_from_not_resolved() {
+    // The core E13 semantic: with the measured set KNOWN, a consumer can tell a
+    // country that was MEASURED but has no data in a domain (present in
+    // measured_countries, absent from that domain's rows) from a country that
+    // was NOT resolved this frame (absent from measured_countries entirely).
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+    // Measured set: GER(47) + FRA(3). D01 (a dynamic observer, id 900) is NOT
+    // measured — the systemic country-roots bound excludes it.
+    push(
+        &mut stream,
+        &mut seq,
+        18,
+        &country_identity_payload(&[(47, "GER"), (3, "FRA")]),
+    );
+    // Fuel domain has a row for GER only; FRA is measured-but-no-fuel-data.
+    push(
+        &mut stream,
+        &mut seq,
+        10,
+        &fuel_payload(&[(47, 100, 200, 0, 0)]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("mc");
+    fold.ingest_stream(&stream);
+    let s = parse(&fold.finish()[0].2);
+    let mc = &s["measured_countries"];
+    assert_eq!(mc["known"], json!(true));
+    let ids: Vec<u64> = mc["tag_db_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    // FRA measured (in the set) but absent from fuel => "no fuel data for FRA".
+    assert!(ids.contains(&3), "FRA is in the measured set");
+    // A dynamic observer (900) is NOT in the measured set => "not resolved".
+    assert!(
+        !ids.contains(&900),
+        "unresolved observer absent from measured set"
+    );
+    // GER has fuel data; FRA does not — both are measured.
+    assert!(s["countries"]["GER"].get("fuel").is_some());
+    assert!(s["countries"].get("FRA").is_none() || s["countries"]["FRA"].get("fuel").is_none());
+}
+
+#[test]
+fn measured_countries_known_resets_per_hour_but_map_persists() {
+    // Hour 1: domain 18 present => known=true. Hour 2: NO domain 18 => the
+    // measured set is UNKNOWN this hour (known=false), yet tag_by_db_id PERSISTS
+    // so TAG re-keying still works (a country-rooted domain's rows still resolve
+    // to TAGs). This is the per-frame-vs-carried distinction E13 requires.
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let mut push = |stream: &mut Vec<u8>, seq: &mut u64, raw, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+    // Hour 1.
+    push(
+        &mut stream,
+        &mut seq,
+        raw1,
+        18,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Hour 2: only a fuel row for GER (no domain 18).
+    push(
+        &mut stream,
+        &mut seq,
+        raw2,
+        10,
+        &fuel_payload(&[(47, 100, 200, 0, 0)]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("mc");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let s1 = parse(&snaps[0].2);
+    assert_eq!(s1["measured_countries"]["known"], json!(true));
+    assert_eq!(s1["measured_countries"]["count"], json!(1));
+
+    let s2 = parse(&snaps[1].2);
+    // Measured set unknown this hour...
+    assert_eq!(s2["measured_countries"]["known"], json!(false));
+    // ...but the carried tag map still re-keys GER's fuel row to the TAG.
+    assert!(s2["countries"]["GER"]["fuel"].is_object());
+}
+
 #[test]
 fn country_identity_cosmetic_tag_present_null_and_absent() {
     // GER(47): cosmetic override "GES" (present). ENG(2): validated null.

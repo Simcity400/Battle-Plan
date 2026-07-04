@@ -671,6 +671,17 @@ pub struct WorldFold {
     /// across hours and full-replaced whenever a domain-18 record arrives. Used
     /// at snapshot-build time to re-key country-valued fields by TAG.
     tag_by_db_id: BTreeMap<u32, String>,
+    /// E13 measured-country observability: true only when a PROVEN domain-18
+    /// record landed THIS hour, i.e. `tag_by_db_id` is the freshly-measured
+    /// country set for this frame (not a carried-over roster). Reset each hour;
+    /// set in `fold_country_identity` on success. Lets downstream distinguish
+    /// "country absent from a domain = no data for it" (the country IS in the
+    /// measured set) from "country absent = not resolved this frame" (not in the
+    /// measured set — e.g. the D01/D02/D03 dynamic observers the country-roots
+    /// resolver excludes, a systemic ~356/437 bound shared by all
+    /// country-rooted domains). When this is false, the measured set is UNKNOWN
+    /// this hour, never falsely reported as empty or complete.
+    country_identity_known_this_hour: bool,
     /// Wave-4 cosmetic tag: tag_db_id -> cosmetic override. `Some(tag)` = an
     /// active cosmetic tag; `None` = validated no-override (folds `null`). A
     /// country whose cosmetic field was UNREADABLE (absent) is NOT in this map
@@ -826,6 +837,7 @@ impl WorldFold {
             land_combats_known_this_hour: false,
             land_combats_unknown_note_this_hour: None,
             tag_by_db_id: BTreeMap::new(),
+            country_identity_known_this_hour: false,
             cosmetic_by_db_id: BTreeMap::new(),
             domains_this_hour: Vec::new(),
             unfolded_domains_this_hour: BTreeSet::new(),
@@ -1022,6 +1034,11 @@ impl WorldFold {
     }
 
     fn reset_hour_state(&mut self) {
+        // E13: the measured-country set is per-frame; a new hour has not yet
+        // measured it. `tag_by_db_id` itself deliberately PERSISTS (D18 full-
+        // replaces it) so TAG re-keying still works when D18 is absent, but the
+        // KNOWN flag resets so `measured_countries.known` reflects this hour.
+        self.country_identity_known_this_hour = false;
         self.domains_this_hour.clear();
         self.unfolded_domains_this_hour.clear();
         self.domain_problems_this_hour.clear();
@@ -1087,6 +1104,37 @@ impl WorldFold {
             // A non-numeric key is already a TAG (or otherwise resolved); pass through.
             Err(_) => numeric_key.to_string(),
         }
+    }
+
+    /// E13: the measured-country roster for this frame — the set of countries
+    /// the capture RESOLVED (domain 18's full-replace map). `known` is false
+    /// when no proven domain-18 record landed this hour (the measured set is
+    /// UNKNOWN, not empty). When known, `count`/`tags`/`tag_db_ids` enumerate
+    /// the measured population so downstream can tell a country that was
+    /// measured-but-has-no-data-in-a-domain from one that was NOT resolved this
+    /// frame (absent from `tag_db_ids`).
+    fn build_measured_countries(&self) -> Value {
+        if !self.country_identity_known_this_hour {
+            return json!({
+                "known": false,
+                "source": "country_identity",
+                "reason": "no proven country_identity (domain 18) record this frame; \
+                           the measured-country set is unknown (not empty)",
+            });
+        }
+        let tag_db_ids: Vec<u32> = self.tag_by_db_id.keys().copied().collect();
+        let tags: Vec<&str> = self.tag_by_db_id.values().map(String::as_str).collect();
+        json!({
+            "known": true,
+            "source": "country_identity",
+            "count": tag_db_ids.len(),
+            "tag_db_ids": tag_db_ids,
+            "tags": tags,
+            "note": "the countries resolved this frame (systemic country-roots bound; \
+                     dynamic observers e.g. D01/D02/D03 are excluded). A country ABSENT \
+                     from a domain's rows but PRESENT here has no data for that domain; \
+                     a country absent here was not resolved this frame.",
+        })
     }
 
     /// Rewrite a country-valued JSON string field ("47" -> "GER") in place. Null
@@ -2059,6 +2107,16 @@ impl WorldFold {
             ));
         }
 
+        // E13 measured-country observability: the set of countries the capture
+        // RESOLVED this frame (domain 18's full-replace roster). Downstream uses
+        // it to distinguish "country absent from a domain = no data for it" (the
+        // country IS measured) from "country absent = not resolved this frame"
+        // (not in the measured set — the systemic country-roots bound excludes
+        // dynamic observers like D01/D02/D03). `known: false` when no proven
+        // domain-18 record landed this hour — the measured set is UNKNOWN, never
+        // reported as an empty/complete set.
+        let measured_countries = self.build_measured_countries();
+
         let mut snapshot = json!({
             "schema_version": SCHEMA_VERSION,
             "game_id": self.game_id,
@@ -2071,6 +2129,7 @@ impl WorldFold {
                 "notes": notes,
             },
             "tag_db_id_index": tag_db_id_index,
+            "measured_countries": measured_countries,
             "countries": Value::Object(countries),
             "states": states_value,
             "provinces": provinces_value,
@@ -3910,6 +3969,9 @@ impl WorldFold {
         // full-replace: the domain re-sends the complete live-country map each frame.
         self.tag_by_db_id = fresh;
         self.cosmetic_by_db_id = fresh_cosmetic;
+        // E13: a proven domain-18 record measured the country set THIS hour, so
+        // `tag_by_db_id` is now the freshly-measured roster (not carried over).
+        self.country_identity_known_this_hour = true;
         Ok(())
     }
 
