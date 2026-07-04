@@ -33,6 +33,7 @@ sys.path.insert(0, str(_HERE))
 import resolver as R  # noqa: E402
 import parse_localisation  # noqa: E402
 import parse_focus_def  # noqa: E402
+import parse_world_defs  # noqa: E402
 import parse_catalogs  # noqa: E402
 import parse_characters  # noqa: E402
 import parse_idea_tech_loc  # noqa: E402
@@ -335,6 +336,110 @@ def _country_tag_loc_candidates(tag: str, ideology_groups: list[str]) -> list[di
     return candidates
 
 
+# --- N4/E11 RESOLVED JOIN TABLES ------------------------------------------
+#
+# The coverage report above records HOW MANY ids resolve; the replay UI needs
+# the actual id -> display-name lookups. These tables are the consumable form:
+# focus_id -> name, state_id -> name, victory-point provid -> name, and country
+# TAG -> name PLUS cosmetic-tag -> name (the live compact domain emits a
+# country's active cosmetic_tag string; the replay joins it flat, falling back
+# cosmetic_tags[active] ?? tags[base_tag] ?? tag). No fabrication: an id whose
+# best loc candidate is absent from every effective file is simply OMITTED from
+# the table (never guessed, never defaulted to the raw token). All mod-over-
+# vanilla via the shared layer priority.
+
+
+def _best_country_name(candidates: list[dict[str, str]], loc_names: dict[str, str]) -> str | None:
+    """First candidate key (in bare -> ideology -> DEF/ADJ priority order) whose
+    loc value exists is the display name; None if none resolve."""
+    for cand in candidates:
+        name = loc_names.get(cand["key"])
+        if name:
+            return name
+    return None
+
+
+def _cosmetic_tag_ids(layers) -> list[str]:
+    """Cosmetic-tag ids from common/countries/cosmetic.txt (top-level blocks:
+    ``COSMETIC_ID = { color = ... }``). Mod-over-vanilla union (a mod may add
+    or replace cosmetic tags); a bare id with a Node body is a cosmetic tag."""
+    ids: set[str] = set()
+    for rel, abspath in R.ordered_files(layers, "common/countries", (".txt",)):
+        if Path(rel).name != "cosmetic.txt":
+            continue
+        try:
+            root = R.parse_file(abspath)
+        except Exception as e:
+            print(f"[localisation_gate] WARN cosmetic {rel}: {e}", file=sys.stderr)
+            continue
+        for key, value in root.entries:
+            if key and not key.startswith("@") and isinstance(value, Node):
+                ids.add(key)
+    return sorted(ids)
+
+
+def build_resolved_joins(layers, loc_out: dict[str, Any]) -> dict[str, Any]:
+    """The consumable id -> display-name join tables (R3/N4)."""
+    loc_names = {key: entry["name"] for key, entry in loc_out["keys"].items()}
+    loc = R.load_loc(layers)
+    ideology_groups = _ideology_groups(layers)
+
+    # Focus: parse_focus_def already loc-resolves each focus title.
+    focus_out = parse_focus_def.parse_focus_defs(layers, loc)
+    focus = {
+        fid: rec["loc"]["title"]
+        for fid, rec in focus_out["focuses"].items()
+        if isinstance(rec.get("loc"), dict) and rec["loc"].get("title")
+    }
+
+    # State + victory-point names (STATE_<id> / VICTORY_POINTS_<provid>).
+    world_out = parse_world_defs.parse_world_defs(layers, loc)
+    state = dict(world_out["state_names"])
+    victory_point = dict(world_out["vp_names"])
+
+    # Country base tags -> best-resolving name.
+    tags: dict[str, str] = {}
+    for item in _country_tag_items(layers):
+        if item.get("dynamic_tag"):
+            # dynamic country tags (D01..) get their origin name at runtime.
+            continue
+        name = _best_country_name(item.get("loc_candidates") or [], loc_names)
+        if name:
+            tags[item["id"]] = name
+
+    # Cosmetic tags -> name (same candidate rules; the id itself is the loc key
+    # shape, e.g. MAL_UK / MAL_UK_DEF / MAL_UK_ADJ + ideology variants).
+    cosmetic_tags: dict[str, str] = {}
+    for cid in _cosmetic_tag_ids(layers):
+        name = _best_country_name(_country_tag_loc_candidates(cid, ideology_groups), loc_names)
+        if name:
+            cosmetic_tags[cid] = name
+
+    return {
+        "schema": "static_localisation_join_r3.resolved_joins.v1",
+        "join_note": (
+            "consumable id -> english display-name lookups, mod-over-vanilla; "
+            "an id whose best loc candidate is absent is OMITTED (never faked). "
+            "Country display: cosmetic_tags[active_cosmetic_tag] else "
+            "tags[country_tag] else the raw tag; dynamic (D01..) tags resolve at runtime."
+        ),
+        "focus": dict(sorted(focus.items())),
+        "state": dict(sorted(state.items(), key=lambda kv: int(kv[0]))),
+        "victory_point": dict(sorted(victory_point.items(), key=lambda kv: int(kv[0]))),
+        "country": {
+            "tags": dict(sorted(tags.items())),
+            "cosmetic_tags": dict(sorted(cosmetic_tags.items())),
+        },
+        "counts": {
+            "focus": len(focus),
+            "state": len(state),
+            "victory_point": len(victory_point),
+            "country_tags": len(tags),
+            "cosmetic_tags": len(cosmetic_tags),
+        },
+    }
+
+
 def _items_from_records(records: dict[str, dict[str, Any]], *, default_loc_key: bool = False) -> list[dict[str, Any]]:
     items = []
     for token_id, rec in records.items():
@@ -466,6 +571,7 @@ def build_catalog(vanilla: str | None, mods: list[str] | None) -> dict[str, Any]
     layers = R.build_layers(vanilla=vanilla, mods=mods)
     loc_out = parse_localisation.parse_localisation(layers)
     coverage = build_coverage_report(layers, loc_out["keys"])
+    resolved_joins = build_resolved_joins(layers, loc_out)
 
     catalog = {
         "schema": "static_localisation_join_r3.static_artifact.v1",
@@ -475,10 +581,17 @@ def build_catalog(vanilla: str | None, mods: list[str] | None) -> dict[str, Any]
             "closed_rows": [
                 "english localisation key -> {name, raw, source_layer, source_file}"
                 " effective mod-over-vanilla join",
+                # N4/E11: the consumable resolved id -> display-name join tables.
+                "focus id -> display name (resolved_joins.focus)",
+                "state id -> name (resolved_joins.state)",
+                "victory-point province id -> name (resolved_joins.victory_point)",
+                "country TAG -> name and cosmetic-tag -> name"
+                " (resolved_joins.country.{tags,cosmetic_tags})",
             ],
             "not_closed_rows": [
                 "$VAR$ / [Scope.Func] interpolation resolution (runtime job, not static)",
                 "non-english languages (english only, per R3 scope)",
+                "dynamic (D01..) country-tag names (runtime origin, not static)",
             ],
         },
         "layers": [
@@ -487,6 +600,10 @@ def build_catalog(vanilla: str | None, mods: list[str] | None) -> dict[str, Any]
         ],
         "meta": loc_out["meta"],
         "coverage": coverage,
+        # N4/E11: consumable id -> display-name join tables (additive; the
+        # recorder hashes the whole file and reads only schema/layers, and
+        # consumers read known keys — existing `keys`/`coverage` unchanged).
+        "resolved_joins": resolved_joins,
         "keys": loc_out["keys"],
     }
     catalog["artifact_sha256"] = sha256_bytes(canonical_json(catalog))
@@ -583,6 +700,7 @@ def main() -> int:
     catalog = build_catalog(args.vanilla, mods)
     paths = write_store(args.out_dir, catalog)
 
+    joins = catalog["resolved_joins"]["counts"]
     proof: dict[str, Any] = {
         "schema": "static_localisation_join_r3.static_gate_report.v1",
         "request": "R3",
@@ -590,14 +708,26 @@ def main() -> int:
         "paths": {key: redact_path(path) for key, path in paths.items()},
         "meta": catalog["meta"],
         "coverage": catalog["coverage"],
+        "resolved_joins_counts": joins,
         "artifact_sha256": catalog["artifact_sha256"],
         "pack_verify": None,
     }
     if not args.skip_pack:
         proof["pack_verify"] = run_pack_verify(args.out_dir)
     verify_rc = ((proof.get("pack_verify") or {}).get("verify") or {}).get("returncode")
+    # Fail closed if the resolved-join tables came back implausibly empty (a
+    # broken parser/loc join must NOT ship a hollow bundle that passed only on
+    # the raw key count). Vanilla has hundreds of focuses/states/VPs/tags.
+    joins_ok = (
+        joins["focus"] > 100
+        and joins["state"] > 100
+        and joins["victory_point"] > 100
+        and joins["country_tags"] > 100
+    )
+    proof["resolved_joins_ok"] = joins_ok
     proof["passed"] = bool(
         catalog["meta"]["key_count"] > 10000
+        and joins_ok
         and (args.skip_pack or verify_rc == 0)
     )
     assert_no_report_path_leaks(proof)
