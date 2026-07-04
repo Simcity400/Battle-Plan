@@ -49,7 +49,13 @@ RE-CLASSIFIED (no longer memory rows):
 - Garrison child scalars → **RESOLVED** (wave-3: +0x88/+0xF0/+0xF8).
 
 STILL OPEN / IN PROGRESS:
-- Game-speed root, intel-network/spy-map graph → in progress (round-2 crack agent; C2/C4).
+- Intel-network/spy-map graph (C4) → **CRACKED + verified**: CStrategicOperative+0x10 →
+  66 CCountryIntelNetwork (vt RVA 0x298AB48) → +0x08 target tag, +0x18 graph → +0x40
+  vertices / +0x38 state array (66/66, ENG-14/SOV-43 exact; CRACK_QUEUE_RESULTS §C4).
+  Wiring queued.
+- Game-speed root (C2) → **DEFERRED to fixture B0 (or deeper disasm)**: mechanism found
+  (CSet/Increase/DecreaseGameSpeedCommand + GAME_SPEED_SECONDS), +0x66C retired as a
+  false candidate; value has no paused oracle. Cheapest close = the 10s B0 speed-tap.
 - Capitulation/peace/war-detail, land/naval/air combat DETAIL, reinforcement reason,
   breakthrough state, scripted-state coverage audit → the **FINAL_CRACK_SWEEP_2026-07-04.md**
   no-user sweep (in progress).

@@ -80,26 +80,45 @@ not serialized). Two finish paths, neither guessing:
 - (A) disassemble the tick-sink → scheduler backward-slice (higher effort, no user).
 - (B) ~10s user fixture B0: tap speed-down once → diff `idler[0..0x1000]` +
   `CGameState[0..0x2000]`; the changed small-int field is the speed root.
-Ranked candidates for the B0 diff: `idler+0x66C` (=100, an interval-looking value),
-`idler+0x668`, then a CGameState speed-command-state field, then `idler+0x6C2`.
-Codex concurs DEFER is correct. This remains the single cheapest user fixture (B0).
+Round-2 sharpened this: **`idler+0x66C` is RETIRED** — it's a constant `mov
+dword[rdi+0x66C],0x64` (=100) written by idler init and read generically by 12
+unrelated fns (a fixed frame budget, NOT speed). The 0.3s gate is a UI debounce, not
+the sim scheduler. Mechanism FOUND via RTTI: `CSetGameSpeedCommand` (vt RVA
+0x2960?A0-region), `CIncreaseGameSpeedCommand`, `CDecreaseGameSpeedCommand`, and the
+define `NGameGAME_SPEED_SECONDS` (helper) — the speed-specific DoExecute is behind the
+network-command framework, and no paused oracle exists for the value. Two closes: (A)
+deeper no-user disasm — index-slice `GAME_SPEED_SECONDS` by the bounded 0..5 operand,
+or trace the command DoExecute's stored field; (B) 10s fixture B0 — tap speed once,
+diff **CGameState[0..0x2000]** (now the TOP watch-list, a small u32/u8 clamping 0..5)
++ idler[0x600..0xA50]. Codex: DEFER correct. Remains the cheapest user fixture (B0).
 
-## C4 — Intel network graph — DEFERRED (strong partial; container types now known)
+## C4 — Intel network graph — CRACKED (round-2, orchestrator-verified)
 
-Prior "container not found" blocker cleared: broad RTTI surfaced the type family —
-`CCountryIntelNetwork` (map<CCountryTag, SOccupiedStateCoverage>), `CSubIntelNetwork`
-(map<…, SBasicStateCoverage>), `SCountryIntelInstance`, `SGfxIntelNetworkEdgeData`.
-ENG/SOV state_ids were located live but only inside the *graphical edge* layer
-(repeated endpoints); the authoritative vertex set lives in inline-buffered coverage
-structs with no scannable vtable, and no simple CCountry+offset was found. What's
-needed (no user/mutation): xref the serializer token strings (`state_id` / `vertices`
-/ `intel_network`) → recover `CCountry+X → intel network → map<CCountryTag,
-coverage>`, then validate total==66 blocks, ENG=14 vertices exact set, SOV=43. Codex:
-"strong partial, DEFER is fair." No longer "not found" — one bounded disasm move left.
+The data model was corrected: not `map<owner CCountry, coverage>` but
+`CStrategicOperative → vector<CCountryIntelNetwork*>`, 66 networks summed across
+operatives. Proven chain (live-validated on paused D04):
+```
+CStrategicOperative (vt RVA 0x298B448; 440 live, 38 own networks)
+  +0x10 ptr = CCountryIntelNetwork*[] data ; +0x18 u32 = size
+  CCountryIntelNetwork (vt RVA 0x298AB48; EXACTLY 66 live)
+    +0x08 i32 = target CCountryTag db_id (ENG=2, SOV=3, AST=33, GRE=22, …)
+    +0x18 ptr -> graph G:  G+0x40 u32 = vertices count ;
+                           G+0x38 ptr -> array of 16-byte vertex structs (state_id = elem+0x00 i32)
+```
+**Orchestrator independent verification (own heap scan + melt):** RTTI confirmed
+`.?AVCCountryIntelNetwork@@`; **exactly 66 live instances**; **ENG(tag 2) vertices=14
+with state set == the melt 14-set EXACTLY**; **SOV(tag 3) vertices=43**; reachability
+(union of all operative vectors) == the 66 objects, 0 missing / 0 extra. Full compare
+60/66 exact on (tag + sorted state set); the 6 residual are live-vs-save dynamic-intel
+recompute divergence (incl. one tag → live "D04", a released nation, not a decode bug).
+Codex: CRACK CONFIRMED. Wire target: a spy-network/intel-map domain (per (owner
+operative, target, vertex state set)).
 
-## Net remaining crackable-without-user work
-- C1, C3: DONE (wire-ready; C1 unblocks market, C3 is a D53 sidecar).
-- C2 speed: disasm slice OR the 10s B0 fixture (recommended — cheapest).
-- C4 intel graph: one serializer-string xref pass (bounded, no user).
+## Net status
+- C1 market owner, C3 diplo queue, **C4 intel graph: CRACKED + orchestrator-verified**
+  (wire-ready — C1 market attribution, C3 D53 diplo sidecar, C4 spy-network domain).
+- C2 speed: DEFERRED. Mechanism found; value has no paused oracle. Close via deeper
+  no-user disasm (GAME_SPEED_SECONDS index-slice / command DoExecute), OR the 10s B0
+  fixture (cheapest). This is the only crack-queue item still open.
 - (Market-specific cross-tick mutation proof for C1 needs game control — not required
-  for wiring, but the wiring content cross-check stands in for it.)
+  for wiring; the wiring content cross-check stands in for it.)
