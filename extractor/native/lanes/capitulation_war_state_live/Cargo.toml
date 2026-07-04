@@ -1,0 +1,11 @@
+[package]
+name = "capitulation_war_state_live"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "capitulation_war_state_live"
+path = "src/lib.rs"
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }

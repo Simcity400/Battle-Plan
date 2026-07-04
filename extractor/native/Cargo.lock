@@ -20,6 +20,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "capitulation_war_state_live"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -39,6 +46,7 @@ version = "0.1.0"
 dependencies = [
  "air_wings_variants_lifecycle_live_lane",
  "army_battleplans_depth_live_lane",
+ "capitulation_war_state_live",
  "characters_leaders_cabinet_live",
  "compact_contract",
  "construction_buildings_state_damage_live",
@@ -215,6 +223,7 @@ version = "0.1.0"
 dependencies = [
  "air_wings_variants_lifecycle_live_lane",
  "army_battleplans_depth_live_lane",
+ "capitulation_war_state_live",
  "characters_leaders_cabinet_live",
  "compact_contract",
  "construction_buildings_state_damage_live",

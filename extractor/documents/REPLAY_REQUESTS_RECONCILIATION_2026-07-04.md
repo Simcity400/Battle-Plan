@@ -157,6 +157,26 @@ queued, before user-fixture items — except N3 which can join any wiring batch)
   shape supplies `ship_count` + `dominant_hull_class` per task force per hour;
   if not, aggregate D29 ship rows onto D56 task-force rows in world_fold.
 
+## Schema deltas shipped by E1 (capitulation / war state, domain 60)
+
+- `countries[*].capitulation` (NEW, additive): `{capitulated: bool,
+  capitulated_date: "Y.M.D.H"|null, last_surrender_date: "Y.M.D.H"|null,
+  faction_join_date: "Y.M.D.H"|null, legitimacy: float, legitimacy_raw: int
+  (x1e5), exile_army_leaders: int}`. Absent key = country not measured
+  (absent != false). Persistent last-proven-frame semantics across hours.
+- `diplomacy_world.wars` (CHANGED: was a dead `{}` placeholder, now
+  **nullable + populated**): `null` when no proven domain-60 frame landed
+  that hour (unknown), else an object keyed `"FIRST|SECOND"` (resolved TAGs)
+  with `{first, second, first_tag_db_id, second_tag_db_id, start_date,
+  start_date_raw, first_casualties, second_casualties,
+  casualties_semantics: "live_running_accumulator"}`. A proven frame with
+  zero wars is a genuine empty object, distinct from null. Casualty fields
+  are LIVE running accumulators: byte-exact vs the save for frozen wars,
+  legitimately above the save snapshot on active wars.
+- Date strings use the repo-canonical renderer (hours 0-23): the save melt's
+  day-boundary "hour 24" (`Y.M.D.24`) renders as next-day hour 0 — same raw
+  instant; consumers comparing against melt text must normalize.
+
 ## Messages back to the replay layer (stale statuses to update on their side)
 
 1. R1 is shipped — compact production recordings contain hourly

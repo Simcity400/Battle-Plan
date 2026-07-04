@@ -570,6 +570,11 @@ fn domain53_validated_payload_with_war() -> Vec<u8> {
 
 #[test]
 fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
+    // D53-ONLY regression (guards the E1 `diplomacy_world.wars` {}→null change):
+    // this stream carries NO domain-60 record, so d53's own war rows must still
+    // land under `diplomacy_world.domain53_extra.war_relation_rows` (a SEPARATE
+    // key that E1 never touched), and `diplomacy_world.wars` — which was a dead
+    // unconditional `{}` placeholder at HEAD and is now D60-owned — is null.
     let snapshot = snapshot_for_domain_records(vec![
         (
             18,
@@ -596,7 +601,9 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
         ger["intel"][DOMAIN53_EXTRA_KEY]["operative_lifecycle_rows"][0]["lifecycle_flag"],
         json!(47)
     );
-    assert_eq!(snapshot["diplomacy_world"]["wars"], json!({}));
+    // E1 schema delta: `wars` is D60-owned and null until a proven
+    // capitulation_war_state frame lands this hour (this stream has none).
+    assert_eq!(snapshot["diplomacy_world"]["wars"], Value::Null);
     assert_eq!(
         snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["war_relation_rows"][0]
             ["lifecycle_unvalidated"],
@@ -7401,4 +7408,449 @@ fn chunk2_malformed_payload_is_rejected_not_treated_as_empty() {
         .unwrap()
         .iter()
         .any(|note| note.as_str().unwrap().contains("domain 42 fold skipped")));
+}
+
+// --- DOMAIN 60 capitulation_war_state_live (E1) ---------------------------
+
+fn capwar_real_date_raw(year: i32, doy: i32, hour: i32) -> i32 {
+    DATE_EPOCH_CONST + (year * 365 + doy) * 24 + hour
+}
+
+fn capwar_country_row(
+    tag_db_id: u32,
+    capitulated: bool,
+    capitulated_date_raw: i32,
+    legitimacy_raw: i32,
+    exile_army_leaders: i32,
+) -> capwar60::compact::CountryCapitulationRow {
+    capwar60::compact::CountryCapitulationRow {
+        tag_db_id,
+        capitulated,
+        capitulated_date_raw,
+        last_surrender_date_raw: capwar60::compact::CGAMEDATE_NULL_RAW,
+        faction_join_date_raw: capwar60::compact::CGAMEDATE_NULL_RAW,
+        legitimacy_raw,
+        exile_army_leaders,
+    }
+}
+
+fn capwar_payload(snapshot: &capwar60::compact::CapitulationWarSnapshot) -> Vec<u8> {
+    capwar60::compact::encode_payload(snapshot)
+}
+
+fn capwar_sample_snapshot() -> capwar60::compact::CapitulationWarSnapshot {
+    // FRA(3) capitulated 1940.6.18.2 with legitimacy 100.0 and 8 exile
+    // leaders; GER(47) not capitulated. One GER->FRA war started 1939.9.1.4.
+    let fra_date = capwar_real_date_raw(1940, 31 + 28 + 31 + 30 + 31 + 17, 2);
+    capwar60::compact::CapitulationWarSnapshot {
+        elapsed_wall_ms: 1,
+        status_flags: capwar60::compact::STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR,
+        countries: vec![
+            capwar_country_row(3, true, fra_date, 10_000_000, 8),
+            capwar_country_row(47, false, capwar60::compact::CGAMEDATE_NULL_RAW, 0, 0),
+        ],
+        wars: vec![capwar60::compact::WarRow {
+            first_tag_db_id: 47,
+            second_tag_db_id: 3,
+            start_date_raw: capwar_real_date_raw(1939, 31 + 28 + 31 + 30 + 31 + 30 + 31 + 31, 4),
+            first_casualties: 1_110,
+            second_casualties: 948,
+        }],
+    }
+}
+
+fn capwar_stream(records: Vec<(u16, Vec<u8>)>, raw: i32) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for (dom, payload) in records {
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            dom,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        seq += 1;
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    stream
+}
+
+#[test]
+fn capitulation_war_state_folds_countries_and_wars() {
+    let raw = raw_for(16_959_360);
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(47, 100, 200, 0, 0)])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+
+    let fra = &s["countries"]["FRA"]["capitulation"];
+    assert_eq!(fra["capitulated"], json!(true));
+    assert_eq!(fra["capitulated_date"], json!("1940.6.18.2"));
+    assert_eq!(fra["last_surrender_date"], Value::Null);
+    assert_eq!(fra["faction_join_date"], Value::Null);
+    assert!((fra["legitimacy"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+    assert_eq!(fra["legitimacy_raw"], json!(10_000_000));
+    assert_eq!(fra["exile_army_leaders"], json!(8));
+
+    let ger = &s["countries"]["GER"]["capitulation"];
+    assert_eq!(ger["capitulated"], json!(false));
+    assert_eq!(ger["capitulated_date"], Value::Null);
+
+    let wars = s["diplomacy_world"]["wars"].as_object().unwrap();
+    assert_eq!(wars.len(), 1);
+    let war = &wars["GER|FRA"];
+    assert_eq!(war["first"], json!("GER"));
+    assert_eq!(war["second"], json!("FRA"));
+    assert_eq!(war["first_tag_db_id"], json!(47));
+    assert_eq!(war["second_tag_db_id"], json!(3));
+    assert_eq!(war["start_date"], json!("1939.9.1.4"));
+    assert_eq!(war["first_casualties"], json!(1_110));
+    assert_eq!(war["second_casualties"], json!(948));
+    assert_eq!(
+        war["casualties_semantics"],
+        json!("live_running_accumulator")
+    );
+
+    let dom = s["provenance"]["collector"]["domains"].as_array().unwrap();
+    assert!(dom.iter().any(|d| d == "capitulation_war_state_live"));
+}
+
+#[test]
+fn capitulation_persists_across_hours_but_wars_go_unknown() {
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw1,
+    );
+    // Hour 2: no D60 record at all.
+    stream.extend(capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+        ],
+        raw2,
+    ));
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let s1 = parse(&snaps[0].2);
+    assert_eq!(
+        s1["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+    assert!(s1["diplomacy_world"]["wars"].is_object());
+
+    // Hour 2: capitulation state persists (last proven frame), wars unknown.
+    let s2 = parse(&snaps[1].2);
+    assert_eq!(
+        s2["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+    assert_eq!(s2["diplomacy_world"]["wars"], Value::Null);
+}
+
+#[test]
+fn capitulation_absent_country_gets_no_key() {
+    // D60 frame carries only FRA; GER materializes via fuel but must get NO
+    // capitulation key (absent != false).
+    let raw = raw_for(16_959_360);
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.countries.retain(|row| row.tag_db_id == 3);
+    snapshot.wars.clear();
+    snapshot.status_flags = 0;
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(47, 100, 200, 0, 0)])),
+            (60, capwar_payload(&snapshot)),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    assert!(s["countries"]["FRA"]["capitulation"]["capitulated"].as_bool() == Some(true));
+    assert!(s["countries"]["GER"].get("capitulation").is_none());
+    // Proven frame with zero wars: genuine empty object, not null.
+    assert_eq!(s["diplomacy_world"]["wars"], json!({}));
+}
+
+#[test]
+fn capitulated_minor_without_other_domains_materializes_numeric() {
+    // A capitulated country with no identity mapping and no other domain rows
+    // must still surface (numeric key) and be recorded as unresolved. The
+    // identity record maps only GER so the tag index exists.
+    let raw = raw_for(16_959_360);
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.countries = vec![capwar_country_row(
+        99,
+        true,
+        capwar_real_date_raw(1941, 50, 6),
+        0,
+        0,
+    )];
+    snapshot.wars.clear();
+    snapshot.status_flags = 0;
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER")])),
+            (60, capwar_payload(&snapshot)),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    assert_eq!(
+        s["countries"]["99"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+    let gaps = s["tag_db_id_index"]["unresolved_tag_db_ids"]
+        .as_array()
+        .unwrap();
+    assert!(gaps.iter().any(|g| g == "99"));
+}
+
+#[test]
+fn capitulation_failure_status_keeps_last_map_and_wars_unknown() {
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw1,
+    );
+    // Hour 2: fail-closed empty SOURCE_UNAVAILABLE record.
+    let failed = capwar60::compact::CapitulationWarSnapshot {
+        elapsed_wall_ms: 1,
+        status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+        ..capwar60::compact::CapitulationWarSnapshot::default()
+    };
+    stream.extend(capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&failed)),
+        ],
+        raw2,
+    ));
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let s2 = parse(&snaps[1].2);
+    // Last proven capitulation map is retained; wars are unknown (null).
+    assert_eq!(
+        s2["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+    assert_eq!(s2["diplomacy_world"]["wars"], Value::Null);
+    let problems = s2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(problems
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(60)
+            && problem["problem"] == json!("compact_status_non_clean")));
+}
+
+#[test]
+fn capitulation_partial_only_frame_retains_map_not_wipes() {
+    // REGRESSION: the collector's per-row-skip fail-closed path emits an EMPTY
+    // payload with `status_flags | COMPACT_STATUS_PARTIAL_DATA` (see the
+    // collector `capwar_row_skips` return). The fold MUST retain the last
+    // proven capitulation map on that frame and NEVER rebuild it from the empty
+    // payload — a single torn country read on a live game would otherwise wipe
+    // the whole political-map capitulation state.
+    //
+    // NOTE on the shared mask: `COMPACT_STATUS_PARTIAL_DATA` IS currently a
+    // member of `COMPACT_STATUS_FAILURE_MASK`, so `compact_status_is_failure`
+    // already returns true for a partial-only frame. The fold guard makes the
+    // "retain on partial" intent EXPLICIT (`... || PARTIAL_DATA`) so this
+    // domain — a full-replace domain with no partial tolerance — stays correct
+    // even if PARTIAL_DATA were ever demoted out of the failure mask. This test
+    // is the behavioral guarantee regardless of that membership;
+    // `partial_data_is_treated_as_non_clean_for_full_replace_domains` below
+    // pins the assumption directly.
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw1,
+    );
+    // Hour 2: EMPTY payload with PARTIAL_DATA ONLY (exactly the collector's
+    // torn-row skip path — NO SOURCE_UNAVAILABLE, NO other failure bit).
+    let partial_only = capwar60::compact::CapitulationWarSnapshot {
+        elapsed_wall_ms: 1,
+        status_flags: COMPACT_STATUS_PARTIAL_DATA,
+        ..capwar60::compact::CapitulationWarSnapshot::default()
+    };
+    stream.extend(capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&partial_only)),
+        ],
+        raw2,
+    ));
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    // Hour 1: FRA capitulated proven.
+    let s1 = parse(&snaps[0].2);
+    assert_eq!(
+        s1["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+
+    // Hour 2 (the bug): map RETAINED, not wiped. FRA still capitulated=true;
+    // wars go unknown (null) because the partial frame is not proven.
+    let s2 = parse(&snaps[1].2);
+    assert_eq!(
+        s2["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true),
+        "PARTIAL-only frame must RETAIN the last proven capitulation map, not wipe it"
+    );
+    assert_eq!(s2["diplomacy_world"]["wars"], Value::Null);
+    let problems = s2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(problems
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(60)
+            && problem["problem"] == json!("compact_status_non_clean")));
+}
+
+#[test]
+fn capitulation_clean_but_empty_frame_retains_map_not_wipes() {
+    // STRUCTURAL guard (closes the residual an adversarial review found): even a
+    // CLEAN-status D60 frame (status 0, no failure/partial bit) that carries
+    // ZERO country rows must NOT wipe the persistent map — an empty country set
+    // on a clean status is implausible (a real clean frame always resolves the
+    // live CCountry set) and is treated as non-authoritative.
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw1,
+    );
+    // Hour 2: EMPTY payload with a fully CLEAN status (0) — no failure/partial.
+    let clean_empty = capwar60::compact::CapitulationWarSnapshot {
+        elapsed_wall_ms: 1,
+        status_flags: 0,
+        ..capwar60::compact::CapitulationWarSnapshot::default()
+    };
+    stream.extend(capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&clean_empty)),
+        ],
+        raw2,
+    ));
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s2 = parse(&snaps[1].2);
+    assert_eq!(
+        s2["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true),
+        "clean-but-empty frame must RETAIN the last proven map, not wipe it"
+    );
+    assert_eq!(s2["diplomacy_world"]["wars"], Value::Null);
+    let problems = s2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(problems
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(60)
+            && problem["problem"] == json!("clean_but_empty_country_set")));
+}
+
+#[test]
+fn partial_data_is_treated_as_non_clean_for_full_replace_domains() {
+    // Pins the invariant the D60 fold relies on: PARTIAL_DATA must be treated
+    // as a non-clean frame for a full-replace domain with no partial tolerance.
+    // Today PARTIAL_DATA is a member of the failure mask (so the fold's
+    // `compact_status_is_failure(..) || PARTIAL_DATA` is true on the first
+    // term); this test guards the *behavioral* assumption so that if
+    // PARTIAL_DATA is ever demoted out of the mask, the explicit `|| PARTIAL`
+    // term in the fold — and this assertion — keep the retain semantics.
+    assert!(
+        compact_contract::compact_status_is_failure(COMPACT_STATUS_PARTIAL_DATA)
+            || (COMPACT_STATUS_PARTIAL_DATA & COMPACT_STATUS_PARTIAL_DATA) != 0,
+        "a PARTIAL_DATA frame must be non-clean for full-replace domains"
+    );
+    // And confirm domain 60 has NO expected-partial tolerance (it must fail
+    // closed on partial, never accept a partial frame as authoritative).
+    assert_eq!(compact_contract::expected_partial_tolerance(60), None);
+}
+
+#[test]
+fn capitulation_war_rows_without_badge_are_skipped_whole() {
+    // A payload whose war rows lack the mandatory running-accumulator badge
+    // must be rejected wholesale (decode fails; nothing folds).
+    let raw = raw_for(16_959_360);
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.status_flags = 0; // badge cleared while war rows present
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&snapshot)),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    assert!(s["countries"]["FRA"].get("capitulation").is_none());
+    assert_eq!(s["diplomacy_world"]["wars"], Value::Null);
+    assert!(s["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("domain 60 fold skipped")));
 }

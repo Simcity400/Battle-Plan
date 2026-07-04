@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as ace46;
 use army_battleplans_depth_live_lane as battleplans54;
+use capitulation_war_state_live as capwar60;
 use characters_leaders_cabinet_live_lane as domain47;
 use compact_contract::calendar::{date_from_raw, hour_index_from_raw};
 use compact_contract::{
@@ -216,6 +217,7 @@ const CHARACTERS_LEADERS_CABINET_DOMAIN_ID: u16 = 47;
 const CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID: u16 = 48;
 const SCRIPTED_STATE_DOMAIN_ID: u16 = 51;
 const DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID: u16 = diplomacy53::DOMAIN_ID;
+const CAPITULATION_WAR_STATE_DOMAIN_ID: u16 = capwar60::DOMAIN_ID;
 const ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID: u16 = battleplans54::DOMAIN_ID;
 const NAVAL_MISSIONS_STATUS_DOMAIN_ID: u16 = 56;
 const NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID: u16 = naval4950::DOMAIN_NAVAL_COMBAT_LIFECYCLE;
@@ -514,7 +516,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 /// The set of domains this fold understands and folds into world state.
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
-    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
+    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -560,6 +562,15 @@ pub struct WorldFold {
     domain53_known_this_hour: bool,
     domain53_country_overlays_this_hour: BTreeMap<u32, Domain53CountryOverlay>,
     domain53_world_overlay_this_hour: Domain53WorldOverlay,
+    /// D60 capitulation/war state. Per-country capitulation is a PERSISTENT
+    /// full-replace map (cosmetic-tag pattern: last proven frame wins; a
+    /// country absent from the map gets NO capitulation key — absent != false).
+    /// Wars are a current-hour overlay: `diplomacy_world.wars` is null until a
+    /// proven D60 frame lands this hour (a proven frame with zero wars is a
+    /// genuine empty object, distinct from unknown).
+    capitulation_by_db_id: BTreeMap<u32, capwar60::compact::CountryCapitulationRow>,
+    capitulation_war_state_known_this_hour: bool,
+    war_state_wars_this_hour: Vec<capwar60::compact::WarRow>,
     /// D43 world-scoped market contracts; full-replaced by each successful frame.
     market_trade_contracts: Option<Vec<Value>>,
     /// D44 live supply proxy sidecar; full-replaced by each successful frame.
@@ -761,6 +772,9 @@ impl WorldFold {
             domain53_known_this_hour: false,
             domain53_country_overlays_this_hour: BTreeMap::new(),
             domain53_world_overlay_this_hour: Domain53WorldOverlay::default(),
+            capitulation_by_db_id: BTreeMap::new(),
+            capitulation_war_state_known_this_hour: false,
+            war_state_wars_this_hour: Vec::new(),
             market_trade_contracts: None,
             supply: None,
             weather_live: None,
@@ -1034,6 +1048,10 @@ impl WorldFold {
         self.domain53_known_this_hour = false;
         self.domain53_country_overlays_this_hour.clear();
         self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
+        // D60: wars are hour-scoped; the capitulation map deliberately
+        // PERSISTS across hours (full-replaced by each proven frame).
+        self.capitulation_war_state_known_this_hour = false;
+        self.war_state_wars_this_hour.clear();
         self.supply_unknown_this_hour = false;
         self.market_trade_unknown_this_hour = false;
         self.session_multiplayer_metadata_this_hour = None;
@@ -1541,6 +1559,7 @@ impl WorldFold {
             50 => self.fold_naval_combat_members(payload),
             56 => self.fold_naval_missions_status(payload),
             57 => self.fold_session_multiplayer_metadata(payload),
+            60 => self.fold_capitulation_war_state(payload),
             _ => {
                 self.unfolded_domains_this_hour.insert(domain_id);
                 return;
@@ -1686,6 +1705,9 @@ impl WorldFold {
         if self.domain53_known_this_hour {
             self.project_domain53_country_overlays(&mut countries, &mut unresolved);
         }
+        // D60 capitulation attaches from its persistent map (last proven frame
+        // wins), creating country objects for capitulated minors if needed.
+        self.project_capitulation_country_state(&mut countries, &mut unresolved);
 
         // States: merge sibling-domain fields with D22-owned map-control fields.
         // Unknown domains mask only their own fields, not the whole shared object.
@@ -1796,7 +1818,14 @@ impl WorldFold {
         }
 
         let mut diplomacy_world = Map::new();
-        diplomacy_world.insert("wars".into(), json!({}));
+        // D60: `wars` is null (unknown) until a proven capitulation_war_state
+        // frame lands this hour; a proven frame with zero wars is a genuine
+        // empty object. Never fabricate emptiness from absence.
+        if self.capitulation_war_state_known_this_hour {
+            diplomacy_world.insert("wars".into(), self.build_war_state_wars(&mut unresolved));
+        } else {
+            diplomacy_world.insert("wars".into(), Value::Null);
+        }
         diplomacy_world.insert("factions".into(), json!({}));
         diplomacy_world.insert("subjects".into(), json!([]));
         if self.domain53_known_this_hour {
@@ -8197,6 +8226,145 @@ impl WorldFold {
         Ok(())
     }
 
+    // --- DOMAIN 60 capitulation_war_state_live (E1 validated slice) -------
+    fn fold_capitulation_war_state(&mut self, payload: &[u8]) -> Result<(), String> {
+        // Strict lane decode: row-level validation, exact-end framing, and the
+        // mandatory war running-accumulator badge are all enforced inside.
+        let decoded = capwar60::compact::decode_snapshot_payload(0, payload)
+            .map_err(|errors| errors.join("; "))?;
+        let status_flags = decoded.status_flags;
+        self.capitulation_war_state_known_this_hour = false;
+        self.war_state_wars_this_hour.clear();
+
+        // INVARIANT: domain 60 is a FULL-REPLACE domain with NO expected-partial
+        // tolerance (asserted in tests). It must NEVER rebuild the persistent
+        // capitulation map from a non-clean frame — a single torn country read
+        // on a live game would otherwise wipe the whole political-map
+        // capitulation state to "nobody capitulated" until the next clean frame.
+        //
+        // The collector's per-row-skip fail-closed path emits an EMPTY payload
+        // with `status_flags | COMPACT_STATUS_PARTIAL_DATA`. PARTIAL_DATA is
+        // presently a member of COMPACT_STATUS_FAILURE_MASK, so
+        // `compact_status_is_failure` ALREADY returns true for that frame and
+        // the map is retained. The explicit `|| PARTIAL_DATA` term below is
+        // DEFENSIVE HARDENING: it makes the retain-on-partial intent local and
+        // self-evident so this full-replace domain stays correct even if
+        // PARTIAL_DATA were ever demoted out of the failure mask (a plausible
+        // future refactor — PARTIAL is arguably informational for
+        // partial-tolerant domains, but for a no-tolerance full-replace domain
+        // it must ALWAYS mean "don't full-replace"). Retain on ANY non-clean
+        // frame regardless of which flag the source set.
+        let non_clean = compact_status_is_failure(status_flags)
+            || (status_flags & COMPACT_STATUS_PARTIAL_DATA) != 0;
+        if non_clean {
+            self.mark_fold_domain_unknown(
+                CAPITULATION_WAR_STATE_DOMAIN_ID,
+                "compact_status_non_clean",
+                format!(
+                    "capitulation_war_state_live non-clean status {status_flags:#x}; wars unknown this hour, last proven capitulation map RETAINED (not wiped)"
+                ),
+            );
+            return Err("compact_status_non_clean".to_string());
+        }
+
+        // STRUCTURAL guard (closes the one residual an adversarial review found:
+        // a clean-status but EMPTY payload would otherwise full-replace to
+        // empty and wipe the map). A genuinely clean, complete D60 frame ALWAYS
+        // carries the resolved CCountry set (the frame only reaches "clean"
+        // after resolving hundreds of live country roots); an empty country set
+        // on a clean status is implausible — the collector never emits it on
+        // success, only on the fail-closed paths which carry PARTIAL_DATA. Treat
+        // clean+empty as non-authoritative and RETAIN, rather than trusting a
+        // status field alone. (If a future map with a genuinely empty world ever
+        // exists, it would arrive with countries anyway; zero countries is the
+        // signal, not a legitimate state.)
+        if decoded.countries.is_empty() {
+            self.mark_fold_domain_unknown(
+                CAPITULATION_WAR_STATE_DOMAIN_ID,
+                "clean_but_empty_country_set",
+                "capitulation_war_state_live clean status but zero country rows; \
+                 last proven capitulation map RETAINED (not wiped)",
+            );
+            return Err("clean_but_empty_country_set".to_string());
+        }
+
+        // Full-replace: each proven (clean) frame re-sends the complete country
+        // set. A country absent from the fresh map loses its capitulation key
+        // (absent != false), matching the live read's validated-absence rule.
+        let mut fresh = BTreeMap::new();
+        for row in decoded.countries {
+            fresh.insert(row.tag_db_id, row);
+        }
+        self.capitulation_by_db_id = fresh;
+        self.war_state_wars_this_hour = decoded.wars;
+        self.capitulation_war_state_known_this_hour = true;
+        self.mark_fold_domain_success(CAPITULATION_WAR_STATE_DOMAIN_ID);
+        Ok(())
+    }
+
+    /// Attach `countries[*].capitulation` from the persistent D60 map. Creates
+    /// the country object when no other domain contributed one this hour (a
+    /// capitulated minor must never be dropped for lacking economy rows).
+    fn project_capitulation_country_state(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for (tag_db_id, row) in &self.capitulation_by_db_id {
+            let key = self.resolve_country_key(&tag_db_id.to_string(), unresolved);
+            let entry = countries
+                .entry(key)
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Some(country) = entry.as_object_mut() else {
+                continue;
+            };
+            country.insert("capitulation".into(), capitulation_country_json(row));
+        }
+    }
+
+    /// Build the §7b `diplomacy_world.wars` object from the current-hour D60
+    /// war overlay: keyed `"FIRST|SECOND"` with resolved TAGs where available.
+    fn build_war_state_wars(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        let mut wars = Map::new();
+        for row in &self.war_state_wars_this_hour {
+            let first = self.resolve_country_key(&row.first_tag_db_id.to_string(), unresolved);
+            let second = self.resolve_country_key(&row.second_tag_db_id.to_string(), unresolved);
+            wars.insert(
+                format!("{first}|{second}"),
+                json!({
+                    "first": first,
+                    "second": second,
+                    "first_tag_db_id": row.first_tag_db_id,
+                    "second_tag_db_id": row.second_tag_db_id,
+                    // Decode guarantees an in-window date; a None here would be
+                    // a logic error, surfaced as null rather than a fabricated
+                    // date (fail closed).
+                    "start_date": compact_contract::calendar::date_from_raw(row.start_date_raw)
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                    "start_date_raw": row.start_date_raw,
+                    "first_casualties": row.first_casualties,
+                    "second_casualties": row.second_casualties,
+                    // Casualty semantics (per-war, explicit so a consumer never
+                    // reads an ACTIVE war's live total as a save-snapshot value):
+                    // the +0x40/+0x48 fields are LIVE RUNNING ACCUMULATORS. For a
+                    // frozen war (combat ended) they equal the serialized save
+                    // snapshot byte-for-byte (validated: GER-LUX 1110/948). For an
+                    // active war they legitimately EXCEED the save snapshot and
+                    // keep climbing each tick. Frozen-vs-active is NOT
+                    // distinguishable from live memory alone on this build (no
+                    // in-object "war frozen" flag was cracked), so the field is
+                    // conservatively "live_running_accumulator" for every row —
+                    // treat every value as a lower bound that is exact only if the
+                    // war is known (from elsewhere) to be frozen.
+                    "casualties_semantics": "live_running_accumulator",
+                    "casualties_is_save_snapshot": false,
+                }),
+            );
+        }
+        Value::Object(wars)
+    }
+
     // --- DOMAIN 54 army_battleplans_depth_live (R2 OOB annotation) -------
     fn fold_army_battleplans_depth(&mut self, payload: &[u8]) -> Result<(), String> {
         let decoded_summary = battleplans54::decode_depth_payload(0, payload);
@@ -10809,6 +10977,27 @@ fn domain48_resource_key(resource_id: u32) -> String {
 
 fn option_flag(flags: u32, flag: u32, value: u32) -> Option<u32> {
     (flags & flag != 0).then_some(value)
+}
+
+/// D60 per-country capitulation JSON. Date raws use the engine hour-counter
+/// encoding; the engine null sentinel (and only it — decode range-gates
+/// everything else) renders as JSON null. Legitimacy is fixed-point x 1e5.
+fn capitulation_country_json(row: &capwar60::compact::CountryCapitulationRow) -> Value {
+    let date_or_null = |raw: i32| -> Value {
+        compact_contract::calendar::date_from_raw(raw)
+            .map(Value::from)
+            .unwrap_or(Value::Null)
+    };
+    json!({
+        "capitulated": row.capitulated,
+        "capitulated_date": date_or_null(row.capitulated_date_raw),
+        "last_surrender_date": date_or_null(row.last_surrender_date_raw),
+        "faction_join_date": date_or_null(row.faction_join_date_raw),
+        "legitimacy": (f64::from(row.legitimacy_raw))
+            / f64::from(capwar60::compact::FIXED_SCALE_RAW),
+        "legitimacy_raw": row.legitimacy_raw,
+        "exile_army_leaders": row.exile_army_leaders,
+    })
 }
 
 fn domain53_relation_flag_name(flag_kind: u16) -> &'static str {

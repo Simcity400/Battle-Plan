@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 use army_battleplans_depth_live_lane as battleplans54;
+use capitulation_war_state_live as capwar60;
 use characters_leaders_cabinet_live_lane as domain47;
 use construction_buildings_state_damage_live_lane as domain48;
 use diplomacy_intel_operatives_live as diplomacy53;
@@ -99,6 +100,7 @@ const COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE: u16 = 56;
 const COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE: u16 = naval4950::DOMAIN_NAVAL_COMBAT_LIFECYCLE;
 const COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE: u16 = naval4950::DOMAIN_NAVAL_COMBAT_MEMBERS;
 const COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE: u16 = session57::DOMAIN_ID;
+const COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE: u16 = capwar60::DOMAIN_ID;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
 #[cfg(test)]
@@ -3333,6 +3335,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE => {
                         decode_compact_session_multiplayer_metadata_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE => {
+                        decode_compact_capitulation_war_state_live_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -8524,6 +8533,40 @@ fn decode_compact_diplomacy_intel_operatives_live_data_payload(
             *entry = entry.saturating_add(count);
         }
     }
+}
+
+fn decode_compact_capitulation_war_state_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = capwar60::compact::decode_payload(offset, payload);
+    summary.status_flags_or |= lane_summary.status_flags_or;
+    summary.parse_errors.extend(lane_summary.parse_errors);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE)
+    {
+        domain.status_flags_or |= lane_summary.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.data_rows_total);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.data_changed_rows_total);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE,
+        "capitulation_country_rows",
+        lane_summary.country_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE,
+        "war_rows",
+        lane_summary.war_rows as usize,
+    );
 }
 
 fn decode_compact_army_battleplans_depth_live_data_payload(
@@ -16016,6 +16059,88 @@ mod tests {
         assert!(!summary
             .unfolded_domain_data
             .contains(&COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE));
+    }
+
+    #[test]
+    fn compact_summary_decodes_capitulation_war_state_live_data_record() {
+        let snapshot = capwar60::compact::CapitulationWarSnapshot {
+            elapsed_wall_ms: 3,
+            status_flags: capwar60::compact::STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR,
+            countries: vec![capwar60::compact::CountryCapitulationRow {
+                tag_db_id: 3,
+                capitulated: true,
+                capitulated_date_raw: compact_contract::calendar::DATE_EPOCH_CONST
+                    + (1940 * 365 + 168) * 24
+                    + 2,
+                last_surrender_date_raw: capwar60::compact::CGAMEDATE_NULL_RAW,
+                faction_join_date_raw: capwar60::compact::CGAMEDATE_NULL_RAW,
+                legitimacy_raw: 10_000_000,
+                exile_army_leaders: 8,
+            }],
+            wars: vec![capwar60::compact::WarRow {
+                first_tag_db_id: 47,
+                second_tag_db_id: 3,
+                start_date_raw: compact_contract::calendar::DATE_EPOCH_CONST
+                    + (1939 * 365 + 243) * 24
+                    + 4,
+                first_casualties: 1_110,
+                second_casualties: 948,
+            }],
+        };
+        let payload = capwar60::compact::encode_payload(&snapshot);
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE)
+            .unwrap();
+        assert_eq!(domain.data_record_count, 1);
+        assert_eq!(domain.data_rows_total, 2);
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("capitulation_country_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(domain.data_units_total.get("war_rows").copied(), Some(1));
+        assert!(!summary
+            .unfolded_domain_data
+            .contains(&COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE));
+
+        // A payload with unbadged war rows must surface as a parse error.
+        let mut unbadged = snapshot;
+        unbadged.status_flags = 0;
+        let bad_payload = capwar60::compact::encode_payload(&unbadged);
+        let mut bad_raw = Vec::new();
+        append_test_compact_record(
+            &mut bad_raw,
+            1,
+            100,
+            COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &bad_payload,
+        );
+        let bad_summary = summarize_compact_stream(&bad_raw);
+        assert!(bad_summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("running-accumulator badge")));
     }
 
     #[test]

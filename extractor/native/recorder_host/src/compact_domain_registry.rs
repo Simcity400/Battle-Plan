@@ -174,8 +174,10 @@ mod tests {
             .expect("builtins register");
         registry
             .register(CompactDomainModule {
+                // Deliberately the next UNASSIGNED id (60 became the builtin
+                // capitulation_war_state_live domain).
                 descriptor: domain(
-                    60,
+                    61,
                     "test_lane_live",
                     "test_lane_live",
                     CompactDomainStatus::ActiveIntegration,
@@ -187,11 +189,11 @@ mod tests {
             })
             .unwrap();
 
-        let decoder = registry.decoder_for(60).expect("registered decoder");
+        let decoder = registry.decoder_for(61).expect("registered decoder");
         let mut summary = DummySummary::default();
         decoder(0, &[], &mut summary);
         assert_eq!(summary.calls, 1);
-        assert_eq!(registry.id_for_scheduled_name("test_lane_live"), Some(60));
+        assert_eq!(registry.id_for_scheduled_name("test_lane_live"), Some(61));
     }
 
     #[test]

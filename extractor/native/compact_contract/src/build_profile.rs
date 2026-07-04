@@ -260,6 +260,31 @@ pub const DOMAIN53_HEAP_HI: usize = 0x7FF000000000;
 pub const DOMAIN53_MAX_COUNTRY_TABLE_SLOTS: u32 = 4_096;
 pub const DOMAIN53_MAX_VECTOR_ROWS: u32 = 8_192;
 
+/// Domain 60 capitulation/war-state offsets for the supported 870ebf profile.
+///
+/// Provenance: FINAL_SWEEP_RESULTS_2026-07-04.md §T1 — the per-country
+/// capitulation block hangs off the CCountry diplomacy sub-object
+/// (`D = u64[CCountry+0xF88]`, the same pointer as DOMAIN53_RELATION_MANAGER).
+/// `capitulated` u8 @ D+0x2E0 was orchestrator-verified live: exactly the
+/// melt's 15 capitulated tags across all 437 live countries, 0 mismatches.
+/// Sibling fields validated in the same sweep (dates 0-mismatch over 437,
+/// legitimacy 8/8 exact, exile counts hit all 8 exile countries). Evidence:
+/// `extractor/native/runs/finalsweep_t1_capitulation/EVIDENCE.md`.
+pub const DOMAIN60_DIPLOMACY_SUB_OBJECT: usize = DOMAIN53_RELATION_MANAGER;
+pub const DOMAIN60_DIPLOMACY_LEGITIMACY: usize = 0x1B0;
+pub const DOMAIN60_DIPLOMACY_EXILE_ARMY_LEADERS: usize = 0x1B8;
+pub const DOMAIN60_DIPLOMACY_LAST_SURRENDER_DATE: usize = 0x2B8;
+pub const DOMAIN60_DIPLOMACY_FACTION_JOIN_DATE: usize = 0x2D0;
+pub const DOMAIN60_DIPLOMACY_CAPITULATED: usize = 0x2E0;
+pub const DOMAIN60_DIPLOMACY_CAPITULATED_DATE: usize = 0x2F0;
+/// War-row start-date VALUE (i32 engine hour counter inside the inline date
+/// object whose vtable sits at war-row+0x08). Validated 2026-07-04 during E1
+/// wiring: exact match vs melt `war_relation.start_date` for ALL 958/958 melt
+/// pairs across both date-object kinds (289 CGregorianDate + 669 CGameDate);
+/// every other candidate offset in row+0x0C..row+0x38 scored 0/958. Evidence:
+/// `extractor/native/runs/e1_wire_capitulation_war/EVIDENCE.md`.
+pub const DOMAIN60_WAR_START_DATE: usize = 0x10;
+
 /// Domain 43 market-trade purchase-contract layout for the supported 870ebf
 /// profile. Provenance: MTD1 lane validation in
 /// `extractor/native/lanes/market_trade_live/SLICE_PACKET.md` matched 63

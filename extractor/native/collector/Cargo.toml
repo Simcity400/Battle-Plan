@@ -14,6 +14,7 @@ construction_buildings_state_damage_live_lane = { package = "construction_buildi
 scripted_state_flags_variables_live_lane = { path = "../lanes/scripted_state_flags_variables_live" }
 occupation_resistance_compliance_live_lane = { path = "../lanes/occupation_resistance_compliance_live" }
 diplomacy_intel_operatives_live = { path = "../lanes/diplomacy_intel_operatives_live" }
+capitulation_war_state_live = { path = "../lanes/capitulation_war_state_live" }
 land_combat_detail_events_live_lane = { path = "../lanes/land_combat_detail_events_live" }
 naval_combat_live_lane = { path = "../lanes/naval_combat_live" }
 army_battleplans_depth_live_lane = { path = "../lanes/army_battleplans_depth_live" }

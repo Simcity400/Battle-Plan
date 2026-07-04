@@ -19,6 +19,7 @@ members = [
     "lanes/land_combat_detail_events_live",
     "lanes/market_trade_live",
     "lanes/army_battleplans_depth_live",
+    "lanes/capitulation_war_state_live",
     "lanes/naval_combat_live",
     "lanes/naval_missions_status_live",
     "lanes/session_multiplayer_metadata_live",

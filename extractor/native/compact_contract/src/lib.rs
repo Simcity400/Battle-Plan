@@ -846,6 +846,19 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         false,
         &[],
     ),
+    // E1 (2026-07-04): per-country capitulation state + global war pool.
+    // Independent of domain 53 by design — the d53 base extract is fail-closed
+    // on 870ebf and all-or-nothing, while these families are fully validated
+    // (FINAL_SWEEP §T1 + runs/e1_wire_capitulation_war).
+    domain(
+        60,
+        "capitulation_war_state_live",
+        "capitulation_war_state_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -890,7 +903,7 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 1000,
+            55, 56, 57, 58, 59, 60, 1000,
         ];
         for id in expected {
             assert!(
