@@ -741,6 +741,34 @@ fn chunk3_rowless_division_equipment_payload(
     out
 }
 
+/// Append a `PLCF` project-lifecycle trailer. `rows` = (tag_db_id, local_id,
+/// started, completed).
+fn append_project_lifecycle_trailer(
+    out: &mut Vec<u8>,
+    rows: &[(u32, u32, bool, bool)],
+    walked_countries: u32,
+    aborted_countries: u32,
+) {
+    out.extend_from_slice(b"PLCF");
+    out.extend_from_slice(&1u16.to_le_bytes()); // version
+    out.extend_from_slice(&20u16.to_le_bytes()); // header_len
+    out.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    out.extend_from_slice(&walked_countries.to_le_bytes());
+    out.extend_from_slice(&aborted_countries.to_le_bytes());
+    for (tag, lid, started, completed) in rows {
+        let mut flags = 0u32;
+        if *started {
+            flags |= 1;
+        }
+        if *completed {
+            flags |= 1 << 1;
+        }
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&lid.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+    }
+}
+
 fn chunk3_projects_payload(status: u32) -> Vec<u8> {
     let header_extension = 4u32;
     let mut out = vec![
@@ -1232,6 +1260,67 @@ fn chunk3_folds_d41_projects_with_raw_handle_r2_fields() {
         json!(9001)
     );
     assert_eq!(projects["_r2_breakthroughs"][0]["country"], json!("GER"));
+    // Wave-5: no PLCF trailer in this base payload -> lifecycle not measured.
+    assert_eq!(projects["project_lifecycle"], Value::Null);
+}
+
+#[test]
+fn chunk3_folds_d41_project_lifecycle_trailer() {
+    let mut payload = chunk3_projects_payload(0);
+    // GER(47): local 1 started+completed, local 2 started only.
+    // SOV(48): local 3 neither. 1 country aborted fail-closed elsewhere.
+    append_project_lifecycle_trailer(
+        &mut payload,
+        &[
+            (47, 1, true, true),
+            (47, 2, true, false),
+            (48, 3, false, false),
+        ],
+        2,
+        1,
+    );
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SOV")])),
+        (41, payload),
+    ]);
+
+    let lifecycle = &snapshot["special_projects"]["project_lifecycle"];
+    assert_eq!(lifecycle["row_count"], json!(3));
+    assert_eq!(lifecycle["started_count"], json!(2));
+    assert_eq!(lifecycle["completed_count"], json!(1));
+    assert_eq!(lifecycle["walked_countries"], json!(2));
+    assert_eq!(lifecycle["aborted_countries"], json!(1));
+    // GER's two projects, keyed by resolved TAG.
+    let ger = lifecycle["countries"]["GER"].as_array().unwrap();
+    assert_eq!(ger.len(), 2);
+    assert_eq!(ger[0]["local_id"], json!(1));
+    assert_eq!(ger[0]["started"], json!(true));
+    assert_eq!(ger[0]["completed"], json!(true));
+    assert_eq!(ger[1]["local_id"], json!(2));
+    assert_eq!(ger[1]["completed"], json!(false));
+    // SOV's single project, neither flag.
+    let sov = lifecycle["countries"]["SOV"].as_array().unwrap();
+    assert_eq!(sov[0]["local_id"], json!(3));
+    assert_eq!(sov[0]["started"], json!(false));
+}
+
+#[test]
+fn chunk3_d41_lifecycle_trailer_duplicate_key_fails_fold_closed() {
+    let mut payload = chunk3_projects_payload(0);
+    // Duplicate (47, 1): the whole D41 fold must fail closed (no
+    // special_projects this hour).
+    append_project_lifecycle_trailer(
+        &mut payload,
+        &[(47, 1, true, false), (47, 1, false, true)],
+        1,
+        0,
+    );
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (41, payload),
+    ]);
+    // Fold rejected the malformed payload -> special_projects unknown/null.
+    assert!(snapshot["special_projects"].is_null());
 }
 
 #[test]

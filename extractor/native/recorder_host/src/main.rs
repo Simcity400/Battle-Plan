@@ -9719,12 +9719,124 @@ fn decode_compact_projects_data_payload(
             ));
         }
     }
+    // Wave-5 project lifecycle: any bytes after the self-delimiting base
+    // payload are the `PLCF` lifecycle trailer; anything else is a trailing-
+    // byte error exactly as before.
     if cursor != payload.len() {
-        summary.parse_errors.push(format!(
-            "offset {offset}: projects payload has {} trailing byte(s)",
-            payload.len().saturating_sub(cursor)
-        ));
+        decode_compact_project_lifecycle_trailer(offset, payload, cursor, summary);
     }
+}
+
+/// Decode + gate the domain-41 `PLCF` project-lifecycle trailer. The trailer
+/// must consume the payload to its exact end. Flags are STARTED bit0 /
+/// COMPLETED bit1 (validated boolean-domain u8s from the collector); the
+/// higher bits must be zero. Per-country (tag, local_id) uniqueness is
+/// enforced.
+fn decode_compact_project_lifecycle_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut CompactSummary,
+) {
+    const MAGIC: &[u8; 4] = b"PLCF";
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 12;
+    const FLAG_STARTED: u32 = 1;
+    const FLAG_COMPLETED: u32 = 1 << 1;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project lifecycle trailer offset {trailer_offset} beyond payload"
+        ));
+        return;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project lifecycle trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+        return;
+    }
+    if &trailer[0..4] != MAGIC {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project lifecycle trailer magic is invalid"
+        ));
+        return;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_count = read_u32_le(trailer, 8) as usize;
+    let lifecycle_countries = read_u32_le(trailer, 12) as usize;
+    let aborted_countries = read_u32_le(trailer, 16) as usize;
+    if version != 1 || header_len != HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project lifecycle trailer header shape invalid (version {version}, header_len {header_len})"
+        ));
+        return;
+    }
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if trailer.len() != expected {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project lifecycle trailer len {} != {expected}",
+            trailer.len()
+        ));
+        return;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    let mut started_rows = 0usize;
+    let mut completed_rows = 0usize;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let local_id = read_u32_le(trailer, cursor + 4);
+        let flags = read_u32_le(trailer, cursor + 8);
+        cursor += ROW_LEN;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: project lifecycle row {row_index} has zero tag_db_id"
+            ));
+        }
+        if local_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: project lifecycle row {row_index} has zero local_id"
+            ));
+        }
+        if flags & !(FLAG_STARTED | FLAG_COMPLETED) != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: project lifecycle row {row_index} has unknown flags {flags:#x}"
+            ));
+        }
+        if !seen.insert((tag_db_id, local_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: project lifecycle row {row_index} duplicates (tag {tag_db_id}, local_id {local_id})"
+            ));
+        }
+        if flags & FLAG_STARTED != 0 {
+            started_rows = started_rows.saturating_add(1);
+        }
+        if flags & FLAG_COMPLETED != 0 {
+            completed_rows = completed_rows.saturating_add(1);
+        }
+    }
+    add_compact_domain_data_unit(summary, 41, "project_lifecycle_rows", row_count);
+    add_compact_domain_data_unit(summary, 41, "project_lifecycle_started_rows", started_rows);
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_lifecycle_completed_rows",
+        completed_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_lifecycle_countries",
+        lifecycle_countries,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_lifecycle_aborted_countries",
+        aborted_countries,
+    );
 }
 
 fn decode_compact_market_trade_data_payload(
@@ -17266,6 +17378,79 @@ mod tests {
         assert!(
             compact_projects_root_discovery_debt(source).contains("one-time DLL startup heap scan")
         );
+    }
+
+    fn append_plcf_trailer(payload: &mut Vec<u8>, rows: &[(u32, u32, bool, bool)]) {
+        payload.extend_from_slice(b"PLCF");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes()); // walked_countries
+        payload.extend_from_slice(&0u32.to_le_bytes()); // aborted_countries
+        for (tag, lid, started, completed) in rows {
+            let mut flags = 0u32;
+            if *started {
+                flags |= 1;
+            }
+            if *completed {
+                flags |= 1 << 1;
+            }
+            payload.extend_from_slice(&tag.to_le_bytes());
+            payload.extend_from_slice(&lid.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn projects_decode_accepts_lifecycle_trailer_and_counts_units() {
+        let mut payload = test_projects_data_payload(0);
+        append_plcf_trailer(&mut payload, &[(47, 1, true, true), (47, 2, true, false)]);
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(41).or_default();
+        decode_compact_projects_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain.get(&41).unwrap().data_units_total;
+        assert_eq!(units.get("project_lifecycle_rows").copied(), Some(2));
+        assert_eq!(
+            units.get("project_lifecycle_started_rows").copied(),
+            Some(2)
+        );
+        assert_eq!(
+            units.get("project_lifecycle_completed_rows").copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn projects_decode_rejects_lifecycle_trailer_duplicate() {
+        let mut payload = test_projects_data_payload(0);
+        append_plcf_trailer(&mut payload, &[(47, 1, true, false), (47, 1, false, true)]);
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(41).or_default();
+        decode_compact_projects_data_payload(0, &payload, &mut summary);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|e| e.contains("duplicates")));
+    }
+
+    #[test]
+    fn projects_decode_accepts_legacy_record_without_trailer() {
+        let payload = test_projects_data_payload(0);
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(41).or_default();
+        decode_compact_projects_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain.get(&41).unwrap().data_units_total;
+        assert!(units.get("project_lifecycle_rows").is_none());
     }
 
     #[test]

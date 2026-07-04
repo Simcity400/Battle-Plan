@@ -6713,12 +6713,16 @@ impl WorldFold {
                 scientist.display_name = Some(display_name);
             }
         }
-        if cursor != payload.len() {
-            return Err(format!(
-                "special_projects payload has {} trailing byte(s)",
-                payload.len().saturating_sub(cursor)
-            ));
-        }
+        // Wave-5 project lifecycle: any bytes after the self-delimiting base
+        // payload are the `PLCF` lifecycle trailer; anything else is a
+        // trailing-byte error exactly as before.
+        let lifecycle = if cursor != payload.len() {
+            parse_project_lifecycle_trailer(payload, cursor)?
+        } else {
+            // No trailer this frame: lifecycle not measured (absent, never
+            // "all-empty").
+            None
+        };
 
         let source = match source_kind {
             1 => "scan".to_string(),
@@ -6734,6 +6738,7 @@ impl WorldFold {
             count: project_count as u32,
             source,
             header_extension,
+            lifecycle,
         });
         self.mark_fold_domain_success(SPECIAL_PROJECTS_DOMAIN_ID);
         Ok(())
@@ -9904,6 +9909,25 @@ struct SpecialProjectsState {
     count: u32,
     source: String,
     header_extension: u32,
+    /// Wave-5 owner-joined lifecycle: `Some` when the `PLCF` trailer was
+    /// present this frame (per-project started/completed keyed by
+    /// (tag_db_id, local_id)); `None` when not measured (absent, never empty).
+    lifecycle: Option<ProjectLifecycleFold>,
+}
+
+/// Wave-5 project lifecycle fold payload: per-project started/completed rows
+/// plus the country counters (validated + fail-closed-aborted).
+struct ProjectLifecycleFold {
+    rows: Vec<ProjectLifecycleFoldRow>,
+    countries: u32,
+    aborted_countries: u32,
+}
+
+struct ProjectLifecycleFoldRow {
+    tag_db_id: u32,
+    local_id: u32,
+    started: bool,
+    completed: bool,
 }
 
 impl SpecialProjectsState {
@@ -9924,12 +9948,49 @@ impl SpecialProjectsState {
         for (id, state) in &self.project_states {
             project_states.insert(id.to_string(), state.to_json());
         }
+        // Wave-5 owner-joined lifecycle: per-country started/completed, keyed
+        // by resolved country ref -> [{local_id, started, completed}]. `null`
+        // when the lifecycle trailer was not measured this frame (absent !=
+        // empty).
+        let project_lifecycle = match &self.lifecycle {
+            Some(lifecycle) => {
+                let mut by_country: BTreeMap<u32, Vec<&ProjectLifecycleFoldRow>> = BTreeMap::new();
+                for row in &lifecycle.rows {
+                    by_country.entry(row.tag_db_id).or_default().push(row);
+                }
+                let mut countries = Map::new();
+                for (tag_db_id, rows) in by_country {
+                    let key = fold.resolve_country_key(&tag_db_id.to_string(), unresolved);
+                    let entries: Vec<Value> = rows
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "local_id": row.local_id,
+                                "started": row.started,
+                                "completed": row.completed,
+                            })
+                        })
+                        .collect();
+                    countries.insert(key, Value::Array(entries));
+                }
+                json!({
+                    "countries": countries,
+                    "row_count": lifecycle.rows.len(),
+                    "started_count": lifecycle.rows.iter().filter(|r| r.started).count(),
+                    "completed_count": lifecycle.rows.iter().filter(|r| r.completed).count(),
+                    "walked_countries": lifecycle.countries,
+                    "aborted_countries": lifecycle.aborted_countries,
+                })
+            }
+            None => Value::Null,
+        };
         json!({
             "count": self.count,
             "source": self.source,
             "facilities": facilities,
             "projects": projects,
             "scientists": scientists,
+            "project_lifecycle": project_lifecycle,
             "_r2_header_extension": self.header_extension,
             "_r2_project_states": project_states,
             "_r2_breakthroughs": self.breakthroughs.iter().map(|row| row.to_json(fold, unresolved)).collect::<Vec<_>>(),
@@ -10868,6 +10929,87 @@ fn validate_weather_i32_optional(
         ));
     }
     Ok(())
+}
+
+/// Wave-5 project lifecycle: parse the domain-41 `PLCF` trailer into
+/// per-project started/completed rows keyed by (tag_db_id, local_id). Strict:
+/// the trailer must consume the payload to its exact end, flags are STARTED
+/// bit0 / COMPLETED bit1 (higher bits fail), and (tag, local_id) must be
+/// unique (fail closed). Returns `Some(fold)` on success.
+fn parse_project_lifecycle_trailer(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<Option<ProjectLifecycleFold>, String> {
+    const MAGIC: &[u8; 4] = b"PLCF";
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 12;
+    const FLAG_STARTED: u32 = 1;
+    const FLAG_COMPLETED: u32 = 1 << 1;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "project lifecycle trailer offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "project lifecycle trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    if &trailer[0..4] != MAGIC {
+        return Err("project lifecycle trailer magic is invalid".to_string());
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let row_count = read_u32(trailer, 8) as usize;
+    let countries = read_u32(trailer, 12);
+    let aborted_countries = read_u32(trailer, 16);
+    if version != 1 || header_len != HEADER_LEN {
+        return Err(format!(
+            "project lifecycle trailer header shape invalid (version {version}, header_len {header_len})"
+        ));
+    }
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if trailer.len() != expected {
+        return Err(format!(
+            "project lifecycle trailer len {} != {expected}",
+            trailer.len()
+        ));
+    }
+    let mut cursor = HEADER_LEN;
+    let mut rows = Vec::with_capacity(row_count);
+    let mut seen = BTreeSet::new();
+    for _ in 0..row_count {
+        let tag_db_id = read_u32(trailer, cursor);
+        let local_id = read_u32(trailer, cursor + 4);
+        let flags = read_u32(trailer, cursor + 8);
+        cursor += ROW_LEN;
+        if tag_db_id == 0 {
+            return Err("project lifecycle row has zero tag_db_id".to_string());
+        }
+        if local_id == 0 {
+            return Err("project lifecycle row has zero local_id".to_string());
+        }
+        if flags & !(FLAG_STARTED | FLAG_COMPLETED) != 0 {
+            return Err(format!(
+                "project lifecycle row has unknown flags {flags:#x}"
+            ));
+        }
+        if !seen.insert((tag_db_id, local_id)) {
+            return Err(format!(
+                "project lifecycle trailer duplicates (tag {tag_db_id}, local_id {local_id})"
+            ));
+        }
+        rows.push(ProjectLifecycleFoldRow {
+            tag_db_id,
+            local_id,
+            started: flags & FLAG_STARTED != 0,
+            completed: flags & FLAG_COMPLETED != 0,
+        });
+    }
+    Ok(Some(ProjectLifecycleFold {
+        rows,
+        countries,
+        aborted_countries,
+    }))
 }
 
 /// Wave-4 production licensing: parse the domain-11 `PLIC` license trailer
