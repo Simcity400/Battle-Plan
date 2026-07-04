@@ -548,13 +548,18 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
             row.flags & !KNOWN_ROW_FLAGS
         ));
     }
-    validate_optional_max(
+    // Mission enum 0 is a VALID value (the "hold/do-nothing" mission; the melt
+    // oracle carries all 7 distinct values 0,1,2,3,4,8,9). Presence is carried
+    // solely by FLAG_HAS_MISSION, so 0-when-present must NOT be rejected.
+    validate_optional_enum(
         row.flags & FLAG_HAS_MISSION != 0,
         row.mission_enum,
         MAX_MISSION_ENUM,
         "mission_enum",
         index,
     )?;
+    // mission_state is not emitted or proven in this packet; keep the strict
+    // validator (present-zero rejected) until a zero value is oracle-proven.
     validate_optional_max(
         row.flags & FLAG_HAS_MISSION_STATE != 0,
         row.mission_state,
@@ -647,6 +652,29 @@ fn validate_optional_max(
 ) -> Result<(), String> {
     if present {
         if value == 0 || value > max_value {
+            Err(format!("row {index} {label} has invalid value {value}"))
+        } else {
+            Ok(())
+        }
+    } else if value != 0 {
+        Err(format!("row {index} {label} has value without flag"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Like `validate_optional_max` but 0 is a VALID present value (for enum
+/// fields whose zero is a real member, e.g. the naval mission "hold" enum).
+/// Presence is carried by the flag, so an absent field must still be 0.
+fn validate_optional_enum(
+    present: bool,
+    value: u32,
+    max_value: u32,
+    label: &str,
+    index: usize,
+) -> Result<(), String> {
+    if present {
+        if value > max_value {
             Err(format!("row {index} {label} has invalid value {value}"))
         } else {
             Ok(())

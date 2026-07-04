@@ -37,6 +37,29 @@ pub const TASK_FORCE_OFF_FLEET_PARENT: usize = 0x330;
 pub const TASK_FORCE_OFF_SHIP_BEGIN: usize = 0x338;
 pub const TASK_FORCE_OFF_SHIP_COUNT: usize = 0x344;
 
+// Wave-4 naval enrichment (validated live 870ebf, paused D04, same-tick melt
+// oracle; runs/attemptcrack_naval_missions/EVIDENCE.md — each offset was the
+// UNIQUE full-population diagonal in its scanned span):
+//   - mission enum: CTaskForce+0x364 i32, 192/192 (values 0,1,2,3,4,8,9).
+//   - current-location pointer form CTaskForce+0x1E0 == the already-validated
+//     +0x18 province id (not separately emitted; +0x18 is the direct read).
+//   - repair_target: CTaskForce+0x4B0 CProvince* (nullable; 3/3 set, 189/189
+//     null) -> province id at CProvince+0xA4.
+//   - home_base: CFleet+0xD8 CProvince* (119/119) -> province id at +0xA4.
+pub const TASK_FORCE_OFF_MISSION_ENUM: usize = 0x364;
+pub const TASK_FORCE_OFF_REPAIR_TARGET: usize = 0x4B0;
+pub const FLEET_OFF_HOME_BASE: usize = 0xD8;
+pub const CPROVINCE_VTABLE_RVA: usize = 0x295AF68;
+pub const CPROVINCE_OFF_ID: usize = 0xA4;
+/// The collector emits a mission enum only when the raw value is within the
+/// PROVEN naval-mission range. D04 exercised {0,1,2,3,4,8,9} (max 9); the
+/// naval mission enum is a small contiguous game enum, so this is the
+/// fail-closed acceptance bound — a value beyond it (or a negative-i32
+/// sentinel read as a huge u32) is badged ABSENT rather than emitted as a
+/// plausible-but-unproven mission. The wire/gate cap (MAX_MISSION_ENUM=64) is
+/// deliberately looser headroom; the collector is the strict layer.
+pub const MAX_OBSERVED_MISSION_ENUM: u32 = 9;
+
 pub const COMPACT_FLEET_SCAN_SPAN: usize = 0x1800;
 pub const TASK_FORCE_SUBOBJECT_TO_BODY_DELTAS: [i64; 4] = [-0x780, 0x10, 0x7A0, 0xF30];
 
@@ -352,10 +375,14 @@ fn read_task_force_row<M: NavalMissionMemory>(
             value: task_force.owner_tag_db_id,
         });
     }
-    let mut flags = compact::FLAG_VALIDATED_DIRECT | compact::FLAG_FIXTURE_REQUIRED;
-    let mut source_status = compact::STATUS_MISSION_FIXTURE_REQUIRED
-        | compact::STATUS_HOME_BASE_FIXTURE_REQUIRED
-        | compact::STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED;
+    let module_base = mem.module_base();
+    // Wave-4: mission enum, home base, and repair target are now directly
+    // read (validated), so the mission/home-base/repair fixture-required
+    // badges are dropped. Retreat has no field in the save schema (documented
+    // absence, not a fixture gap). Convoy-COMBAT context remains fixture-
+    // blocked (needs live combat) and is set below when sunk convoys appear.
+    let mut flags = compact::FLAG_VALIDATED_DIRECT;
+    let mut source_status = 0u32;
     let mut location_province_id = 0u32;
     let location = mem.read_u32(task_force.body_ptr + TASK_FORCE_OFF_LOCATION_PROVINCE as u64)?;
     if (1..=compact::MAX_PROVINCE_ID).contains(&location) {
@@ -371,6 +398,37 @@ fn read_task_force_row<M: NavalMissionMemory>(
             }
         }
     }
+    // Mission enum (CTaskForce+0x364 i32). Only the PROVEN range is emitted
+    // (<= MAX_OBSERVED_MISSION_ENUM); an unproven/out-of-range value or a
+    // negative-i32 sentinel (read as a huge u32) is badged absent (absent != 0).
+    let mut mission_enum = 0u32;
+    let mission_raw = mem.read_u32(task_force.body_ptr + TASK_FORCE_OFF_MISSION_ENUM as u64)?;
+    if mission_raw <= MAX_OBSERVED_MISSION_ENUM {
+        flags |= compact::FLAG_HAS_MISSION;
+        mission_enum = mission_raw;
+    }
+    // Home base (CFleet+0xD8 -> CProvince* -> province id at +0xA4). Absent
+    // when the pointer is null/invalid.
+    let mut home_base_province_id = 0u32;
+    if let Some(province_id) = read_cprovince_id(
+        mem,
+        module_base,
+        task_force.fleet_ptr + FLEET_OFF_HOME_BASE as u64,
+    )? {
+        flags |= compact::FLAG_HAS_HOME_BASE;
+        home_base_province_id = province_id;
+    }
+    // Repair target (CTaskForce+0x4B0 -> CProvince*). Nullable (only set while
+    // repairing at a specific base); absent otherwise.
+    let mut repair_base_province_id = 0u32;
+    if let Some(province_id) = read_cprovince_id(
+        mem,
+        module_base,
+        task_force.body_ptr + TASK_FORCE_OFF_REPAIR_TARGET as u64,
+    )? {
+        flags |= compact::FLAG_HAS_REPAIR_BASE;
+        repair_base_province_id = province_id;
+    }
     let sunk_convoys = aggregate_sunk_convoys(mem, task_force.body_ptr)?;
     if sunk_convoys > 0 {
         flags |= compact::FLAG_HAS_SUNK_CONVOY_COUNT | compact::FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED;
@@ -381,12 +439,55 @@ fn read_task_force_row<M: NavalMissionMemory>(
         fleet_id: task_force.fleet_id,
         owner_tag_db_id: task_force.owner_tag_db_id,
         flags,
+        mission_enum,
         location_province_id,
         strategic_region_id,
+        home_base_province_id,
+        repair_base_province_id,
         sunk_convoys,
         source_status,
         ..compact::NavalMissionStatusRow::default()
     })
+}
+
+/// Read a CProvince* at `pointer_addr`, vtable-gate it as a CProvince, and
+/// return its province id (CProvince+0xA4) when valid. Returns `Ok(None)` for
+/// a null/invalid pointer (nullable field). A memory-read failure on a
+/// present pointer propagates as `Err` so the whole row is dropped fail-closed.
+///
+/// Hardening (Codex DEFECT B): the pointer + id are read with a STABLE double
+/// read. On an unpaused game a stale/being-freed pointer can flap; if the two
+/// reads of the pointer OR the id disagree the field is badged ABSENT (not
+/// emitted as a plausible-but-wrong province). A stably-reused address that
+/// still carries the CProvince vtable and an in-range id remains a documented
+/// residual shared by every CProvince read in the codebase (the established
+/// vtable+id gate); the paused capture is the current proof.
+fn read_cprovince_id<M: NavalMissionMemory>(
+    mem: &M,
+    module_base: u64,
+    pointer_addr: u64,
+) -> Result<Option<u32>, ExtractError> {
+    let province_ptr = mem.read_u64(pointer_addr)?;
+    if province_ptr != mem.read_u64(pointer_addr)? {
+        // The pointer flapped mid-read: torn, badge absent.
+        return Ok(None);
+    }
+    if province_ptr == 0 || !is_heap_aligned(province_ptr) {
+        return Ok(None);
+    }
+    if mem.read_u64(province_ptr)? != module_base + CPROVINCE_VTABLE_RVA as u64 {
+        return Ok(None);
+    }
+    let province_id = mem.read_u32(province_ptr + CPROVINCE_OFF_ID as u64)?;
+    if province_id != mem.read_u32(province_ptr + CPROVINCE_OFF_ID as u64)? {
+        // The id flapped mid-read: torn, badge absent.
+        return Ok(None);
+    }
+    if (1..=compact::MAX_PROVINCE_ID).contains(&province_id) {
+        Ok(Some(province_id))
+    } else {
+        Ok(None)
+    }
 }
 
 fn aggregate_sunk_convoys<M: NavalMissionMemory>(
@@ -727,6 +828,8 @@ mod tests {
     const TASK_FORCE_617: u64 = 0x22000007000;
     const SHIP_VECTOR: u64 = 0x22000009000;
     const SHIP_9001: u64 = 0x2200000A000;
+    const PROVINCE_HOME_BASE: u64 = 0x2200000B000;
+    const PROVINCE_REPAIR: u64 = 0x2200000C000;
 
     #[derive(Clone, Debug, Default)]
     struct FakeMemory {
@@ -798,6 +901,14 @@ mod tests {
         mem.write_u64(FLEET_615, MODULE_BASE + FLEET_VTABLE_RVA as u64);
         mem.write_u64(FLEET_615 + 0x08, (615u64 << 32) | OOB_TYPE_FLEET as u64);
         mem.write_u64(FLEET_615 + 0x40, TASK_FORCE_617);
+        // Wave-4: home base CProvince* on the fleet.
+        mem.write_u64(FLEET_615 + FLEET_OFF_HOME_BASE as u64, PROVINCE_HOME_BASE);
+
+        // CProvince objects (vtable-gated, id at +0xA4).
+        mem.write_u64(PROVINCE_HOME_BASE, MODULE_BASE + CPROVINCE_VTABLE_RVA as u64);
+        mem.write_u32(PROVINCE_HOME_BASE + CPROVINCE_OFF_ID as u64, 4021);
+        mem.write_u64(PROVINCE_REPAIR, MODULE_BASE + CPROVINCE_VTABLE_RVA as u64);
+        mem.write_u32(PROVINCE_REPAIR + CPROVINCE_OFF_ID as u64, 5088);
 
         mem.write_u64(TASK_FORCE_617, MODULE_BASE + TASK_FORCE_VTABLE_RVA as u64);
         mem.write_u64(
@@ -808,6 +919,9 @@ mod tests {
             TASK_FORCE_617 + TASK_FORCE_OFF_LOCATION_PROVINCE as u64,
             12389,
         );
+        // Wave-4: mission enum + repair target CProvince*.
+        mem.write_u32(TASK_FORCE_617 + TASK_FORCE_OFF_MISSION_ENUM as u64, 3);
+        mem.write_u64(TASK_FORCE_617 + TASK_FORCE_OFF_REPAIR_TARGET as u64, PROVINCE_REPAIR);
         mem.write_u64(
             TASK_FORCE_617 + TASK_FORCE_OFF_FLEET_PARENT as u64,
             FLEET_615,
@@ -869,6 +983,87 @@ mod tests {
         assert!(row.flags & compact::FLAG_HAS_LOCATION != 0);
         assert!(row.flags & compact::FLAG_HAS_REGION != 0);
         assert!(row.flags & compact::FLAG_HAS_SUNK_CONVOY_COUNT != 0);
+        // Wave-4 enrichment: mission enum, home base, repair target.
+        assert_eq!(row.mission_enum, 3);
+        assert!(row.flags & compact::FLAG_HAS_MISSION != 0);
+        assert_eq!(row.home_base_province_id, 4021);
+        assert!(row.flags & compact::FLAG_HAS_HOME_BASE != 0);
+        assert_eq!(row.repair_base_province_id, 5088);
+        assert!(row.flags & compact::FLAG_HAS_REPAIR_BASE != 0);
+        // Mission/home-base/repair fixture-required badges are gone.
+        assert!(row.flags & compact::FLAG_FIXTURE_REQUIRED == 0);
+        assert!(row.source_status & compact::STATUS_MISSION_FIXTURE_REQUIRED == 0);
+        assert!(row.source_status & compact::STATUS_HOME_BASE_FIXTURE_REQUIRED == 0);
+    }
+
+    #[test]
+    fn mission_enum_zero_is_a_valid_present_value_not_a_panic() {
+        // Mission enum 0 is the "hold" mission; it must encode as present
+        // (FLAG_HAS_MISSION set, value 0) and survive the encode validator,
+        // which previously rejected 0-when-present and panicked the worker.
+        let mut mem = fake_memory();
+        mem.write_u32(TASK_FORCE_617 + TASK_FORCE_OFF_MISSION_ENUM as u64, 0);
+
+        let roots = resolve_naval_roots(&mem).unwrap();
+        let extracted = extract_rows_from_roots(&mem, &roots).unwrap();
+        let row = &extracted.rows[0];
+        assert_eq!(row.mission_enum, 0);
+        assert!(row.flags & compact::FLAG_HAS_MISSION != 0);
+
+        // Full encode + decode round-trip must not panic or error.
+        let frame = encode_rows(1, 0, extracted.observed_task_forces, &extracted.rows);
+        assert!(compact::decode_status_payload(0, &frame.payload).is_ok());
+    }
+
+    #[test]
+    fn out_of_range_mission_enum_badges_absent() {
+        // A negative i32 sentinel (read as a huge u32) or an out-of-cap value
+        // badges the mission absent rather than emitting garbage.
+        let mut mem = fake_memory();
+        mem.write_u32(TASK_FORCE_617 + TASK_FORCE_OFF_MISSION_ENUM as u64, 0xFFFF_FFFF);
+
+        let roots = resolve_naval_roots(&mem).unwrap();
+        let extracted = extract_rows_from_roots(&mem, &roots).unwrap();
+        let row = &extracted.rows[0];
+        assert_eq!(row.flags & compact::FLAG_HAS_MISSION, 0);
+        assert_eq!(row.mission_enum, 0);
+    }
+
+    #[test]
+    fn unproven_mission_enum_above_observed_max_badges_absent() {
+        // A value within the loose wire cap (64) but above the PROVEN max (9)
+        // must be badged absent, not emitted as a plausible-but-unproven
+        // mission (Codex DEFECT A).
+        let mut mem = fake_memory();
+        mem.write_u32(
+            TASK_FORCE_617 + TASK_FORCE_OFF_MISSION_ENUM as u64,
+            MAX_OBSERVED_MISSION_ENUM + 1,
+        );
+
+        let roots = resolve_naval_roots(&mem).unwrap();
+        let extracted = extract_rows_from_roots(&mem, &roots).unwrap();
+        let row = &extracted.rows[0];
+        assert_eq!(row.flags & compact::FLAG_HAS_MISSION, 0);
+        assert_eq!(row.mission_enum, 0);
+    }
+
+    #[test]
+    fn nullable_repair_target_and_home_base_badge_absent_not_zero() {
+        let mut mem = fake_memory();
+        // Null out the repair target pointer and the fleet home base pointer.
+        mem.write_u64(TASK_FORCE_617 + TASK_FORCE_OFF_REPAIR_TARGET as u64, 0);
+        mem.write_u64(FLEET_615 + FLEET_OFF_HOME_BASE as u64, 0);
+
+        let roots = resolve_naval_roots(&mem).unwrap();
+        let extracted = extract_rows_from_roots(&mem, &roots).unwrap();
+        let row = &extracted.rows[0];
+        // Absent, not zero-emitted: the flags are clear and the fields stay 0.
+        assert_eq!(row.flags & compact::FLAG_HAS_REPAIR_BASE, 0);
+        assert_eq!(row.flags & compact::FLAG_HAS_HOME_BASE, 0);
+        assert_eq!(row.repair_base_province_id, 0);
+        assert_eq!(row.home_base_province_id, 0);
+        // Mission still present.
+        assert!(row.flags & compact::FLAG_HAS_MISSION != 0);
     }
 
     #[test]
