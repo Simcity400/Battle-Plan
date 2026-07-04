@@ -11,6 +11,53 @@ under `extractor/documents/archive/` and are evidence only.
 - This file is the master contract: if every row here is closed, the extractor
   should have no known missed replay-relevant data.
 
+## 2026-07-04 SESSION STATUS DELTA (authoritative — supersedes stale rows below)
+
+The rows in the checklist below predate the 2026-07-04 crack/wire session. The
+following statuses changed; where a row below still reads `FIXTURE_BLOCKED`/
+`NOT_STARTED` for one of these, THIS DELTA is authoritative. Evidence docs cited.
+
+CRACKED + WIRED into production this session (committed):
+- Naval missions: mission enum `CTaskForce+0x364`, home base `CFleet+0xD8`, repair
+  `+0x4B0` → `FIXTURE_BLOCKED`→**PRODUCTION_SLICE_DONE** (D56, commit 88b8f756a; WAVE4 doc).
+- Aces: identity/death/killer/wing-assignment (`CAceEntry` +0x0C/+0xF0/+0x158/+0x164/
+  +0x168, `CAirWing+0x2DC`) → **PRODUCTION_SLICE_DONE** (D46, 9e3ec2d50).
+- Production licensing (`CCountry+0xF68` mgr) → **PRODUCTION_SLICE_DONE** (D11, c6e969d39).
+- Division disrupted_supply (`CDivision+0xA0`) + supply_gain → **PRODUCTION_SLICE_DONE**
+  (D20, 6c495fd92).
+- Project start/completion lifecycle (`CProject` +0x1BC/+0x1BD via CCountry+0xFA8 chain)
+  → `FIXTURE_BLOCKED`→**PRODUCTION_SLICE_DONE** (D41, 05e9a0af1; WAVE5 doc §2).
+
+CRACKED (validated, WIRING queued — not yet in the container):
+- Operations: running-op target `COperationInstance+0x50` (vt 0x29A76C0) → **cracked,
+  wiring in progress** (D53 sidecar; WAVE5 §3). Owner +0x10 REJECTED.
+- Diplomacy action queue: `CCountry+0xFF8` queue (corrects the wrong +0x4E0) → **cracked
+  5/5 recipients / 7/7 actions** (CRACK_QUEUE_RESULTS §C3).
+- Market stockpile + per-country owner chain: `CCountry+0xFB8`→wrapper→pool (vt 0x27330A0),
+  i64 amounts → **cracked 70/70 by pointer** (CRACK_QUEUE_RESULTS §C1; WAVE5 §1).
+- Cosmetic-tag live stream (`CCountry+0x1488`) → **cracked, wiring queued** (D18).
+- Strategic-redeploy (`CDivision+0x29F`, 220==220), division current manpower
+  (`CDivision+0x3D0→+4`, 2359/2359) + cumulative losses (`+0x668`) → **cracked**
+  (WALL_CRACK_RESULTS).
+- Combat attribution at COUNTRY granularity: `CStatsObserver→SDamageDone` dealer→victim→
+  damage matrix (vt 0x2946F68/0x2946EC8), + loss stores CSunkConvoyInfo/CSunkShipInfo/
+  SAirWingCombatData → **cracked** (WALL_CRACK_RESULTS). Finest per-entity killer = NEEDS-USER.
+
+RE-CLASSIFIED (no longer memory rows):
+- Exact province supply, resource flow, attrition reason, offmap factory → **DERIVED**
+  (replay recomputes; no stored field — WALL_CRACK_RESULTS).
+- Garrison child scalars → **RESOLVED** (wave-3: +0x88/+0xF0/+0xF8).
+
+STILL OPEN / IN PROGRESS:
+- Game-speed root, intel-network/spy-map graph → in progress (round-2 crack agent; C2/C4).
+- Capitulation/peace/war-detail, land/naval/air combat DETAIL, reinforcement reason,
+  breakthrough state, scripted-state coverage audit → the **FINAL_CRACK_SWEEP_2026-07-04.md**
+  no-user sweep (in progress).
+- Genuine USER-fixture floor (4): hub motorization level, focus-paused bit, convoy/port
+  PRESSURE, MP chat/hotjoin. Plus the fine per-entity combat killer (1 event).
+- Architecture: capture is HOURLY SNAPSHOTS; a real-time delta/event stream is a deferred
+  slice (archive/plans/RAW_DELTA_EVENT_STREAM_PLAN.md), NOT built.
+
 ## Completion Rule
 
 A gameplay concept is not complete just because one compact domain passes.
