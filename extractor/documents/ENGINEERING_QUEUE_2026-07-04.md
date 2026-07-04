@@ -6,6 +6,19 @@ container, fix the one structural blocker, and close the replay-layer + infra
 items. All no-user (validated on the paused D04 save). Worked ONE packet at a
 time by a single Fable agent, gated by the coordinator per packet.
 
+> **SCOPE UPDATE (2026-07-04): PURE WIRING ONLY.** All reverse-engineering was
+> moved to a separate crack agent (`CRACK_LIST_FINAL_2026-07-04.md`). Do NOT crack
+> anything here — only wire already-verified offsets. Specifically:
+> - **E2**: wire the validated CCombatSide fields only; the land-combat TACTIC
+>   crack (table decode) is the crack agent's (B1) — skip it here.
+> - **E7**: do the DECOUPLE half only (give operations/diplo/intel their own
+>   independent emitting records with own source-availability bits, so they emit
+>   regardless of the d53 base). Do NOT attempt to crack/validate the d53 base
+>   relation root — that is the crack agent's (B4).
+> - The active-war casualty magnitude semantic (E1 note) and breakthrough state
+>   are the crack agent's (B3/B2) — wire only the validated capitulation/war
+>   fields; leave breakthrough out.
+
 ## THE RHYTHM (mandatory — do NOT deviate)
 For each queue item: BUILD it (lane emit + collector read/schedule + recorder
 decode + world_fold + tolerance + tests) → run `cargo test --workspace` green →
