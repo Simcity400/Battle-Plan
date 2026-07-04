@@ -47,7 +47,14 @@ const TECH_PROGRESS_SCALE: f64 = 1000.0;
 const TECH_LIVE_SCALE: f64 = 100_000.0;
 const FIXED_SCALE: f64 = 100_000.0;
 
-const DIVISION_ROW_LEN: usize = 88;
+// Wave-4: division row grew 88 -> 92 to carry disrupted_supply at +88 (must
+// stay in lockstep with the collector and recorder-decode row lengths).
+const DIVISION_ROW_LEN: usize = 92;
+/// Wave-4 disrupted-supply presence (row +88). A present 0 is valid.
+const DIVISION_FLAG_DISRUPTED_SUPPLY: u32 = 1 << 17;
+/// Wave-4 supply_gain presence (row +76, packed by the collector at flag
+/// bit 10 — already in the row, now folded into the D20 division snapshot).
+const DIVISION_FLAG_SUPPLY_GAIN: u32 = 1 << 10;
 const DIVISION_FLAG_DELETED: u32 = 1 << 12;
 // Wave-3 primary-order linkage flags (mutually exclusive; ORDER_ARMY carries
 // the COrderInstance+0x244 instance id in the row tail u32 at +84).
@@ -7284,7 +7291,9 @@ impl WorldFold {
             let army_id = read_u32(payload, cursor + 60);
             let experience_raw = read_u32(payload, cursor + 64);
             let current_supply_raw = read_u32(payload, cursor + 72);
+            let supply_gain_raw = read_u32(payload, cursor + 76);
             let fuel_raw = read_u32(payload, cursor + 80);
+            let disrupted_supply_raw = read_u32(payload, cursor + 88);
 
             let moving = flags & 1 != 0;
             let has_target = flags & (1 << 2) != 0;
@@ -7293,7 +7302,9 @@ impl WorldFold {
             let has_army = flags & (1 << 6) != 0;
             let has_experience = flags & (1 << 7) != 0;
             let has_current_supply = flags & (1 << 9) != 0;
+            let has_supply_gain = flags & DIVISION_FLAG_SUPPLY_GAIN != 0;
             let has_fuel = flags & (1 << 11) != 0;
+            let has_disrupted_supply = flags & DIVISION_FLAG_DISRUPTED_SUPPLY != 0;
             let has_template = flags & DIVISION_FLAG_TEMPLATE != 0;
 
             let mut obj = Map::new();
@@ -7352,6 +7363,25 @@ impl WorldFold {
                 "supply_status".into(),
                 if has_current_supply {
                     json!(current_supply_raw as f64 / FIXED_SCALE)
+                } else {
+                    Value::Null
+                },
+            );
+            // Wave-4: supply_gain (already in the D20 row, now folded) and
+            // disrupted_supply (new). Null when the field was absent
+            // (unreadable); a genuine 0.0 is present and kept.
+            obj.insert(
+                "supply_gain".into(),
+                if has_supply_gain {
+                    json!(supply_gain_raw as f64 / FIXED_SCALE)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "disrupted_supply".into(),
+                if has_disrupted_supply {
+                    json!(disrupted_supply_raw as f64 / FIXED_SCALE)
                 } else {
                     Value::Null
                 },

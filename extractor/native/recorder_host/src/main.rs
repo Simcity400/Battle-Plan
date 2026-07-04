@@ -267,7 +267,9 @@ const COMPACT_SUPPLY_MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
 const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = 1_000;
 const COMPACT_SUPPLY_MAX_CSUPPLY_INPUT_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
 const COMPACT_DIVISION_TYPE: u32 = 4713;
-const COMPACT_DIVISION_ROW_LEN: usize = 88;
+// Wave-4: division row grew 88 -> 92 to carry disrupted_supply at +88 (must
+// stay in lockstep with the collector and world_fold row lengths).
+const COMPACT_DIVISION_ROW_LEN: usize = 92;
 const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
 const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
@@ -286,6 +288,12 @@ const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
 const COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY: u32 = 1 << 14;
 const COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP: u32 = 1 << 15;
 const COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED: u32 = 1 << 16;
+/// Wave-4 disrupted-supply presence (row +88). A present 0 is valid; absent
+/// (flag clear) must carry a zero field.
+const COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY: u32 = 1 << 17;
+/// Sane ceiling for disrupted_supply raw (fixed x100000): a disrupted
+/// fraction far above 1.0 is a torn read.
+const COMPACT_MAX_DIVISION_DISRUPTED_SUPPLY_RAW: u32 = 1_000_000;
 /// Shared ceiling for the division primary-order instance id (collector,
 /// this summary decoder, and world_fold enforce the same bound).
 const COMPACT_MAX_DIVISION_ORDER_INSTANCE_ID: u32 = 100_000_000;
@@ -5332,6 +5340,7 @@ fn decode_compact_divisions_data_payload(
     let mut order_army_rows = 0usize;
     let mut order_group_rows = 0usize;
     let mut order_unresolved_rows = 0usize;
+    let mut disrupted_supply_rows = 0usize;
     for row_index in 0..row_count {
         let div_id = read_u32_le(payload, cursor);
         let div_type = read_u32_le(payload, cursor + 4);
@@ -5355,6 +5364,7 @@ fn decode_compact_divisions_data_payload(
         let supply_gain_raw = read_u32_le(payload, cursor + 76);
         let fuel_raw = read_u32_le(payload, cursor + 80);
         let row_reserved2 = read_u32_le(payload, cursor + 84);
+        let disrupted_supply_raw = read_u32_le(payload, cursor + 88);
         cursor += COMPACT_DIVISION_ROW_LEN;
 
         if div_id == 0 {
@@ -5377,7 +5387,8 @@ fn decode_compact_divisions_data_payload(
                 | COMPACT_DIVISION_ROW_FLAG_TEMPLATE
                 | COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY
                 | COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP
-                | COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED)
+                | COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED
+                | COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -5397,6 +5408,7 @@ fn decode_compact_divisions_data_payload(
         let has_current_supply = (flags & (1 << 9)) != 0;
         let has_supply_gain = (flags & (1 << 10)) != 0;
         let has_fuel = (flags & (1 << 11)) != 0;
+        let has_disrupted_supply = (flags & COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY) != 0;
         let has_template = (flags & COMPACT_DIVISION_ROW_FLAG_TEMPLATE) != 0;
         if deleted {
             deleted_rows = deleted_rows.saturating_add(1);
@@ -5423,7 +5435,8 @@ fn decode_compact_divisions_data_payload(
                 && current_supply_raw == 0
                 && supply_gain_raw == 0
                 && fuel_raw == 0
-                && row_reserved2 == 0;
+                && row_reserved2 == 0
+                && disrupted_supply_raw == 0;
             if !zero_filled {
                 summary.parse_errors.push(format!(
                     "offset {offset}: divisions delete row {row_index} is not zero-filled"
@@ -5597,6 +5610,21 @@ fn decode_compact_divisions_data_payload(
             COMPACT_MAX_DIVISION_FUEL_RAW,
             "fuel_raw",
         );
+        // Wave-4 disrupted supply: present value gated 0..=max (a present 0 is
+        // valid — 3162/3168 divisions); absent must carry a zero field.
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_disrupted_supply,
+            disrupted_supply_raw,
+            0,
+            COMPACT_MAX_DIVISION_DISRUPTED_SUPPLY_RAW,
+            "disrupted_supply_raw",
+        );
+        if has_disrupted_supply {
+            disrupted_supply_rows = disrupted_supply_rows.saturating_add(1);
+        }
         let has_order_army = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY) != 0;
         let has_order_group = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP) != 0;
         let has_order_unresolved = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED) != 0;
@@ -5645,6 +5673,12 @@ fn decode_compact_divisions_data_payload(
         20,
         "division_order_unresolved_rows",
         order_unresolved_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        20,
+        "division_disrupted_supply_rows",
+        disrupted_supply_rows,
     );
 }
 
@@ -20190,6 +20224,8 @@ mod tests {
             payload.extend_from_slice(&supply_gain.to_le_bytes());
             payload.extend_from_slice(&fuel.to_le_bytes());
             payload.extend_from_slice(&order_iid.to_le_bytes());
+            // Wave-4: disrupted_supply slot at +88 (absent here -> 0).
+            payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload
     }
@@ -20292,6 +20328,8 @@ mod tests {
             payload.extend_from_slice(&current_supply.to_le_bytes());
             payload.extend_from_slice(&supply_gain.to_le_bytes());
             payload.extend_from_slice(&fuel.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            // Wave-4: disrupted_supply slot at +88 (absent here -> 0).
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload

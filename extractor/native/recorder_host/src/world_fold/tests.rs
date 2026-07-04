@@ -228,7 +228,7 @@ fn append_production_license_trailer(p: &mut Vec<u8>, countries: &[(u32, Vec<u32
     }
 }
 
-const DIV_ROW_LEN: usize = 88;
+const DIV_ROW_LEN: usize = 92;
 const DIV_TYPE: u32 = 4713;
 const DELTA: u32 = 1 << 10;
 const DIV_FLAG_DELETED: u32 = 1 << 12;
@@ -267,7 +267,53 @@ fn push_div_row(
     p.extend_from_slice(&0u32.to_le_bytes()); // +72 current_supply
     p.extend_from_slice(&0u32.to_le_bytes()); // +76 supply_gain
     p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
-    p.extend_from_slice(&0u32.to_le_bytes()); // +84 reserved
+    p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
+    p.extend_from_slice(&0u32.to_le_bytes()); // +88 disrupted_supply
+    assert_eq!(p.len() - start, DIV_ROW_LEN);
+}
+
+/// Build a division row with explicit supply_gain and disrupted_supply and
+/// their presence flags — for the wave-4 supply-scalar fold tests.
+#[allow(clippy::too_many_arguments)]
+fn push_div_row_with_supply(
+    p: &mut Vec<u8>,
+    div_id: u32,
+    base_flags: u32,
+    location: u32,
+    supply_gain_raw: Option<u32>,
+    disrupted_supply_raw: Option<u32>,
+) {
+    let start = p.len();
+    let mut flags = base_flags;
+    if supply_gain_raw.is_some() {
+        flags |= 1 << 10;
+    }
+    if disrupted_supply_raw.is_some() {
+        flags |= 1 << 17;
+    }
+    p.extend_from_slice(&div_id.to_le_bytes()); // +0
+    p.extend_from_slice(&4713u32.to_le_bytes()); // +4 div_type
+    p.extend_from_slice(&flags.to_le_bytes()); // +8
+    p.extend_from_slice(&location.to_le_bytes()); // +12
+    p.extend_from_slice(&0u32.to_le_bytes()); // +16 move_target
+    p.extend_from_slice(&0u32.to_le_bytes()); // +20 move_source
+    p.extend_from_slice(&0u32.to_le_bytes()); // +24 movement_progress
+    p.extend_from_slice(&0u32.to_le_bytes()); // +28 progress_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +32 org
+    p.extend_from_slice(&0u32.to_le_bytes()); // +36 org_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +40 strength
+    p.extend_from_slice(&0u32.to_le_bytes()); // +44 strength_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +48 combat_ref
+    p.extend_from_slice(&0u32.to_le_bytes()); // +52 template
+    p.extend_from_slice(&0u32.to_le_bytes()); // +56 owner
+    p.extend_from_slice(&0u32.to_le_bytes()); // +60 army
+    p.extend_from_slice(&0u32.to_le_bytes()); // +64 experience
+    p.extend_from_slice(&0u32.to_le_bytes()); // +68 max_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +72 current_supply
+    p.extend_from_slice(&supply_gain_raw.unwrap_or(0).to_le_bytes()); // +76 supply_gain
+    p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
+    p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
+    p.extend_from_slice(&disrupted_supply_raw.unwrap_or(0).to_le_bytes()); // +88 disrupted_supply
     assert_eq!(p.len() - start, DIV_ROW_LEN);
 }
 
@@ -622,6 +668,8 @@ fn chunk3_division_payload(rows: &[(u32, u32, u32)]) -> Vec<u8> {
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        // Wave-4: disrupted_supply slot at +88 (absent -> 0).
         out.extend_from_slice(&0u32.to_le_bytes());
     }
     out
@@ -2564,10 +2612,11 @@ fn folds_division_primary_order_link_fields() {
     let raw = raw_for(16_959_360);
     let mut div = Vec::new();
     divisions_header(&mut div, 4, 0);
-    // div 17: validated army order, instance id 317 in the row tail u32.
+    // div 17: validated army order, instance id 317 at the order-id slot
+    // (row +84; the final +88 slot is now disrupted_supply).
     push_div_row(&mut div, 17, (1 << 5) | (1 << 14), 118, 1, 1, 0, 47);
-    let tail = div.len() - 4;
-    div[tail..].copy_from_slice(&317u32.to_le_bytes());
+    let order_iid_off = div.len() - DIV_ROW_LEN + 84;
+    div[order_iid_off..order_iid_off + 4].copy_from_slice(&317u32.to_le_bytes());
     // div 18: army-group-owned order (badge only, no id).
     push_div_row(&mut div, 18, (1 << 5) | (1 << 15), 119, 1, 1, 0, 47);
     // div 19: unresolved order pointer (badge only, no id).
@@ -2620,9 +2669,11 @@ fn division_order_instance_id_without_flag_fails_fold_closed() {
     let mut div = Vec::new();
     divisions_header(&mut div, 1, 0);
     push_div_row(&mut div, 17, 1 << 5, 118, 1, 1, 0, 47);
-    // Corrupt: id present without the army-order flag.
-    let tail = div.len() - 4;
-    div[tail..].copy_from_slice(&99u32.to_le_bytes());
+    // Corrupt: order_instance_id (row +84) present without the army-order
+    // flag. The row is 92 bytes now, so +84 is the second-to-last u32
+    // (disrupted_supply is the final +88 slot).
+    let order_iid_off = div.len() - DIV_ROW_LEN + 84;
+    div[order_iid_off..order_iid_off + 4].copy_from_slice(&99u32.to_le_bytes());
 
     let mut stream = Vec::new();
     push_record(
@@ -6976,6 +7027,40 @@ fn chunk2_d46_ace_trailer_source_unavailable_retains_and_badges() {
         .iter()
         .any(|problem| problem["domain_id"] == json!(46)
             && problem["problem"] == json!("ace_roster_source_unavailable")));
+}
+
+#[test]
+fn chunk2_d20_division_supply_scalars_fold_with_presence() {
+    // Div A: supply_gain present-nonzero, disrupted present-nonzero.
+    // Div B: supply_gain present-ZERO, disrupted present-ZERO (valid, kept).
+    // Div C: both absent (flags clear) -> null, not 0.0.
+    let mut divs = Vec::new();
+    divisions_header(&mut divs, 3, 0);
+    // moving=0, in_combat=0; base_flags carries only the supply/disrupted bits
+    // added by the helper.
+    push_div_row_with_supply(&mut divs, 17, 0, 118, Some(25_000), Some(39_248));
+    push_div_row_with_supply(&mut divs, 18, 0, 119, Some(0), Some(0));
+    push_div_row_with_supply(&mut divs, 19, 0, 120, None, None);
+
+    let snap = snapshot_for_domain_records(vec![(20, divs)]);
+    let list = snap["divisions"].as_array().unwrap();
+    let by_id = |id: u32| {
+        list.iter()
+            .find(|d| d["div_id"] == json!(id))
+            .unwrap_or_else(|| panic!("div {id} missing"))
+    };
+
+    let a = by_id(17);
+    assert!((a["supply_gain"].as_f64().unwrap() - 0.25).abs() < 1e-9);
+    assert!((a["disrupted_supply"].as_f64().unwrap() - 0.39248).abs() < 1e-9);
+
+    let b = by_id(18);
+    assert_eq!(b["supply_gain"], json!(0.0));
+    assert_eq!(b["disrupted_supply"], json!(0.0));
+
+    let c = by_id(19);
+    assert_eq!(c["supply_gain"], Value::Null);
+    assert_eq!(c["disrupted_supply"], Value::Null);
 }
 
 #[test]
