@@ -1,5 +1,11 @@
 # Crack queue — everything still crackable WITHOUT the user (2026-07-04)
 
+> **RESOLVED — see `CRACK_QUEUE_RESULTS_2026-07-04.md`.** C1 (market owner,
+> `CCountry+0xFB8`) and C3 (diplo queue, **`CCountry+0xFF8`** — the +0x4E0 root
+> named below was WRONG) are CRACKED + independently verified. C2 (speed) and C4
+> (intel graph) DEFERRED with precise negatives. The brief below is the original
+> task list, retained for provenance.
+
 Every reverse-engineering item that does NOT need in-game action from the user.
 One Fable discovery agent works this list top to bottom. DISCOVERY ONLY: no
 tracked-source edits, no commits, no wiring — write evidence to gitignored

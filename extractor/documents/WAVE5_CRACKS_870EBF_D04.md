@@ -94,15 +94,18 @@ target). Usable operationally as target_country with that badge; not for
 analytics claims. Wiring target: domain 53 sidecar rows
 {instance_id, def_ref, associated_country} badged provisional.
 
-## Partials banked (not closed, not user-blocked)
+## Partials banked — ALL SUPERSEDED by the crack queue (see `CRACK_QUEUE_RESULTS_2026-07-04.md`)
 
-- **Diplomatic-action queue root: `CCountry+0x4E0`** on the RECIPIENT country
-  (PdxMap; melt id 150442 GER→CZE located at +0x3CC preceded by handle type
-  4713). Remaining: per-action-type payload decode + hash-map walk.
-- **Market manager owner chain**: disassemble the 23 code xrefs to pool
-  vtable `0x27330A0` to find the per-country accessor (unblocks §1 wiring).
-- **Intel network graph / intel-map %**: container not surfaced by RTTI terms
-  tried; remains the deferred domain-53 spy-graph item.
+- **Diplomatic-action queue: CRACKED.** ⚠️ The `CCountry+0x4E0` root recorded here
+  was WRONG (a neighbor-object coincidence; independently confirmed to yield 0
+  action hits). The real container is **`CCountry+0xFF8`** — CRACKED 5/5 recipients
+  / 7/7 actions exact (id/actor/date). Full chain in the results doc §C3.
+- **Market manager owner chain: CRACKED.** `CCountry+0xFB8 → wrapper → pool`
+  reproduces the 70/70 pool→tag map by pointer (independently verified). Unblocks
+  §1 market wiring. Results doc §C1.
+- **Intel network graph / intel-map %**: DEFERRED but no longer "not found" — the
+  container type family (`CCountryIntelNetwork` etc.) is identified; one bounded
+  serializer-string xref pass remains. Results doc §C4.
 
 ## Verification provenance
 
