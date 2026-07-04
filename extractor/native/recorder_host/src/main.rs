@@ -280,6 +280,15 @@ const COMPACT_MAX_DIVISION_SUPPLY_GAIN_RAW: u32 = 500_000;
 const COMPACT_MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
 const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
 const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
+/// Wave-3 primary-order linkage flags (mutually exclusive). ORDER_ARMY
+/// carries the COrderInstance+0x244 instance id in the row tail u32
+/// (previously reserved-zero); ARMY_GROUP/UNRESOLVED badge without an id.
+const COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY: u32 = 1 << 14;
+const COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP: u32 = 1 << 15;
+const COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED: u32 = 1 << 16;
+/// Shared ceiling for the division primary-order instance id (collector,
+/// this summary decoder, and world_fold enforce the same bound).
+const COMPACT_MAX_DIVISION_ORDER_INSTANCE_ID: u32 = 100_000_000;
 const COMPACT_MAX_DIVISION_TEMPLATE_ID: u32 = i32::MAX as u32;
 const COMPACT_DIVISION_EQUIPMENT_ROW_LEN: usize = 24;
 const COMPACT_DIVISION_EQUIPMENT_ENTRY_ROW_LEN: usize = 16;
@@ -5204,6 +5213,9 @@ fn decode_compact_divisions_data_payload(
     let mut owner_rows = 0usize;
     let mut army_rows = 0usize;
     let mut org_strength_rows = 0usize;
+    let mut order_army_rows = 0usize;
+    let mut order_group_rows = 0usize;
+    let mut order_unresolved_rows = 0usize;
     for row_index in 0..row_count {
         let div_id = read_u32_le(payload, cursor);
         let div_type = read_u32_le(payload, cursor + 4);
@@ -5246,7 +5258,10 @@ fn decode_compact_divisions_data_payload(
         if flags
             & !(0b1111_1111_1111
                 | COMPACT_DIVISION_ROW_FLAG_DELETED
-                | COMPACT_DIVISION_ROW_FLAG_TEMPLATE)
+                | COMPACT_DIVISION_ROW_FLAG_TEMPLATE
+                | COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY
+                | COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP
+                | COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -5466,10 +5481,33 @@ fn decode_compact_divisions_data_payload(
             COMPACT_MAX_DIVISION_FUEL_RAW,
             "fuel_raw",
         );
-        if row_reserved2 != 0 {
+        let has_order_army = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY) != 0;
+        let has_order_group = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP) != 0;
+        let has_order_unresolved = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED) != 0;
+        if (has_order_army as u32 + has_order_group as u32 + has_order_unresolved as u32) > 1 {
             summary.parse_errors.push(format!(
-                "offset {offset}: divisions row {row_index} second reserved field is nonzero"
+                "offset {offset}: divisions row {row_index} has conflicting order-link flags"
             ));
+        }
+        if has_order_army {
+            order_army_rows = order_army_rows.saturating_add(1);
+            if row_reserved2 == 0 || row_reserved2 > COMPACT_MAX_DIVISION_ORDER_INSTANCE_ID {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: divisions row {row_index} has invalid order instance id {row_reserved2}"
+                ));
+            }
+        } else {
+            if has_order_group {
+                order_group_rows = order_group_rows.saturating_add(1);
+            }
+            if has_order_unresolved {
+                order_unresolved_rows = order_unresolved_rows.saturating_add(1);
+            }
+            if row_reserved2 != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: divisions row {row_index} has order instance id without army-order flag"
+                ));
+            }
         }
     }
     add_compact_domain_data_unit(summary, 20, "division_deleted_rows", deleted_rows);
@@ -5479,6 +5517,19 @@ fn decode_compact_divisions_data_payload(
     add_compact_domain_data_unit(summary, 20, "division_owner_rows", owner_rows);
     add_compact_domain_data_unit(summary, 20, "division_army_rows", army_rows);
     add_compact_domain_data_unit(summary, 20, "division_org_strength_rows", org_strength_rows);
+    add_compact_domain_data_unit(summary, 20, "division_order_army_rows", order_army_rows);
+    add_compact_domain_data_unit(
+        summary,
+        20,
+        "division_order_army_group_rows",
+        order_group_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        20,
+        "division_order_unresolved_rows",
+        order_unresolved_rows,
+    );
 }
 
 fn decode_compact_division_equipment_data_payload(
@@ -14931,6 +14982,28 @@ mod tests {
                 .copied(),
             Some(1)
         );
+        assert_eq!(
+            divisions
+                .data_units_total
+                .get("division_order_army_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            divisions
+                .data_units_total
+                .get("division_order_army_group_rows")
+                .copied(),
+            Some(1)
+        );
+        // Zero-valued units are omitted by add_compact_domain_data_unit.
+        assert_eq!(
+            divisions
+                .data_units_total
+                .get("division_order_unresolved_rows")
+                .copied(),
+            None
+        );
     }
 
     #[test]
@@ -19552,6 +19625,7 @@ mod tests {
                 value_raw: None,
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
             d51::ScriptedStateRow {
                 scope_kind: d51::SCOPE_GLOBAL,
@@ -19562,6 +19636,7 @@ mod tests {
                 value_raw: None,
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
         ];
         d51::encode_payload(
@@ -19852,10 +19927,11 @@ mod tests {
             current_supply,
             supply_gain,
             fuel,
+            order_iid,
         ) in [
             (
                 17u32,
-                0b10_1111_1111_1111u32,
+                0b110_1111_1111_1111u32,
                 118u32,
                 118u32,
                 117u32,
@@ -19874,10 +19950,11 @@ mod tests {
                 1_250_000u32,
                 25_000u32,
                 450_000u32,
+                317u32,
             ),
             (
                 18u32,
-                0b1111_1010_0000u32,
+                0b1000_1111_1010_0000u32,
                 119u32,
                 0u32,
                 0u32,
@@ -19894,6 +19971,7 @@ mod tests {
                 0u32,
                 1_200_000u32,
                 1_200_000u32,
+                0u32,
                 0u32,
                 0u32,
             ),
@@ -19919,7 +19997,7 @@ mod tests {
             payload.extend_from_slice(&current_supply.to_le_bytes());
             payload.extend_from_slice(&supply_gain.to_le_bytes());
             payload.extend_from_slice(&fuel.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&order_iid.to_le_bytes());
         }
         payload
     }

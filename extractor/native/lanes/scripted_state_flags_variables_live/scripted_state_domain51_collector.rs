@@ -96,6 +96,22 @@ impl OpaqueRootState {
     }
 }
 
+/// A validated pending delayed-event (wave-3 CDelayedEvent chain). Owner and
+/// scope are country tag_db_ids; `combined_event_id` is CEvent+0x0C
+/// (namespace*100000+index); `scope_random` is the +0x1C/+0x20 seed pair;
+/// `due_remaining_hours` is CDelayedEvent+0xC4 (total remaining hours =
+/// months*720 + days*24 + hours, 17/17 oracle-validated). An out-of-bounds /
+/// torn due read is badged ABSENT (`None`, absent != 0) without dropping the
+/// row's validated identity fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DelayedEventRow {
+    pub owner_tag_db_id: u32,
+    pub combined_event_id: u32,
+    pub scope_tag_db_id: u32,
+    pub scope_random: u64,
+    pub due_remaining_hours: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Domain51FrameInput {
     pub elapsed_wall_ms: u64,
@@ -103,6 +119,10 @@ pub struct Domain51FrameInput {
     pub flag_scopes: Vec<FlagScopeRead>,
     pub delayed_events: OpaqueRootState,
     pub scripted_gui_open_state: OpaqueRootState,
+    /// Measured pending delayed-event rows. When non-empty, `delayed_events`
+    /// MUST be `MeasuredEmpty` (the root is resolved, not fixture-blocked);
+    /// the two are mutually exclusive, mirrored by the payload gate.
+    pub delayed_event_rows: Vec<DelayedEventRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,6 +190,7 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
                 value_raw: Some(entry.value_raw),
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             });
         }
     }
@@ -202,12 +223,39 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
                 value_raw: entry.value.map(i64::from),
                 date_hour_raw: entry.date_hour_raw,
                 deleted: false,
+                delayed_due_hours: None,
             });
         }
     }
 
+    // Measured delayed-event rows and the fixture-blocked opaque badge are
+    // mutually exclusive (mirrored by the payload gate). When the CDelayedEvent
+    // discovery resolved rows, emit them; the badge/UNRESOLVED-status path is
+    // skipped by passing MeasuredEmpty to append_opaque_root below.
+    let delayed_events_state = if input.delayed_event_rows.is_empty() {
+        input.delayed_events
+    } else {
+        observed_scopes = observed_scopes.saturating_add(1);
+        measured_scopes = measured_scopes.saturating_add(1);
+        for row in &input.delayed_event_rows {
+            rows.push(compact::ScriptedStateRow {
+                scope_kind: compact::SCOPE_COUNTRY,
+                owner_id: row.owner_tag_db_id,
+                value_kind: compact::VALUE_DELAYED_EVENT,
+                key: None,
+                token_id: Some(row.combined_event_id),
+                value_raw: Some(row.scope_random as i64),
+                date_hour_raw: Some(row.scope_tag_db_id as i32),
+                deleted: false,
+                // Validated due-remaining-hours (CDelayedEvent+0xC4); badged
+                // absent on a torn/out-of-bounds read.
+                delayed_due_hours: row.due_remaining_hours,
+            });
+        }
+        OpaqueRootState::MeasuredEmpty
+    };
     append_opaque_root(
-        input.delayed_events,
+        delayed_events_state,
         compact::STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,
         compact::VALUE_DELAYED_EVENT_OPAQUE,
         DELAYED_EVENTS_BADGE_KEY,
@@ -287,6 +335,7 @@ fn append_opaque_root(
             value_raw: None,
             date_hour_raw: None,
             deleted: false,
+            delayed_due_hours: None,
         });
     }
 }
@@ -370,6 +419,7 @@ mod tests {
             ],
             delayed_events: OpaqueRootState::MeasuredEmpty,
             scripted_gui_open_state: OpaqueRootState::MeasuredEmpty,
+            delayed_event_rows: vec![],
         });
 
         assert_eq!(frame.domain_id, 51);
@@ -396,6 +446,143 @@ mod tests {
     }
 
     #[test]
+    fn measured_delayed_event_rows_emit_without_unresolved_badge() {
+        let frame = collect_domain51_frame(Domain51FrameInput {
+            elapsed_wall_ms: 9,
+            variable_scopes: vec![],
+            flag_scopes: vec![],
+            // When rows are supplied, the fixture-blocked opaque badge state is
+            // ignored: the collector emits measured rows and MeasuredEmpty.
+            delayed_events: OpaqueRootState::UnresolvedFixtureBlocked,
+            scripted_gui_open_state: OpaqueRootState::NotRequested,
+            delayed_event_rows: vec![
+                DelayedEventRow {
+                    owner_tag_db_id: 2,
+                    combined_event_id: 28_200_333,
+                    scope_tag_db_id: 2,
+                    scope_random: 0x3723_2577_1394_6267,
+                    due_remaining_hours: Some(755),
+                },
+                DelayedEventRow {
+                    owner_tag_db_id: 68,
+                    combined_event_id: 36_000_046,
+                    scope_tag_db_id: 68,
+                    scope_random: 0x1,
+                    // Absent due (torn read badged absent, != 0).
+                    due_remaining_hours: None,
+                },
+            ],
+        });
+
+        assert_eq!(frame.row_count, 2);
+        // The measured rows resolve the root: the UNRESOLVED bit must be clear.
+        assert_eq!(
+            frame.status_flags & compact::STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,
+            0
+        );
+        assert_eq!(frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        let summary = compact::decode_payload(0, &frame.payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_delayed_event_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_delayed_event_opaque_rows")
+                .copied(),
+            Some(0)
+        );
+        // Exactly one of the two rows carried a present due-remaining-hours
+        // value (the other was badged absent), round-tripped through encode.
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_delayed_event_due_rows")
+                .copied(),
+            Some(1)
+        );
+        // Delayed-event rows do not count as token-only flags.
+        assert_eq!(frame.status_flags & compact::STATUS_FLAG_NAMES_PARTIAL, 0);
+    }
+
+    #[test]
+    fn repeated_event_id_with_distinct_seed_is_not_a_duplicate() {
+        // A country can have the same event delayed more than once; the two
+        // rows share (owner, event_id) but differ in scope.random seed. The
+        // payload gate must NOT flag them as duplicate identity.
+        let frame = collect_domain51_frame(Domain51FrameInput {
+            elapsed_wall_ms: 1,
+            variable_scopes: vec![],
+            flag_scopes: vec![],
+            delayed_events: OpaqueRootState::NotRequested,
+            scripted_gui_open_state: OpaqueRootState::NotRequested,
+            delayed_event_rows: vec![
+                DelayedEventRow {
+                    owner_tag_db_id: 20,
+                    combined_event_id: 9_200_000,
+                    scope_tag_db_id: 20,
+                    scope_random: 0xAAAA_BBBB_CCCC_DDDD,
+                    due_remaining_hours: Some(755),
+                },
+                DelayedEventRow {
+                    owner_tag_db_id: 20,
+                    combined_event_id: 9_200_000,
+                    scope_tag_db_id: 20,
+                    scope_random: 0x1111_2222_3333_4444,
+                    due_remaining_hours: Some(755),
+                },
+            ],
+        });
+        assert_eq!(frame.row_count, 2);
+        let summary = compact::decode_payload(0, &frame.payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_delayed_event_rows")
+                .copied(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn delayed_event_rows_reject_out_of_range_ids() {
+        let frame = collect_domain51_frame(Domain51FrameInput {
+            elapsed_wall_ms: 1,
+            variable_scopes: vec![],
+            flag_scopes: vec![],
+            delayed_events: OpaqueRootState::NotRequested,
+            scripted_gui_open_state: OpaqueRootState::NotRequested,
+            delayed_event_rows: vec![DelayedEventRow {
+                owner_tag_db_id: 2,
+                // namespace 0 -> combined id < 100_000 is invalid.
+                combined_event_id: 42,
+                scope_tag_db_id: 2,
+                scope_random: 0,
+                due_remaining_hours: Some(755),
+            }],
+        });
+        let summary = compact::decode_payload(0, &frame.payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("out-of-range event id")));
+    }
+
+    #[test]
     fn unresolved_delayed_and_scripted_gui_roots_are_badges_not_partial_failure() {
         let frame = collect_domain51_frame(Domain51FrameInput {
             elapsed_wall_ms: 3,
@@ -403,6 +590,7 @@ mod tests {
             flag_scopes: vec![named_flag(1)],
             delayed_events: OpaqueRootState::UnresolvedFixtureBlocked,
             scripted_gui_open_state: OpaqueRootState::UnresolvedFixtureBlocked,
+            delayed_event_rows: vec![],
         });
 
         assert_eq!(
@@ -452,6 +640,7 @@ mod tests {
             flag_scopes: vec![named_flag(1)],
             delayed_events: OpaqueRootState::UnresolvedFixtureBlocked,
             scripted_gui_open_state: OpaqueRootState::NotRequested,
+            delayed_event_rows: vec![],
         });
 
         assert_ne!(frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
@@ -483,6 +672,7 @@ mod tests {
             }],
             delayed_events: OpaqueRootState::NotRequested,
             scripted_gui_open_state: OpaqueRootState::NotRequested,
+            delayed_event_rows: vec![],
         });
 
         assert_ne!(frame.status_flags & compact::STATUS_FLAG_NAMES_PARTIAL, 0);

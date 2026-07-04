@@ -37,8 +37,13 @@ impl NativeRootCache {
         self.roots_validated && self.roots.is_some() && self.stable_root_count() != 0
     }
 
+    /// Roots still excluded from the shared collector. Advisor and
+    /// unit-leader-trait roots were unblocked by the wave-3 870ebf
+    /// revalidation (`WAVE3_CRACKS_870EBF_D04.md` §1); portrait rows remain
+    /// excluded until a static portrait feed keyed to validated live
+    /// characters exists.
     pub fn shared_collector_excluded_root_count(&self) -> usize {
-        self.unit_leader_trait_tokens.len() + self.advisors.len() + self.portraits.len()
+        self.portraits.len()
     }
 
     pub fn shared_collector_excluded_roots_are_empty(&self) -> bool {
@@ -48,7 +53,7 @@ impl NativeRootCache {
     pub fn debug_assert_shared_collector_excluded_roots_empty(&self) {
         debug_assert!(
             self.shared_collector_excluded_roots_are_empty(),
-            "shared domain47 collector must not populate unit_leader_trait, advisor_roster, appointed_advisor, or character_portrait roots until CUnitLeaderTrait/CAdvisor/static portrait roots are revalidated"
+            "shared domain47 collector must not populate character_portrait roots until a static portrait feed keyed to validated live characters is revalidated"
         );
     }
 }
@@ -178,7 +183,8 @@ mod tests {
         CADVISOR_CHARACTER_PTR_OFF, CCHARACTER_COUNTRY_TAG_DB_ID_OFF, CCHARACTER_ID_OFF,
         CCHARACTER_TYPE_ID, CCHARACTER_TYPE_OFF, CCHARACTER_UNIT_LEADER_PTR_OFF,
         CCOUNTRY_LEADER_CHARACTER_PTR_OFF, CCOUNTRY_POLITICAL_STATUS_OFF,
-        CPOLITICAL_PARTY_LEADER_VEC_OFF, CPOLITICAL_STATUS_RULING_PARTY_OFF,
+        CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, CPOLITICAL_PARTY_LEADER_VEC_OFF,
+        CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, CPOLITICAL_STATUS_RULING_PARTY_OFF,
         CUNIT_LEADER_CHARACTER_ID_COPY_OFF, CUNIT_LEADER_ID_OFF, CUNIT_LEADER_SKILL_SOURCE_PTR_OFF,
         CUNIT_LEADER_SKILL_VALUE_OFF, CUNIT_LEADER_TRAIT_CAPACITY_OFF, CUNIT_LEADER_TRAIT_DATA_OFF,
         CUNIT_LEADER_TRAIT_SIZE_OFF, CUNIT_LEADER_TYPE_ID, CUNIT_LEADER_TYPE_OFF,
@@ -267,7 +273,8 @@ mod tests {
         mem.write_u64(country + CCOUNTRY_POLITICAL_STATUS_OFF, status);
         mem.write_u64(status + CPOLITICAL_STATUS_RULING_PARTY_OFF, party);
         mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF, leader_vec);
-        mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF + 8, leader_vec + 8);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, 1);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, 1);
         mem.write_u64(leader_vec, country_leader);
 
         mem.write_u64(advisor, ADVISOR_VT);
@@ -332,8 +339,10 @@ mod tests {
         assert_eq!(read.domain_id, 47);
         assert_eq!(read.status_flags, 0);
         assert!(read.parse_errors.is_empty(), "{:?}", read.parse_errors);
-        assert_eq!(read.row_count, 8);
-        assert_eq!(read.adapter_stats.appointed_advisor_rows, 1);
+        // Appointed advisors are fail-closed off in production (unvalidated
+        // active-idea proxy); the row that would have carried it is gone.
+        assert_eq!(read.row_count, 7);
+        assert_eq!(read.adapter_stats.appointed_advisor_rows, 0);
         assert_eq!(read.adapter_stats.portrait_rows, 1);
     }
 
@@ -368,9 +377,27 @@ mod tests {
     fn shared_collector_excluded_root_guard_flags_blocked_roots() {
         let mut cache = NativeRootCache::default();
         assert!(cache.shared_collector_excluded_roots_are_empty());
+        // Advisor + trait roots are unblocked (wave-3 870ebf revalidation)
+        // and must not trip the excluded-root guard.
         cache.unit_leader_trait_tokens.push(TraitDefinitionRoot {
             trait_addr: 0x2300,
             token: "old_guard".to_string(),
+        });
+        cache.advisors.push(AdvisorRoot {
+            advisor_addr: 0x5000,
+            idea_token: "ENG_maxwell_aitken".to_string(),
+            slot: Some("political_advisor".to_string()),
+            ledger: None,
+        });
+        assert_eq!(cache.shared_collector_excluded_root_count(), 0);
+        assert!(cache.shared_collector_excluded_roots_are_empty());
+        // Portrait roots remain excluded until their static feed is validated.
+        cache.portraits.push(CharacterPortraitInput {
+            country_tag_db_id: 2,
+            char_id: 1458,
+            role: "civilian".to_string(),
+            size: "large".to_string(),
+            gfx: "GFX_portrait_ENG_maxwell_aitken".to_string(),
         });
         assert_eq!(cache.shared_collector_excluded_root_count(), 1);
         assert!(!cache.shared_collector_excluded_roots_are_empty());

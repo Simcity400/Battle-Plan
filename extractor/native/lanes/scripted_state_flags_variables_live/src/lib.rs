@@ -9,8 +9,9 @@ pub use country_variables_extractor::{
     read_variables_container, rtti_type_name, MemoryRead, VariableReadStatus, RTTI_VARIABLES,
 };
 pub use scripted_state_domain51_collector::{
-    collect_domain51_frame, registration_descriptor, Domain51CollectedFrame, Domain51FrameInput,
-    FlagEntry, FlagScopeRead, OpaqueRootState, ScopeReadStatus, VariableEntry, VariableScopeRead,
+    collect_domain51_frame, registration_descriptor, DelayedEventRow, Domain51CollectedFrame,
+    Domain51FrameInput, FlagEntry, FlagScopeRead, OpaqueRootState, ScopeReadStatus, VariableEntry,
+    VariableScopeRead,
 };
 pub use scripted_state_domain51_gate::compact::{
     Domain51GateSummary, DOMAIN_ID, DOMAIN_NAME, STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,

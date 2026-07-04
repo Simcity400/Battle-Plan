@@ -38,6 +38,12 @@ pub const ROW_FLAG_SUPPLY_GAIN: u32 = 1 << 10;
 pub const ROW_FLAG_FUEL: u32 = 1 << 11;
 pub const ROW_FLAG_DELETED: u32 = 1 << 12;
 pub const ROW_FLAG_TEMPLATE: u32 = 1 << 13;
+/// Wave-3 primary-order linkage flags (mutually exclusive). ORDER_ARMY
+/// carries the COrderInstance+0x244 instance id in the row tail u32 at +84
+/// (previously reserved-zero); ARMY_GROUP/UNRESOLVED badge without an id.
+pub const ROW_FLAG_ORDER_ARMY: u32 = 1 << 14;
+pub const ROW_FLAG_ORDER_ARMY_GROUP: u32 = 1 << 15;
+pub const ROW_FLAG_ORDER_UNRESOLVED: u32 = 1 << 16;
 pub const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_MOVING
     | ROW_FLAG_PROGRESS
     | ROW_FLAG_MOVE_TARGET
@@ -51,14 +57,24 @@ pub const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_MOVING
     | ROW_FLAG_SUPPLY_GAIN
     | ROW_FLAG_FUEL
     | ROW_FLAG_DELETED
-    | ROW_FLAG_TEMPLATE;
+    | ROW_FLAG_TEMPLATE
+    | ROW_FLAG_ORDER_ARMY
+    | ROW_FLAG_ORDER_ARMY_GROUP
+    | ROW_FLAG_ORDER_UNRESOLVED;
+/// Shared ceiling for the primary-order instance id (collector, recorder
+/// summary decoder, world_fold, and this standalone gate all enforce it).
+pub const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
 
 pub const MAX_PROVINCE_ID: u32 = 1_000_000;
 pub const MAX_COMBAT_REF_COUNT: u32 = 1_000;
 pub const MAX_ORGANISATION_RAW: u32 = 100_000_000;
 pub const MAX_STRENGTH_RAW: u32 = 1_000_000_000;
-pub const MAX_OWNER_TAG_DB_ID: u32 =
-    compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
+// Dependency-free literal (see README): this gate must compile via a plain
+// `rustc --edition 2021 --test domain20_compact.rs` with no extern crates.
+// Kept in lockstep with
+// compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID (= 2_048); a
+// drift would surface in the shared collector/recorder workspace tests.
+pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
 pub const MAX_ARMY_ID: u32 = i32::MAX as u32;
 pub const MAX_TEMPLATE_ID: u32 = i32::MAX as u32;
 pub const MAX_SUPPLY_RAW: u32 = 100_000_000;
@@ -70,6 +86,17 @@ pub struct DivisionStateHeader {
     pub status_flags: u32,
     pub changed_rows: u32,
     pub root_rows: u32,
+}
+
+/// Wave-3 primary-order linkage (CDivision+0xC8). Only the primary order is
+/// represented; ArmyGroup/Unresolved badge distinctly without an id.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DivisionOrderLink {
+    #[default]
+    None,
+    ArmyOrder(u32),
+    ArmyGroup,
+    Unresolved,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -95,6 +122,7 @@ pub struct DivisionStateRow {
     pub raw_current_supply: Option<u32>,
     pub raw_supply_gain: Option<u32>,
     pub raw_fuel: Option<u32>,
+    pub order_link: DivisionOrderLink,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -246,7 +274,11 @@ pub fn encode_payload(header: &DivisionStateHeader, rows: &[DivisionStateRow]) -
         payload.extend_from_slice(&row.raw_current_supply.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.raw_supply_gain.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.raw_fuel.unwrap_or(0).to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        let order_instance_id = match row.order_link {
+            DivisionOrderLink::ArmyOrder(instance_id) if !row.deleted => instance_id,
+            _ => 0,
+        };
+        payload.extend_from_slice(&order_instance_id.to_le_bytes());
     }
     payload
 }
@@ -323,6 +355,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
     let mut fuel_rows = 0usize;
     let mut delta_upsert_rows = 0usize;
     let mut reserved_tail_zero_rows = 0usize;
+    let mut order_army_rows = 0usize;
+    let mut order_army_group_rows = 0usize;
+    let mut order_unresolved_rows = 0usize;
 
     for row_index in 0..row_count {
         let div_id = read_u32_le(payload, cursor);
@@ -588,10 +623,30 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
             u32::MAX,
             "fuel_raw",
         );
-        if reserved1 != 0 {
+        let has_order_army = has_flag(flags, ROW_FLAG_ORDER_ARMY);
+        let has_order_group = has_flag(flags, ROW_FLAG_ORDER_ARMY_GROUP);
+        let has_order_unresolved = has_flag(flags, ROW_FLAG_ORDER_UNRESOLVED);
+        if (has_order_army as u32 + has_order_group as u32 + has_order_unresolved as u32) > 1 {
             summary.parse_errors.push(format!(
-                "offset {offset}: divisions row {row_index} reserved field is nonzero"
+                "offset {offset}: divisions row {row_index} has conflicting order-link flags"
             ));
+        }
+        if has_order_army {
+            order_army_rows = order_army_rows.saturating_add(1);
+            if reserved1 == 0 || reserved1 > MAX_ORDER_INSTANCE_ID {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: divisions row {row_index} has invalid order instance id {reserved1}"
+                ));
+            }
+        } else {
+            order_army_group_rows = order_army_group_rows.saturating_add(has_order_group as usize);
+            order_unresolved_rows =
+                order_unresolved_rows.saturating_add(has_order_unresolved as usize);
+            if reserved1 != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: divisions row {row_index} has order instance id without army-order flag"
+                ));
+            }
         }
     }
 
@@ -624,6 +679,17 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
         &mut summary,
         "division_reserved_tail_zero_rows",
         reserved_tail_zero_rows,
+    );
+    add_unit(&mut summary, "division_order_army_rows", order_army_rows);
+    add_unit(
+        &mut summary,
+        "division_order_army_group_rows",
+        order_army_group_rows,
+    );
+    add_unit(
+        &mut summary,
+        "division_order_unresolved_rows",
+        order_unresolved_rows,
     );
     summary
 }
@@ -836,6 +902,12 @@ fn row_flags(row: &DivisionStateRow) -> u32 {
     if row.template_id.is_some() {
         flags |= ROW_FLAG_TEMPLATE;
     }
+    match row.order_link {
+        DivisionOrderLink::None => {}
+        DivisionOrderLink::ArmyOrder(_) => flags |= ROW_FLAG_ORDER_ARMY,
+        DivisionOrderLink::ArmyGroup => flags |= ROW_FLAG_ORDER_ARMY_GROUP,
+        DivisionOrderLink::Unresolved => flags |= ROW_FLAG_ORDER_UNRESOLVED,
+    }
     flags
 }
 
@@ -991,6 +1063,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn row_len_literal_is_stable() {
+        // Guard against stale-constant drift (a prior review found a sibling
+        // domain-42 test asserting a stale 68): pin the LITERAL, not a derived
+        // value, so a wrong ROW_LEN fails here.
+        assert_eq!(ROW_LEN, 88);
+    }
+
+    #[test]
     fn encodes_and_decodes_full_state_rows() {
         let rows = vec![
             DivisionStateRow {
@@ -1069,6 +1149,124 @@ mod tests {
             summary.data_units_total.get("division_fuel_rows").copied(),
             Some(1)
         );
+    }
+
+    #[test]
+    fn encodes_and_decodes_order_link_rows() {
+        let rows = vec![
+            DivisionStateRow {
+                div_id: 201,
+                location: 10,
+                raw_organisation: 1,
+                raw_strength: 1,
+                order_link: DivisionOrderLink::ArmyOrder(317),
+                ..DivisionStateRow::default()
+            },
+            DivisionStateRow {
+                div_id: 202,
+                location: 11,
+                raw_organisation: 1,
+                raw_strength: 1,
+                order_link: DivisionOrderLink::ArmyGroup,
+                ..DivisionStateRow::default()
+            },
+            DivisionStateRow {
+                div_id: 203,
+                location: 12,
+                raw_organisation: 1,
+                raw_strength: 1,
+                order_link: DivisionOrderLink::Unresolved,
+                ..DivisionStateRow::default()
+            },
+            DivisionStateRow {
+                div_id: 204,
+                location: 13,
+                raw_organisation: 1,
+                raw_strength: 1,
+                ..DivisionStateRow::default()
+            },
+        ];
+        let header = DivisionStateHeader {
+            elapsed_wall_ms: 1,
+            status_flags: 0,
+            changed_rows: rows.len() as u32,
+            root_rows: rows.len() as u32,
+        };
+        let summary = decode_payload(0, &encode_payload(&header, &rows));
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("division_order_army_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("division_order_army_group_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("division_order_unresolved_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn rejects_out_of_range_order_instance_id() {
+        let rows = vec![DivisionStateRow {
+            div_id: 210,
+            location: 10,
+            raw_organisation: 1,
+            raw_strength: 1,
+            order_link: DivisionOrderLink::ArmyOrder(MAX_ORDER_INSTANCE_ID + 1),
+            ..DivisionStateRow::default()
+        }];
+        let header = DivisionStateHeader {
+            elapsed_wall_ms: 1,
+            status_flags: 0,
+            changed_rows: 1,
+            root_rows: 1,
+        };
+        let summary = decode_payload(0, &encode_payload(&header, &rows));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("invalid order instance id")));
+    }
+
+    #[test]
+    fn rejects_order_instance_id_without_army_flag() {
+        let rows = vec![DivisionStateRow {
+            div_id: 211,
+            location: 10,
+            raw_organisation: 1,
+            raw_strength: 1,
+            ..DivisionStateRow::default()
+        }];
+        let header = DivisionStateHeader {
+            elapsed_wall_ms: 1,
+            status_flags: 0,
+            changed_rows: 1,
+            root_rows: 1,
+        };
+        let mut payload = encode_payload(&header, &rows);
+        let tail = payload.len() - 4;
+        payload[tail..].copy_from_slice(&99u32.to_le_bytes());
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("order instance id without army-order flag")));
     }
 
     #[test]

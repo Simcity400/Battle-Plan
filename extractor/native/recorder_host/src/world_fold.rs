@@ -48,6 +48,13 @@ const FIXED_SCALE: f64 = 100_000.0;
 
 const DIVISION_ROW_LEN: usize = 88;
 const DIVISION_FLAG_DELETED: u32 = 1 << 12;
+// Wave-3 primary-order linkage flags (mutually exclusive; ORDER_ARMY carries
+// the COrderInstance+0x244 instance id in the row tail u32 at +84).
+const DIVISION_FLAG_ORDER_ARMY: u32 = 1 << 14;
+const DIVISION_FLAG_ORDER_ARMY_GROUP: u32 = 1 << 15;
+const DIVISION_FLAG_ORDER_UNRESOLVED: u32 = 1 << 16;
+// Same ceiling as the collector read and the summary decoder.
+const DIVISION_MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
 const LAND_COMBAT_ROW_LEN: usize = 40;
 const LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 const MAP_STATE_ROW_LEN: usize = 16;
@@ -343,6 +350,10 @@ const FRD_DECISION_TARGET_COUNTRY_FLAGS: u32 =
 const FRD_MAX_TARGET_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 
 const SCRIPTED_STATE_HEADER_LEN: usize = 64;
+// Wire schema version for domain 51 (header byte 52). Bumped to 2 with the
+// measured delayed-event row family + due-remaining-hours; the fold rejects a
+// payload whose version it does not understand rather than misparsing it.
+const SCRIPTED_STATE_SCHEMA_VERSION: u32 = 2;
 const SCRIPTED_STATE_ROW_LEN: usize = 48;
 const SCRIPTED_STATE_STATUS_FLAG_NAMES_PARTIAL: u32 =
     compact_contract::DOMAIN51_STATUS_FLAG_NAMES_PARTIAL;
@@ -360,16 +371,28 @@ const SCRIPTED_STATE_VALUE_FLAG_NAMED: u32 = 2;
 const SCRIPTED_STATE_VALUE_FLAG_TOKEN_ONLY: u32 = 3;
 const SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE: u32 = 4;
 const SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE: u32 = 5;
+// Wave-3 measured pending delayed-event row (owner + event id + scope +
+// random seed; due-date absent, a documented residual). Same ceilings as the
+// collector emit and the payload gate.
+const SCRIPTED_STATE_VALUE_DELAYED_EVENT: u32 = 6;
+const SCRIPTED_STATE_MIN_DELAYED_EVENT_ID: u32 = 100_000;
+const SCRIPTED_STATE_MAX_DELAYED_EVENT_ID: u32 = 100_000 * 42_949;
 const SCRIPTED_STATE_ROW_FLAG_KEY_PRESENT: u32 = 1;
 const SCRIPTED_STATE_ROW_FLAG_TOKEN_PRESENT: u32 = 1 << 1;
 const SCRIPTED_STATE_ROW_FLAG_VALUE_PRESENT: u32 = 1 << 2;
 const SCRIPTED_STATE_ROW_FLAG_DATE_PRESENT: u32 = 1 << 3;
 const SCRIPTED_STATE_ROW_FLAG_DELETED: u32 = 1 << 4;
+// Wave-3 delayed-event due-remaining-hours present (rides reserved row u32 at
+// base+40). Same ceiling as the collector emit + payload gate.
+const SCRIPTED_STATE_ROW_FLAG_DELAYED_DUE_PRESENT: u32 = 1 << 5;
+const SCRIPTED_STATE_MAX_DELAYED_EVENT_DUE_HOURS: u32 =
+    compact_contract::build_profile::DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS;
 const SCRIPTED_STATE_ROW_KNOWN_FLAGS: u32 = SCRIPTED_STATE_ROW_FLAG_KEY_PRESENT
     | SCRIPTED_STATE_ROW_FLAG_TOKEN_PRESENT
     | SCRIPTED_STATE_ROW_FLAG_VALUE_PRESENT
     | SCRIPTED_STATE_ROW_FLAG_DATE_PRESENT
-    | SCRIPTED_STATE_ROW_FLAG_DELETED;
+    | SCRIPTED_STATE_ROW_FLAG_DELETED
+    | SCRIPTED_STATE_ROW_FLAG_DELAYED_DUE_PRESENT;
 
 const ARMY_ORDER_HEADER_LEN: usize = 40;
 const ARMY_ORDER_ROW_LEN: usize = 48;
@@ -552,6 +575,10 @@ pub struct WorldFold {
     scripted_world_variables: BTreeMap<String, f64>,
     scripted_world_token_only_flags: BTreeMap<u32, ScriptFlagState>,
     scripted_world_opaque_badges: Vec<ScriptedOpaqueBadgeState>,
+    /// Wave-3 measured pending delayed-event rows (owner + event id + scope +
+    /// random seed; due-date absent). Replaced wholesale on every full D51
+    /// snapshot; keyed by (owner, event_id, scope_random) so repeats collapse.
+    scripted_world_delayed_events: BTreeMap<(u32, u32, u64), DelayedEventFoldState>,
     /// Chunk2 order-of-battle/design/air accumulators. These remain domain-owned
     /// internally and are merged into shared snapshot sections only at build time.
     army_orders: BTreeMap<ArmyOrderKey, ArmyOrderState>,
@@ -721,6 +748,7 @@ impl WorldFold {
             scripted_world_variables: BTreeMap::new(),
             scripted_world_token_only_flags: BTreeMap::new(),
             scripted_world_opaque_badges: Vec::new(),
+            scripted_world_delayed_events: BTreeMap::new(),
             army_orders: BTreeMap::new(),
             oob_commands: BTreeMap::new(),
             ships: BTreeMap::new(),
@@ -1311,12 +1339,14 @@ impl WorldFold {
                 || !self.scripted_world_variables.is_empty()
                 || !self.scripted_world_token_only_flags.is_empty()
                 || !self.scripted_world_opaque_badges.is_empty()
+                || !self.scripted_world_delayed_events.is_empty()
             {
                 return json!({
                     "flags": Value::Null,
                     "variables": Value::Null,
                     "_r2_token_only_flags": Value::Null,
                     "_r2_scripted_state_badges": Value::Null,
+                    "_r2_delayed_events": Value::Null,
                 });
             }
             return json!({});
@@ -1351,6 +1381,17 @@ impl WorldFold {
                     self.scripted_world_opaque_badges
                         .iter()
                         .map(ScriptedOpaqueBadgeState::to_json)
+                        .collect(),
+                ),
+            );
+        }
+        if !self.scripted_world_delayed_events.is_empty() {
+            world.insert(
+                "_r2_delayed_events".into(),
+                Value::Array(
+                    self.scripted_world_delayed_events
+                        .values()
+                        .map(DelayedEventFoldState::to_json)
                         .collect(),
                 ),
             );
@@ -5238,30 +5279,58 @@ impl WorldFold {
             return Ok(());
         }
 
+        // Excluded fail-closed scope (wave-3 870ebf narrowed it): advisor
+        // roster, appointed advisor, and unit-leader trait rows are now
+        // validated and fold below (into the domain-47 sidecar only; domain 14
+        // remains the owner of politics.appointed_advisors). Portrait rows
+        // stay blocked pending a validated static portrait feed.
         let excluded_rows = decoded
+            .rows
+            .iter()
+            .filter(|row| matches!(row, domain47::DecodedDomain47Row::CharacterPortrait { .. }))
+            .count();
+        if excluded_rows != 0 {
+            self.mark_fold_domain_unknown(
+                CHARACTERS_LEADERS_CABINET_DOMAIN_ID,
+                "excluded_rows_present",
+                format!(
+                    "characters_leaders_cabinet_live carried {excluded_rows} excluded portrait row(s); prior character/leader/cabinet state retained"
+                ),
+            );
+            return Ok(());
+        }
+        // Trait rows carry only unit_leader_id; join them to their owning
+        // country through this payload's own full-snapshot UnitLeader rows.
+        // An orphan trait row means a torn/inconsistent snapshot: retain the
+        // prior hour instead of guessing an owner (fail closed).
+        let mut trait_leader_owner = BTreeMap::new();
+        for row in &decoded.rows {
+            if let domain47::DecodedDomain47Row::UnitLeader {
+                country_tag_db_id,
+                unit_leader_id,
+                ..
+            } = row
+            {
+                trait_leader_owner.insert(*unit_leader_id, *country_tag_db_id);
+            }
+        }
+        let orphan_trait_rows = decoded
             .rows
             .iter()
             .filter(|row| {
                 matches!(
                     row,
-                    domain47::DecodedDomain47Row::UnitLeaderTrait { .. }
-                        | domain47::DecodedDomain47Row::AdvisorRoster { .. }
-                        | domain47::DecodedDomain47Row::AppointedAdvisor { .. }
-                        | domain47::DecodedDomain47Row::CharacterPortrait { .. }
+                    domain47::DecodedDomain47Row::UnitLeaderTrait { unit_leader_id, .. }
+                        if !trait_leader_owner.contains_key(unit_leader_id)
                 )
             })
             .count();
-        if excluded_rows != 0 {
-            // Excluded fail-closed scope: unit_leader_trait token rows depend on
-            // a CUnitLeaderTrait vtable root that is blocked pending current-build
-            // revalidation. Advisor roster, appointed advisor, and portrait rows
-            // also stay blocked pending CAdvisor/feed revalidation, and domain 14
-            // remains the owner of politics.appointed_advisors.
+        if orphan_trait_rows != 0 {
             self.mark_fold_domain_unknown(
                 CHARACTERS_LEADERS_CABINET_DOMAIN_ID,
-                "excluded_rows_present",
+                "orphan_trait_rows",
                 format!(
-                    "characters_leaders_cabinet_live carried {excluded_rows} excluded advisor/appointee/portrait/trait row(s); prior character/leader/cabinet state retained"
+                    "characters_leaders_cabinet_live carried {orphan_trait_rows} trait row(s) without a matching unit-leader row; prior character/leader/cabinet state retained"
                 ),
             );
             return Ok(());
@@ -5362,11 +5431,53 @@ impl WorldFold {
                         "ambiguous": ambiguous,
                     }));
                 }
-                domain47::DecodedDomain47Row::UnitLeaderTrait { .. }
-                | domain47::DecodedDomain47Row::AdvisorRoster { .. }
-                | domain47::DecodedDomain47Row::AppointedAdvisor { .. }
-                | domain47::DecodedDomain47Row::CharacterPortrait { .. } => unreachable!(
-                    "excluded domain47 rows are rejected before the fold mutates state"
+                domain47::DecodedDomain47Row::UnitLeaderTrait {
+                    unit_leader_id,
+                    ordinal,
+                    trait_token,
+                } => {
+                    let country_tag_db_id = *trait_leader_owner
+                        .get(&unit_leader_id)
+                        .expect("orphan trait rows are rejected before the fold mutates state");
+                    let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
+                    ensure_json_array_mut(sidecar, "unit_leader_traits").push(json!({
+                        "unit_leader_id": unit_leader_id,
+                        "ordinal": ordinal,
+                        "trait_token": trait_token,
+                    }));
+                }
+                domain47::DecodedDomain47Row::AdvisorRoster {
+                    country_tag_db_id,
+                    char_id,
+                    slot,
+                    ledger,
+                    idea_token,
+                } => {
+                    let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
+                    ensure_json_array_mut(sidecar, "advisor_roster").push(json!({
+                        "char_id": char_id,
+                        "slot": slot,
+                        "ledger": ledger,
+                        "idea_token": idea_token,
+                    }));
+                }
+                domain47::DecodedDomain47Row::AppointedAdvisor {
+                    country_tag_db_id,
+                    char_id,
+                    slot,
+                    ledger,
+                    idea_token,
+                } => {
+                    let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
+                    ensure_json_array_mut(sidecar, "appointed_advisors").push(json!({
+                        "char_id": char_id,
+                        "slot": slot,
+                        "ledger": ledger,
+                        "idea_token": idea_token,
+                    }));
+                }
+                domain47::DecodedDomain47Row::CharacterPortrait { .. } => unreachable!(
+                    "excluded domain47 portrait rows are rejected before the fold mutates state"
                 ),
             }
         }
@@ -6584,6 +6695,12 @@ impl WorldFold {
         let key_bytes_len = read_u32(payload, 12) as usize;
         let status_flags = read_u32(payload, 20);
         let fixed_scale = read_u32(payload, 48);
+        let schema_version = read_u32(payload, 52);
+        if schema_version != SCRIPTED_STATE_SCHEMA_VERSION {
+            return Err(format!(
+                "scripted_state schema version {schema_version} != {SCRIPTED_STATE_SCHEMA_VERSION}"
+            ));
+        }
         let is_delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
         let hard_failure = (status_flags
             & (COMPACT_STATUS_FAILURE_MASK & !SCRIPTED_STATE_OPAQUE_STATUS_MASK))
@@ -6650,6 +6767,24 @@ impl WorldFold {
                 }
                 None
             };
+            // Reserved slot 0 (base+40) carries the delayed-event due hours
+            // when the due flag is set; otherwise it must be 0. Slot 1
+            // (base+44) is still fully reserved and must be 0 (mirrors the
+            // payload gate so the fold enforces the reserved contract even if
+            // it ever ingests without the gate).
+            let has_delayed_due = flags & SCRIPTED_STATE_ROW_FLAG_DELAYED_DUE_PRESENT != 0;
+            let reserved0 = read_u32(payload, base + 40);
+            let reserved1 = read_u32(payload, base + 44);
+            if !has_delayed_due && reserved0 != 0 {
+                return Err(format!(
+                    "scripted_state row {index} has due hours without the due flag"
+                ));
+            }
+            if reserved1 != 0 {
+                return Err(format!(
+                    "scripted_state row {index} reserved field is nonzero"
+                ));
+            }
             let row = ScriptedStateRow {
                 scope_kind,
                 owner_id,
@@ -6662,6 +6797,7 @@ impl WorldFold {
                 value_raw: (flags & SCRIPTED_STATE_ROW_FLAG_VALUE_PRESENT != 0)
                     .then_some(read_i64(payload, base + 32)),
                 deleted: flags & SCRIPTED_STATE_ROW_FLAG_DELETED != 0,
+                delayed_due_hours: has_delayed_due.then_some(reserved0),
             };
             validate_scripted_state_row(&row)?;
             rows.push(row);
@@ -6698,6 +6834,7 @@ impl WorldFold {
         self.scripted_world_variables.clear();
         self.scripted_world_token_only_flags.clear();
         self.scripted_world_opaque_badges.clear();
+        self.scripted_world_delayed_events.clear();
         for country in self.countries.values_mut() {
             clear_scripted_country_extra(country);
         }
@@ -6867,6 +7004,33 @@ impl WorldFold {
                         key: row.key.clone(),
                     });
             }
+            SCRIPTED_STATE_VALUE_DELAYED_EVENT => {
+                // owner_id = owner/scope tag_db_id; token_id = combined event
+                // id; date_hour_raw = scope tag_db_id; value_raw = scope.random
+                // seed pair. The due-date is intentionally absent. All three
+                // present-flags are enforced by validate_scripted_state_row so
+                // the seed is never a fabricated 0.
+                let combined_event_id =
+                    row.token_id.expect("validated delayed-event event id token");
+                let scope_tag_db_id = row
+                    .date_hour_raw
+                    .expect("validated delayed-event scope tag") as u32;
+                let scope_random = row
+                    .value_raw
+                    .expect("validated delayed-event scope random seed")
+                    as u64;
+                self.scripted_world_delayed_events.insert(
+                    (row.owner_id, combined_event_id, scope_random),
+                    DelayedEventFoldState {
+                        owner_tag_db_id: row.owner_id,
+                        combined_event_id,
+                        scope_tag_db_id,
+                        scope_random,
+                        // Ancillary: absent stays absent (badged, never 0).
+                        due_remaining_hours: row.delayed_due_hours,
+                    },
+                );
+            }
             _ => unreachable!("validated scripted value kind"),
         }
         Ok(())
@@ -6908,7 +7072,34 @@ impl WorldFold {
             let div_type = read_u32(payload, cursor + 4);
             let flags = read_u32(payload, cursor + 8);
             let uid = format!("{div_id}:{div_type}");
+            let order_instance_id = read_u32(payload, cursor + 84);
+            let has_order_army = flags & DIVISION_FLAG_ORDER_ARMY != 0;
+            let has_order_group = flags & DIVISION_FLAG_ORDER_ARMY_GROUP != 0;
+            let has_order_unresolved = flags & DIVISION_FLAG_ORDER_UNRESOLVED != 0;
+            // Validate the order-link flags/tail for EVERY row (including
+            // deletes) BEFORE acting on the delete, so a malformed deleted row
+            // carrying an order flag or a nonzero tail id fails the whole fold
+            // closed instead of silently deleting.
+            if (has_order_army as u32 + has_order_group as u32 + has_order_unresolved as u32) > 1 {
+                return Err("divisions row has conflicting order-link flags".into());
+            }
+            if has_order_army {
+                if order_instance_id == 0 || order_instance_id > DIVISION_MAX_ORDER_INSTANCE_ID {
+                    return Err(format!(
+                        "divisions row has invalid order instance id {order_instance_id}"
+                    ));
+                }
+            } else if order_instance_id != 0 {
+                return Err(
+                    "divisions row has order instance id without army-order flag".into(),
+                );
+            }
             if flags & DIVISION_FLAG_DELETED != 0 {
+                // A deleted row's only permitted flag is DELETED itself; any
+                // order flag on a delete is a malformed row (fail closed).
+                if has_order_army || has_order_group || has_order_unresolved {
+                    return Err("divisions delete row carries order-link flags".into());
+                }
                 if let Some(key) = self
                     .divisions
                     .get(&uid)
@@ -7015,6 +7206,29 @@ impl WorldFold {
                 "army_id".into(),
                 if has_army {
                     json!(army_id)
+                } else {
+                    Value::Null
+                },
+            );
+            // Wave-3 primary-order linkage: instance id only for validated
+            // army orders; army-group / unresolved are distinct badges; both
+            // flags absent means the division has no primary order (null).
+            obj.insert(
+                "order_instance_id".into(),
+                if has_order_army {
+                    json!(order_instance_id)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "order_link".into(),
+                if has_order_army {
+                    json!("army")
+                } else if has_order_group {
+                    json!("army_group")
+                } else if has_order_unresolved {
+                    json!("unresolved")
                 } else {
                     Value::Null
                 },
@@ -9878,6 +10092,49 @@ impl ScriptedOpaqueBadgeState {
     }
 }
 
+/// Wave-3 measured pending delayed-event fold state.
+struct DelayedEventFoldState {
+    owner_tag_db_id: u32,
+    combined_event_id: u32,
+    scope_tag_db_id: u32,
+    scope_random: u64,
+    /// CDelayedEvent+0xC4 total remaining hours (months*720 + days*24 +
+    /// hours). None = the field read was torn/out-of-bounds and badged absent.
+    due_remaining_hours: Option<u32>,
+}
+
+impl DelayedEventFoldState {
+    fn to_json(&self) -> Value {
+        // Decompose the remaining-hours countdown into 30-day months / days /
+        // hours for readability when present; null when the read was absent.
+        let (due_months, due_days, due_hours) = match self.due_remaining_hours {
+            Some(total) => (
+                json!(total / 720),
+                json!((total % 720) / 24),
+                json!(total % 24),
+            ),
+            None => (Value::Null, Value::Null, Value::Null),
+        };
+        json!({
+            "owner_tag_db_id": self.owner_tag_db_id,
+            "event_id": self.combined_event_id,
+            "event_namespace_index": self.combined_event_id / 100_000,
+            "event_index": self.combined_event_id % 100_000,
+            "scope_tag_db_id": self.scope_tag_db_id,
+            "scope_random_seed": self.scope_random.to_string(),
+            // Validated remaining-hours countdown (CDelayedEvent+0xC4, 17/17
+            // oracle). Absent (null) only on a torn/out-of-bounds read.
+            "due_remaining_hours": self
+                .due_remaining_hours
+                .map(|h| json!(h))
+                .unwrap_or(Value::Null),
+            "due_remaining_months": due_months,
+            "due_remaining_days": due_days,
+            "due_remaining_hours_component": due_hours,
+        })
+    }
+}
+
 struct ScriptedStateRow {
     scope_kind: u32,
     owner_id: u32,
@@ -9887,6 +10144,7 @@ struct ScriptedStateRow {
     date_hour_raw: Option<i32>,
     value_raw: Option<i64>,
     deleted: bool,
+    delayed_due_hours: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -10992,6 +11250,10 @@ fn parse_frd_depth_header(payload: &[u8], record_flags: u32) -> Result<FrdDepthH
 }
 
 fn validate_scripted_state_row(row: &ScriptedStateRow) -> Result<(), String> {
+    // Only delayed-event rows may carry due-remaining-hours.
+    if row.delayed_due_hours.is_some() && row.value_kind != SCRIPTED_STATE_VALUE_DELAYED_EVENT {
+        return Err("scripted_state non-delayed-event row carries due hours".to_string());
+    }
     match row.scope_kind {
         SCRIPTED_STATE_SCOPE_GLOBAL => {
             if row.owner_id != 0 {
@@ -11025,6 +11287,61 @@ fn validate_scripted_state_row(row: &ScriptedStateRow) -> Result<(), String> {
             }
         }
         SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE | SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE => {}
+        SCRIPTED_STATE_VALUE_DELAYED_EVENT => {
+            // Country-scoped only; carries event id token + scope tag date +
+            // scope random seed (value), no string key. Every bound mirrors
+            // the collector emit + payload gate so the three layers agree.
+            if row.scope_kind != SCRIPTED_STATE_SCOPE_COUNTRY {
+                return Err("scripted_state delayed-event row must be country-scoped".to_string());
+            }
+            // Owner (== scope) tag must be a valid country tag_db_id. The scope
+            // outer-match already rejects owner_id == 0 for country scope.
+            if row.owner_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID {
+                return Err("scripted_state delayed-event row owner tag out of range".to_string());
+            }
+            match row.token_id {
+                Some(id)
+                    if (SCRIPTED_STATE_MIN_DELAYED_EVENT_ID..=SCRIPTED_STATE_MAX_DELAYED_EVENT_ID)
+                        .contains(&id) => {}
+                _ => {
+                    return Err(
+                        "scripted_state delayed-event row has invalid event id".to_string()
+                    )
+                }
+            }
+            // Scope tag_db_id (date_hour_raw slot): present, in country range,
+            // and equal to the owner tag (scope == owner is a contract, the
+            // same CDelayedEvent+0x18 field per WAVE3_CRACKS_870EBF_D04.md §5).
+            match row.date_hour_raw {
+                Some(scope_tag)
+                    if scope_tag > 0
+                        && (scope_tag as u32)
+                            <= compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+                        && scope_tag as u32 == row.owner_id => {}
+                _ => {
+                    return Err(
+                        "scripted_state delayed-event row scope tag invalid or != owner".to_string(),
+                    )
+                }
+            }
+            if row.value_raw.is_none() {
+                return Err(
+                    "scripted_state delayed-event row missing scope random seed".to_string()
+                );
+            }
+            if row.key.is_some() {
+                return Err("scripted_state delayed-event row must not carry a key".to_string());
+            }
+            // Due-remaining-hours is ancillary (may be absent), but when
+            // present it must be within the shared ceiling.
+            if let Some(hours) = row.delayed_due_hours {
+                if hours > SCRIPTED_STATE_MAX_DELAYED_EVENT_DUE_HOURS {
+                    return Err(
+                        "scripted_state delayed-event row due hours out of range".to_string()
+                    );
+                }
+            }
+        }
         other => return Err(format!("scripted_state unsupported value_kind {other}")),
     }
     Ok(())

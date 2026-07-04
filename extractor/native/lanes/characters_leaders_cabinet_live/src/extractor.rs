@@ -15,16 +15,24 @@ pub const CNAVY_LEADER_RTTI_RVA: u32 =
 pub const CCOUNTRY_LEADER_RTTI_RVA: u32 =
     compact_contract::build_profile::DOMAIN47_CCOUNTRY_LEADER_VTABLE_RVA as u32;
 pub const CADVISOR_RTTI_RVA: u32 =
-    compact_contract::build_profile::DOMAIN47_CADVISOR_RTTI_RVA_BLOCKED_PENDING_REVALIDATION as u32;
+    compact_contract::build_profile::DOMAIN47_CADVISOR_VTABLE_RVA as u32;
 pub const CUNIT_LEADER_TRAIT_RTTI_RVA: u32 =
-    compact_contract::build_profile::DOMAIN47_CUNIT_LEADER_TRAIT_VTABLE_RVA_BLOCKED_PENDING_REVALIDATION
-        as u32;
+    compact_contract::build_profile::DOMAIN47_CUNIT_LEADER_TRAIT_VTABLE_RVA as u32;
 
 pub const CCOUNTRY_POLITICAL_STATUS_OFF: u64 = 0xF90;
 pub const CPOLITICAL_STATUS_RULING_PARTY_OFF: u64 = 0xD0;
 pub const CPOLITICAL_STATUS_IDEAS_DATA_OFF: u64 = 0x50;
 pub const CPOLITICAL_STATUS_IDEAS_SIZE_OFF: u64 = 0x5C;
+/// Ruling-party country-leader vector on build 870ebf: `{data_ptr @+0x70,
+/// size u32 @+0x78, capacity u32 @+0x7C}`. The historic begin/end pointer
+/// pair never validated live on this build (all 437 countries failed the
+/// end-pointer shape); the corrected layout resolves 435/437 rulers whose
+/// CCharacter tag echoes the country tag exactly (live re-probe 2026-07-04,
+/// paused D04).
 pub const CPOLITICAL_PARTY_LEADER_VEC_OFF: u64 = 0x70;
+pub const CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF: u64 = 0x78;
+pub const CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF: u64 = 0x7C;
+pub const MAX_PARTY_LEADER_VEC: u32 = 64;
 
 pub const CCHARACTER_TYPE_OFF: u64 = 0x08;
 pub const CCHARACTER_ID_OFF: u64 = 0x0C;
@@ -604,36 +612,34 @@ pub fn read_active_ruler_from_country<M: LaneMemory>(
         CPOLITICAL_STATUS_RULING_PARTY_OFF,
         "CPoliticalStatus.ruling_party",
     )?;
-    let begin = read_nonzero_u64(
+    let data = read_nonzero_u64(
         mem,
         party,
         CPOLITICAL_PARTY_LEADER_VEC_OFF,
-        "CPoliticalParty.country_leaders.begin",
+        "CPoliticalParty.country_leaders.data",
     )?;
-    let end = read_u64(
+    let size = read_u32(
         mem,
         party,
-        CPOLITICAL_PARTY_LEADER_VEC_OFF + 8,
-        "CPoliticalParty.country_leaders.end",
+        CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF,
+        "CPoliticalParty.country_leaders.size",
     )?;
-    if end < begin || (end - begin) % 8 != 0 {
+    let capacity = read_u32(
+        mem,
+        party,
+        CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF,
+        "CPoliticalParty.country_leaders.capacity",
+    )?;
+    if size == 0 || size > capacity || size > MAX_PARTY_LEADER_VEC || capacity > MAX_PARTY_LEADER_VEC
+    {
         return Err(ExtractError::BadVector {
             field: "CPoliticalParty.country_leaders",
-            begin,
-            end,
-            size: 0,
+            begin: data,
+            end: data.saturating_add((capacity as u64).saturating_mul(8)),
+            size: size as u64,
         });
     }
-    let size = (end - begin) / 8;
-    if size == 0 || size > u16::MAX as u64 {
-        return Err(ExtractError::BadVector {
-            field: "CPoliticalParty.country_leaders",
-            begin,
-            end,
-            size,
-        });
-    }
-    let country_leader = read_nonzero_u64_at(mem, begin, "CCountryLeader[0]")?;
+    let country_leader = read_nonzero_u64_at(mem, data, "CCountryLeader[0]")?;
     require_vtable(
         mem,
         country_leader,
@@ -647,6 +653,18 @@ pub fn read_active_ruler_from_country<M: LaneMemory>(
         "CCountryLeader.character",
     )?;
     let character = read_character_raw_fields(mem, roots, character_addr)?;
+    // Ownership guard: the resolved ruler's CCharacter must echo the
+    // country's own tag_db_id (live 870ebf re-probe: 435/435 resolvable
+    // rulers echo exactly). A mismatch means a torn/aliased chain landed on
+    // another country's character — reject rather than emit a wrong ruler.
+    if character.country_tag_db_id != country_tag_db_id {
+        return Err(ExtractError::BadTypeId {
+            addr: character_addr,
+            field: "CCharacter.country_tag_echo",
+            expected: country_tag_db_id,
+            observed: character.country_tag_db_id,
+        });
+    }
     Ok(ActiveRulerRecord {
         country_tag_db_id,
         char_id: character.char_id,
@@ -903,7 +921,8 @@ mod tests {
         mem.write_u64(country + CCOUNTRY_POLITICAL_STATUS_OFF, status);
         mem.write_u64(status + CPOLITICAL_STATUS_RULING_PARTY_OFF, party);
         mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF, vector);
-        mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF + 8, vector + 8);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, 1);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, 1);
         mem.write_u64(vector, country_leader);
         mem.write_u64(country_leader, CL_VT);
         mem.write_u64(
@@ -942,7 +961,8 @@ mod tests {
         mem.write_u64(country + CCOUNTRY_POLITICAL_STATUS_OFF, status);
         mem.write_u64(status + CPOLITICAL_STATUS_RULING_PARTY_OFF, party);
         mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF, vector);
-        mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF + 8, vector + 16);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, 2);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, 2);
         mem.write_u64(vector, country_leader);
         mem.write_u64(vector + 8, country_leader);
         mem.write_u64(country_leader, CL_VT);

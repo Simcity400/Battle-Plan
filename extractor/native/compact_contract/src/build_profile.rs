@@ -89,6 +89,19 @@ pub const DOMAIN54_ORDER_OFF_PATH_BEGIN: usize = 0x70;
 pub const DOMAIN54_ORDER_OFF_PATH_SIZE: usize = 0x78;
 pub const DOMAIN54_ORDER_OFF_TYPE5_STATES_BEGIN: usize = 0xE0;
 pub const DOMAIN54_ORDER_OFF_TYPE5_STATES_SIZE: usize = 0xE8;
+/// COrderInstance save-identity instance id (u32), validated live on build
+/// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad against
+/// the same-tick save oracle: 430/430 enumerated army orders matched the
+/// save's (army_id, slot) -> instance_id map at +0x244 (next-best offset
+/// 22/430). Evidence: `extractor/documents/WAVE3_CRACKS_870EBF_D04.md` §2,
+/// `extractor/native/runs/wave3_division_order_link_870ebf/`.
+pub const DOMAIN54_ORDER_OFF_INSTANCE_ID: usize = 0x244;
+/// CDivision -> the division's current/primary assigned COrderInstance
+/// pointer, validated in the same wave-3 evidence: 2035 divisions point at an
+/// enumerated army order (2031/2035 in the division's oracle scheduled-order
+/// set; 4 = order advanced past the snapshot), ~1067 point at an army-GROUP
+/// COrderInstance (back-ref `.?AVCArmyGroup@@`), 65 null.
+pub const DOMAIN20_DIVISION_OFF_PRIMARY_ORDER: usize = 0xC8;
 
 /// Short build proof id retained by the domain 48 proof binaries.
 pub const DOMAIN48_BUILD_PROFILE: &str = "870ebf";
@@ -104,11 +117,49 @@ pub const DOMAIN47_CARMY_LEADER_VTABLE_RVA: usize = 0x293F538;
 pub const DOMAIN47_CNAVY_LEADER_VTABLE_RVA: usize = 0x293F650;
 pub const DOMAIN47_CCOUNTRY_LEADER_VTABLE_RVA: usize = 0x296A720;
 
-/// Domain 47 historical roots that stay blocked until revalidated in the
-/// shared collector. Advisor/appointee/portrait rows and unit-leader trait
-/// token rows must not be emitted from these constants alone.
-pub const DOMAIN47_CADVISOR_RTTI_RVA_BLOCKED_PENDING_REVALIDATION: usize = 0x2990E60;
-pub const DOMAIN47_CUNIT_LEADER_TRAIT_VTABLE_RVA_BLOCKED_PENDING_REVALIDATION: usize = 0x291F3C0;
+/// Domain 47 advisor/trait roots, revalidated live on supported build
+/// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad
+/// (paused D04 save 1944.2.11.18, 2026-07-03; evidence in
+/// `extractor/documents/WAVE3_CRACKS_870EBF_D04.md` §1 and
+/// `extractor/native/runs/wave3_d47_advisor_trait_870ebf/`).
+///
+/// `.?AVCAdvisor@@` vtable: 10,576 live instances (~1005 dead-pointer objects
+/// carry no idea token and are excluded); advisor idea-token oracle 4874/4876
+/// (2 diffs are byte-identical UTF-8/latin-1 mojibake), slot oracle 9547/9547.
+/// The historical RVA never moved and is now validated.
+pub const DOMAIN47_CADVISOR_VTABLE_RVA: usize = 0x2990E60;
+/// `.?AVCUnitLeaderTrait@@` vtable: 194 live instances; per-leader assigned
+/// trait multiset 1193/1193 exact keyed by unit_leader_id. CORRECTED from the
+/// stale historical `0x291F3C0` during the same wave-3 revalidation.
+pub const DOMAIN47_CUNIT_LEADER_TRAIT_VTABLE_RVA: usize = 0x292F160;
+
+/// Domain 51 pending delayed-event roots, validated live on build
+/// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad (paused
+/// D04, re-probe 2026-07-04: 22/22 CDelayedEvent instances, 22/22 CEvent RTTI,
+/// 22/22 valid combined ids, 22/22 owner==owner-copy; oracle join 17/17 via
+/// scope tag + random seed pair). Evidence: WAVE3_CRACKS_870EBF_D04.md §5,
+/// `extractor/native/runs/wave3_delayed_event_870ebf/`.
+pub const DOMAIN51_CDELAYED_EVENT_VTABLE_RVA: usize = 0x27D0FB8;
+/// CDelayedEvent+0x08 -> CEvent (`.?AVCEvent@@`).
+pub const DOMAIN51_CDELAYED_EVENT_CEVENT_OFF: usize = 0x08;
+/// CEvent+0x0C = combined event id (namespace*100000 + index).
+pub const DOMAIN51_CEVENT_COMBINED_ID_OFF: usize = 0x0C;
+/// CDelayedEvent+0x18 = owner/originator tag_db_id (also the scope tag_db_id;
+/// second copy at +0xC0).
+pub const DOMAIN51_CDELAYED_EVENT_OWNER_TAG_OFF: usize = 0x18;
+pub const DOMAIN51_CDELAYED_EVENT_OWNER_TAG_COPY_OFF: usize = 0xC0;
+/// CDelayedEvent scope.random seed pair (+0x1C low32, +0x20 high32).
+pub const DOMAIN51_CDELAYED_EVENT_SCOPE_RANDOM_A_OFF: usize = 0x1C;
+pub const DOMAIN51_CDELAYED_EVENT_SCOPE_RANDOM_B_OFF: usize = 0x20;
+/// CDelayedEvent+0xC4 (u32) = total remaining hours until the event fires =
+/// months*720 + days*24 + hours (30-day months). Validated 17/17 exact vs the
+/// same-tick save oracle (orchestrator-confirmed 2026-07-04; live re-probe
+/// 22/22 in bounds), all decoy encodings (decomposed d/h/m, absolute
+/// timestamp) ruled out. This resolves the wave-3 due-date RESIDUAL.
+pub const DOMAIN51_CDELAYED_EVENT_DUE_REMAINING_HOURS_OFF: usize = 0xC4;
+/// Sane ceiling on the remaining-hours countdown (~57 years of 30-day-month
+/// hours). A value beyond this is treated as a torn read.
+pub const DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS: u32 = 500_000;
 
 /// Domain 53 diplomacy/intel/operative live roots for supported build
 /// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad.

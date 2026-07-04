@@ -45,6 +45,7 @@ mod tests {
                 value_raw: None,
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
             compact::ScriptedStateRow {
                 scope_kind: compact::SCOPE_GLOBAL,
@@ -55,6 +56,7 @@ mod tests {
                 value_raw: None,
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
         ];
         let header = compact::ScriptedStateHeader {

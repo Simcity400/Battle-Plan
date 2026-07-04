@@ -104,6 +104,14 @@ pub struct AdapterBuildStats {
     pub country_leader_role_rows: u32,
     pub country_roots_seen: u32,
     pub active_ruler_rows: u32,
+    /// Countries whose active-ruler chain did not resolve this frame
+    /// (structurally empty ruling-party leader vector — e.g. rebels — or a
+    /// malformed vector). The ruler row for such a country is ABSENT, never
+    /// fabricated, and this is NOT a frame-failing rejection: every emitted
+    /// ruler row is individually vtable/type/tag-validated, and the live
+    /// 870ebf D04 re-probe resolved 435/437 countries with two expected
+    /// structural outliers.
+    pub active_ruler_unresolved_roots: u32,
     pub advisor_roots_seen: u32,
     pub advisor_roster_rows: u32,
     pub appointed_advisor_rows: u32,
@@ -215,7 +223,10 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                 known_characters.insert((row.country_tag_db_id, row.char_id));
                 frame.active_rulers.push(row);
             }
-            Err(_) => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
+            Err(_) => {
+                stats.active_ruler_unresolved_roots =
+                    stats.active_ruler_unresolved_roots.saturating_add(1)
+            }
         }
     }
     stats.active_ruler_rows = frame.active_rulers.len().min(u32::MAX as usize) as u32;
@@ -242,9 +253,28 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
         }
     }
     stats.advisor_roster_rows = frame.advisor_roster.len().min(u32::MAX as usize) as u32;
-    frame.appointed_advisors =
-        appointed_advisors_from_country_active_ideas(&frame.advisor_roster, &input.countries);
-    stats.appointed_advisor_rows = frame.appointed_advisors.len().min(u32::MAX as usize) as u32;
+    // Appointed (currently-hired) advisors are a KNOWN-OPEN sub-scope for this
+    // lane: the validated CAdvisor scan yields the full available ROSTER
+    // (roster + slot + idea token, oracle-validated 9549/9549 rows, slot
+    // 9547/9547 this build), but "currently appointed" needs the CAdvisor
+    // hired bool, which the lane's INTEGRATION_PACKET.md keeps explicitly
+    // out-of-scope (domain 14 owns politics.appointed_advisors). The exact
+    // active-idea intersection below is a conservative proxy that is correct
+    // when hired advisors surface as literal active-idea tokens (vanilla) and
+    // legitimately empty on overhaul-mod fixtures whose hired advisors use
+    // leveled variant tokens (D04: 8615 roster rows, 0 intersection). It is
+    // fail-closed: it never fabricates an appointment, only under-reports.
+    // The clean deliverable is roster + traits + slot; no new schema bit is
+    // emitted so real captures stay at the established schema value.
+    // Fail-closed (orchestrator wave-3 review): appointment needs the CAdvisor
+    // hired bool (domain 14 owns politics.appointed_advisors). The active-idea
+    // intersection is an UNVALIDATED proxy that yields 0 on the D04 fixture but
+    // could emit unproven appointed rows on other saves and break the
+    // appointed_advisor_rows==0 merge-ready/integration validators. Do NOT emit
+    // it in production. `appointed_advisors_from_country_active_ideas` + its unit
+    // test are retained so it can be enabled once the hired bool is validated.
+    frame.appointed_advisors = Vec::new();
+    stats.appointed_advisor_rows = 0;
 
     stats.portrait_inputs_seen = input.portraits.len().min(u32::MAX as usize) as u32;
     for portrait in &input.portraits {
@@ -548,7 +578,8 @@ mod tests {
     use crate::extractor::{
         self, CADVISOR_CHARACTER_PTR_OFF, CCHARACTER_COUNTRY_TAG_DB_ID_OFF, CCHARACTER_ID_OFF,
         CCHARACTER_TYPE_ID, CCHARACTER_TYPE_OFF, CCHARACTER_UNIT_LEADER_PTR_OFF,
-        CCOUNTRY_POLITICAL_STATUS_OFF, CPOLITICAL_PARTY_LEADER_VEC_OFF,
+        CCOUNTRY_POLITICAL_STATUS_OFF, CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF,
+        CPOLITICAL_PARTY_LEADER_VEC_OFF, CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF,
         CPOLITICAL_STATUS_RULING_PARTY_OFF, CUNIT_LEADER_SKILL_SOURCE_PTR_OFF,
         CUNIT_LEADER_SKILL_VALUE_OFF, CUNIT_LEADER_TRAIT_CAPACITY_OFF, CUNIT_LEADER_TRAIT_DATA_OFF,
         CUNIT_LEADER_TRAIT_SIZE_OFF,
@@ -656,7 +687,8 @@ mod tests {
         mem.write_u64(country + CCOUNTRY_POLITICAL_STATUS_OFF, status);
         mem.write_u64(status + CPOLITICAL_STATUS_RULING_PARTY_OFF, party);
         mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF, leader_vec);
-        mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF + 8, leader_vec + 8);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, 1);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, 1);
         mem.write_u64(leader_vec, country_leader);
 
         mem.write_u64(advisor, ADVISOR_VT);
@@ -703,6 +735,17 @@ mod tests {
                     ruler_token: None,
                     active_idea_tokens: vec!["OTHER_shared_token".to_string()],
                 },
+                // A country whose ruler chain does not resolve (nothing
+                // mapped at this address): the ruler row must be ABSENT and
+                // counted unresolved without failing the frame.
+                CountryPoliticsRoot {
+                    country_addr: 0xDEAD_0000,
+                    country_tag_db_id: 4,
+                    ruling_party: None,
+                    ruler_name: None,
+                    ruler_token: None,
+                    active_idea_tokens: vec![],
+                },
             ],
             advisors: vec![AdvisorRoot {
                 advisor_addr: advisor,
@@ -726,9 +769,17 @@ mod tests {
         assert_eq!(result.stats.unit_leader_rows, 1);
         assert_eq!(result.stats.unit_leader_trait_rows, 1);
         assert_eq!(result.stats.country_leader_role_rows, 1);
-        assert_eq!(result.stats.active_ruler_rows, 2);
+        // Country 2 resolves; country 3 shares country 2's object so its
+        // ruler fails the tag-echo ownership guard; country 4 has no memory.
+        assert_eq!(result.stats.active_ruler_rows, 1);
+        assert_eq!(result.stats.active_ruler_unresolved_roots, 2);
+        assert_eq!(result.stats.rejected_roots, 0);
+        assert!(!result.stats.has_rejections());
         assert_eq!(result.stats.advisor_roster_rows, 1);
-        assert_eq!(result.stats.appointed_advisor_rows, 1);
+        // Appointed is fail-closed off in production (see build path); the
+        // intersection derivation is validated directly in
+        // appointed_intersection_is_country_scoped below.
+        assert_eq!(result.stats.appointed_advisor_rows, 0);
         assert_eq!(result.stats.portrait_rows, 1);
 
         let payload = extractor::encode_frame_payload(&result.frame);
@@ -739,7 +790,7 @@ mod tests {
             summary.parse_errors
         );
         assert_eq!(summary.character_portrait_rows, 1);
-        assert_eq!(summary.appointed_advisor_rows, 1);
+        assert_eq!(summary.appointed_advisor_rows, 0);
     }
 
     #[test]

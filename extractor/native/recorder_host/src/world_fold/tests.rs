@@ -915,7 +915,7 @@ fn chunk3_scripted_payload(status: u32, rows: &[Chunk3ScriptedRow]) -> Vec<u8> {
     put_u32_at(&mut out, 40, flag_rows);
     put_u32_at(&mut out, 44, token_only_rows);
     put_u32_at(&mut out, 48, 100_000);
-    put_u32_at(&mut out, 52, 1);
+    put_u32_at(&mut out, 52, 2);
     out.extend_from_slice(&encoded_rows);
     out.extend_from_slice(&key_table);
     out
@@ -2177,7 +2177,12 @@ fn domain47_folds_active_ruler_and_r2_sidecar_after_tag_rekey() {
             coordination: None,
             token: Some("POR_salazar"),
             name: Some("Antonio de Oliveira Salazar"),
-            trait_count: 0,
+            trait_count: 1,
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeaderTrait(domain47_lane::UnitLeaderTraitRow {
+            unit_leader_id: 4713,
+            ordinal: 0,
+            trait_token: "old_guard",
         }),
         domain47_lane::CharacterLaneRow::CountryLeaderRole(domain47_lane::CountryLeaderRoleRow {
             country_tag_db_id: 47,
@@ -2193,6 +2198,20 @@ fn domain47_folds_active_ruler_and_r2_sidecar_after_tag_rekey() {
             token: Some("POR_salazar"),
             leader_vec_size: 1,
             ambiguous: false,
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+        domain47_lane::CharacterLaneRow::AppointedAdvisor(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
         }),
     ];
 
@@ -2249,7 +2268,119 @@ fn domain47_folds_active_ruler_and_r2_sidecar_after_tag_rekey() {
         json!("POR_salazar")
     );
     assert_eq!(sidecar["active_rulers"][0]["leader_vec_size"], json!(1));
+    assert_eq!(
+        sidecar["unit_leader_traits"],
+        json!([{
+            "unit_leader_id": 4713,
+            "ordinal": 0,
+            "trait_token": "old_guard",
+        }])
+    );
+    assert_eq!(
+        sidecar["advisor_roster"],
+        json!([{
+            "char_id": 1001,
+            "slot": "political_advisor",
+            "ledger": "political_advisor",
+            "idea_token": "POR_salazar_advisor",
+        }])
+    );
+    assert_eq!(
+        sidecar["appointed_advisors"],
+        json!([{
+            "char_id": 1001,
+            "slot": "political_advisor",
+            "ledger": "political_advisor",
+            "idea_token": "POR_salazar_advisor",
+        }])
+    );
     assert!(country.as_object().unwrap().get("politics").is_none());
+}
+
+#[test]
+fn domain47_portrait_rows_stay_excluded_and_retain_prior_state() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let baseline_rows = vec![domain47_lane::CharacterLaneRow::Character(
+        domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        },
+    )];
+    let portrait_rows = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1002,
+            name: None,
+            token: None,
+        }),
+        domain47_lane::CharacterLaneRow::CharacterPortrait(domain47_lane::CharacterPortraitRow {
+            country_tag_db_id: 47,
+            char_id: 1002,
+            role: "civilian",
+            size: "large",
+            gfx: "GFX_portrait_por_1002",
+        }),
+    ];
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &baseline_rows),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &portrait_rows),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_portrait_excluded");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let second = parse(&snaps[1].2);
+    // The portrait-bearing hour is rejected wholesale: the prior hour's
+    // character sidecar is retained and the exclusion is recorded.
+    let sidecar = &second["countries"]["POR"]["extra"]["_r2_characters_leaders_cabinet_live"];
+    assert_eq!(sidecar["characters"][0]["char_id"], json!(1001));
+    assert!(second["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(47)
+            && problem["problem"] == json!("excluded_rows_present")));
 }
 
 #[test]
@@ -2404,6 +2535,138 @@ fn domain47_delta_data_is_unknown_and_does_not_clear_prior_state() {
         .iter()
         .any(|problem| problem["domain_id"] == json!(47)
             && problem["problem"] == json!("delta_unsupported")));
+}
+
+#[test]
+fn folds_division_primary_order_link_fields() {
+    let raw = raw_for(16_959_360);
+    let mut div = Vec::new();
+    divisions_header(&mut div, 4, 0);
+    // div 17: validated army order, instance id 317 in the row tail u32.
+    push_div_row(&mut div, 17, (1 << 5) | (1 << 14), 118, 1, 1, 0, 47);
+    let tail = div.len() - 4;
+    div[tail..].copy_from_slice(&317u32.to_le_bytes());
+    // div 18: army-group-owned order (badge only, no id).
+    push_div_row(&mut div, 18, (1 << 5) | (1 << 15), 119, 1, 1, 0, 47);
+    // div 19: unresolved order pointer (badge only, no id).
+    push_div_row(&mut div, 19, (1 << 5) | (1 << 16), 120, 1, 1, 0, 47);
+    // div 20: no primary order (both flags absent, tail zero).
+    push_div_row(&mut div, 20, 1 << 5, 121, 1, 1, 0, 47);
+
+    let mut stream = Vec::new();
+    push_record(&mut stream, 1, raw, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &div);
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("division_order_link_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let snap = parse(&snaps[0].2);
+    let divisions = snap["divisions"].as_array().unwrap();
+    let by_id = |id: u32| {
+        divisions
+            .iter()
+            .find(|d| d["div_id"] == json!(id))
+            .unwrap_or_else(|| panic!("division {id} missing"))
+    };
+    assert_eq!(by_id(17)["order_instance_id"], json!(317));
+    assert_eq!(by_id(17)["order_link"], json!("army"));
+    assert_eq!(by_id(18)["order_instance_id"], Value::Null);
+    assert_eq!(by_id(18)["order_link"], json!("army_group"));
+    assert_eq!(by_id(19)["order_link"], json!("unresolved"));
+    assert_eq!(by_id(20)["order_link"], Value::Null);
+    assert_eq!(by_id(20)["order_instance_id"], Value::Null);
+}
+
+#[test]
+fn division_order_instance_id_without_flag_fails_fold_closed() {
+    let raw = raw_for(16_959_360);
+    let mut div = Vec::new();
+    divisions_header(&mut div, 1, 0);
+    push_div_row(&mut div, 17, 1 << 5, 118, 1, 1, 0, 47);
+    // Corrupt: id present without the army-order flag.
+    let tail = div.len() - 4;
+    div[tail..].copy_from_slice(&99u32.to_le_bytes());
+
+    let mut stream = Vec::new();
+    push_record(&mut stream, 1, raw, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &div);
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("division_order_link_corrupt_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let snap = parse(&snaps[0].2);
+    // The malformed domain-20 payload must not fold any division rows.
+    assert!(snap["divisions"]
+        .as_array()
+        .map(|rows| rows.is_empty())
+        .unwrap_or(true));
+}
+
+#[test]
+fn division_delete_row_with_order_flag_fails_fold_closed() {
+    // Establish a baseline division, then send a delete row that is malformed
+    // (carries ORDER_ARMY). The delete must NOT apply: the fold fails closed
+    // and the prior division survives.
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+
+    let mut base = Vec::new();
+    divisions_header(&mut base, 1, 0);
+    push_div_row(&mut base, 17, 1 << 5, 118, 1, 1, 0, 47);
+
+    let mut del = Vec::new();
+    divisions_header(&mut del, 1, DELTA);
+    // Deleted row with an illegal ORDER_ARMY flag set.
+    push_div_row(&mut del, 17, DIV_FLAG_DELETED | (1 << 14), 0, 0, 0, 0, 0);
+
+    let mut stream = Vec::new();
+    push_record(&mut stream, 1, raw_a, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &base);
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(&mut stream, 3, raw_b, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &del);
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("division_malformed_delete_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    // Hour B's malformed payload failed closed; the baseline division 17 is
+    // retained rather than deleted.
+    let second = parse(&snaps[1].2);
+    assert!(second["divisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["div_id"] == json!(17)));
 }
 
 #[test]

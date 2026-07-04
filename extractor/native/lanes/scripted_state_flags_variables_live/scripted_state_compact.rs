@@ -2,7 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOMAIN_ID: u16 = 51;
 pub const DOMAIN_NAME: &str = "scripted_state_flags_variables_live";
-pub const SCHEMA_VERSION: u32 = 1;
+/// Bumped to 2 when the measured delayed-event row family (value_kind 6) was
+/// added. The decoder rejects any payload whose header version does not match,
+/// so an older v1 reader fails closed on a v2 payload (with its new kind-6
+/// rows) rather than silently misparsing an unsupported value_kind.
+pub const SCHEMA_VERSION: u32 = 2;
 pub const HEADER_LEN: usize = 64;
 pub const ROW_LEN: usize = 48;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
@@ -25,6 +29,17 @@ pub const VALUE_FLAG_NAMED: u32 = 2;
 pub const VALUE_FLAG_TOKEN_ONLY: u32 = 3;
 pub const VALUE_DELAYED_EVENT_OPAQUE: u32 = 4;
 pub const VALUE_SCRIPTED_GUI_OPAQUE: u32 = 5;
+/// Wave-3 pending delayed-event row (validated CDelayedEvent chain on build
+/// 870ebf; see WAVE3_CRACKS_870EBF_D04.md §5). Field packing reuses the
+/// existing row layout: `owner_id` = owner/originator tag_db_id
+/// (CDelayedEvent+0x18, copy +0xC0); `token_id` = combined event id
+/// (CEvent+0x0C = namespace*100000+index, 17/17 oracle); `date_hour_raw` =
+/// scope tag_db_id (CDelayedEvent+0x18); `value_raw` = scope.random seed pair
+/// (+0x1C low32 | +0x20 high32). The countdown/absolute due-date is a
+/// documented RESIDUAL (not a plain scalar in CDelayedEvent[0..0x200]) and is
+/// emitted ABSENT — never fabricated. This is a MEASURED row family, distinct
+/// from the fixture-blocked opaque badge (VALUE_DELAYED_EVENT_OPAQUE).
+pub const VALUE_DELAYED_EVENT: u32 = 6;
 
 pub const DELAYED_EVENTS_BADGE_KEY: &str = "root_unresolved:delayed_events";
 pub const SCRIPTED_GUI_BADGE_KEY: &str = "root_unresolved:scripted_gui_open_state";
@@ -34,17 +49,27 @@ pub const ROW_FLAG_TOKEN_PRESENT: u32 = 1 << 1;
 pub const ROW_FLAG_VALUE_PRESENT: u32 = 1 << 2;
 pub const ROW_FLAG_DATE_PRESENT: u32 = 1 << 3;
 pub const ROW_FLAG_DELETED: u32 = 1 << 4;
+/// Wave-3 delayed-event due-remaining-hours present (rides the previously
+/// reserved row u32 at cursor+40). Absent when a torn/out-of-bounds due read
+/// was badged absent (absent != 0).
+pub const ROW_FLAG_DELAYED_DUE_PRESENT: u32 = 1 << 5;
 
 pub const MAX_KEY_BYTES: usize = 512;
 pub const MAX_KEY_TABLE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_COUNTRY_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_STATE_ID: u32 = 65_535;
+/// Combined event id = namespace*100000 + index (CEvent+0x0C). A live event
+/// always has a nonzero namespace, so the minimum valid combined id is
+/// 100_000; the ceiling bounds namespace < 100_000 (id space 100000*100000).
+pub const MIN_DELAYED_EVENT_COMBINED_ID: u32 = 100_000;
+pub const MAX_DELAYED_EVENT_COMBINED_ID: u32 = 100_000 * 42_949; // < u32::MAX
 
 const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_KEY_PRESENT
     | ROW_FLAG_TOKEN_PRESENT
     | ROW_FLAG_VALUE_PRESENT
     | ROW_FLAG_DATE_PRESENT
-    | ROW_FLAG_DELETED;
+    | ROW_FLAG_DELETED
+    | ROW_FLAG_DELAYED_DUE_PRESENT;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptedStateHeader {
@@ -66,6 +91,9 @@ pub struct ScriptedStateRow {
     pub value_raw: Option<i64>,
     pub date_hour_raw: Option<i32>,
     pub deleted: bool,
+    /// Wave-3 delayed-event due-remaining-hours (CDelayedEvent+0xC4). Only set
+    /// on VALUE_DELAYED_EVENT rows; badged absent on a torn/out-of-bounds read.
+    pub delayed_due_hours: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -91,7 +119,10 @@ pub fn encode_payload(header: &ScriptedStateHeader, rows: &[ScriptedStateRow]) -
         if row.value_kind == VALUE_FLAG_NAMED || row.value_kind == VALUE_FLAG_TOKEN_ONLY {
             flag_rows = flag_rows.saturating_add(1);
         }
-        if row.key.is_none() && row.token_id.is_some() {
+        // Delayed-event rows carry the event id in token_id but are NOT
+        // token-only flags; exclude them from that counter (keeps the
+        // STATUS_FLAG_NAMES_PARTIAL gate coupled to real flags only).
+        if row.key.is_none() && row.token_id.is_some() && row.value_kind != VALUE_DELAYED_EVENT {
             token_only_rows = token_only_rows.saturating_add(1);
         }
         if let Some(key) = row.key.as_ref() {
@@ -144,6 +175,9 @@ pub fn encode_payload(header: &ScriptedStateHeader, rows: &[ScriptedStateRow]) -
         if row.deleted {
             flags |= ROW_FLAG_DELETED;
         }
+        if row.delayed_due_hours.is_some() {
+            flags |= ROW_FLAG_DELAYED_DUE_PRESENT;
+        }
         payload.extend_from_slice(&row.scope_kind.to_le_bytes());
         payload.extend_from_slice(&row.owner_id.to_le_bytes());
         payload.extend_from_slice(&row.value_kind.to_le_bytes());
@@ -153,7 +187,10 @@ pub fn encode_payload(header: &ScriptedStateHeader, rows: &[ScriptedStateRow]) -
         payload.extend_from_slice(&row.token_id.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.date_hour_raw.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.value_raw.unwrap_or(0).to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        // Reserved slot 0 (cursor+40) now carries the delayed-event
+        // due-remaining-hours when ROW_FLAG_DELAYED_DUE_PRESENT is set; 0 with
+        // the flag clear (historical/other rows).
+        payload.extend_from_slice(&row.delayed_due_hours.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
     }
     payload.extend_from_slice(&key_bytes);
@@ -282,7 +319,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
     let mut decoded_variable_rows = 0usize;
     let mut decoded_flag_rows = 0usize;
     let mut decoded_token_only_rows = 0usize;
+    let mut decoded_delayed_event_opaque_rows = 0usize;
     let mut decoded_delayed_event_rows = 0usize;
+    let mut decoded_delayed_event_due_rows = 0usize;
     let mut decoded_scripted_gui_rows = 0usize;
     let mut seen_rows = BTreeSet::new();
 
@@ -296,7 +335,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
         let key_len = read_u32_le(payload, cursor + 20) as usize;
         let token_id = read_u32_le(payload, cursor + 24);
         let date_hour_raw = read_i32_le(payload, cursor + 28);
-        let _value_raw = read_i64_le(payload, cursor + 32);
+        let value_raw = read_i64_le(payload, cursor + 32);
         let reserved_row0 = read_u32_le(payload, cursor + 40);
         let reserved_row1 = read_u32_le(payload, cursor + 44);
 
@@ -307,10 +346,30 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
         }
         validate_scope(offset, row_index, scope_kind, owner_id, &mut summary);
         validate_value_kind(offset, row_index, value_kind, flags, token_id, &mut summary);
-        if reserved_row0 != 0 || reserved_row1 != 0 {
+        // Reserved slot 0 (cursor+40) now carries the delayed-event due hours
+        // when ROW_FLAG_DELAYED_DUE_PRESENT is set; otherwise it must be 0.
+        let has_delayed_due = flags & ROW_FLAG_DELAYED_DUE_PRESENT != 0;
+        if !has_delayed_due && reserved_row0 != 0 {
             summary.parse_errors.push(format!(
-                "offset {offset}: scripted state row {row_index} reserved fields are nonzero"
+                "offset {offset}: scripted state row {row_index} has due hours without the due flag"
             ));
+        }
+        if reserved_row1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: scripted state row {row_index} reserved field is nonzero"
+            ));
+        }
+        if has_delayed_due {
+            if value_kind != VALUE_DELAYED_EVENT {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: scripted state row {row_index} sets due-hours flag on a non-delayed-event row"
+                ));
+            }
+            if reserved_row0 > compact_contract::build_profile::DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} due hours {reserved_row0} out of range"
+                ));
+            }
         }
         if flags & ROW_FLAG_KEY_PRESENT != 0 {
             if key_len == 0 {
@@ -368,11 +427,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
         if value_kind == VALUE_FLAG_NAMED || value_kind == VALUE_FLAG_TOKEN_ONLY {
             decoded_flag_rows = decoded_flag_rows.saturating_add(1);
         }
-        if key_len == 0 && token_id != 0 {
+        if key_len == 0 && token_id != 0 && value_kind != VALUE_DELAYED_EVENT {
             decoded_token_only_rows = decoded_token_only_rows.saturating_add(1);
         }
         if value_kind == VALUE_DELAYED_EVENT_OPAQUE {
-            decoded_delayed_event_rows = decoded_delayed_event_rows.saturating_add(1);
+            decoded_delayed_event_opaque_rows = decoded_delayed_event_opaque_rows.saturating_add(1);
             validate_opaque_badge_key(
                 offset,
                 row_index,
@@ -381,6 +440,40 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
                 DELAYED_EVENTS_BADGE_KEY,
                 &mut summary,
             );
+        }
+        if value_kind == VALUE_DELAYED_EVENT {
+            decoded_delayed_event_rows = decoded_delayed_event_rows.saturating_add(1);
+            if has_delayed_due {
+                decoded_delayed_event_due_rows = decoded_delayed_event_due_rows.saturating_add(1);
+            }
+            // Combined event id lives in token_id; owner/scope is the country
+            // tag_db_id in owner_id, echoed in date_hour_raw (scope tag). The
+            // scope.random seed rides in value_raw. The due-remaining-hours
+            // (reserved slot 0) is validated above when present. Every bound
+            // here mirrors the collector emit AND world_fold's fold validation
+            // so a malformed row is rejected at the SAME layer boundary in all
+            // three (gate parity: country scope + scope == owner).
+            if scope_kind != SCOPE_COUNTRY {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} must be country-scoped, got scope {scope_kind}"
+                ));
+            }
+            if token_id < MIN_DELAYED_EVENT_COMBINED_ID
+                || token_id > MAX_DELAYED_EVENT_COMBINED_ID
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} has out-of-range event id {token_id}"
+                ));
+            }
+            if date_hour_raw <= 0 || date_hour_raw as u32 > MAX_COUNTRY_TAG_DB_ID {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} has invalid scope tag {date_hour_raw}"
+                ));
+            } else if date_hour_raw as u32 != owner_id {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} scope tag {date_hour_raw} != owner {owner_id}"
+                ));
+            }
         }
         if value_kind == VALUE_SCRIPTED_GUI_OPAQUE {
             decoded_scripted_gui_rows = decoded_scripted_gui_rows.saturating_add(1);
@@ -393,6 +486,17 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
                 &mut summary,
             );
         }
+        // Delayed-event rows can legitimately repeat the same (owner,
+        // event_id) with a distinct scope.random seed (a country can have the
+        // same event delayed more than once); the seed rides in value_raw and
+        // is the oracle's distinguishing join field, so fold it into the
+        // duplicate-identity key. Non-delayed rows keep their historical
+        // identity (seed component 0).
+        let seed_discriminator: i64 = if value_kind == VALUE_DELAYED_EVENT {
+            value_raw
+        } else {
+            0
+        };
         let row_key = (
             scope_kind,
             owner_id,
@@ -400,6 +504,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
             key_offset as u32,
             key_len as u32,
             token_id,
+            seed_discriminator,
         );
         if !seen_rows.insert(row_key) {
             summary.parse_errors.push(format!(
@@ -428,15 +533,26 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
             "offset {offset}: scripted state token-only flag rows require STATUS_FLAG_NAMES_PARTIAL"
         ));
     }
-    if decoded_delayed_event_rows > 0 && status_flags & STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED == 0 {
+    // The OPAQUE delayed-event badge (fixture-blocked) is coupled to the
+    // UNRESOLVED status bit. A MEASURED delayed-event row family is the
+    // opposite: it must NOT set the unresolved bit (the root is resolved).
+    if decoded_delayed_event_opaque_rows > 0
+        && status_flags & STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED == 0
+    {
         summary.parse_errors.push(format!(
             "offset {offset}: delayed-event opaque rows require STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED"
         ));
     }
-    if status_flags & STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED != 0 && decoded_delayed_event_rows == 0
+    if status_flags & STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED != 0
+        && decoded_delayed_event_opaque_rows == 0
     {
         summary.parse_errors.push(format!(
             "offset {offset}: STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED set without delayed-event opaque badge row"
+        ));
+    }
+    if decoded_delayed_event_rows > 0 && decoded_delayed_event_opaque_rows > 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: measured delayed-event rows and the opaque badge are mutually exclusive"
         ));
     }
     if decoded_scripted_gui_rows > 0 && status_flags & STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED == 0 {
@@ -452,7 +568,17 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
     add_unit(
         &mut summary,
         "scripted_delayed_event_opaque_rows",
+        decoded_delayed_event_opaque_rows,
+    );
+    add_unit(
+        &mut summary,
+        "scripted_delayed_event_rows",
         decoded_delayed_event_rows,
+    );
+    add_unit(
+        &mut summary,
+        "scripted_delayed_event_due_rows",
+        decoded_delayed_event_due_rows,
     );
     add_unit(
         &mut summary,
@@ -554,6 +680,34 @@ fn validate_value_kind(
                 ));
             }
         }
+        VALUE_DELAYED_EVENT => {
+            // Measured delayed-event row: the combined event id rides in
+            // token_id (token flag set), the scope tag in date_hour_raw (date
+            // flag set), the scope.random seed in value_raw (value flag set);
+            // it carries NO string key. The due-date is absent. The seed value
+            // flag is REQUIRED so the seed rides an explicit present-flag
+            // rather than defaulting to a fabricated 0 downstream.
+            if flags & ROW_FLAG_TOKEN_PRESENT == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} lacks event id token"
+                ));
+            }
+            if flags & ROW_FLAG_DATE_PRESENT == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} lacks scope tag"
+                ));
+            }
+            if flags & ROW_FLAG_VALUE_PRESENT == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} lacks scope random seed"
+                ));
+            }
+            if flags & ROW_FLAG_KEY_PRESENT != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: delayed-event row {row_index} must not carry a string key"
+                ));
+            }
+        }
         _ => summary.parse_errors.push(format!(
             "offset {offset}: scripted state row {row_index} has unknown value_kind {value_kind}"
         )),
@@ -592,6 +746,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn row_len_literal_is_stable() {
+        assert_eq!(ROW_LEN, 48);
+    }
+
+    #[test]
     fn decodes_country_variables_and_token_flags() {
         let rows = vec![
             ScriptedStateRow {
@@ -603,6 +762,7 @@ mod tests {
                 value_raw: Some(5_250_000),
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
             ScriptedStateRow {
                 scope_kind: SCOPE_COUNTRY,
@@ -613,6 +773,7 @@ mod tests {
                 value_raw: Some(-1_073_741_542),
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
             ScriptedStateRow {
                 scope_kind: SCOPE_COUNTRY,
@@ -623,6 +784,7 @@ mod tests {
                 value_raw: None,
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
         ];
         let header = ScriptedStateHeader {
@@ -700,6 +862,7 @@ mod tests {
             value_raw: Some(1),
             date_hour_raw: None,
             deleted: false,
+            delayed_due_hours: None,
         }];
         let header = ScriptedStateHeader {
             elapsed_wall_ms: 1,
@@ -752,6 +915,7 @@ mod tests {
                 value_raw: None,
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
             ScriptedStateRow {
                 scope_kind: SCOPE_GLOBAL,
@@ -762,6 +926,7 @@ mod tests {
                 value_raw: None,
                 date_hour_raw: None,
                 deleted: false,
+                delayed_due_hours: None,
             },
         ];
         let status_flags = STATUS_SOURCE_UNAVAILABLE
@@ -832,6 +997,7 @@ mod tests {
             value_raw: None,
             date_hour_raw: None,
             deleted: false,
+            delayed_due_hours: None,
         }];
         let header = ScriptedStateHeader {
             elapsed_wall_ms: 1,
@@ -860,6 +1026,7 @@ mod tests {
             value_raw: None,
             date_hour_raw: None,
             deleted: false,
+            delayed_due_hours: None,
         }];
         let header = ScriptedStateHeader {
             elapsed_wall_ms: 1,
@@ -889,6 +1056,7 @@ mod tests {
             value_raw: Some(1),
             date_hour_raw: Some(13_443),
             deleted: false,
+            delayed_due_hours: None,
         }];
         let header = ScriptedStateHeader {
             elapsed_wall_ms: 1,

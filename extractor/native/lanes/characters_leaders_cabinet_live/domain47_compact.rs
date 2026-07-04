@@ -1572,6 +1572,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn row_len_literals_are_stable() {
+        // Pin the per-kind row-length literals (stale-const guard).
+        assert_eq!(CHARACTER_ROW_LEN, 20);
+        assert_eq!(UNIT_LEADER_ROW_LEN, 42);
+        assert_eq!(TRAIT_ROW_LEN, 16);
+        assert_eq!(COUNTRY_LEADER_ROLE_ROW_LEN, 20);
+        assert_eq!(ACTIVE_RULER_ROW_LEN, 28);
+        assert_eq!(ADVISOR_ROW_LEN, 24);
+        assert_eq!(CHARACTER_PORTRAIT_ROW_LEN, 24);
+    }
+
+    #[test]
     fn encodes_full_character_leader_cabinet_slice() {
         let rows = vec![
             CharacterLaneRow::Character(CharacterRow {
