@@ -58,9 +58,14 @@ STILL OPEN / IN PROGRESS:
 - Game-speed root (C2) → **DEFERRED to fixture B0 (or deeper disasm)**: mechanism found
   (CSet/Increase/DecreaseGameSpeedCommand + GAME_SPEED_SECONDS), +0x66C retired as a
   false candidate; value has no paused oracle. Cheapest close = the 10s B0 speed-tap.
-- Capitulation/peace/war-detail, land/naval/air combat DETAIL, reinforcement reason,
-  breakthrough state, scripted-state coverage audit → the **FINAL_CRACK_SWEEP_2026-07-04.md**
-  no-user sweep (in progress).
+- Capitulation/war-detail, land/naval/air combat DETAIL, reinforcement reason,
+  breakthrough state, scripted-state audit → **DONE (FINAL_SWEEP_RESULTS_2026-07-04.md)**:
+  capitulation CRACKED + orchestrator-verified (`D=u64[CCountry+0xF88]`, capitulated u8
+  @D+0x2E0 = exact 15/15 melt set; legitimacy/dates; war pool 958/958); land combat
+  CRACKED (CCombatSide 0x29913C0, 100/100); naval combat CRACKED (CNavalCombatant
+  0x29CD298, 8/8); reinforcement-reason + surrender_progress DERIVED; peace_conference
+  absent; breakthrough/land-tactic PARTIAL (bounded no-user RE); D51 scripted-state
+  coverage complete. No un-attempted memory category remains.
 - Genuine USER-fixture floor (4): hub motorization level, focus-paused bit, convoy/port
   PRESSURE, MP chat/hotjoin. Plus the fine per-entity combat killer (1 event).
 - Architecture: capture is HOURLY SNAPSHOTS; a real-time delta/event stream is a deferred
