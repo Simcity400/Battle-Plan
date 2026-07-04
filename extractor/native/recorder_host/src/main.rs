@@ -3486,6 +3486,9 @@ fn decode_compact_country_identity_data_payload(
     add_compact_domain_data_unit(summary, 18, "country_identity_rows", row_count);
     let mut cursor = 20usize;
     let mut seen_tag_ids = BTreeSet::new();
+    let mut cosmetic_present_rows = 0usize;
+    let mut cosmetic_null_rows = 0usize;
+    let mut cosmetic_absent_rows = 0usize;
     for row_index in 0..row_count {
         if cursor + 4 > payload.len() {
             summary.parse_errors.push(format!(
@@ -3504,6 +3507,44 @@ fn decode_compact_country_identity_data_payload(
                 return;
             }
         };
+        // Wave-4 cosmetic tag: 1-byte marker (0 absent / 1 null / 2 present),
+        // then a length-prefixed string only when present.
+        if cursor >= payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_identity data row {row_index} truncated before cosmetic marker"
+            ));
+            return;
+        }
+        let cosmetic_marker = payload[cursor];
+        cursor += 1;
+        match cosmetic_marker {
+            0 => cosmetic_absent_rows += 1,
+            1 => cosmetic_null_rows += 1,
+            2 => {
+                cosmetic_present_rows += 1;
+                match read_compact_string(payload, &mut cursor, "country_identity cosmetic_tag") {
+                    Ok(cosmetic) => {
+                        if cosmetic.is_empty() {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: country_identity data row {row_index} has present cosmetic marker with empty string"
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: country_identity data row {row_index}: {err}"
+                        ));
+                        return;
+                    }
+                }
+            }
+            other => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: country_identity data row {row_index} has invalid cosmetic marker {other}"
+                ));
+                return;
+            }
+        }
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: country_identity data row {row_index} has zero tag_db_id"
@@ -3519,6 +3560,24 @@ fn decode_compact_country_identity_data_payload(
             ));
         }
     }
+    add_compact_domain_data_unit(
+        summary,
+        18,
+        "country_cosmetic_tag_rows",
+        cosmetic_present_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        18,
+        "country_cosmetic_null_rows",
+        cosmetic_null_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        18,
+        "country_cosmetic_absent_rows",
+        cosmetic_absent_rows,
+    );
     if cursor != payload.len() {
         summary.parse_errors.push(format!(
             "offset {offset}: country_identity data payload has {} trailing byte(s) after {row_count} row(s)",
@@ -13761,6 +13820,70 @@ fn last_error() -> Dword {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn country_identity_payload_with_cosmetic(rows: &[(u32, &str, u8, Option<&str>)]) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        for (tag_db_id, tag, marker, cosmetic) in rows {
+            p.extend_from_slice(&tag_db_id.to_le_bytes());
+            p.extend_from_slice(&(tag.len() as u16).to_le_bytes());
+            p.extend_from_slice(tag.as_bytes());
+            p.push(*marker);
+            if let Some(cosmetic) = cosmetic {
+                p.extend_from_slice(&(cosmetic.len() as u16).to_le_bytes());
+                p.extend_from_slice(cosmetic.as_bytes());
+            }
+        }
+        p
+    }
+
+    #[test]
+    fn country_identity_decode_counts_cosmetic_markers() {
+        let payload = country_identity_payload_with_cosmetic(&[
+            (47, "GER", 2, Some("GES")),
+            (2, "ENG", 1, None),
+            (3, "FRA", 0, None),
+        ]);
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(18).or_default();
+        decode_compact_country_identity_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain.get(&18).unwrap().data_units_total;
+        assert_eq!(units.get("country_cosmetic_tag_rows").copied(), Some(1));
+        assert_eq!(units.get("country_cosmetic_null_rows").copied(), Some(1));
+        assert_eq!(units.get("country_cosmetic_absent_rows").copied(), Some(1));
+    }
+
+    #[test]
+    fn country_identity_decode_rejects_invalid_cosmetic_marker() {
+        let payload = country_identity_payload_with_cosmetic(&[(47, "GER", 7, None)]);
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(18).or_default();
+        decode_compact_country_identity_data_payload(0, &payload, &mut summary);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|e| e.contains("invalid cosmetic marker 7")));
+    }
+
+    #[test]
+    fn country_identity_decode_rejects_present_marker_with_empty_string() {
+        let payload = country_identity_payload_with_cosmetic(&[(47, "GER", 2, Some(""))]);
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(18).or_default();
+        decode_compact_country_identity_data_payload(0, &payload, &mut summary);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|e| e.contains("present cosmetic marker with empty string")));
+    }
 
     fn append_plic_trailer(payload: &mut Vec<u8>, countries: &[(u32, Vec<u32>)]) {
         let id_rows: usize = countries.iter().map(|(_, ids)| ids.len()).sum();

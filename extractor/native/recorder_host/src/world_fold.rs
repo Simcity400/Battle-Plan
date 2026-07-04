@@ -660,6 +660,11 @@ pub struct WorldFold {
     /// across hours and full-replaced whenever a domain-18 record arrives. Used
     /// at snapshot-build time to re-key country-valued fields by TAG.
     tag_by_db_id: BTreeMap<u32, String>,
+    /// Wave-4 cosmetic tag: tag_db_id -> cosmetic override. `Some(tag)` = an
+    /// active cosmetic tag; `None` = validated no-override (folds `null`). A
+    /// country whose cosmetic field was UNREADABLE (absent) is NOT in this map
+    /// at all (folds absent, never null/empty). Full-replaced with the D18 map.
+    cosmetic_by_db_id: BTreeMap<u32, Option<String>>,
     /// domains that fed at least one row this hour (ordered, deduped)
     domains_this_hour: Vec<u16>,
     /// decoded domain data records received this hour that are not folded into
@@ -807,6 +812,7 @@ impl WorldFold {
             land_combats_known_this_hour: false,
             land_combats_unknown_note_this_hour: None,
             tag_by_db_id: BTreeMap::new(),
+            cosmetic_by_db_id: BTreeMap::new(),
             domains_this_hour: Vec::new(),
             unfolded_domains_this_hour: BTreeSet::new(),
             domain_problems_this_hour: Vec::new(),
@@ -1655,6 +1661,22 @@ impl WorldFold {
             self.resolve_country_fields(&mut out, &mut unresolved);
             if self.fold_domain_unknown(SCRIPTED_STATE_DOMAIN_ID) {
                 mask_scripted_country_extra(&mut out);
+            }
+            // Wave-4 cosmetic tag (D18): attach countries[*].cosmetic_tag from
+            // the D18 cosmetic map. Present in the map => Some(tag)->string,
+            // None->null; a country ABSENT from the map (unreadable cosmetic
+            // field, or no D18 record yet) gets NO cosmetic_tag key at all
+            // (absent != null != empty).
+            if let Ok(id) = numeric_key.parse::<u32>() {
+                if let Some(cosmetic) = self.cosmetic_by_db_id.get(&id) {
+                    out.insert(
+                        "cosmetic_tag".into(),
+                        match cosmetic {
+                            Some(tag) => json!(tag),
+                            None => Value::Null,
+                        },
+                    );
+                }
             }
             countries.insert(key, Value::Object(out));
         }
@@ -3772,6 +3794,7 @@ impl WorldFold {
         }
         let mut cursor = 20usize;
         let mut fresh: BTreeMap<u32, String> = BTreeMap::new();
+        let mut fresh_cosmetic: BTreeMap<u32, Option<String>> = BTreeMap::new();
         for _ in 0..row_count {
             need(payload, cursor + 4, "country_identity row tag_db_id")?;
             let tag_db_id = read_u32(payload, cursor);
@@ -3784,6 +3807,32 @@ impl WorldFold {
                 return Err(format!("country_identity row {tag_db_id} with empty tag"));
             }
             fresh.insert(tag_db_id, tag);
+            // Wave-4 cosmetic tag: 1-byte marker then the string only when
+            // present. absent(0) => not in the map (folds absent); null(1) =>
+            // map[id] = None (folds null); present(2) => map[id] = Some(tag).
+            need(payload, cursor + 1, "country_identity cosmetic marker")?;
+            let marker = payload[cursor];
+            cursor += 1;
+            match marker {
+                0 => {}
+                1 => {
+                    fresh_cosmetic.insert(tag_db_id, None);
+                }
+                2 => {
+                    let cosmetic = read_string(payload, &mut cursor, "country_identity cosmetic")?;
+                    if cosmetic.is_empty() {
+                        return Err(format!(
+                            "country_identity row {tag_db_id} present cosmetic marker with empty string"
+                        ));
+                    }
+                    fresh_cosmetic.insert(tag_db_id, Some(cosmetic));
+                }
+                other => {
+                    return Err(format!(
+                        "country_identity row {tag_db_id} invalid cosmetic marker {other}"
+                    ));
+                }
+            }
         }
         if cursor != payload.len() {
             return Err(format!(
@@ -3793,6 +3842,7 @@ impl WorldFold {
         }
         // full-replace: the domain re-sends the complete live-country map each frame.
         self.tag_by_db_id = fresh;
+        self.cosmetic_by_db_id = fresh_cosmetic;
         Ok(())
     }
 

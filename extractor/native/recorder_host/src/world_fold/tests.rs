@@ -68,14 +68,33 @@ fn frame_end_payload() -> Vec<u8> {
 
 /// country_identity (domain 18): header + [tag_db_id u32][u16-len TAG] rows.
 fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
+    // Wave-4: default cosmetic marker = null (1) for every row — the ~50
+    // existing call sites don't care about cosmetic tags.
+    let with_cosmetic: Vec<(u32, &str, Option<&str>)> =
+        rows.iter().map(|(id, tag)| (*id, *tag, None)).collect();
+    country_identity_payload_with_cosmetic(&with_cosmetic)
+}
+
+/// Wave-4: country_identity payload with per-row cosmetic tag. The third
+/// tuple element is `Some(tag)` for a cosmetic override (marker 2 + string),
+/// or `None` for validated-null (marker 1). (Marker 0 = absent is exercised
+/// by the dedicated absent test, which builds the payload by hand.)
+fn country_identity_payload_with_cosmetic(rows: &[(u32, &str, Option<&str>)]) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&0u64.to_le_bytes()); // wall
     p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
     p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
     p.extend_from_slice(&0u32.to_le_bytes()); // status
-    for (tag_db_id, tag) in rows {
+    for (tag_db_id, tag, cosmetic) in rows {
         p.extend_from_slice(&tag_db_id.to_le_bytes());
         push_str(&mut p, tag);
+        match cosmetic {
+            Some(cosmetic) => {
+                p.push(2); // present
+                push_str(&mut p, cosmetic);
+            }
+            None => p.push(1), // null
+        }
     }
     p
 }
@@ -4008,6 +4027,68 @@ fn country_identity_unmapped_id_stays_numeric_and_unresolved() {
     assert!(gaps.iter().any(|g| g == "48"));
     let notes = s["provenance"]["notes"].as_array().unwrap();
     assert!(notes.iter().any(|n| n.as_str().unwrap().contains("48")));
+}
+
+#[test]
+fn country_identity_cosmetic_tag_present_null_and_absent() {
+    // GER(47): cosmetic override "GES" (present). ENG(2): validated null.
+    // FRA(3): ABSENT (marker 0) — hand-built row. Each country also gets a
+    // fuel row so it materializes as a country object.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let mut push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+
+    // Build the D18 payload by hand so FRA can carry the absent marker (0).
+    let mut ident = Vec::new();
+    ident.extend_from_slice(&0u64.to_le_bytes()); // wall
+    ident.extend_from_slice(&3u32.to_le_bytes()); // row_count
+    ident.extend_from_slice(&3u32.to_le_bytes()); // changed
+    ident.extend_from_slice(&0u32.to_le_bytes()); // status
+                                                  // GER present -> "GES"
+    ident.extend_from_slice(&47u32.to_le_bytes());
+    push_str(&mut ident, "GER");
+    ident.push(2);
+    push_str(&mut ident, "GES");
+    // ENG null
+    ident.extend_from_slice(&2u32.to_le_bytes());
+    push_str(&mut ident, "ENG");
+    ident.push(1);
+    // FRA absent
+    ident.extend_from_slice(&3u32.to_le_bytes());
+    push_str(&mut ident, "FRA");
+    ident.push(0);
+    push(&mut stream, &mut seq, 18, &ident);
+
+    // fuel rows so each country materializes.
+    for tag in [47u32, 2, 3] {
+        let fuel = fuel_payload(&[(tag, 100, 200, 0, 0)]);
+        push(&mut stream, &mut seq, 10, &fuel);
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("cosmetic");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+
+    // GER: cosmetic override present.
+    assert_eq!(s["countries"]["GER"]["cosmetic_tag"], json!("GES"));
+    // ENG: validated null (key present, value null).
+    assert!(s["countries"]["ENG"].get("cosmetic_tag").is_some());
+    assert_eq!(s["countries"]["ENG"]["cosmetic_tag"], Value::Null);
+    // FRA: absent -> NO cosmetic_tag key at all (absent != null).
+    assert!(s["countries"]["FRA"].get("cosmetic_tag").is_none());
 }
 
 #[test]
