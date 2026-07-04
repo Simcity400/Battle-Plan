@@ -10,8 +10,7 @@ NEXT, and the operating protocol so nothing is lost.
 - Python probes: `PYTHONPATH=extractor/memory_reader`. Rust workspace: `extractor/native`. `extractor/native/runs/` is GITIGNORED (evidence; read by absolute path).
 
 ## RUNNING NOW (background)
-- **Cracking agent `a2da727701ea4d8d7`** (Fable, discovery-only) — resumed on the THREE not-user-blocked deep-reverse items: (1) operations/spy-intel-map/diplomacy-action-queue containers (domain 53), (2) market-stockpile `CCountry->CEquipmentVariantPool` owner chain (reach 70/70 vs market.json), (3) projects/rewards per-country container for owner-join. Writes evidence to `runs/attemptcrack_*/`, NO source edits, NO commit. Resume/continue via `SendMessage` to that agentId. It will notify on completion; VERIFY its cracks (offsets vs oracle) + capture into a doc before any wiring.
-- No other subagents running. Wiring agent `a11abf9bdb027a90c` is DONE (all 3 domains landed + committed).
+- None. Cracking agent `a2da727701ea4d8d7` is DONE (wave-5: all three items cracked; independently verified + Codex-gated; see `WAVE5_CRACKS_870EBF_D04.md`). Wiring agent `a11abf9bdb027a90c` is DONE.
 
 ## GIT STATE — HEAD `3dfcd2776`, working tree CLEAN (only gitignored runs/ evidence untracked)
 Session commits (newest first), all gated (my own `cargo test --workspace` + independent adversarial Codex gate + paused-capture emission proof + `pack_replay verify` before each commit):
@@ -33,7 +32,7 @@ Session commits (newest first), all gated (my own `cargo test --workspace` + ind
 - Dispositioned (proof-backed partial rejections): weather causal internals, mission/decision scripted state, on-action/effect runtime, direct focus/decision events.
 
 ## NEXT — priority order
-1. **When cracking agent `a2da727701ea4d8d7` returns**: verify its 3 results (ops/market/projects) vs oracle + Codex-gate; append to `WAVE4_ATTEMPTCRACK_870EBF_D04.md`.
+1. ~~Verify cracking agent results~~ DONE — wave-5 verified + gated, dispositions in `WAVE5_CRACKS_870EBF_D04.md`. Wire-ready from wave-5: projects started/completed+owner-join (extend D41); operations associated-country rows (D53 sidecar, provisional badge). HELD: market per-country attribution (needs manager owner-chain disassembly — 23 code xrefs to pool vtable 0x27330A0). Banked partials: diplo-queue root CCountry+0x4E0 (payload decode remains), intel-graph container (not surfaced).
 2. **Wire the 6 wave-4 cracks into production** (same process as wave-3: lane compact record + collector read/schedule + recorder decode + world_fold + tolerance + tests + paused-capture proof + my adversarial gate). Validated offsets in `extractor/documents/WAVE4_ATTEMPTCRACK_870EBF_D04.md`:
    - Naval missions/home-base/repair (CTaskForce+0x364 mission, +0x1E0 location, CFleet+0xD8 home_base, +0x4B0 repair_target, etc.)
    - Ace identity+wing-assignment+death (CAceEntry +0x0C/+0xF0/+0x158/+0x164/+0x168; CAirWing+0x2DC assigned ace)
@@ -42,7 +41,18 @@ Session commits (newest first), all gated (my own `cargo test --workspace` + ind
    - Attrition supply signals (CDivision+0x600, +0x5F8)
    - (delayed-event due-date already wired in commit 02ea83faf)
    Delegate to a Fable subagent using commit `02ea83faf` / `f68a6deed` as the template; ONE domain at a time, green after each.
-3. **USER IN-GAME FIXTURES** — the only genuinely user-blocked items left (short list):
+3. **Replay-layer requested items (N1–N5)** — reconciled from the replay agent's
+   `REPLAY_DATA_REQUIREMENTS.md` / R1–R10; full analysis + offsets in
+   `extractor/documents/REPLAY_REQUESTS_RECONCILIATION_2026-07-04.md`:
+   - N1 [WIRE] cosmetic_tag (CCountry+0x1488, validated) → D18 compact + fold §3.12 (R8)
+   - N2 [PORT+WIRE] naval supremacy per region — python-SOLVED chain in `memory_reader/naval_air` → native compact domain + fold (R6)
+   - N3 [CRACK] game-speed root (only genuinely new reverse item; pause already live in D57) (R4)
+   - N4 [PACKAGE] localisation static bundles: focus/state/country names incl. cosmetic overrides (R3)
+   - N5 [VERIFY/FOLD] naval per-hour consumable rows: ship_count + dominant_hull_class via D29→D56 aggregation (R9.1)
+   Already-covered asks (their info stale — tell replay layer): R1 snapshots SHIPPED,
+   R7 weather = `map._r2_weather_live`, R9.2 air = `_r2_air_region_activity`,
+   naval combat rows live since `f68a6deed`.
+4. **USER IN-GAME FIXTURES** — the only genuinely user-blocked items left (short list):
    - Set ONE supply hub to a non-2 motorization level (currently all level 2) -> unblocks hub motorization level offset.
    - Pause ONE national focus (none currently paused) -> unblocks focus-paused bit.
    - Have live AIR + NAVAL combat actively running -> unblocks air kill attribution + convoy combat losses (need combat ticks).
