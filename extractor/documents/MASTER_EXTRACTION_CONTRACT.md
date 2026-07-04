@@ -35,7 +35,9 @@ CRACKED (validated, WIRING queued — not yet in the container):
   5/5 recipients / 7/7 actions** (CRACK_QUEUE_RESULTS §C3).
 - Market stockpile + per-country owner chain: `CCountry+0xFB8`→wrapper→pool (vt 0x27330A0),
   i64 amounts → **cracked 70/70 by pointer** (CRACK_QUEUE_RESULTS §C1; WAVE5 §1).
-- Cosmetic-tag live stream (`CCountry+0x1488`) → **cracked, wiring queued** (D18).
+- Cosmetic-tag live stream (`CCountry+0x1488`) → **PRODUCTION_SLICE_DONE** (D18,
+  commit 5f7c75666; 29/29 live-exact vs melt; tri-state string|null|absent — schema
+  delta to replay layer that §3.12 becomes nullable).
 - Strategic-redeploy (`CDivision+0x29F`, 220==220), division current manpower
   (`CDivision+0x3D0→+4`, 2359/2359) + cumulative losses (`+0x668`) → **cracked**
   (WALL_CRACK_RESULTS).

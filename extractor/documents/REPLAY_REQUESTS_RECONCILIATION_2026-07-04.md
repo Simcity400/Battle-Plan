@@ -70,15 +70,23 @@ plus per-province temperature/precipitation raw values, folded under
 parity, causal internals) do not block the replay ask. **Action: none — point
 replay layer at `map._r2_weather_live`.**
 
-### R8 — Live cosmetic-tag stream — **CRACKED, wire needed**
-The collector already reads per-country `cosmetic_tag` live at
-`CCountry+0x1488` with token validation (`collector/src/lib.rs:237`,
-`34349-34351`, `38250-38263`) — but only on the legacy raw JSON path.
-`recorder_host` has zero cosmetic handling, and compact domain 18
-`country_identity` explicitly omits it (registry row 18). **Backlog item N1
-(wire: add cosmetic_tag to D18 compact rows + world_fold into §3.12)** — low
-effort, validated offset, exactly the on-change/hourly `{tag, cosmetic_tag}`
-rows requested.
+### R8 — Live cosmetic-tag stream — **DONE (wired + live-verified, commit 5f7c75666)**
+cosmetic_tag now flows live in domain-18 `country_identity` →
+`countries[*].cosmetic_tag`. Live paused capture: 29 present byte-exact vs the
+melt (FRA→FRA_FREE, DEN→DEN_occupied_denmark, D04→FRA_VICHY, …), 0 false
+positives; the only melt-only 3 are dynamic observers D01/D02/D03.
+
+⚠️ **SCHEMA DELTA for the replay layer (please update §3.12 binding):** the live
+feed makes `cosmetic_tag` a **tri-state**, richer than §3.12's save-based `""`
+convention:
+- present → the cosmetic tag string.
+- **`null`** → measured, country has NO override (was `""` in the save-based §3.12).
+- **key absent** → not measured / unreadable this frame (a state the save never had).
+
+Please bind `cosmetic_tag` as `string | null | missing`. If the renderer wants the
+old convention, project `null`/missing → `""` at your boundary (both mean "use the
+base tag's color/flag/name"). Emitting `null` instead of `""` is deliberate
+(fail-closed: absent ≠ null ≠ empty) — the recorder will not fabricate `""`.
 
 ### R9.1 — On-map naval presence — **LARGELY COVERED + wave-4 wiring queued**
 - Task-force position rows are production-integrated: domain 56
