@@ -273,9 +273,10 @@ const COMPACT_SUPPLY_MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
 const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = 1_000;
 const COMPACT_SUPPLY_MAX_CSUPPLY_INPUT_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
 const COMPACT_DIVISION_TYPE: u32 = 4713;
-// Wave-4: division row grew 88 -> 92 to carry disrupted_supply at +88 (must
-// stay in lockstep with the collector and world_fold row lengths).
-const COMPACT_DIVISION_ROW_LEN: usize = 92;
+// E4: division row grew 92 -> 104 to carry strategic_redeployment,
+// current_manpower, and cumulative_losses (must stay in lockstep with
+// collector and world_fold row lengths).
+const COMPACT_DIVISION_ROW_LEN: usize = 104;
 const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
 const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
@@ -297,6 +298,9 @@ const COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED: u32 = 1 << 16;
 /// Wave-4 disrupted-supply presence (row +88). A present 0 is valid; absent
 /// (flag clear) must carry a zero field.
 const COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY: u32 = 1 << 17;
+const COMPACT_DIVISION_ROW_FLAG_STRATEGIC_REDEPLOYMENT: u32 = 1 << 18;
+const COMPACT_DIVISION_ROW_FLAG_CURRENT_MANPOWER: u32 = 1 << 19;
+const COMPACT_DIVISION_ROW_FLAG_CUMULATIVE_LOSSES: u32 = 1 << 20;
 /// Sane ceiling for disrupted_supply raw (fixed x100000): a disrupted
 /// fraction far above 1.0 is a torn read.
 const COMPACT_MAX_DIVISION_DISRUPTED_SUPPLY_RAW: u32 = 1_000_000;
@@ -304,6 +308,8 @@ const COMPACT_MAX_DIVISION_DISRUPTED_SUPPLY_RAW: u32 = 1_000_000;
 /// this summary decoder, and world_fold enforce the same bound).
 const COMPACT_MAX_DIVISION_ORDER_INSTANCE_ID: u32 = 100_000_000;
 const COMPACT_MAX_DIVISION_TEMPLATE_ID: u32 = i32::MAX as u32;
+const COMPACT_MAX_DIVISION_CURRENT_MANPOWER: u32 = 10_000_000;
+const COMPACT_MAX_DIVISION_CUMULATIVE_LOSSES: u32 = 100_000_000;
 const COMPACT_DIVISION_EQUIPMENT_ROW_LEN: usize = 24;
 const COMPACT_DIVISION_EQUIPMENT_ENTRY_ROW_LEN: usize = 16;
 const COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE: u32 = 1;
@@ -5427,6 +5433,9 @@ fn decode_compact_divisions_data_payload(
     let mut order_group_rows = 0usize;
     let mut order_unresolved_rows = 0usize;
     let mut disrupted_supply_rows = 0usize;
+    let mut strategic_redeployment_rows = 0usize;
+    let mut current_manpower_rows = 0usize;
+    let mut cumulative_losses_rows = 0usize;
     for row_index in 0..row_count {
         let div_id = read_u32_le(payload, cursor);
         let div_type = read_u32_le(payload, cursor + 4);
@@ -5451,6 +5460,9 @@ fn decode_compact_divisions_data_payload(
         let fuel_raw = read_u32_le(payload, cursor + 80);
         let row_reserved2 = read_u32_le(payload, cursor + 84);
         let disrupted_supply_raw = read_u32_le(payload, cursor + 88);
+        let strategic_redeployment_raw = read_u32_le(payload, cursor + 92);
+        let current_manpower = read_u32_le(payload, cursor + 96);
+        let cumulative_losses = read_u32_le(payload, cursor + 100);
         cursor += COMPACT_DIVISION_ROW_LEN;
 
         if div_id == 0 {
@@ -5474,7 +5486,10 @@ fn decode_compact_divisions_data_payload(
                 | COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY
                 | COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP
                 | COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED
-                | COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY)
+                | COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY
+                | COMPACT_DIVISION_ROW_FLAG_STRATEGIC_REDEPLOYMENT
+                | COMPACT_DIVISION_ROW_FLAG_CURRENT_MANPOWER
+                | COMPACT_DIVISION_ROW_FLAG_CUMULATIVE_LOSSES)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -5495,6 +5510,10 @@ fn decode_compact_divisions_data_payload(
         let has_supply_gain = (flags & (1 << 10)) != 0;
         let has_fuel = (flags & (1 << 11)) != 0;
         let has_disrupted_supply = (flags & COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY) != 0;
+        let has_strategic_redeployment =
+            (flags & COMPACT_DIVISION_ROW_FLAG_STRATEGIC_REDEPLOYMENT) != 0;
+        let has_current_manpower = (flags & COMPACT_DIVISION_ROW_FLAG_CURRENT_MANPOWER) != 0;
+        let has_cumulative_losses = (flags & COMPACT_DIVISION_ROW_FLAG_CUMULATIVE_LOSSES) != 0;
         let has_template = (flags & COMPACT_DIVISION_ROW_FLAG_TEMPLATE) != 0;
         if deleted {
             deleted_rows = deleted_rows.saturating_add(1);
@@ -5522,7 +5541,10 @@ fn decode_compact_divisions_data_payload(
                 && supply_gain_raw == 0
                 && fuel_raw == 0
                 && row_reserved2 == 0
-                && disrupted_supply_raw == 0;
+                && disrupted_supply_raw == 0
+                && strategic_redeployment_raw == 0
+                && current_manpower == 0
+                && cumulative_losses == 0;
             if !zero_filled {
                 summary.parse_errors.push(format!(
                     "offset {offset}: divisions delete row {row_index} is not zero-filled"
@@ -5711,6 +5733,45 @@ fn decode_compact_divisions_data_payload(
         if has_disrupted_supply {
             disrupted_supply_rows = disrupted_supply_rows.saturating_add(1);
         }
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_strategic_redeployment,
+            strategic_redeployment_raw,
+            0,
+            1,
+            "strategic_redeployment_raw",
+        );
+        if has_strategic_redeployment {
+            strategic_redeployment_rows = strategic_redeployment_rows.saturating_add(1);
+        }
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_current_manpower,
+            current_manpower,
+            0,
+            COMPACT_MAX_DIVISION_CURRENT_MANPOWER,
+            "current_manpower",
+        );
+        if has_current_manpower {
+            current_manpower_rows = current_manpower_rows.saturating_add(1);
+        }
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_cumulative_losses,
+            cumulative_losses,
+            0,
+            COMPACT_MAX_DIVISION_CUMULATIVE_LOSSES,
+            "cumulative_losses",
+        );
+        if has_cumulative_losses {
+            cumulative_losses_rows = cumulative_losses_rows.saturating_add(1);
+        }
         let has_order_army = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY) != 0;
         let has_order_group = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP) != 0;
         let has_order_unresolved = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED) != 0;
@@ -5765,6 +5826,24 @@ fn decode_compact_divisions_data_payload(
         20,
         "division_disrupted_supply_rows",
         disrupted_supply_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        20,
+        "division_strategic_redeployment_rows",
+        strategic_redeployment_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        20,
+        "division_current_manpower_rows",
+        current_manpower_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        20,
+        "division_cumulative_losses_rows",
+        cumulative_losses_rows,
     );
 }
 
@@ -20964,6 +21043,9 @@ mod tests {
             payload.extend_from_slice(&order_iid.to_le_bytes());
             // Wave-4: disrupted_supply slot at +88 (absent here -> 0).
             payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+            payload.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+            payload.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
         }
         payload
     }
@@ -21069,6 +21151,9 @@ mod tests {
             payload.extend_from_slice(&0u32.to_le_bytes());
             // Wave-4: disrupted_supply slot at +88 (absent here -> 0).
             payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+            payload.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+            payload.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
         }
         payload
     }

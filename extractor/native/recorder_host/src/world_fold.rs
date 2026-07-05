@@ -50,11 +50,15 @@ const TECH_PROGRESS_SCALE: f64 = 1000.0;
 const TECH_LIVE_SCALE: f64 = 100_000.0;
 const FIXED_SCALE: f64 = 100_000.0;
 
-// Wave-4: division row grew 88 -> 92 to carry disrupted_supply at +88 (must
-// stay in lockstep with the collector and recorder-decode row lengths).
-const DIVISION_ROW_LEN: usize = 92;
+// E4: division row grew 92 -> 104 to carry strategic_redeployment,
+// current_manpower, and cumulative_losses (must stay in lockstep with the
+// collector and recorder-decode row lengths).
+const DIVISION_ROW_LEN: usize = 104;
 /// Wave-4 disrupted-supply presence (row +88). A present 0 is valid.
 const DIVISION_FLAG_DISRUPTED_SUPPLY: u32 = 1 << 17;
+const DIVISION_FLAG_STRATEGIC_REDEPLOYMENT: u32 = 1 << 18;
+const DIVISION_FLAG_CURRENT_MANPOWER: u32 = 1 << 19;
+const DIVISION_FLAG_CUMULATIVE_LOSSES: u32 = 1 << 20;
 /// Wave-4 supply_gain presence (row +76, packed by the collector at flag
 /// bit 10 — already in the row, now folded into the D20 division snapshot).
 const DIVISION_FLAG_SUPPLY_GAIN: u32 = 1 << 10;
@@ -66,6 +70,8 @@ const DIVISION_FLAG_ORDER_ARMY_GROUP: u32 = 1 << 15;
 const DIVISION_FLAG_ORDER_UNRESOLVED: u32 = 1 << 16;
 // Same ceiling as the collector read and the summary decoder.
 const DIVISION_MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
+const DIVISION_MAX_CURRENT_MANPOWER: u32 = 10_000_000;
+const DIVISION_MAX_CUMULATIVE_LOSSES: u32 = 100_000_000;
 const LAND_COMBAT_ROW_LEN: usize = 40;
 const LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 const MAP_STATE_ROW_LEN: usize = 16;
@@ -7871,9 +7877,15 @@ impl WorldFold {
             let flags = read_u32(payload, cursor + 8);
             let uid = format!("{div_id}:{div_type}");
             let order_instance_id = read_u32(payload, cursor + 84);
+            let strategic_redeployment_raw = read_u32(payload, cursor + 92);
+            let current_manpower = read_u32(payload, cursor + 96);
+            let cumulative_losses = read_u32(payload, cursor + 100);
             let has_order_army = flags & DIVISION_FLAG_ORDER_ARMY != 0;
             let has_order_group = flags & DIVISION_FLAG_ORDER_ARMY_GROUP != 0;
             let has_order_unresolved = flags & DIVISION_FLAG_ORDER_UNRESOLVED != 0;
+            let has_strategic_redeployment = flags & DIVISION_FLAG_STRATEGIC_REDEPLOYMENT != 0;
+            let has_current_manpower = flags & DIVISION_FLAG_CURRENT_MANPOWER != 0;
+            let has_cumulative_losses = flags & DIVISION_FLAG_CUMULATIVE_LOSSES != 0;
             // Validate the order-link flags/tail for EVERY row (including
             // deletes) BEFORE acting on the delete, so a malformed deleted row
             // carrying an order flag or a nonzero tail id fails the whole fold
@@ -7890,11 +7902,31 @@ impl WorldFold {
             } else if order_instance_id != 0 {
                 return Err("divisions row has order instance id without army-order flag".into());
             }
+            validate_optional_u32_field(
+                has_strategic_redeployment,
+                strategic_redeployment_raw,
+                0,
+                1,
+                "strategic_redeployment_raw",
+            )?;
+            validate_optional_u32_field(
+                has_current_manpower,
+                current_manpower,
+                0,
+                DIVISION_MAX_CURRENT_MANPOWER,
+                "current_manpower",
+            )?;
+            validate_optional_u32_field(
+                has_cumulative_losses,
+                cumulative_losses,
+                0,
+                DIVISION_MAX_CUMULATIVE_LOSSES,
+                "cumulative_losses",
+            )?;
             if flags & DIVISION_FLAG_DELETED != 0 {
-                // A deleted row's only permitted flag is DELETED itself; any
-                // order flag on a delete is a malformed row (fail closed).
-                if has_order_army || has_order_group || has_order_unresolved {
-                    return Err("divisions delete row carries order-link flags".into());
+                // A deleted row's only permitted flag is DELETED itself.
+                if flags != DIVISION_FLAG_DELETED {
+                    return Err("divisions delete row carries non-delete flags".into());
                 }
                 if let Some(key) = self
                     .divisions
@@ -8009,6 +8041,30 @@ impl WorldFold {
                 "disrupted_supply".into(),
                 if has_disrupted_supply {
                     json!(disrupted_supply_raw as f64 / FIXED_SCALE)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "strategic_redeployment".into(),
+                if has_strategic_redeployment {
+                    json!(strategic_redeployment_raw != 0)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "current_manpower".into(),
+                if has_current_manpower {
+                    json!(current_manpower)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "cumulative_losses".into(),
+                if has_cumulative_losses {
+                    json!(cumulative_losses)
                 } else {
                     Value::Null
                 },
@@ -12972,6 +13028,23 @@ fn need(payload: &[u8], at_least: usize, label: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn validate_optional_u32_field(
+    present: bool,
+    value: u32,
+    min_value: u32,
+    max_value: u32,
+    field: &str,
+) -> Result<(), String> {
+    if present {
+        if value < min_value || value > max_value {
+            return Err(format!("{field} value {value} out of range"));
+        }
+    } else if value != 0 {
+        return Err(format!("{field} present value without flag"));
+    }
+    Ok(())
 }
 
 fn ensure_count_at_most(

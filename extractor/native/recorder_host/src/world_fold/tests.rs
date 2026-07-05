@@ -249,11 +249,14 @@ fn append_production_license_trailer(p: &mut Vec<u8>, countries: &[(u32, Vec<u32
     }
 }
 
-const DIV_ROW_LEN: usize = 92;
+const DIV_ROW_LEN: usize = 104;
 const DIV_TYPE: u32 = 4713;
 const DELTA: u32 = 1 << 10;
 const DIV_FLAG_DELETED: u32 = 1 << 12;
 const DIV_FLAG_TEMPLATE: u32 = 1 << 13;
+const DIV_FLAG_STRATEGIC_REDEPLOYMENT: u32 = 1 << 18;
+const DIV_FLAG_CURRENT_MANPOWER: u32 = 1 << 19;
+const DIV_FLAG_CUMULATIVE_LOSSES: u32 = 1 << 20;
 
 #[allow(clippy::too_many_arguments)]
 fn push_div_row(
@@ -290,6 +293,9 @@ fn push_div_row(
     p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
     p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
     p.extend_from_slice(&0u32.to_le_bytes()); // +88 disrupted_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+    p.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+    p.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
     assert_eq!(p.len() - start, DIV_ROW_LEN);
 }
 
@@ -335,6 +341,60 @@ fn push_div_row_with_supply(
     p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
     p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
     p.extend_from_slice(&disrupted_supply_raw.unwrap_or(0).to_le_bytes()); // +88 disrupted_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+    p.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+    p.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
+    assert_eq!(p.len() - start, DIV_ROW_LEN);
+}
+
+fn push_div_row_with_e4(
+    p: &mut Vec<u8>,
+    div_id: u32,
+    strategic_redeployment: Option<bool>,
+    current_manpower: Option<u32>,
+    cumulative_losses: Option<u32>,
+) {
+    let start = p.len();
+    let mut flags = 0u32;
+    if strategic_redeployment.is_some() {
+        flags |= DIV_FLAG_STRATEGIC_REDEPLOYMENT;
+    }
+    if current_manpower.is_some() {
+        flags |= DIV_FLAG_CURRENT_MANPOWER;
+    }
+    if cumulative_losses.is_some() {
+        flags |= DIV_FLAG_CUMULATIVE_LOSSES;
+    }
+    p.extend_from_slice(&div_id.to_le_bytes()); // +0
+    p.extend_from_slice(&DIV_TYPE.to_le_bytes()); // +4 div_type
+    p.extend_from_slice(&flags.to_le_bytes()); // +8
+    p.extend_from_slice(&118u32.to_le_bytes()); // +12 location
+    p.extend_from_slice(&0u32.to_le_bytes()); // +16 move_target
+    p.extend_from_slice(&0u32.to_le_bytes()); // +20 move_source
+    p.extend_from_slice(&0u32.to_le_bytes()); // +24 movement_progress
+    p.extend_from_slice(&0u32.to_le_bytes()); // +28 progress_bucket
+    p.extend_from_slice(&9_000_000u32.to_le_bytes()); // +32 org
+    p.extend_from_slice(&0u32.to_le_bytes()); // +36 org_bucket
+    p.extend_from_slice(&95_000_000u32.to_le_bytes()); // +40 strength
+    p.extend_from_slice(&0u32.to_le_bytes()); // +44 strength_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +48 combat_ref
+    p.extend_from_slice(&0u32.to_le_bytes()); // +52 template
+    p.extend_from_slice(&0u32.to_le_bytes()); // +56 owner
+    p.extend_from_slice(&0u32.to_le_bytes()); // +60 army
+    p.extend_from_slice(&0u32.to_le_bytes()); // +64 experience
+    p.extend_from_slice(&0u32.to_le_bytes()); // +68 max_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +72 current_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +76 supply_gain
+    p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
+    p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
+    p.extend_from_slice(&0u32.to_le_bytes()); // +88 disrupted_supply
+    let sr_raw = match strategic_redeployment {
+        Some(true) => 1u32,
+        Some(false) | None => 0u32,
+    };
+    p.extend_from_slice(&sr_raw.to_le_bytes()); // +92 strategic_redeployment
+    p.extend_from_slice(&current_manpower.unwrap_or(0).to_le_bytes()); // +96 current_manpower
+    p.extend_from_slice(&cumulative_losses.unwrap_or(0).to_le_bytes()); // +100 cumulative_losses
     assert_eq!(p.len() - start, DIV_ROW_LEN);
 }
 
@@ -773,6 +833,9 @@ fn chunk3_division_payload(rows: &[(u32, u32, u32)]) -> Vec<u8> {
         out.extend_from_slice(&0u32.to_le_bytes());
         // Wave-4: disrupted_supply slot at +88 (absent -> 0).
         out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+        out.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+        out.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
     }
     out
 }
@@ -7984,6 +8047,41 @@ fn chunk2_d20_division_supply_scalars_fold_with_presence() {
     let c = by_id(19);
     assert_eq!(c["supply_gain"], Value::Null);
     assert_eq!(c["disrupted_supply"], Value::Null);
+}
+
+#[test]
+fn chunk2_d20_e4_fields_fold_with_presence() {
+    // Div A: all E4 fields present, SR true.
+    // Div B: present false/zero values (kept, not null).
+    // Div C: all absent -> null.
+    let mut divs = Vec::new();
+    divisions_header(&mut divs, 3, 0);
+    push_div_row_with_e4(&mut divs, 17, Some(true), Some(8777), Some(1234));
+    push_div_row_with_e4(&mut divs, 18, Some(false), Some(0), Some(0));
+    push_div_row_with_e4(&mut divs, 19, None, None, None);
+
+    let snap = snapshot_for_domain_records(vec![(20, divs)]);
+    let list = snap["divisions"].as_array().unwrap();
+    let by_id = |id: u32| {
+        list.iter()
+            .find(|d| d["div_id"] == json!(id))
+            .unwrap_or_else(|| panic!("div {id} missing"))
+    };
+
+    let a = by_id(17);
+    assert_eq!(a["strategic_redeployment"], json!(true));
+    assert_eq!(a["current_manpower"], json!(8777));
+    assert_eq!(a["cumulative_losses"], json!(1234));
+
+    let b = by_id(18);
+    assert_eq!(b["strategic_redeployment"], json!(false));
+    assert_eq!(b["current_manpower"], json!(0));
+    assert_eq!(b["cumulative_losses"], json!(0));
+
+    let c = by_id(19);
+    assert_eq!(c["strategic_redeployment"], Value::Null);
+    assert_eq!(c["current_manpower"], Value::Null);
+    assert_eq!(c["cumulative_losses"], Value::Null);
 }
 
 #[test]
