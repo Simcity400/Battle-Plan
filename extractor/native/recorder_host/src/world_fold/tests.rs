@@ -5975,6 +5975,48 @@ fn d56_payload(status_flags: u32, rows: &[naval56::NavalMissionStatusRow]) -> Ve
     )
 }
 
+fn d56_payload_with_supremacy(
+    status_flags: u32,
+    rows: &[naval56::NavalMissionStatusRow],
+    supremacy_rows: &[naval56::NavalSupremacyRow],
+) -> Vec<u8> {
+    naval56::compact::encode_payload_with_naval_supremacy(
+        &naval56::NavalMissionStatusHeader {
+            elapsed_wall_ms: 5,
+            changed_rows: rows.len().min(u32::MAX as usize) as u32,
+            status_flags,
+            observed_task_forces: rows.len().min(u32::MAX as usize) as u32,
+            validated_location_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_LOCATION != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+            derived_region_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_REGION != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+            fixture_required_rows: rows
+                .iter()
+                .filter(|row| {
+                    row.flags
+                        & (naval56::compact::FLAG_FIXTURE_REQUIRED
+                            | naval56::compact::FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED)
+                        != 0
+                })
+                .count()
+                .min(u32::MAX as usize) as u32,
+            convoy_sunk_count_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_SUNK_CONVOY_COUNT != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+        },
+        rows,
+        supremacy_rows,
+    )
+}
+
 fn d54_path_row(
     army_id: u32,
     slot_index: u32,
@@ -6621,6 +6663,57 @@ fn chunk2_folds_d56_naval_status_under_oob_extra_without_owning_entities() {
         .unwrap()
         .iter()
         .any(|domain| domain["domain_id"] == json!(56)));
+}
+
+#[test]
+fn chunk2_folds_d56_naval_supremacy_under_naval_air() {
+    let rows = [d56_row(201, 200, 1, 12345, 0)];
+    let supremacy_rows = [
+        naval56::NavalSupremacyRow {
+            region_id: 16,
+            controller_tag_db_id: 2,
+            current_raw: 67_962_800,
+            target_raw: 67_962_800,
+            base_target_raw: 67_962_800,
+            previous_raw: 67_962_800,
+            decline_from_raw: 67_962_800,
+            individual_ratio_raw: 87_173,
+        },
+        naval56::NavalSupremacyRow {
+            region_id: 18,
+            controller_tag_db_id: 44,
+            current_raw: 448_057_205,
+            target_raw: 448_057_205,
+            base_target_raw: 76_245_200,
+            previous_raw: 448_057_205,
+            decline_from_raw: 448_057_205,
+            individual_ratio_raw: 97_816,
+        },
+    ];
+    let snap = chunk1_one_snapshot(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (44, "USA")]),
+        ),
+        (56, d56_payload_with_supremacy(0, &rows, &supremacy_rows)),
+    ]);
+
+    let sidecar = &snap["naval_air"]["_r2_naval_supremacy"];
+    assert_eq!(sidecar["source"], json!("C"));
+    assert_eq!(sidecar["confidence"], json!("validated_slice"));
+    assert_eq!(sidecar["scale_raw"], json!(100_000));
+    assert_eq!(sidecar["row_count"], json!(2));
+    let rows = sidecar["rows"].as_array().unwrap();
+    assert_eq!(rows[0]["region_id"], json!(16));
+    assert_eq!(rows[0]["controller"], json!("ENG"));
+    assert_eq!(rows[0]["current_raw"], json!(67_962_800));
+    assert_eq!(rows[0]["individual_ratio_raw"], json!(87_173));
+    assert!((rows[0]["current"].as_f64().unwrap() - 679.628).abs() < 0.00001);
+    assert!((rows[0]["individual_ratio"].as_f64().unwrap() - 0.87173).abs() < 0.00001);
+    assert_eq!(rows[1]["region_id"], json!(18));
+    assert_eq!(rows[1]["controller"], json!("USA"));
+    assert_eq!(rows[1]["target_raw"], json!(448_057_205));
+    assert_eq!(rows[1]["base_target_raw"], json!(76_245_200));
 }
 
 #[test]

@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 
 pub use compact::{
     decode_payload, decode_status_payload, encode_payload, DecodedNavalMissionStatusPayload,
-    Domain56GateSummary, NavalMissionStatusHeader, NavalMissionStatusRow, DOMAIN_ID, DOMAIN_NAME,
+    Domain56GateSummary, NavalMissionStatusHeader, NavalMissionStatusRow, NavalSupremacyRow,
+    DOMAIN_ID, DOMAIN_NAME,
 };
 
 pub const EXPECTED_SHA256: &str =
@@ -51,6 +52,32 @@ pub const TASK_FORCE_OFF_REPAIR_TARGET: usize = 0x4B0;
 pub const FLEET_OFF_HOME_BASE: usize = 0xD8;
 pub const CPROVINCE_VTABLE_RVA: usize = 0x295AF68;
 pub const CPROVINCE_OFF_ID: usize = 0xA4;
+// E10 / R6 naval supremacy (validated live 870ebf, paused D04, same-tick melt
+// oracle): scan CStrategicRegion objects, walk the per-region
+// CNavalRegionDominance container, and emit CDominanceValues rows. The
+// 870ebf field order is target@+0x30 and base_target@+0x28; the older python
+// prototype had those two names reversed for this build.
+pub const STRATEGIC_REGION_VTABLE_RVA: usize = 0x29569A8;
+pub const STRATEGIC_REGION_SECONDARY_VTABLE_RVA: usize = 0x29569F8;
+pub const STRATEGIC_REGION_OFF_SECONDARY_VTABLE: usize = 0x08;
+pub const STRATEGIC_REGION_OFF_ID: usize = 0x58;
+pub const STRATEGIC_REGION_OFF_NAVAL_DOMINANCE: usize = 0xE8;
+pub const NAVAL_REGION_DOMINANCE_VTABLE_RVA: usize = 0x296E010;
+pub const NAVAL_REGION_DOMINANCE_OFF_BEGIN: usize = 0x40;
+pub const NAVAL_REGION_DOMINANCE_OFF_COUNT: usize = 0x48;
+pub const DOMINANCE_VALUES_VTABLE_RVA: usize = 0x296DFC0;
+pub const DOMINANCE_VALUES_STRIDE: usize = 0x50;
+pub const DOMINANCE_VALUES_OFF_TAG: usize = 0x00;
+pub const DOMINANCE_VALUES_OFF_VTABLE: usize = 0x08;
+pub const DOMINANCE_VALUES_OFF_TAG_DUP: usize = 0x10;
+pub const DOMINANCE_VALUES_OFF_CURRENT: usize = 0x20;
+pub const DOMINANCE_VALUES_OFF_BASE_TARGET: usize = 0x28;
+pub const DOMINANCE_VALUES_OFF_TARGET: usize = 0x30;
+pub const DOMINANCE_VALUES_OFF_INDIVIDUAL_RATIO: usize = 0x38;
+pub const DOMINANCE_VALUES_OFF_PREVIOUS: usize = 0x40;
+pub const DOMINANCE_VALUES_OFF_DECLINE_FROM: usize = 0x48;
+pub const MAX_STRATEGIC_REGIONS: usize = 4096;
+pub const MAX_NAVAL_DOMINANCE_ENTRIES_PER_REGION: u32 = 1024;
 /// The collector emits a mission enum only when the raw value is within the
 /// PROVEN naval-mission range. D04 exercised {0,1,2,3,4,8,9} (max 9); the
 /// naval mission enum is a small contiguous game enum, so this is the
@@ -96,6 +123,10 @@ pub trait NavalMissionMemory {
 
     fn province_to_region(&self, _province_id: u32) -> Option<u32> {
         None
+    }
+
+    fn scan_qword_hits(&self, _needle: u64) -> Result<Vec<u64>, ExtractError> {
+        Err(ExtractError::InvalidRoot("scan_qword_hits"))
     }
 
     fn read_u64(&self, address: u64) -> Result<u64, ExtractError> {
@@ -147,6 +178,7 @@ pub struct NavalRootCounters {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtractedRows {
     pub rows: Vec<compact::NavalMissionStatusRow>,
+    pub naval_supremacy_rows: Vec<compact::NavalSupremacyRow>,
     pub observed_task_forces: u32,
     pub invalid_task_force_rows: u32,
 }
@@ -156,6 +188,7 @@ pub struct EncodedFrame {
     pub payload: Vec<u8>,
     pub header: compact::NavalMissionStatusHeader,
     pub rows: Vec<compact::NavalMissionStatusRow>,
+    pub naval_supremacy_rows: Vec<compact::NavalSupremacyRow>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -170,6 +203,23 @@ impl CompactNavalMissionStatusTracker {
         status_flags: u32,
         observed_task_forces: u32,
         rows: &[compact::NavalMissionStatusRow],
+    ) -> EncodedFrame {
+        self.encode_frame_with_naval_supremacy(
+            elapsed_wall_ms,
+            status_flags,
+            observed_task_forces,
+            rows,
+            &[],
+        )
+    }
+
+    pub fn encode_frame_with_naval_supremacy(
+        &mut self,
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        observed_task_forces: u32,
+        rows: &[compact::NavalMissionStatusRow],
+        naval_supremacy_rows: &[compact::NavalSupremacyRow],
     ) -> EncodedFrame {
         let changed_rows = rows
             .iter()
@@ -187,11 +237,13 @@ impl CompactNavalMissionStatusTracker {
             observed_task_forces,
             rows,
         );
-        let payload = compact::encode_payload(&header, rows);
+        let payload =
+            compact::encode_payload_with_naval_supremacy(&header, rows, naval_supremacy_rows);
         EncodedFrame {
             payload,
             header,
             rows: rows.to_vec(),
+            naval_supremacy_rows: naval_supremacy_rows.to_vec(),
         }
     }
 }
@@ -309,8 +361,10 @@ pub fn extract_rows_from_roots<M: NavalMissionMemory>(
             Err(_) => invalid_task_force_rows = invalid_task_force_rows.saturating_add(1),
         }
     }
+    let naval_supremacy_rows = read_naval_supremacy_rows(mem)?.unwrap_or_default();
     Ok(ExtractedRows {
         rows,
+        naval_supremacy_rows,
         observed_task_forces: roots.task_forces.len().min(u32::MAX as usize) as u32,
         invalid_task_force_rows,
     })
@@ -322,6 +376,22 @@ pub fn encode_rows(
     observed_task_forces: u32,
     rows: &[compact::NavalMissionStatusRow],
 ) -> EncodedFrame {
+    encode_rows_with_naval_supremacy(
+        elapsed_wall_ms,
+        status_flags,
+        observed_task_forces,
+        rows,
+        &[],
+    )
+}
+
+pub fn encode_rows_with_naval_supremacy(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    observed_task_forces: u32,
+    rows: &[compact::NavalMissionStatusRow],
+    naval_supremacy_rows: &[compact::NavalSupremacyRow],
+) -> EncodedFrame {
     let header = build_header(
         elapsed_wall_ms,
         status_flags,
@@ -329,11 +399,12 @@ pub fn encode_rows(
         observed_task_forces,
         rows,
     );
-    let payload = compact::encode_payload(&header, rows);
+    let payload = compact::encode_payload_with_naval_supremacy(&header, rows, naval_supremacy_rows);
     EncodedFrame {
         payload,
         header,
         rows: rows.to_vec(),
+        naval_supremacy_rows: naval_supremacy_rows.to_vec(),
     }
 }
 
@@ -448,6 +519,115 @@ fn read_task_force_row<M: NavalMissionMemory>(
         source_status,
         ..compact::NavalMissionStatusRow::default()
     })
+}
+
+fn read_naval_supremacy_rows<M: NavalMissionMemory>(
+    mem: &M,
+) -> Result<Option<Vec<compact::NavalSupremacyRow>>, ExtractError> {
+    let module_base = mem.module_base();
+    let region_vtable = module_base + STRATEGIC_REGION_VTABLE_RVA as u64;
+    let region_secondary_vtable = module_base + STRATEGIC_REGION_SECONDARY_VTABLE_RVA as u64;
+    let container_vtable = module_base + NAVAL_REGION_DOMINANCE_VTABLE_RVA as u64;
+    let entry_vtable = module_base + DOMINANCE_VALUES_VTABLE_RVA as u64;
+    let hits = match mem.scan_qword_hits(region_vtable) {
+        Ok(hits) => hits,
+        Err(_) => return Ok(None),
+    };
+    if hits.is_empty() || hits.len() > MAX_STRATEGIC_REGIONS {
+        return Ok(None);
+    }
+
+    let mut regions_by_id = BTreeMap::new();
+    for region_ptr in hits {
+        if mem.read_u64(region_ptr + STRATEGIC_REGION_OFF_SECONDARY_VTABLE as u64)
+            != Ok(region_secondary_vtable)
+        {
+            continue;
+        }
+        let Ok(region_id) = mem.read_u32(region_ptr + STRATEGIC_REGION_OFF_ID as u64) else {
+            return Ok(None);
+        };
+        if !(1..=compact::MAX_REGION_ID).contains(&region_id) {
+            continue;
+        }
+        regions_by_id.entry(region_id).or_insert(region_ptr);
+    }
+    if regions_by_id.is_empty() || regions_by_id.len() > MAX_STRATEGIC_REGIONS {
+        return Ok(None);
+    }
+
+    let mut rows = Vec::new();
+    for (region_id, region_ptr) in regions_by_id {
+        let container_ptr =
+            match mem.read_u64(region_ptr + STRATEGIC_REGION_OFF_NAVAL_DOMINANCE as u64) {
+                Ok(container_ptr) => container_ptr,
+                Err(_) => return Ok(None),
+            };
+        if !is_heap_aligned(container_ptr) {
+            continue;
+        }
+        if mem.read_u64(container_ptr)? != container_vtable {
+            return Ok(None);
+        }
+        let begin = mem.read_u64(container_ptr + NAVAL_REGION_DOMINANCE_OFF_BEGIN as u64)?;
+        let count = mem.read_u32(container_ptr + NAVAL_REGION_DOMINANCE_OFF_COUNT as u64)?;
+        if count == 0 {
+            continue;
+        }
+        if count > MAX_NAVAL_DOMINANCE_ENTRIES_PER_REGION || !is_heap_aligned(begin) {
+            return Ok(None);
+        }
+        let byte_len = (count as usize)
+            .checked_mul(DOMINANCE_VALUES_STRIDE)
+            .ok_or(ExtractError::InvalidCount {
+                name: "naval_dominance_entry_bytes",
+                value: count,
+            })?;
+        let raw = match mem.read_bytes(begin, byte_len) {
+            Ok(raw) if raw.len() == byte_len => raw,
+            _ => return Ok(None),
+        };
+        let mut staged = Vec::with_capacity(count as usize);
+        for index in 0..count as usize {
+            let cursor = index * DOMINANCE_VALUES_STRIDE;
+            if u64_from(&raw, cursor + DOMINANCE_VALUES_OFF_VTABLE) != entry_vtable {
+                return Ok(None);
+            }
+            let controller_tag_db_id = u32_from(&raw, cursor + DOMINANCE_VALUES_OFF_TAG);
+            let controller_tag_db_id_dup = u32_from(&raw, cursor + DOMINANCE_VALUES_OFF_TAG_DUP);
+            if controller_tag_db_id == 0
+                || controller_tag_db_id > compact::MAX_OWNER_TAG_DB_ID
+                || controller_tag_db_id != controller_tag_db_id_dup
+            {
+                return Ok(None);
+            }
+            let row = compact::NavalSupremacyRow {
+                region_id,
+                controller_tag_db_id,
+                current_raw: u32_from(&raw, cursor + DOMINANCE_VALUES_OFF_CURRENT),
+                target_raw: u32_from(&raw, cursor + DOMINANCE_VALUES_OFF_TARGET),
+                base_target_raw: u32_from(&raw, cursor + DOMINANCE_VALUES_OFF_BASE_TARGET),
+                previous_raw: u32_from(&raw, cursor + DOMINANCE_VALUES_OFF_PREVIOUS),
+                decline_from_raw: u32_from(&raw, cursor + DOMINANCE_VALUES_OFF_DECLINE_FROM),
+                individual_ratio_raw: u32_from(
+                    &raw,
+                    cursor + DOMINANCE_VALUES_OFF_INDIVIDUAL_RATIO,
+                ),
+            };
+            if row.individual_ratio_raw > compact::NAVAL_SUPREMACY_FIXED_SCALE_RAW {
+                return Ok(None);
+            }
+            staged.push(row);
+        }
+        if mem.read_u64(container_ptr + NAVAL_REGION_DOMINANCE_OFF_BEGIN as u64)? != begin
+            || mem.read_u32(container_ptr + NAVAL_REGION_DOMINANCE_OFF_COUNT as u64)? != count
+        {
+            return Ok(None);
+        }
+        rows.extend(staged);
+    }
+    rows.sort_by_key(|row| (row.region_id, row.controller_tag_db_id));
+    Ok(Some(rows))
 }
 
 /// Read a CProvince* at `pointer_addr`, vtable-gate it as a CProvince, and
@@ -830,11 +1010,15 @@ mod tests {
     const SHIP_9001: u64 = 0x2200000A000;
     const PROVINCE_HOME_BASE: u64 = 0x2200000B000;
     const PROVINCE_REPAIR: u64 = 0x2200000C000;
+    const REGION_16: u64 = 0x2200000D000;
+    const NAVAL_DOMINANCE_16: u64 = 0x2200000E000;
+    const DOMINANCE_VALUES_16: u64 = 0x2200000F000;
 
     #[derive(Clone, Debug, Default)]
     struct FakeMemory {
         writes: BTreeMap<u64, u8>,
         fail_reads: BTreeSet<u64>,
+        scan_hits: BTreeMap<u64, Vec<u64>>,
     }
 
     impl FakeMemory {
@@ -854,6 +1038,10 @@ mod tests {
 
         fn fail_read(&mut self, address: u64) {
             self.fail_reads.insert(address);
+        }
+
+        fn add_scan_hit(&mut self, needle: u64, address: u64) {
+            self.scan_hits.entry(needle).or_default().push(address);
         }
     }
 
@@ -878,6 +1066,10 @@ mod tests {
 
         fn province_to_region(&self, province_id: u32) -> Option<u32> {
             (province_id == 12389).then_some(31)
+        }
+
+        fn scan_qword_hits(&self, needle: u64) -> Result<Vec<u64>, ExtractError> {
+            Ok(self.scan_hits.get(&needle).cloned().unwrap_or_default())
         }
     }
 
@@ -905,7 +1097,10 @@ mod tests {
         mem.write_u64(FLEET_615 + FLEET_OFF_HOME_BASE as u64, PROVINCE_HOME_BASE);
 
         // CProvince objects (vtable-gated, id at +0xA4).
-        mem.write_u64(PROVINCE_HOME_BASE, MODULE_BASE + CPROVINCE_VTABLE_RVA as u64);
+        mem.write_u64(
+            PROVINCE_HOME_BASE,
+            MODULE_BASE + CPROVINCE_VTABLE_RVA as u64,
+        );
         mem.write_u32(PROVINCE_HOME_BASE + CPROVINCE_OFF_ID as u64, 4021);
         mem.write_u64(PROVINCE_REPAIR, MODULE_BASE + CPROVINCE_VTABLE_RVA as u64);
         mem.write_u32(PROVINCE_REPAIR + CPROVINCE_OFF_ID as u64, 5088);
@@ -921,7 +1116,10 @@ mod tests {
         );
         // Wave-4: mission enum + repair target CProvince*.
         mem.write_u32(TASK_FORCE_617 + TASK_FORCE_OFF_MISSION_ENUM as u64, 3);
-        mem.write_u64(TASK_FORCE_617 + TASK_FORCE_OFF_REPAIR_TARGET as u64, PROVINCE_REPAIR);
+        mem.write_u64(
+            TASK_FORCE_617 + TASK_FORCE_OFF_REPAIR_TARGET as u64,
+            PROVINCE_REPAIR,
+        );
         mem.write_u64(
             TASK_FORCE_617 + TASK_FORCE_OFF_FLEET_PARENT as u64,
             FLEET_615,
@@ -940,6 +1138,60 @@ mod tests {
         );
         mem.write_u32(SHIP_9001 + CSHIP_OFF_REF100 as u64, CSHIP_REF100_RAW);
         mem.write_u32(SHIP_9001 + CSHIP_OFF_SUNK_CONVOYS as u64, 2);
+
+        mem.write_u64(REGION_16, MODULE_BASE + STRATEGIC_REGION_VTABLE_RVA as u64);
+        mem.write_u64(
+            REGION_16 + STRATEGIC_REGION_OFF_SECONDARY_VTABLE as u64,
+            MODULE_BASE + STRATEGIC_REGION_SECONDARY_VTABLE_RVA as u64,
+        );
+        mem.write_u32(REGION_16 + STRATEGIC_REGION_OFF_ID as u64, 16);
+        mem.write_u64(
+            REGION_16 + STRATEGIC_REGION_OFF_NAVAL_DOMINANCE as u64,
+            NAVAL_DOMINANCE_16,
+        );
+        mem.write_u64(
+            NAVAL_DOMINANCE_16,
+            MODULE_BASE + NAVAL_REGION_DOMINANCE_VTABLE_RVA as u64,
+        );
+        mem.write_u64(
+            NAVAL_DOMINANCE_16 + NAVAL_REGION_DOMINANCE_OFF_BEGIN as u64,
+            DOMINANCE_VALUES_16,
+        );
+        mem.write_u32(
+            NAVAL_DOMINANCE_16 + NAVAL_REGION_DOMINANCE_OFF_COUNT as u64,
+            1,
+        );
+        mem.write_u32(DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_TAG as u64, 1);
+        mem.write_u64(
+            DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_VTABLE as u64,
+            MODULE_BASE + DOMINANCE_VALUES_VTABLE_RVA as u64,
+        );
+        mem.write_u32(DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_TAG_DUP as u64, 1);
+        mem.write_u32(
+            DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_CURRENT as u64,
+            67_962_800,
+        );
+        mem.write_u32(
+            DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_TARGET as u64,
+            67_962_800,
+        );
+        mem.write_u32(
+            DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_BASE_TARGET as u64,
+            67_962_800,
+        );
+        mem.write_u32(
+            DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_PREVIOUS as u64,
+            67_962_800,
+        );
+        mem.write_u32(
+            DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_DECLINE_FROM as u64,
+            67_962_800,
+        );
+        mem.write_u32(
+            DOMINANCE_VALUES_16 + DOMINANCE_VALUES_OFF_INDIVIDUAL_RATIO as u64,
+            87_173,
+        );
+        mem.add_scan_hit(MODULE_BASE + STRATEGIC_REGION_VTABLE_RVA as u64, REGION_16);
         mem
     }
 
@@ -973,6 +1225,20 @@ mod tests {
 
         let extracted = extract_rows_from_roots(&mem, &roots).unwrap();
         assert_eq!(extracted.rows.len(), 1);
+        assert_eq!(extracted.naval_supremacy_rows.len(), 1);
+        assert_eq!(
+            extracted.naval_supremacy_rows[0],
+            compact::NavalSupremacyRow {
+                region_id: 16,
+                controller_tag_db_id: 1,
+                current_raw: 67_962_800,
+                target_raw: 67_962_800,
+                base_target_raw: 67_962_800,
+                previous_raw: 67_962_800,
+                decline_from_raw: 67_962_800,
+                individual_ratio_raw: 87_173,
+            }
+        );
         let row = &extracted.rows[0];
         assert_eq!(row.task_force_id, 617);
         assert_eq!(row.fleet_id, 615);
@@ -994,6 +1260,25 @@ mod tests {
         assert!(row.flags & compact::FLAG_FIXTURE_REQUIRED == 0);
         assert!(row.source_status & compact::STATUS_MISSION_FIXTURE_REQUIRED == 0);
         assert!(row.source_status & compact::STATUS_HOME_BASE_FIXTURE_REQUIRED == 0);
+    }
+
+    #[test]
+    fn encodes_extracted_naval_supremacy_trailer() {
+        let mem = fake_memory();
+        let roots = resolve_naval_roots(&mem).unwrap();
+        let extracted = extract_rows_from_roots(&mem, &roots).unwrap();
+
+        let frame = encode_rows_with_naval_supremacy(
+            1,
+            0,
+            extracted.observed_task_forces,
+            &extracted.rows,
+            &extracted.naval_supremacy_rows,
+        );
+        let decoded = compact::decode_status_payload(0, &frame.payload).unwrap();
+        assert_eq!(decoded.rows.len(), 1);
+        assert_eq!(decoded.naval_supremacy_rows, extracted.naval_supremacy_rows);
+        assert_eq!(frame.naval_supremacy_rows.len(), 1);
     }
 
     #[test]
@@ -1020,7 +1305,10 @@ mod tests {
         // A negative i32 sentinel (read as a huge u32) or an out-of-cap value
         // badges the mission absent rather than emitting garbage.
         let mut mem = fake_memory();
-        mem.write_u32(TASK_FORCE_617 + TASK_FORCE_OFF_MISSION_ENUM as u64, 0xFFFF_FFFF);
+        mem.write_u32(
+            TASK_FORCE_617 + TASK_FORCE_OFF_MISSION_ENUM as u64,
+            0xFFFF_FFFF,
+        );
 
         let roots = resolve_naval_roots(&mem).unwrap();
         let extracted = extract_rows_from_roots(&mem, &roots).unwrap();

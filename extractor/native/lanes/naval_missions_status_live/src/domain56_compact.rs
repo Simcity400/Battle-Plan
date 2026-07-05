@@ -16,6 +16,10 @@ pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 pub const SCHEMA_VERSION: u32 = 1;
 pub const HEADER_LEN: usize = 44;
 pub const ROW_LEN: usize = 64;
+pub const NAVAL_SUPREMACY_TRAILER_MAGIC: &[u8; 4] = b"NSUP";
+pub const NAVAL_SUPREMACY_TRAILER_VERSION: u16 = 1;
+pub const NAVAL_SUPREMACY_TRAILER_HEADER_LEN: usize = 12;
+pub const NAVAL_SUPREMACY_TRAILER_ROW_LEN: usize = 32;
 pub const MAX_OOB_ID: u32 = 4_000_000;
 pub const MAX_OWNER_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_PROVINCE_ID: u32 = 1_000_000;
@@ -25,6 +29,8 @@ pub const MAX_MISSION_STATE: u32 = 256;
 pub const MAX_RETREAT_STATE: u32 = 256;
 pub const MAX_REPAIR_PROGRESS_MILLI: u32 = 1_000;
 pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
+pub const MAX_NAVAL_SUPREMACY_ROWS: usize = 20_000;
+pub const NAVAL_SUPREMACY_FIXED_SCALE_RAW: u32 = 100_000;
 
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
@@ -107,6 +113,18 @@ pub struct NavalMissionStatusRow {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NavalSupremacyRow {
+    pub region_id: u32,
+    pub controller_tag_db_id: u32,
+    pub current_raw: u32,
+    pub target_raw: u32,
+    pub base_target_raw: u32,
+    pub previous_raw: u32,
+    pub decline_from_raw: u32,
+    pub individual_ratio_raw: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Domain56GateSummary {
     pub record_count: u64,
     pub data_record_count: u64,
@@ -124,6 +142,7 @@ pub struct Domain56GateSummary {
 pub struct DecodedNavalMissionStatusPayload {
     pub header: NavalMissionStatusHeader,
     pub rows: Vec<NavalMissionStatusRow>,
+    pub naval_supremacy_rows: Vec<NavalSupremacyRow>,
 }
 
 impl Domain56GateSummary {
@@ -160,16 +179,16 @@ pub fn decode_status_payload(
         convoy_sunk_count_rows: read_u32(payload, 36),
     };
     let schema_version = read_u32(payload, 40);
-    let expected_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    let base_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
 
     if schema_version != SCHEMA_VERSION {
         errors.push(format!(
             "offset {offset}: domain 56 schema version {schema_version} != {SCHEMA_VERSION}"
         ));
     }
-    if payload.len() != expected_len {
+    if payload.len() < base_len {
         errors.push(format!(
-            "offset {offset}: domain 56 payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: domain 56 payload is {} byte(s), expected at least {base_len}",
             payload.len()
         ));
         return Err(errors);
@@ -223,8 +242,14 @@ pub fn decode_status_payload(
         rows.push(row);
     }
 
+    let naval_supremacy_rows = decode_domain56_trailers(offset, payload, base_len, &mut errors);
+
     if errors.is_empty() {
-        Ok(DecodedNavalMissionStatusPayload { header, rows })
+        Ok(DecodedNavalMissionStatusPayload {
+            header,
+            rows,
+            naval_supremacy_rows,
+        })
     } else {
         Err(errors)
     }
@@ -233,6 +258,14 @@ pub fn decode_status_payload(
 pub fn encode_payload(
     header: &NavalMissionStatusHeader,
     rows: &[NavalMissionStatusRow],
+) -> Vec<u8> {
+    encode_payload_with_naval_supremacy(header, rows, &[])
+}
+
+pub fn encode_payload_with_naval_supremacy(
+    header: &NavalMissionStatusHeader,
+    rows: &[NavalMissionStatusRow],
+    naval_supremacy_rows: &[NavalSupremacyRow],
 ) -> Vec<u8> {
     let mut payload = Vec::with_capacity(HEADER_LEN + rows.len() * ROW_LEN);
     push_u64(&mut payload, header.elapsed_wall_ms);
@@ -265,7 +298,134 @@ pub fn encode_payload(
         push_u32(&mut payload, row.source_status);
         push_u32(&mut payload, row.reserved0);
     }
+    append_naval_supremacy_trailer(&mut payload, naval_supremacy_rows);
     payload
+}
+
+fn append_naval_supremacy_trailer(payload: &mut Vec<u8>, rows: &[NavalSupremacyRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    payload.extend_from_slice(NAVAL_SUPREMACY_TRAILER_MAGIC);
+    payload.extend_from_slice(&NAVAL_SUPREMACY_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(NAVAL_SUPREMACY_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    for row in rows {
+        validate_naval_supremacy_row(row, 0).expect("invalid naval supremacy row");
+        push_u32(&mut *payload, row.region_id);
+        push_u32(&mut *payload, row.controller_tag_db_id);
+        push_u32(&mut *payload, row.current_raw);
+        push_u32(&mut *payload, row.target_raw);
+        push_u32(&mut *payload, row.base_target_raw);
+        push_u32(&mut *payload, row.previous_raw);
+        push_u32(&mut *payload, row.decline_from_raw);
+        push_u32(&mut *payload, row.individual_ratio_raw);
+    }
+}
+
+fn decode_domain56_trailers(
+    offset: usize,
+    payload: &[u8],
+    mut cursor: usize,
+    errors: &mut Vec<String>,
+) -> Vec<NavalSupremacyRow> {
+    let mut naval_supremacy_rows = Vec::new();
+    let mut seen_nsup = false;
+    while cursor < payload.len() {
+        if payload.get(cursor..cursor + 4) == Some(NAVAL_SUPREMACY_TRAILER_MAGIC) {
+            if seen_nsup {
+                errors.push(format!(
+                    "offset {offset}: duplicate naval-supremacy trailer"
+                ));
+                break;
+            }
+            let (rows, next) = decode_naval_supremacy_trailer(offset, payload, cursor, errors);
+            naval_supremacy_rows = rows;
+            cursor = next;
+            seen_nsup = true;
+        } else {
+            errors.push(format!(
+                "offset {offset}: domain 56 unknown trailer magic at byte {cursor}"
+            ));
+            break;
+        }
+    }
+    naval_supremacy_rows
+}
+
+fn decode_naval_supremacy_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    errors: &mut Vec<String>,
+) -> (Vec<NavalSupremacyRow>, usize) {
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        errors.push(format!(
+            "offset {offset}: naval-supremacy trailer offset {trailer_offset} beyond payload"
+        ));
+        return (Vec::new(), payload.len());
+    };
+    if trailer.len() < NAVAL_SUPREMACY_TRAILER_HEADER_LEN {
+        errors.push(format!(
+            "offset {offset}: naval-supremacy trailer is {} byte(s), expected at least {}",
+            trailer.len(),
+            NAVAL_SUPREMACY_TRAILER_HEADER_LEN
+        ));
+        return (Vec::new(), payload.len());
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let row_count = read_u32(trailer, 8) as usize;
+    if version != NAVAL_SUPREMACY_TRAILER_VERSION
+        || header_len != NAVAL_SUPREMACY_TRAILER_HEADER_LEN
+    {
+        errors.push(format!(
+            "offset {offset}: naval-supremacy trailer header shape invalid (version {version}, header_len {header_len})"
+        ));
+    }
+    if row_count > MAX_NAVAL_SUPREMACY_ROWS {
+        errors.push(format!(
+            "offset {offset}: naval-supremacy row_count {row_count} exceeds {MAX_NAVAL_SUPREMACY_ROWS}"
+        ));
+        return (Vec::new(), payload.len());
+    }
+    let expected = NAVAL_SUPREMACY_TRAILER_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(NAVAL_SUPREMACY_TRAILER_ROW_LEN));
+    if trailer.len() < expected {
+        errors.push(format!(
+            "offset {offset}: naval-supremacy trailer len {} < {expected}",
+            trailer.len()
+        ));
+        return (Vec::new(), payload.len());
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut rows = Vec::with_capacity(row_count);
+    let mut cursor = NAVAL_SUPREMACY_TRAILER_HEADER_LEN;
+    for index in 0..row_count {
+        let row = NavalSupremacyRow {
+            region_id: read_u32(trailer, cursor),
+            controller_tag_db_id: read_u32(trailer, cursor + 4),
+            current_raw: read_u32(trailer, cursor + 8),
+            target_raw: read_u32(trailer, cursor + 12),
+            base_target_raw: read_u32(trailer, cursor + 16),
+            previous_raw: read_u32(trailer, cursor + 20),
+            decline_from_raw: read_u32(trailer, cursor + 24),
+            individual_ratio_raw: read_u32(trailer, cursor + 28),
+        };
+        cursor += NAVAL_SUPREMACY_TRAILER_ROW_LEN;
+        if !seen.insert((row.region_id, row.controller_tag_db_id)) {
+            errors.push(format!(
+                "offset {offset}: naval-supremacy trailer duplicates region/controller ({}, {})",
+                row.region_id, row.controller_tag_db_id
+            ));
+        }
+        if let Err(err) = validate_naval_supremacy_row(&row, index) {
+            errors.push(format!("offset {offset}: {err}"));
+        }
+        rows.push(row);
+    }
+    (rows, trailer_offset + expected)
 }
 
 pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
@@ -287,7 +447,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
     let fixture_required_rows = read_u32(payload, 32) as usize;
     let convoy_sunk_count_rows = read_u32(payload, 36) as usize;
     let schema_version = read_u32(payload, 40);
-    let expected_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    let base_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
 
     summary.status_flags_or |= status_flags;
     summary.row_count_total = row_count as u64;
@@ -324,9 +484,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
             "offset {offset}: domain 56 schema version {schema_version} != {SCHEMA_VERSION}"
         ));
     }
-    if payload.len() != expected_len {
+    if payload.len() < base_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: domain 56 payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: domain 56 payload is {} byte(s), expected at least {base_len}",
             payload.len()
         ));
         return summary;
@@ -435,6 +595,15 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
         sunk_convoy_rows,
     );
     add_unit(&mut summary, "naval_mission_fixture_rows", fixture_rows);
+    let mut trailer_errors = Vec::new();
+    let naval_supremacy_rows =
+        decode_domain56_trailers(offset, payload, base_len, &mut trailer_errors);
+    add_unit(
+        &mut summary,
+        "naval_supremacy_rows",
+        naval_supremacy_rows.len(),
+    );
+    summary.parse_errors.extend(trailer_errors);
     summary
 }
 
@@ -630,6 +799,24 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
         return Err(format!(
             "row {index} source_status has unknown bits 0x{:X}",
             row.source_status & !KNOWN_SOURCE_STATUS_MASK
+        ));
+    }
+    Ok(())
+}
+
+fn validate_naval_supremacy_row(row: &NavalSupremacyRow, index: usize) -> Result<(), String> {
+    validate_optional_max(true, row.region_id, MAX_REGION_ID, "region_id", index)?;
+    validate_optional_max(
+        true,
+        row.controller_tag_db_id,
+        MAX_OWNER_TAG_DB_ID,
+        "controller_tag_db_id",
+        index,
+    )?;
+    if row.individual_ratio_raw > NAVAL_SUPREMACY_FIXED_SCALE_RAW {
+        return Err(format!(
+            "naval-supremacy row {index} individual_ratio_raw {} exceeds {}",
+            row.individual_ratio_raw, NAVAL_SUPREMACY_FIXED_SCALE_RAW
         ));
     }
     Ok(())
@@ -879,6 +1066,31 @@ mod tests {
         ]
     }
 
+    fn sample_supremacy_rows() -> Vec<NavalSupremacyRow> {
+        vec![
+            NavalSupremacyRow {
+                region_id: 16,
+                controller_tag_db_id: 2,
+                current_raw: 67_962_800,
+                target_raw: 67_962_800,
+                base_target_raw: 67_962_800,
+                previous_raw: 67_962_800,
+                decline_from_raw: 67_962_800,
+                individual_ratio_raw: 87_173,
+            },
+            NavalSupremacyRow {
+                region_id: 18,
+                controller_tag_db_id: 44,
+                current_raw: 448_057_205,
+                target_raw: 448_057_205,
+                base_target_raw: 76_245_200,
+                previous_raw: 448_057_205,
+                decline_from_raw: 448_057_205,
+                individual_ratio_raw: 97_816,
+            },
+        ]
+    }
+
     #[test]
     fn encodes_and_decodes_badged_domain56_payload() {
         let rows = sample_rows();
@@ -992,6 +1204,66 @@ mod tests {
         assert_eq!(decoded.rows.len(), 2);
         assert_eq!(decoded.rows[0].task_force_id, 617);
         assert_eq!(decoded.rows[0].strategic_region_id, 31);
+    }
+
+    #[test]
+    fn naval_supremacy_trailer_round_trips() {
+        let rows = sample_rows();
+        let supremacy_rows = sample_supremacy_rows();
+        let payload = encode_payload_with_naval_supremacy(
+            &NavalMissionStatusHeader {
+                elapsed_wall_ms: 42,
+                changed_rows: 2,
+                observed_task_forces: 2,
+                validated_location_rows: 2,
+                derived_region_rows: 1,
+                fixture_required_rows: 2,
+                convoy_sunk_count_rows: 1,
+                ..NavalMissionStatusHeader::default()
+            },
+            &rows,
+            &supremacy_rows,
+        );
+
+        let decoded = decode_status_payload(0, &payload).unwrap();
+        assert_eq!(decoded.rows.len(), 2);
+        assert_eq!(decoded.naval_supremacy_rows, supremacy_rows);
+
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.data_units_total.get("naval_supremacy_rows"),
+            Some(&2)
+        );
+    }
+
+    #[test]
+    fn naval_supremacy_trailer_rejects_duplicate_region_controller() {
+        let rows = sample_rows();
+        let mut supremacy_rows = sample_supremacy_rows();
+        supremacy_rows[1].region_id = supremacy_rows[0].region_id;
+        supremacy_rows[1].controller_tag_db_id = supremacy_rows[0].controller_tag_db_id;
+        let payload = encode_payload_with_naval_supremacy(
+            &NavalMissionStatusHeader {
+                elapsed_wall_ms: 42,
+                changed_rows: 2,
+                observed_task_forces: 2,
+                validated_location_rows: 2,
+                derived_region_rows: 1,
+                fixture_required_rows: 2,
+                convoy_sunk_count_rows: 1,
+                ..NavalMissionStatusHeader::default()
+            },
+            &rows,
+            &supremacy_rows,
+        );
+
+        let errors = decode_status_payload(0, &payload).unwrap_err();
+        assert!(errors.iter().any(|error| error.contains("duplicates")));
     }
 
     #[test]

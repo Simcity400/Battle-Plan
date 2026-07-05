@@ -639,6 +639,9 @@ pub struct WorldFold {
     /// existence; D56 only annotates validated task-force status under
     /// `order_of_battle.extra.naval_missions_status_live`.
     naval_missions_status: BTreeMap<u32, NavalMissionTaskForceFoldRow>,
+    /// D56 E10/R6 naval supremacy rows keyed by strategic region and
+    /// controller tag-db-id.
+    naval_supremacy: BTreeMap<(u32, u32), NavalSupremacyFoldRow>,
     /// D57 validated partial session metadata sidecar for the current hour.
     session_multiplayer_metadata_this_hour: Option<Domain57FoldState>,
     /// D54 R2-projected active army battleplan depth annotations. D27 owns
@@ -842,6 +845,7 @@ impl WorldFold {
             naval_combat_lifecycle_unknown_this_hour: false,
             naval_combat_members_unknown_this_hour: false,
             naval_missions_status: BTreeMap::new(),
+            naval_supremacy: BTreeMap::new(),
             session_multiplayer_metadata_this_hour: None,
             army_battleplans_depth: BTreeMap::new(),
             army_battleplans_depth_unknown_this_hour: false,
@@ -3466,6 +3470,7 @@ impl WorldFold {
 
     fn build_naval_air(&self, unresolved: &mut BTreeSet<u32>) -> Value {
         let mut out = Map::new();
+        self.insert_naval_supremacy(&mut out, unresolved);
         self.insert_air_region_activity(&mut out, unresolved);
         self.insert_air_superiority_inputs(&mut out, unresolved);
         self.insert_air_combat_losses(&mut out, unresolved);
@@ -3533,6 +3538,62 @@ impl WorldFold {
                         })
                         .collect(),
                 ),
+            );
+        }
+    }
+
+    fn insert_naval_supremacy(&self, out: &mut Map<String, Value>, unresolved: &mut BTreeSet<u32>) {
+        if self.fold_domain_unknown(NAVAL_MISSIONS_STATUS_DOMAIN_ID) {
+            out.insert("_r2_naval_supremacy".into(), Value::Null);
+        } else if self.fold_domain_seen(NAVAL_MISSIONS_STATUS_DOMAIN_ID) {
+            let mut rows = self
+                .naval_supremacy
+                .values()
+                .map(|row| {
+                    json!({
+                        "region_id": row.region_id,
+                        "controller": self.country_ref_json(row.controller_tag_db_id, unresolved),
+                        "controller_tag_db_id": row.controller_tag_db_id,
+                        "current": row.current_raw as f64 / FIXED_SCALE,
+                        "target": row.target_raw as f64 / FIXED_SCALE,
+                        "base_target": row.base_target_raw as f64 / FIXED_SCALE,
+                        "previous": row.previous_raw as f64 / FIXED_SCALE,
+                        "decline_from": row.decline_from_raw as f64 / FIXED_SCALE,
+                        "individual_ratio": row.individual_ratio_raw as f64 / FIXED_SCALE,
+                        "current_raw": row.current_raw,
+                        "target_raw": row.target_raw,
+                        "base_target_raw": row.base_target_raw,
+                        "previous_raw": row.previous_raw,
+                        "decline_from_raw": row.decline_from_raw,
+                        "individual_ratio_raw": row.individual_ratio_raw,
+                    })
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|a, b| {
+                let ak = (
+                    a.get("region_id").and_then(Value::as_u64).unwrap_or(0),
+                    a.get("controller_tag_db_id")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                );
+                let bk = (
+                    b.get("region_id").and_then(Value::as_u64).unwrap_or(0),
+                    b.get("controller_tag_db_id")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                );
+                ak.cmp(&bk)
+            });
+            out.insert(
+                "_r2_naval_supremacy".into(),
+                json!({
+                    "source": "C",
+                    "confidence": "validated_slice",
+                    "projection": "R6 per-strategic-region naval supremacy",
+                    "scale_raw": FIXED_SCALE as u32,
+                    "row_count": rows.len(),
+                    "rows": rows,
+                }),
             );
         }
     }
@@ -9072,9 +9133,16 @@ impl WorldFold {
         // may clear stale task-force status rows.
         if !delta {
             self.naval_missions_status.clear();
+            self.naval_supremacy.clear();
         }
 
-        for row in decoded.rows {
+        let naval56::DecodedNavalMissionStatusPayload {
+            rows,
+            naval_supremacy_rows,
+            ..
+        } = decoded;
+
+        for row in rows {
             self.naval_missions_status.insert(
                 row.task_force_id,
                 NavalMissionTaskForceFoldRow {
@@ -9136,6 +9204,21 @@ impl WorldFold {
                         & naval56::compact::FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED
                         != 0,
                     source_status: row.source_status,
+                },
+            );
+        }
+        for row in naval_supremacy_rows {
+            self.naval_supremacy.insert(
+                (row.region_id, row.controller_tag_db_id),
+                NavalSupremacyFoldRow {
+                    region_id: row.region_id,
+                    controller_tag_db_id: row.controller_tag_db_id,
+                    current_raw: row.current_raw,
+                    target_raw: row.target_raw,
+                    base_target_raw: row.base_target_raw,
+                    previous_raw: row.previous_raw,
+                    decline_from_raw: row.decline_from_raw,
+                    individual_ratio_raw: row.individual_ratio_raw,
                 },
             );
         }
@@ -10149,6 +10232,17 @@ struct NavalMissionTaskForceFoldRow {
     fixture_required: bool,
     active_battle_fixture_required: bool,
     source_status: u32,
+}
+
+struct NavalSupremacyFoldRow {
+    region_id: u32,
+    controller_tag_db_id: u32,
+    current_raw: u32,
+    target_raw: u32,
+    base_target_raw: u32,
+    previous_raw: u32,
+    decline_from_raw: u32,
+    individual_ratio_raw: u32,
 }
 
 struct ShipRawRow {
