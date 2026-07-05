@@ -2295,8 +2295,20 @@ impl WorldFold {
                 // present or absent so absence is never ambiguous.
                 match (&detail.attacker_detail, &detail.defender_detail) {
                     (Some(attacker), Some(defender)) => {
-                        detail_obj.insert("attacker".into(), Self::side_detail_json(attacker));
-                        detail_obj.insert("defender".into(), Self::side_detail_json(defender));
+                        detail_obj.insert(
+                            "attacker".into(),
+                            Self::attach_side_attribution(
+                                Self::side_detail_json(attacker),
+                                &detail.attacker_attribution,
+                            ),
+                        );
+                        detail_obj.insert(
+                            "defender".into(),
+                            Self::attach_side_attribution(
+                                Self::side_detail_json(defender),
+                                &detail.defender_attribution,
+                            ),
+                        );
                         // If either side's stable count triple was inconsistent
                         // (a mid-combat transient), badge the pair complete-but-
                         // counts-incomplete rather than fully authoritative.
@@ -2324,6 +2336,20 @@ impl WorldFold {
                         );
                     }
                     (None, None) => {}
+                }
+                if detail.attacker_detail.is_none() {
+                    if let Some(value) =
+                        Self::attribution_only_side_json(&detail.attacker_attribution)
+                    {
+                        detail_obj.insert("attacker".into(), value);
+                    }
+                }
+                if detail.defender_detail.is_none() {
+                    if let Some(value) =
+                        Self::attribution_only_side_json(&detail.defender_attribution)
+                    {
+                        detail_obj.insert("defender".into(), value);
+                    }
                 }
                 if !detail_obj.is_empty() {
                     obj.insert(
@@ -8319,22 +8345,27 @@ impl WorldFold {
     fn fold_land_combat_detail_events(&mut self, payload: &[u8]) -> Result<(), String> {
         let decoded = land_detail55::decode_detail_events_payload(0, payload)
             .map_err(|errors| errors.join("; "))?;
-        if decoded.status_flags & COMPACT_STATUS_TRANSITION_BASELINE_RESET != 0 {
+        let baseline_reset = decoded.status_flags & COMPACT_STATUS_TRANSITION_BASELINE_RESET != 0;
+        if baseline_reset {
             self.combat_detail_events_this_hour.clear();
             self.note(format!(
                 "land_combat_detail_events_live transition baseline reset after an unknown gap; detail events may be missing for this hour"
             ));
-            return Ok(());
         }
-        if compact_status_is_failure(decoded.status_flags) {
+        let failure_flags = decoded.status_flags & COMPACT_STATUS_FAILURE_MASK;
+        let tolerated_rebaseline_failure =
+            baseline_reset && failure_flags == COMPACT_STATUS_PARTIAL_DATA;
+        if compact_status_is_failure(decoded.status_flags) && !tolerated_rebaseline_failure {
             self.combat_detail_events_this_hour.clear();
-            let failure_flags = decoded.status_flags & COMPACT_STATUS_FAILURE_MASK;
             self.note(format!(
                 "land_combat_detail_events_live failure status {failure_flags:#x}; detail enrichment unknown this hour"
             ));
             return Ok(());
         }
         for row in decoded.rows {
+            if baseline_reset {
+                continue;
+            }
             let Some(event_name) = detail_event_kind_name(row.event_kind) else {
                 continue;
             };
@@ -8395,6 +8426,16 @@ impl WorldFold {
                 land_detail55::CombatSide::Defender => entry.defender_detail = Some(row.detail),
             }
         }
+        for row in decoded.attribution_rows {
+            let entry = self
+                .combat_detail_events_this_hour
+                .entry((row.combat_id, row.generation))
+                .or_default();
+            match row.side {
+                land_detail55::CombatSide::Attacker => entry.attacker_attribution.push(row.entry),
+                land_detail55::CombatSide::Defender => entry.defender_attribution.push(row.entry),
+            }
+        }
         Ok(())
     }
 
@@ -8434,6 +8475,42 @@ impl WorldFold {
             // not authoritative). The damage/kill accumulators are still valid.
             "counts_incomplete": detail.counts_incomplete,
         })
+    }
+
+    fn attach_side_attribution(
+        mut side_json: Value,
+        rows: &[land_detail55::AttributionEntry],
+    ) -> Value {
+        if let Some(obj) = side_json.as_object_mut() {
+            if !rows.is_empty() {
+                obj.insert("damage_attribution".into(), Self::attribution_json(rows));
+            }
+        }
+        side_json
+    }
+
+    fn attribution_only_side_json(rows: &[land_detail55::AttributionEntry]) -> Option<Value> {
+        (!rows.is_empty()).then(|| {
+            let mut obj = Map::new();
+            obj.insert("damage_attribution".into(), Self::attribution_json(rows));
+            Value::Object(obj)
+        })
+    }
+
+    fn attribution_json(rows: &[land_detail55::AttributionEntry]) -> Value {
+        let scale = land_detail55::ATTRIBUTION_FIXED_SCALE as f64;
+        Value::Array(
+            rows.iter()
+                .map(|row| {
+                    json!({
+                        "dealer_tag_db_id": row.dealer_tag_db_id,
+                        "victim_tag_db_id": row.victim_tag_db_id,
+                        "damage": row.damage_raw as f64 / scale,
+                        "damage_raw": row.damage_raw,
+                    })
+                })
+                .collect(),
+        )
     }
 
     // --- DOMAIN 49 naval combat lifecycle (cumulative delta) --------------
@@ -10673,6 +10750,8 @@ struct CombatDetailEnrichment {
     /// no detail row emitted this hour (fail closed; never zero-filled).
     attacker_detail: Option<land_detail55::SideDetail>,
     defender_detail: Option<land_detail55::SideDetail>,
+    attacker_attribution: Vec<land_detail55::AttributionEntry>,
+    defender_attribution: Vec<land_detail55::AttributionEntry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

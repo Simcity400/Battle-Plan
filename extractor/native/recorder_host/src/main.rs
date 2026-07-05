@@ -9003,7 +9003,11 @@ fn decode_compact_land_combat_detail_events_live_data_payload(
             _ => {}
         }
     }
-    let row_count = decoded.rows.len();
+    let row_count = decoded
+        .rows
+        .len()
+        .saturating_add(decoded.side_detail_rows.len())
+        .saturating_add(decoded.attribution_rows.len());
     if let Some(domain) = summary
         .per_domain
         .get_mut(&COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE)
@@ -9056,6 +9060,12 @@ fn decode_compact_land_combat_detail_events_live_data_payload(
         COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
         "land_combat_side_detail_rows",
         decoded.side_detail_rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_attribution_rows",
+        decoded.attribution_rows.len(),
     );
 }
 

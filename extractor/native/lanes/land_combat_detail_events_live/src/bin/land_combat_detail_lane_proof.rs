@@ -166,6 +166,8 @@ fn snapshot(
         defender_divisions: defenders.to_vec(),
         attacker_detail,
         defender_detail,
+        attacker_attribution: Vec::new(),
+        defender_attribution: Vec::new(),
     }
 }
 

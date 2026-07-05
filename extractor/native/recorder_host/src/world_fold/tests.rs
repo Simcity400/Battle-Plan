@@ -3642,6 +3642,125 @@ fn folds_land_combat_side_detail_onto_combat() {
 }
 
 #[test]
+fn folds_land_combat_attribution_onto_sides() {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 21381,
+        generation: 7,
+        location: 3236,
+        attackers: vec![101, 102],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+
+    let side_rows = vec![
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Attacker,
+            detail: capwar_side_detail(2, 0),
+        },
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Defender,
+            detail: capwar_side_detail(1, 0),
+        },
+    ];
+    let attribution_rows = vec![
+        land_detail55::AttributionRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Attacker,
+            entry: land_detail55::AttributionEntry {
+                dealer_tag_db_id: 3,
+                victim_tag_db_id: 1,
+                damage_raw: 1_421_400,
+            },
+        },
+        land_detail55::AttributionRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Defender,
+            entry: land_detail55::AttributionEntry {
+                dealer_tag_db_id: 1,
+                victim_tag_db_id: 3,
+                damage_raw: 9_571_110,
+            },
+        },
+    ];
+    let detail = land_detail55::encode_detail_events_payload_v3(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &side_rows,
+        &attribution_rows,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_attribution");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let dl = &s["combats"].as_array().unwrap()[0]["land_combat_detail_events_live"];
+    assert_eq!(
+        dl["attacker"]["damage_attribution"][0]["dealer_tag_db_id"],
+        json!(3)
+    );
+    assert_eq!(
+        dl["attacker"]["damage_attribution"][0]["victim_tag_db_id"],
+        json!(1)
+    );
+    assert_eq!(
+        dl["attacker"]["damage_attribution"][0]["damage_raw"],
+        json!(1_421_400)
+    );
+    assert!(
+        (dl["attacker"]["damage_attribution"][0]["damage"]
+            .as_f64()
+            .unwrap()
+            - 14.214)
+            .abs()
+            < 1e-6
+    );
+    assert_eq!(
+        dl["defender"]["damage_attribution"][0]["dealer_tag_db_id"],
+        json!(1)
+    );
+    assert_eq!(
+        dl["defender"]["damage_attribution"][0]["victim_tag_db_id"],
+        json!(3)
+    );
+    assert_eq!(dl["side_detail_completeness"], json!("both"));
+}
+
+#[test]
 fn side_detail_is_all_or_nothing_per_combat() {
     // A combat whose defender detail is absent (None → no row) must emit
     // NEITHER side (all-or-nothing) with an explicit completeness badge — a
