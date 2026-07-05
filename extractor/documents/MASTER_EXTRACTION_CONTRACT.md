@@ -74,22 +74,89 @@ VALIDATED (no code change needed) + DOCS:
 - **game_defs loc parser** (b7cae4740) — tolerate shipped files omitting the final wrapper
   brace (vanilla `ideas/SOV.txt`); full modset parses clean.
 
-STILL OPEN (in progress, Codex run active at time of writing):
-- **E5 combat attribution matrix** — 50 land_combat + 4 naval_combat blocks in the D04 melt
-  to validate against; wiring in progress.
-- **E3 naval combat detail RE-CRACK** — on the current build, 3/5 side scalars still validate
-  8/8 (positioning_dominance_bonus, total_initial_strength, total_damage_dealt); positioning
-  (1/8) + anti_air (5/8) DRIFTED — differential re-scan in progress; partial promotion authorized.
-- **D23 map_detail speed optimization** — profile-and-cache attempt in progress; honest
-  "no measurable win, reverted" is an accepted outcome.
+RUN-5 SALVAGE (Codex run died mid-work; orchestrator salvaged + committed):
+- **E5 combat attribution matrix → domain-55 v3 COMMITTED** (47ff94ccf). Per-side country→country
+  SDamageDone matrix; observer INLINE at `LandCombatSide+0x1B0`. Live-validated 202/202 rows /
+  100 sides, damage u32, SOV→GER=72690600 reproduces the Jul-4 matrix. Runtime-only (no save oracle).
+- **D23 map_detail speed → COMMITTED** (f72a03ce9). Batched CBuilding header read, ~3x on the hot
+  loop (~17ms/frame), row-identical golden tests. Closes the #1 speed-5 tail.
+- **E3 naval detail re-crack → PARTIAL** (uncommitted; see OPEN registry). 3 control scalars
+  re-confirmed 8/8; positioning + anti_air are serialization-computed (not stored) → the committed
+  `positioning f32@side+0x288` read is bogus (const 1.0) and must be made fail-closed.
 
-Genuine USER-fixture floor unchanged (need a live/save fixture, not effort): game-speed
-enum root (C2/R4, task #22), focus-paused bit, hub inner warlord attribution, convoy/port
-disrupted PRESSURE, MP chat/hotjoin/tag-switch, finest per-entity combat killer. Reserved
-domains 58 (country_economy_counters) / 59 (templates_equipment_catalog live joins) still open.
+DISCOVERY FAN-OUT (10 Opus agents, 2026-07-05): ~25 fields/joins CRACKED + live-validated + logged
+in `extractor/native/runs/crack_fanout/CRACKED_LEDGER.md`, PENDING WIRING (packets W1–W5). Promotes
+RESERVED **domain 59** (division→template_id join, 2359/2359). The wiring pile is "cracked, not yet
+in the DLL" — tracked in the ledger, NOT below. **Everything that is NOT cracked is enumerated in the
+OPEN ITEMS REGISTRY immediately below** — do not treat the fan-out as "complete"; a real fraction came
+back UNRESOLVED / PARTIAL / fixture-blocked.
+
 The remaining engineering acceptance gate is a fresh speed-5 end-to-end capture proving all
-newly-scheduled domains emit at <100ms/frame with zero skipped hours (all validation this
-session was against the PAUSED D04 fixture).
+scheduled domains emit at <100ms/frame with zero skipped hours (all validation this session was
+against the PAUSED D04 fixture).
+
+## OPEN ITEMS REGISTRY — NOT YET CRACKED (single source of truth; 2026-07-05)
+
+The one place to work through everything still uncracked. Anything CRACKED-but-not-yet-wired lives in
+`runs/crack_fanout/CRACKED_LEDGER.md`, NOT here. Check an item off only when it is cracked+validated
+(move it to the ledger) or consciously dispositioned. Categories: **A** needs a user fixture; **B**
+needs another RE pass (no fixture, but hard); **C** derived → replay layer, not a DLL crack; **D**
+committed-code bug to fix; **E** deprioritized/low-value tail (disposition, don't silently drop).
+
+### A. FIXTURE-BLOCKED — needs a live/save game session (cannot crack from paused D04)
+- [ ] A1. Hub motorization LEVEL/settings — toggle ≥2 hubs to distinct levels (d62 node membership done; per-level value needs variance)
+- [ ] A2. Focus-paused bit — pause one national focus (d45; D04 has no paused variance)
+- [ ] A3. Game-speed enum root — 10s speed tap at each speed 1–5 (d57, task #22)
+- [ ] A4. Air combat lifecycle: sortie lifecycle / kill attribution / last_killer (d42)
+- [ ] A5. Ace kill_type / wounded variance (d46)
+- [ ] A6. Convoy/port disrupted-supply PRESSURE (nonzero) — blockaded island / cut pocket (d44)
+- [ ] A7. Convoy combat loss route/context — active convoy battle (d44)
+- [ ] A8. Naval mission enum / home base / repair / retreat / route semantics (d56)
+- [ ] A9. Naval combat lifecycle-end + member join/leave/sinking — battle teardown (d49-50)
+- [ ] A10. Running-operation owner/target contrast (operative loc ≠ target) (d53)
+- [ ] A11. Spy-network / intel-map percentages, same-tick (d53)
+- [ ] A12. Decision numeric state/province targets + cooldowns (d45)
+- [ ] A13. Scripted GUI open/state (d51) — or a proof-backed non-replay rejection
+- [ ] A14. Construction repair semantics/speed — damaged building repairing (d48)
+- [ ] A15. MP chat/messages, hotjoin, tag-switch — 2-player same-build MP (d57)
+- [ ] A16. Subject autonomy CHANGE dynamics (static levels DONE by D4; change needs a fixture) (d53)
+- [ ] A17. Nukes leaf offset — a country with ≥1 built nuke (D1 container `CCountry+0x1310→CNuke` ready) (d20)
+- [ ] A18. Dynamic_modifier per-instance value/expiry — a country carrying a timed modifier (D2 id-set done) (d20/d53)
+- [ ] A19. Delayed-event `+0xC4` decrement-over-time + originator-vs-scope-country separation (D6 static done) (d51)
+- [ ] A20. Weather region-phenomenon-flags drift confirmation (rain_heavy/arctic_water 305/305 now) — unpaused drift (d24)
+- [ ] A21. Finest per-entity combat killer label (per-convoy / per-sunk-event / per-wing) — one controlled combat (combat)
+
+### B. DEEP-CRACK FOLLOW-UP — no fixture, but needs another RE pass (genuinely uncracked)
+- [ ] B1. Market stockpile OWNER chain — crack the global `CInternationalMarket` singleton + per-country keying (D7 proved it is NOT off CCountry; task #28)
+- [ ] B2. Convoys available (owned count) — walk the equipment-stockpile map (equipment type 70) and sum amounts (D1 UNRESOLVED)
+- [ ] B3. Garrison equipment id/type/amount — deeper equipment-bank (D5: 0 hits depth-4 BFS; oracle saved)
+- [ ] B4. sunk_convoys_history container-header stride — finish the container walk (D8: element decode 441/441 ready, header PARTIAL)
+- [ ] B5. War threat / instigator — read off the capitulation lane's already-discovered war-relation row addresses (D4; no new scan needed)
+- [ ] B6. Naval anti_air — member→CShip AA aggregate (E3: matches nowhere as a direct side field)
+- [ ] B7. raids per-raid decode — `CCountryRaidStatus` internal layout (D8: container `RVA 0x29B6198` proven, per-raid UNRESOLVED)
+- [ ] B8. Construction building token/name — resolve numeric type id → token via game-file map (D5 PARTIAL; may be replay-derived)
+- [ ] B9. Subject ratio — `CSubjectRelation+0x60` has no melt oracle to validate against (D4 UNVALIDATED)
+
+### C. DERIVED / RECOMPUTE — replay layer, NOT a DLL crack (track the replay-side work)
+- [ ] C1. World tension / average_major_ic / tension_scaling_base_country — derived decayed sum of the threat event list (D3)
+- [ ] C2. Realized province temperature/water/snow — derived/non-resident (D6)
+- [ ] C3. Outgoing diplomatic queue — transpose of incoming (no distinct structure; D4)
+- [ ] C4. Market sibling pools produced/imported/used/to_export/base_export — derive from states + trade routes (MTRF)
+- [ ] C5. Country factory/resource/consumer-goods UI counters — RESERVED d58; derive from state buildings/offmap + inputs
+- [ ] C6. Alerts/notifications/outliner/message UI — derive alert-equivalents from replay facts (not pollable without hooks)
+
+### D. COMMITTED-CODE FIXES — bugs found by discovery, apply during wiring
+- [ ] D1. d53 subject-relation reads 0 subjects on 870ebf — committed inline-vtable scan misses; add the `CRelationStatus+0x288` pointer hop → 38/38 (found by D4)
+- [ ] D2. Naval positioning read emits a bogus constant 1.0 (`f32@NavalCombatSide+0x288`) — make it fail-closed / ABSENT (found by E3)
+
+### E. DEPRIORITIZED / LOW-VALUE TAIL — disposition consciously (don't silently drop)
+Save-backed but judged low replay value or redundant; each needs a one-line decision (crack-if-cheap /
+redundant / derived / skip), not silent omission:
+- ai / ai_strategy (huge, low replay value → skip unless a replay need appears)
+- buildings per-country (redundant with state buildings d27 → skip)
+- cached_navy_strength (derivable from OOB → derive), convoys count structure (see B2)
+- id counters: theatre_index / navy_id / land_combat_id / industry_organisation_index / instances_counter / id_counter_store / debug_current_ref_id (engine bookkeeping → skip)
+- history / history_queue, tokens (intel), collaboration progress, claims, cores, deployment, reinforcement, upgrades, name_group, external_rules, focus_tree / continuous_focus_palette, preferred_tactic, is_top_ic_country / major / capital / original_capital (mostly session/AI context → decide per item)
 
 ## 2026-07-04 SESSION STATUS DELTA (authoritative — supersedes stale rows below)
 
