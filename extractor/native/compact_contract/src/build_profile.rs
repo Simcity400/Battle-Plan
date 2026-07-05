@@ -163,6 +163,55 @@ pub const DOMAIN51_CDELAYED_EVENT_DUE_REMAINING_HOURS_OFF: usize = 0xC4;
 /// hours). A value beyond this is treated as a torn read.
 pub const DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS: u32 = 500_000;
 
+// --- W3 domain 64 delayed_events_live: ROOTED per-country list root ----------
+// The per-CDelayedEvent field offsets above (CEVENT_OFF, COMBINED_ID_OFF,
+// OWNER_TAG_COPY_OFF as the originator, SCOPE_RANDOM, DUE_REMAINING_HOURS_OFF,
+// VTABLE_RVA) are shared with the d51 diagnostic path. What d64 adds is the
+// ROOTED list root that replaces the d51 heap scan (agent D6, D04, 13/13
+// countries, 17/17 events, ZERO mismatch vs melt oracle; no heap scan):
+//   CCountry+0x1290 = std::vector<CDelayedEvent*> begin
+//   CCountry+0x1298 = packed u64 (low32 = count)
+/// CCountry+0x1290: begin pointer of the per-country pending delayed-event
+/// vector<CDelayedEvent*>.
+pub const DOMAIN64_COUNTRY_DELAYED_EVENT_VECTOR_BEGIN_OFF: usize = 0x1290;
+/// CCountry+0x1298: packed u64; low32 = count of pending delayed events.
+pub const DOMAIN64_COUNTRY_DELAYED_EVENT_VECTOR_PACKED_OFF: usize = 0x1298;
+/// Fail-closed ceiling on the per-country pending-event count (a low32 beyond
+/// this is a torn/aliased read). D04's busiest country has 2; 4096 is safe.
+pub const DOMAIN64_MAX_DELAYED_EVENTS_PER_COUNTRY: u32 = 4096;
+
+// --- W3 domain 65 special_project_programs_live: ROOTED owner-joined walk -----
+// CCountry+0xFA8 -> CProgramStatus, an array of up to 3 records (stride 0x160).
+// Each record's own vtable must == the CProgramStatus primary vtable
+// (mb+0x295AC88); a record whose vtable differs ends the record walk. Each
+// record: +0x20 = std::vector<CProgram*> begin, +0x28 = packed u64
+// (low32 = count, high32 = capacity). Each element -> CProgram
+// (vtable mb+0x295AC30): program_id @+0x0C, province @+0x174,
+// unread_prototype_rewards @+0x178. Validated 26/26 vs melt (agent D6).
+/// CCountry+0xFA8: pointer to the CProgramStatus record array.
+pub const DOMAIN65_COUNTRY_PROGRAM_STATUS_OFF: usize = 0xFA8;
+/// CProgramStatus primary vtable RVA (each record's own vtable must match).
+pub const DOMAIN65_PROGRAM_STATUS_VTABLE_RVA: usize = 0x295AC88;
+/// CProgram facility vtable RVA.
+pub const DOMAIN65_PROGRAM_VTABLE_RVA: usize = 0x295AC30;
+/// CProgramStatus record stride (array-of-records).
+pub const DOMAIN65_PROGRAM_STATUS_RECORD_STRIDE: usize = 0x160;
+/// Maximum CProgramStatus records walked per country (air/army/naval).
+pub const DOMAIN65_MAX_PROGRAM_STATUS_RECORDS: usize = 3;
+/// CProgramStatus record +0x20: vector<CProgram*> begin.
+pub const DOMAIN65_PROGRAM_STATUS_RECORD_VECTOR_BEGIN_OFF: usize = 0x20;
+/// CProgramStatus record +0x28: packed u64 (low32 = count, high32 = capacity).
+pub const DOMAIN65_PROGRAM_STATUS_RECORD_PACKED_OFF: usize = 0x28;
+/// CProgram +0x0C: program_id (owner-join key; == melt program.id).
+pub const DOMAIN65_PROGRAM_ID_OFF: usize = 0x0C;
+/// CProgram +0x174: province (independent 2nd join key).
+pub const DOMAIN65_PROGRAM_PROVINCE_OFF: usize = 0x174;
+/// CProgram +0x178: unread_prototype_rewards (the reward/output scalar).
+pub const DOMAIN65_PROGRAM_UNREAD_REWARDS_OFF: usize = 0x178;
+/// Fail-closed ceiling on a record's CProgram count (a low32 beyond this, or a
+/// low32 > capacity, is a torn/aliased read that drops the record).
+pub const DOMAIN65_MAX_PROGRAMS_PER_RECORD: u32 = 4096;
+
 /// Domain 53 diplomacy/intel/operative live roots for supported build
 /// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad.
 ///

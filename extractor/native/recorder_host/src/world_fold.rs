@@ -62,6 +62,24 @@ const COUNTRY_CORE_MAX_MANPOWER_POOL: u32 = 2_000_000_000;
 const COUNTRY_CORE_MAX_CONVOYS_DESTROYED: u32 = 100_000_000;
 const COUNTRY_CORE_MAX_DIVISIONS_LOST: u32 = 1_000_000;
 
+// W3 domain 64 delayed_events_live: fixed 20-byte per-event row.
+const DELAYED_EVENT_ROW_LEN: usize = 20;
+const DELAYED_EVENT_FLAG_DUE_REMAINING_HOURS: u32 = 1 << 0;
+const DELAYED_EVENT_FLAG_ORIGINATOR: u32 = 1 << 1;
+const DELAYED_EVENT_KNOWN_FLAGS: u32 =
+    DELAYED_EVENT_FLAG_DUE_REMAINING_HOURS | DELAYED_EVENT_FLAG_ORIGINATOR;
+// Sane ceiling on the remaining-hours countdown (~57 years of 30-day-month
+// hours), matching the collector-side DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS.
+const DELAYED_EVENT_MAX_DUE_REMAINING_HOURS: u32 = 500_000;
+const DELAYED_EVENT_DOMAIN_ID: u16 = 64;
+
+// W3 domain 65 special_project_programs_live: fixed 16-byte per-facility row,
+// preceded by a 24-byte header (elapsed_wall_ms u64, row_count u32 x2,
+// status_flags u32, dropped_ambiguous u32).
+const SPECIAL_PROJECT_PROGRAM_ROW_LEN: usize = 16;
+const SPECIAL_PROJECT_PROGRAM_HEADER_LEN: usize = 24;
+const SPECIAL_PROJECT_PROGRAM_DOMAIN_ID: u16 = 65;
+
 // E4: division row grew 92 -> 104 to carry strategic_redeployment,
 // current_manpower, and cumulative_losses (must stay in lockstep with the
 // collector and recorder-decode row lengths).
@@ -554,7 +572,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63,
+    62, 63, 64, 65,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -1696,6 +1714,8 @@ impl WorldFold {
             56 => self.fold_naval_missions_status(payload),
             57 => self.fold_session_multiplayer_metadata(payload),
             63 => self.fold_country_core_scalars(payload),
+            64 => self.fold_delayed_events(payload),
+            65 => self.fold_special_project_programs(payload),
             60 => self.fold_capitulation_war_state(payload),
             _ => {
                 self.unfolded_domains_this_hour.insert(domain_id);
@@ -3968,6 +3988,188 @@ impl WorldFold {
                     Value::Null
                 },
             );
+        }
+        Ok(())
+    }
+
+    // --- W3 DOMAIN 64 delayed_events_live (full replace) ----------------
+    // Per-country pending scripted delayed events, rooted at CCountry+0x1290.
+    // Each row: {owner tag_db_id, event_id, originator?, due_remaining_hours?}.
+    // due_remaining_hours is a RELATIVE countdown (hours) — the replay derives
+    // the absolute due date = current game clock + remaining. Full-replace: the
+    // per-country `delayed_events` array is rebuilt every frame (a country with
+    // no rows this frame gets an empty array, distinguishing "measured, none"
+    // from a failed frame which retains the prior map via handle_compact_failure).
+    fn fold_delayed_events(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 20, "delayed_events header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let expected = 20 + row_count * DELAYED_EVENT_ROW_LEN;
+        if payload.len() != expected {
+            return Err(format!(
+                "delayed_events len {} != {expected}",
+                payload.len()
+            ));
+        }
+        if self.handle_compact_failure(DELAYED_EVENT_DOMAIN_ID, "delayed_events", status_flags) {
+            return Ok(());
+        }
+        // Group rows by owner (a country can have multiple pending events).
+        let mut per_owner: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
+        for i in 0..row_count {
+            let base = 20 + i * DELAYED_EVENT_ROW_LEN;
+            let owner_tag_db_id = read_u32(payload, base);
+            let event_id = read_u32(payload, base + 4);
+            let flags = read_u32(payload, base + 8);
+            let originator = read_u32(payload, base + 12);
+            let due_remaining_hours = read_u32(payload, base + 16);
+            if owner_tag_db_id == 0 {
+                return Err("delayed_events row with zero owner tag_db_id".into());
+            }
+            if event_id == 0 {
+                return Err("delayed_events row with zero event_id".into());
+            }
+            if flags & !DELAYED_EVENT_KNOWN_FLAGS != 0 {
+                return Err(format!("delayed_events row {i} unknown flags {flags:#x}"));
+            }
+            let has_due = flags & DELAYED_EVENT_FLAG_DUE_REMAINING_HOURS != 0;
+            let has_originator = flags & DELAYED_EVENT_FLAG_ORIGINATOR != 0;
+            // An absent field must pack a zero (fail closed on a malformed row).
+            if !has_due && due_remaining_hours != 0 {
+                return Err(format!(
+                    "delayed_events row {i} due_remaining_hours without flag"
+                ));
+            }
+            if has_due && due_remaining_hours > DELAYED_EVENT_MAX_DUE_REMAINING_HOURS {
+                return Err(format!(
+                    "delayed_events row {i} due_remaining_hours {due_remaining_hours} out of range"
+                ));
+            }
+            if !has_originator && originator != 0 {
+                return Err(format!("delayed_events row {i} originator without flag"));
+            }
+            per_owner.entry(owner_tag_db_id).or_default().push(json!({
+                "event_id": event_id,
+                "due_remaining_hours": if has_due {
+                    json!(due_remaining_hours)
+                } else {
+                    Value::Null
+                },
+                "originator_tag_db_id": if has_originator {
+                    json!(originator)
+                } else {
+                    Value::Null
+                },
+            }));
+        }
+        // Full-replace: clear every known country's list, then set the measured
+        // lists. Clearing first ensures a country whose last event fired (no row
+        // this frame) shows an empty list, not a stale one.
+        let known: Vec<String> = self.countries.keys().cloned().collect();
+        for key in known {
+            if let Ok(id) = key.parse::<u32>() {
+                self.country_mut(id)
+                    .insert("delayed_events".into(), Value::Array(Vec::new()));
+            }
+        }
+        for (owner, events) in per_owner {
+            self.country_mut(owner)
+                .insert("delayed_events".into(), Value::Array(events));
+        }
+        Ok(())
+    }
+
+    // --- W3 DOMAIN 65 special_project_programs_live (full replace) ------
+    // Per-country OWNER-JOINED special-project program facilities, rooted at
+    // CCountry+0xFA8 -> CProgramStatus -> CProgram. Each row:
+    // {owner tag_db_id, program_id, province, unread_prototype_rewards}. The
+    // collector fail-closed drops facilities whose CProgram pointer is reachable
+    // from >1 country (aliased); `dropped_ambiguous` counts them and, when > 0,
+    // PARTIAL_DATA is set (an expected-partial tolerance for d65). Full-replace
+    // of the per-country `special_project_programs` array each frame.
+    fn fold_special_project_programs(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            SPECIAL_PROJECT_PROGRAM_HEADER_LEN,
+            "special_project_programs header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let dropped_ambiguous = read_u32(payload, 20);
+        let expected =
+            SPECIAL_PROJECT_PROGRAM_HEADER_LEN + row_count * SPECIAL_PROJECT_PROGRAM_ROW_LEN;
+        if payload.len() != expected {
+            return Err(format!(
+                "special_project_programs len {} != {expected}",
+                payload.len()
+            ));
+        }
+        if self.handle_compact_failure(
+            SPECIAL_PROJECT_PROGRAM_DOMAIN_ID,
+            "special_project_programs",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if compact_expected_partial_tolerance_applies(
+            SPECIAL_PROJECT_PROGRAM_DOMAIN_ID,
+            status_flags,
+        ) {
+            // Dropped-ambiguous facilities make the owner-joined set incomplete
+            // this frame. Without deletion evidence, replacing would fabricate
+            // disappearance of the aliased facilities and merging would fabricate
+            // persistence; keep the d65 leaf unknown for this hour.
+            self.fold_domains_unknown_this_hour
+                .insert(SPECIAL_PROJECT_PROGRAM_DOMAIN_ID);
+            self.note(
+                "special_project_programs state unknown this hour; ambiguous owner-joins dropped"
+                    .to_string(),
+            );
+            return Ok(());
+        }
+        let mut per_owner: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
+        let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
+        for i in 0..row_count {
+            let base = SPECIAL_PROJECT_PROGRAM_HEADER_LEN + i * SPECIAL_PROJECT_PROGRAM_ROW_LEN;
+            let owner_tag_db_id = read_u32(payload, base);
+            let program_id = read_u32(payload, base + 4);
+            let province = read_u32(payload, base + 8);
+            let unread_prototype_rewards = read_u32(payload, base + 12);
+            if owner_tag_db_id == 0 {
+                return Err("special_project_programs row with zero owner tag_db_id".into());
+            }
+            if program_id == 0 {
+                return Err("special_project_programs row with zero program_id".into());
+            }
+            // (owner, program_id) is the join key and must be unique (fail closed).
+            if !seen.insert((owner_tag_db_id, program_id)) {
+                return Err(format!(
+                    "special_project_programs duplicate (owner {owner_tag_db_id}, program_id {program_id})"
+                ));
+            }
+            per_owner.entry(owner_tag_db_id).or_default().push(json!({
+                "program_id": program_id,
+                "province": province,
+                "unread_prototype_rewards": unread_prototype_rewards,
+            }));
+        }
+        // dropped_ambiguous is carried as a per-frame diagnostic note (the count
+        // of facilities that could not be safely owner-attributed this frame).
+        if dropped_ambiguous > 0 {
+            self.note(format!(
+                "special_project_programs dropped {dropped_ambiguous} ambiguous (multiply-owned) facilities"
+            ));
+        }
+        let known: Vec<String> = self.countries.keys().cloned().collect();
+        for key in known {
+            if let Ok(id) = key.parse::<u32>() {
+                self.country_mut(id)
+                    .insert("special_project_programs".into(), Value::Array(Vec::new()));
+            }
+        }
+        for (owner, programs) in per_owner {
+            self.country_mut(owner)
+                .insert("special_project_programs".into(), Value::Array(programs));
         }
         Ok(())
     }

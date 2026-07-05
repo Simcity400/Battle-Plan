@@ -155,6 +155,11 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "army_battleplans_depth_live: documented fixture-blocked scopes (redraw/toggle lifecycle, activation/execution, stance) fail closed per-row",
     },
+    CompactExpectedPartialTolerance {
+        domain_id: 65,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "special_project_programs_live: CProgram facilities reachable from >1 country's CProgramStatus records (aliased stale category records) cannot be owner-attributed without a validated CProgram owner-tag offset; they are dropped fail-closed and counted (dropped_ambiguous), so the owner-joined set is intentionally incomplete when any ambiguity is present",
+    },
 ];
 
 pub fn expected_partial_tolerance(
@@ -903,6 +908,48 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // W3 (2026-07-05): per-country delayed (scripted) events, ROOTED walk of the
+    // CCountry+0x1290 vector<CDelayedEvent*> (count +0x1298 low32). Per event:
+    // event_id (+0x08 -> CEvent+0x0C), due_remaining_hours (+0xC4, RELATIVE
+    // countdown = months*720+days*24+hours; the replay derives the absolute date
+    // = clock + remaining), originator tag_db_id (+0xC0). D04 discovery
+    // validation (agent D6): 13/13 countries, 17/17 events, ZERO mismatch vs the
+    // melt oracle; no heap scan. Distinct from the forbidden d51 scripted-state
+    // lane, whose delayed-event path is a heap-scan diagnostic BADGE that does
+    // not emit per-event rows; d64 is the authoritative rooted per-event source
+    // and d51 is left untouched.
+    domain(
+        64,
+        "delayed_events_live",
+        "delayed_events_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
+    // W3 (2026-07-05): per-country OWNER-JOINED special-project program
+    // facilities, ROOTED walk of CCountry+0xFA8 -> CProgramStatus (array of up
+    // to 3 records, stride 0x160, each record's own vtable == mb+0x295AC88) ->
+    // record+0x20 vector<CProgram*> begin, record+0x28 packed u64 (low32=count,
+    // high32=capacity). Per CProgram (vtable mb+0x295AC30): program_id (+0x0C),
+    // province (+0x174), unread_prototype_rewards (+0x178). D04 discovery
+    // validation (agent D6): 26/26 facilities exact vs melt (unread + province
+    // both unique full-population offsets). FAIL-CLOSED owner attribution: a
+    // CProgram pointer reachable from >1 country's records (stale category
+    // records aliasing another country's vector) is DROPPED as ambiguous (no
+    // production owner oracle exists), yielding the 21 single-owner facilities;
+    // the 5 ambiguous facilities are badged/counted. Distinct from the committed
+    // d41 projects_live flat (non-owner-joined) facility list, which is left
+    // byte-identical.
+    domain(
+        65,
+        "special_project_programs_live",
+        "special_project_programs_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -947,7 +994,7 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 62, 63, 1000,
+            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 1000,
         ];
         for id in expected {
             assert!(
@@ -1109,6 +1156,16 @@ mod tests {
             "domain 63 (country_core_scalars_live) is a validated slice \
              with explicit open gaps"
         );
+        assert!(
+            profile_ids.contains(&64),
+            "domain 64 (delayed_events_live) is a validated slice \
+             with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&65),
+            "domain 65 (special_project_programs_live) is a validated slice \
+             with explicit open gaps"
+        );
         for excluded in [1, 18, 58, 59, 1000] {
             assert!(
                 !profile_ids.contains(&excluded),
@@ -1183,7 +1240,7 @@ mod tests {
             .iter()
             .map(|tolerance| tolerance.domain_id)
             .collect::<Vec<_>>();
-        assert_eq!(domains, vec![26, 27, 28, 41, 45, 48, 49, 50, 54]);
+        assert_eq!(domains, vec![26, 27, 28, 41, 45, 48, 49, 50, 54, 65]);
     }
 
     #[test]
@@ -1203,7 +1260,7 @@ mod tests {
         for domain_id in [29, 47, 56] {
             assert_eq!(expected_partial_tolerance(domain_id), None);
         }
-        for domain_id in [26, 27, 28, 41, 45, 48, 49, 50, 54] {
+        for domain_id in [26, 27, 28, 41, 45, 48, 49, 50, 54, 65] {
             assert_eq!(
                 expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
                 Some(COMPACT_STATUS_PARTIAL_DATA)

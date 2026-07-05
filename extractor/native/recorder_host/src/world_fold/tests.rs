@@ -229,6 +229,54 @@ fn country_core_scalars_payload(
     p
 }
 
+/// W3 domain 64 delayed_events_live payload.
+/// Each row: (owner_tag_db_id, event_id, originator?, due_remaining_hours?).
+/// `None` => absent (flag clear, zero-packed).
+fn delayed_events_payload(rows: &[(u32, u32, Option<u32>, Option<u32>)]) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    for (owner, event_id, originator, due) in rows {
+        let mut flags = 0u32;
+        if due.is_some() {
+            flags |= 1 << 0;
+        }
+        if originator.is_some() {
+            flags |= 1 << 1;
+        }
+        p.extend_from_slice(&owner.to_le_bytes());
+        p.extend_from_slice(&event_id.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&originator.unwrap_or(0).to_le_bytes());
+        p.extend_from_slice(&due.unwrap_or(0).to_le_bytes());
+    }
+    p
+}
+
+/// W3 domain 65 special_project_programs_live payload.
+/// Each row: (owner_tag_db_id, program_id, province, unread_prototype_rewards).
+fn special_project_programs_payload(
+    rows: &[(u32, u32, u32, u32)],
+    dropped_ambiguous: u32,
+    status_flags: u32,
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    p.extend_from_slice(&dropped_ambiguous.to_le_bytes());
+    for (owner, program_id, province, unread) in rows {
+        p.extend_from_slice(&owner.to_le_bytes());
+        p.extend_from_slice(&program_id.to_le_bytes());
+        p.extend_from_slice(&province.to_le_bytes());
+        p.extend_from_slice(&unread.to_le_bytes());
+    }
+    p
+}
+
 /// One country, one stockpile row, one military line, one construction row.
 fn production_payload(tag: u32, stockpile_amount_raw: i64, active_factories: i32) -> Vec<u8> {
     let mut p = Vec::new();
@@ -8339,6 +8387,233 @@ fn chunk2_d63_country_core_scalars_rejects_malformed_row() {
     // from identity but must not carry manpower_pool from the rejected frame).
     let ger = &snap["countries"]["GER"];
     assert!(ger.get("manpower_pool").is_none() || ger["manpower_pool"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d64_delayed_events_fold_melt_anchored() {
+    // W3 domain 64: per-country pending delayed events. Melt-anchored (D04):
+    //   GER (tag 1): event_id 42900001, remaining 62h, originator GER (1).
+    //   ITA (tag 2): event_id 6700000, remaining 2966h, originator ITA (2).
+    //   USA (tag 68): TWO events (36000046 rem 5*24+15=375h; 36000051 rem
+    //     1*720+6*24+21=885h) -> proves multiple events per country.
+    //   ENG (tag 3): identity-only, no delayed events -> no delayed_events field
+    //     (absent == "no pending events").
+    let ident = country_identity_payload(&[(1, "GER"), (2, "ITA"), (68, "USA"), (3, "ENG")]);
+    let de = delayed_events_payload(&[
+        (1, 42_900_001, Some(1), Some(62)),
+        (2, 6_700_000, Some(2), Some(2966)),
+        (68, 36_000_046, Some(68), Some(375)),
+        (68, 36_000_051, Some(68), Some(885)),
+    ]);
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (64, de)]);
+    let countries = &snap["countries"];
+
+    let ger = &countries["GER"]["delayed_events"];
+    assert_eq!(ger.as_array().unwrap().len(), 1);
+    assert_eq!(ger[0]["event_id"], json!(42_900_001));
+    assert_eq!(ger[0]["due_remaining_hours"], json!(62));
+    assert_eq!(ger[0]["originator_tag_db_id"], json!(1));
+
+    let ita = &countries["ITA"]["delayed_events"];
+    assert_eq!(ita[0]["event_id"], json!(6_700_000));
+    assert_eq!(ita[0]["due_remaining_hours"], json!(2966));
+
+    // USA: two events, order preserved.
+    let usa = &countries["USA"]["delayed_events"];
+    assert_eq!(usa.as_array().unwrap().len(), 2);
+    assert_eq!(usa[0]["event_id"], json!(36_000_046));
+    assert_eq!(usa[0]["due_remaining_hours"], json!(375));
+    assert_eq!(usa[1]["event_id"], json!(36_000_051));
+    assert_eq!(usa[1]["due_remaining_hours"], json!(885));
+
+    // ENG: identity-only, no events -> no delayed_events field (absent == none).
+    let eng = &countries["ENG"];
+    assert!(eng.get("delayed_events").is_none() || eng["delayed_events"] == json!([]));
+}
+
+#[test]
+fn chunk2_d64_delayed_events_full_replace_clears_stale() {
+    // Full-replace regression: a country that HAD a pending event in frame 1 and
+    // has NONE in frame 2 must show an empty list in frame 2 (never a stale
+    // event). Two frames fed to the same fold.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let mut push = |stream: &mut Vec<u8>, seq: &mut u64, domain: u16, payload: &[u8]| {
+        push_record(
+            stream,
+            *seq,
+            raw,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            payload,
+        );
+        *seq += 1;
+    };
+    // Frame 1: GER has one pending event.
+    push(
+        &mut stream,
+        &mut seq,
+        18,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        64,
+        &delayed_events_payload(&[(1, 42_900_001, Some(1), Some(62))]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2 (advance one hour): GER's event fired -> zero rows this frame.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        64,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &delayed_events_payload(&[]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d64_full_replace");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    // Frame 1: one event.
+    assert_eq!(
+        frame1["countries"]["GER"]["delayed_events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Frame 2: full-replace cleared the stale event -> empty list.
+    assert_eq!(frame2["countries"]["GER"]["delayed_events"], json!([]));
+}
+
+#[test]
+fn chunk2_d64_delayed_events_absent_due_folds_null() {
+    // A due-remaining-hours badged absent (flag clear) folds null, not 0.
+    let ident = country_identity_payload(&[(3, "ENG")]);
+    let de = delayed_events_payload(&[(3, 28_200_333, Some(3), None)]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (64, de)]);
+    let eng = &snap["countries"]["ENG"]["delayed_events"];
+    assert_eq!(eng[0]["event_id"], json!(28_200_333));
+    assert_eq!(eng[0]["due_remaining_hours"], Value::Null);
+    assert_eq!(eng[0]["originator_tag_db_id"], json!(3));
+}
+
+#[test]
+fn chunk2_d64_delayed_events_rejects_zero_event_id() {
+    // A zero event_id is a malformed row -> fold fails closed (no list folded).
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let de = delayed_events_payload(&[(1, 0, Some(1), Some(62))]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (64, de)]);
+    let ger = &snap["countries"]["GER"];
+    assert!(ger.get("delayed_events").is_none() || ger["delayed_events"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d65_special_project_programs_fold_melt_anchored() {
+    // W3 domain 65: per-country OWNER-JOINED program facilities. Melt-anchored
+    // (D04): GER id21 province 11366 unread 5; USA id6 province 6707 unread 5,
+    // USA id26 province 13010 unread 5; JAP id16 province 7169 unread 2.
+    // dropped_ambiguous=0 (no aliasing in this synthetic set) -> no PARTIAL_DATA,
+    // full authoritative fold.
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA"), (72, "JAP")]);
+    let programs = special_project_programs_payload(
+        &[
+            (1, 21, 11366, 5),
+            (68, 6, 6707, 5),
+            (68, 26, 13010, 5),
+            (72, 16, 7169, 2),
+        ],
+        0,
+        0,
+    );
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (65, programs)]);
+    let countries = &snap["countries"];
+
+    let ger = &countries["GER"]["special_project_programs"];
+    assert_eq!(ger.as_array().unwrap().len(), 1);
+    assert_eq!(ger[0]["program_id"], json!(21));
+    assert_eq!(ger[0]["province"], json!(11366));
+    assert_eq!(ger[0]["unread_prototype_rewards"], json!(5));
+
+    // USA: two facilities, sorted by program_id (6 before 26).
+    let usa = &countries["USA"]["special_project_programs"];
+    assert_eq!(usa.as_array().unwrap().len(), 2);
+    assert_eq!(usa[0]["program_id"], json!(6));
+    assert_eq!(usa[0]["unread_prototype_rewards"], json!(5));
+    assert_eq!(usa[1]["program_id"], json!(26));
+    assert_eq!(usa[1]["province"], json!(13010));
+
+    let jap = &countries["JAP"]["special_project_programs"];
+    assert_eq!(jap[0]["program_id"], json!(16));
+    assert_eq!(jap[0]["province"], json!(7169));
+    assert_eq!(jap[0]["unread_prototype_rewards"], json!(2));
+}
+
+#[test]
+fn chunk2_d65_special_project_programs_partial_when_ambiguous_dropped() {
+    // dropped_ambiguous > 0 sets PARTIAL_DATA (an expected-partial tolerance for
+    // d65). The fold treats the owner-joined set as UNKNOWN this hour (retains
+    // the prior map) rather than fabricating disappearance of aliased facilities.
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let programs =
+        special_project_programs_payload(&[(1, 21, 11366, 5)], 5, COMPACT_STATUS_PARTIAL_DATA);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (65, programs)]);
+    // Unknown-this-hour: GER carries no owner-joined facilities this frame (no
+    // fabricated authoritative set while ambiguity is present).
+    let ger = &snap["countries"]["GER"];
+    assert!(
+        ger.get("special_project_programs").is_none()
+            || ger["special_project_programs"] == Value::Null
+    );
+}
+
+#[test]
+fn chunk2_d65_special_project_programs_rejects_duplicate_join_key() {
+    // Two rows with the same (owner, program_id) is a malformed join -> fold
+    // fails closed.
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let programs = special_project_programs_payload(&[(1, 21, 11366, 5), (1, 21, 11366, 5)], 0, 0);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (65, programs)]);
+    let ger = &snap["countries"]["GER"];
+    assert!(
+        ger.get("special_project_programs").is_none()
+            || ger["special_project_programs"] == Value::Null
+    );
 }
 
 #[test]

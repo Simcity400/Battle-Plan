@@ -212,6 +212,29 @@ mod tests {
     }
 
     #[test]
+    fn w3_delayed_events_and_program_lanes_schedule() {
+        // W3: rooted per-country delayed events (domain 64) and owner-joined
+        // program facilities (domain 65). Both validated_slice_open_gaps.
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            registry.id_for_scheduled_name("delayed_events_live"),
+            Some(64)
+        );
+        assert_eq!(
+            registry.id_for_scheduled_name("special_project_programs_live"),
+            Some(65)
+        );
+        assert_eq!(
+            registry.by_id(64).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+        );
+        assert_eq!(
+            registry.by_id(65).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+        );
+    }
+
+    #[test]
     fn naval_combat_lane_ids_schedule_after_shared_integration() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
