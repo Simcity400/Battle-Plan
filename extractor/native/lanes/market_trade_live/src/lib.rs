@@ -38,6 +38,12 @@ pub const MARKET_TRADE_LEND_LEASE_TRAILER_MAGIC: &[u8; 4] = b"MTLL";
 pub const MARKET_TRADE_LEND_LEASE_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_LEND_LEASE_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_LEND_LEASE_ROW_LEN: usize = 48;
+pub const MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
+pub const MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN: usize = 32;
+pub const MARKET_TRADE_RESOURCE_FLOW_ROW_LEN: usize = 72;
+pub const MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED: u32 = 3;
+pub const MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = 0x7F;
 
 pub const ROW_FLAG_BUYER_PTR_VALID: u32 = 1;
 pub const ROW_FLAG_EQUIPMENT_SUBBUF_VALID: u32 = 1 << 1;
@@ -187,6 +193,14 @@ pub struct LendLeaseMappingRow {
     pub source_record_kind: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResourceFlowRow {
+    pub tag_db_id: u32,
+    pub flow_kind: u32,
+    pub resource_mask: u32,
+    pub values_raw: [i64; 7],
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarketTradeResidualBadge {
     pub gap_id: u32,
@@ -264,10 +278,16 @@ pub struct MarketTradePayloadSummary {
     pub lend_lease_incoming_rows: u32,
     pub lend_lease_amount_valid_rows: u32,
     pub lend_lease_price_valid_rows: u32,
+    pub resource_flow_trailer_present: bool,
+    pub resource_flow_rows: u32,
+    pub resource_flow_exported_rows: u32,
+    pub resource_flow_scale_raw: u32,
+    pub resource_flow_resource_mask: u32,
     pub rows: Vec<MarketTradeRow>,
     pub residual_badges: Vec<MarketTradeResidualBadgeRow>,
     pub detail_contracts: Vec<PurchaseContractDetailRow>,
     pub lend_lease_mappings: Vec<LendLeaseMappingRow>,
+    pub resource_flow_rows_decoded: Vec<ResourceFlowRow>,
     pub parse_errors: Vec<String>,
 }
 
@@ -326,6 +346,9 @@ pub struct MarketTradeStreamSummary {
     pub lend_lease_incoming_rows_total: u64,
     pub lend_lease_amount_valid_rows_total: u64,
     pub lend_lease_price_valid_rows_total: u64,
+    pub resource_flow_records: u64,
+    pub resource_flow_rows_total: u64,
+    pub resource_flow_exported_rows_total: u64,
     pub payloads: Vec<MarketTradePayloadSummary>,
     pub parse_errors: Vec<String>,
     pub ordering_errors: Vec<String>,
@@ -615,21 +638,21 @@ pub fn market_trade_residual_badges() -> Vec<MarketTradeResidualBadge> {
         MarketTradeResidualBadge {
             gap_id: 7,
             name: "country_resource_import_export_flows",
-            status: RESIDUAL_STATUS_SOURCE_BLOCKED,
-            status_label: "source_blocked",
+            status: RESIDUAL_STATUS_VALIDATED_SLICE,
+            status_label: "validated_slice",
             evidence_mask: RESIDUAL_EVIDENCE_SAVE_ORACLE
                 | RESIDUAL_EVIDENCE_COVERAGE_AUDIT
                 | RESIDUAL_EVIDENCE_CURRENT_ROOT_PROOF
-                | RESIDUAL_EVIDENCE_NO_HOT_LOOP_ROOT,
-            current_support: RESIDUAL_SUPPORT_NONE,
-            current_compact_evidence: "state resource deposits are covered by map/detail lanes, but domain 43 has no per-country produced/exported/imported/to_export/shortage rows",
-            source_evidence: "save_oracle/parse_economy.py reads countries.<TAG>.resources.{produced,exported,to_export}; resource_flow_root_probe v1 rejects CCountry+0x5B8; resource_flow_state_shape_probe v1 rejects the stable CCountry+0x1218 vector as the full flow root",
-            fail_closed_badge: "country resource import/export economy is omitted until a live country resource-flow root other than rejected +0x5B8/+0x1218 candidates is validated",
+                | RESIDUAL_EVIDENCE_D04_DYNAMIC_TAG_PROOF,
+            current_support: RESIDUAL_SUPPORT_VALIDATED_SLICE,
+            current_compact_evidence: "MTRF emits the D04-validated exported-resource slice from CCountryResources+0x5B0; produced/imported/used/to_export/base_export remain omitted",
+            source_evidence: "CCountry+0x11F8 CCountryResources with exported pool +0x5B0 matched the D04 melt 56/56 nonzero countries and 392/392 exported fields; sibling pools failed current-PID value validation",
+            fail_closed_badge: "only exported rows are emitted, only with nonzero resources and a valid MTRF trailer; unvalidated resource-flow pools stay absent",
             proposed_record_kind: RESIDUAL_RECORD_KIND_COUNTRY_RESOURCE_FLOW,
             proposed_record: "country_resource_flow",
             owner_boundary: RESIDUAL_OWNER_MARKET_TRADE,
             owner_label: "market_trade_live",
-            root_status: RESIDUAL_ROOT_REJECTED_CANDIDATE,
+            root_status: RESIDUAL_ROOT_VALIDATED,
             proof_status: RESIDUAL_PROOF_LIVE_870EBF,
         },
         MarketTradeResidualBadge {
@@ -706,7 +729,8 @@ pub fn residual_badge_rows(
                 "purchase_contract_dynamic_tag_buyer_identity"
                 | "omitted_candidate_classification"
                 | "purchase_contract_price_detail"
-                | "lend_lease_market_contract_mapping" => DOMAIN_ID as u32,
+                | "lend_lease_market_contract_mapping"
+                | "country_resource_import_export_flows" => DOMAIN_ID as u32,
                 "market_access_diplomatic_context" => 53,
                 "license_production_contract_detail" => 53,
                 _ => 0,
@@ -717,6 +741,7 @@ pub fn residual_badge_rows(
                 | "omitted_candidate_classification"
                 | "purchase_contract_price_detail" => MARKET_TRADE_ROW_LEN as u32,
                 "lend_lease_market_contract_mapping" => MARKET_TRADE_LEND_LEASE_ROW_LEN as u32,
+                "country_resource_import_export_flows" => MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u32,
                 _ => 0,
             },
             source_ref_id: badge.gap_id,
@@ -895,6 +920,39 @@ pub fn encode_lend_lease_trailer(rows: &[LendLeaseMappingRow]) -> Vec<u8> {
     payload
 }
 
+pub fn encode_resource_flow_trailer(rows: &[ResourceFlowRow]) -> Vec<u8> {
+    let row_count = rows.len().min(u32::MAX as usize) as u32;
+    let exported = rows
+        .iter()
+        .filter(|row| row.flow_kind == MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED)
+        .count()
+        .min(u32::MAX as usize) as u32;
+
+    let mut payload = Vec::with_capacity(
+        MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN + rows.len() * MARKET_TRADE_RESOURCE_FLOW_ROW_LEN,
+    );
+    payload.extend_from_slice(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&exported.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_SCALE_RAW.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for row in rows {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.flow_kind.to_le_bytes());
+        payload.extend_from_slice(&row.resource_mask.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for value in row.values_raw {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    payload
+}
+
 pub fn decode_payload(offset: usize, payload: &[u8]) -> MarketTradePayloadSummary {
     let mut summary = MarketTradePayloadSummary::default();
     if payload.len() < MARKET_TRADE_HEADER_LEN {
@@ -1056,26 +1114,41 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> MarketTradePayloadSummar
 fn decode_optional_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    mut trailer_offset: usize,
     summary: &mut MarketTradePayloadSummary,
 ) {
-    if payload.len().saturating_sub(trailer_offset) < 4 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: optional trailer is too short to contain magic"
-        ));
-        return;
-    }
-    let magic = &payload[trailer_offset..trailer_offset + 4];
-    if magic == MARKET_TRADE_RESIDUAL_TRAILER_MAGIC {
-        decode_residual_trailer(offset, payload, trailer_offset, summary);
-    } else if magic == MARKET_TRADE_DETAIL_TRAILER_MAGIC {
-        decode_detail_trailer(offset, payload, trailer_offset, summary);
-    } else if magic == MARKET_TRADE_LEND_LEASE_TRAILER_MAGIC {
-        decode_lend_lease_trailer(offset, payload, trailer_offset, summary);
-    } else {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade optional trailer has unknown magic"
-        ));
+    while trailer_offset < payload.len() {
+        if payload.len().saturating_sub(trailer_offset) < 4 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: optional trailer is too short to contain magic"
+            ));
+            return;
+        }
+        let magic = &payload[trailer_offset..trailer_offset + 4];
+        let next = if magic == MARKET_TRADE_RESIDUAL_TRAILER_MAGIC {
+            decode_residual_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == MARKET_TRADE_DETAIL_TRAILER_MAGIC {
+            decode_detail_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == MARKET_TRADE_LEND_LEASE_TRAILER_MAGIC {
+            decode_lend_lease_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC {
+            decode_resource_flow_trailer(offset, payload, trailer_offset, summary)
+        } else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade optional trailer has unknown magic"
+            ));
+            return;
+        };
+        let Some(next_offset) = next else {
+            return;
+        };
+        if next_offset <= trailer_offset {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade optional trailer did not advance"
+            ));
+            return;
+        }
+        trailer_offset = next_offset;
     }
 }
 
@@ -1084,21 +1157,21 @@ fn decode_residual_trailer(
     payload: &[u8],
     trailer_offset: usize,
     summary: &mut MarketTradePayloadSummary,
-) {
+) -> Option<usize> {
     summary.residual_trailer_present = true;
     if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_RESIDUAL_HEADER_LEN {
         summary.parse_errors.push(format!(
             "offset {offset}: residual trailer is {} byte(s), expected at least {MARKET_TRADE_RESIDUAL_HEADER_LEN}",
             payload.len().saturating_sub(trailer_offset)
         ));
-        return;
+        return None;
     }
     let trailer = &payload[trailer_offset..];
     if &trailer[0..4] != MARKET_TRADE_RESIDUAL_TRAILER_MAGIC {
         summary.parse_errors.push(format!(
             "offset {offset}: market trade residual trailer has invalid magic"
         ));
-        return;
+        return None;
     }
     let version = read_u16_le(trailer, 4);
     let header_len = read_u16_le(trailer, 6) as usize;
@@ -1123,7 +1196,7 @@ fn decode_residual_trailer(
         summary.parse_errors.push(format!(
             "offset {offset}: unsupported residual trailer version {version} header_len {header_len} row_len {row_len}"
         ));
-        return;
+        return None;
     }
     if reserved0 != 0 {
         summary.parse_errors.push(format!(
@@ -1132,12 +1205,12 @@ fn decode_residual_trailer(
     }
     let expected_len = MARKET_TRADE_RESIDUAL_HEADER_LEN
         .saturating_add((row_count as usize).saturating_mul(MARKET_TRADE_RESIDUAL_ROW_LEN));
-    if trailer.len() != expected_len {
+    if trailer.len() < expected_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: residual trailer is {} byte(s), expected {expected_len}",
+            "offset {offset}: residual trailer is {} byte(s), expected at least {expected_len}",
             trailer.len()
         ));
-        return;
+        return None;
     }
 
     let mut cursor = MARKET_TRADE_RESIDUAL_HEADER_LEN;
@@ -1207,6 +1280,7 @@ fn decode_residual_trailer(
             ));
         }
     }
+    Some(trailer_offset + expected_len)
 }
 
 fn decode_detail_trailer(
@@ -1214,21 +1288,21 @@ fn decode_detail_trailer(
     payload: &[u8],
     trailer_offset: usize,
     summary: &mut MarketTradePayloadSummary,
-) {
+) -> Option<usize> {
     summary.detail_trailer_present = true;
     if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_DETAIL_HEADER_LEN {
         summary.parse_errors.push(format!(
             "offset {offset}: detail trailer is {} byte(s), expected at least {MARKET_TRADE_DETAIL_HEADER_LEN}",
             payload.len().saturating_sub(trailer_offset)
         ));
-        return;
+        return None;
     }
     let trailer = &payload[trailer_offset..];
     if &trailer[0..4] != MARKET_TRADE_DETAIL_TRAILER_MAGIC {
         summary.parse_errors.push(format!(
             "offset {offset}: market trade detail trailer has invalid magic"
         ));
-        return;
+        return None;
     }
     let version = read_u16_le(trailer, 4);
     let header_len = read_u16_le(trailer, 6) as usize;
@@ -1253,7 +1327,7 @@ fn decode_detail_trailer(
         summary.parse_errors.push(format!(
             "offset {offset}: unsupported detail trailer version {version} header_len {header_len} row_len {row_len}"
         ));
-        return;
+        return None;
     }
     if reserved0 != 0 {
         summary.parse_errors.push(format!(
@@ -1262,12 +1336,12 @@ fn decode_detail_trailer(
     }
     let expected_len = MARKET_TRADE_DETAIL_HEADER_LEN
         .saturating_add((row_count as usize).saturating_mul(MARKET_TRADE_DETAIL_ROW_LEN));
-    if trailer.len() != expected_len {
+    if trailer.len() < expected_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: detail trailer is {} byte(s), expected {expected_len}",
+            "offset {offset}: detail trailer is {} byte(s), expected at least {expected_len}",
             trailer.len()
         ));
-        return;
+        return None;
     }
 
     let mut cursor = MARKET_TRADE_DETAIL_HEADER_LEN;
@@ -1352,6 +1426,7 @@ fn decode_detail_trailer(
             ));
         }
     }
+    Some(trailer_offset + expected_len)
 }
 
 fn decode_lend_lease_trailer(
@@ -1359,21 +1434,21 @@ fn decode_lend_lease_trailer(
     payload: &[u8],
     trailer_offset: usize,
     summary: &mut MarketTradePayloadSummary,
-) {
+) -> Option<usize> {
     summary.lend_lease_trailer_present = true;
     if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_LEND_LEASE_HEADER_LEN {
         summary.parse_errors.push(format!(
             "offset {offset}: lend-lease trailer is {} byte(s), expected at least {MARKET_TRADE_LEND_LEASE_HEADER_LEN}",
             payload.len().saturating_sub(trailer_offset)
         ));
-        return;
+        return None;
     }
     let trailer = &payload[trailer_offset..];
     if &trailer[0..4] != MARKET_TRADE_LEND_LEASE_TRAILER_MAGIC {
         summary.parse_errors.push(format!(
             "offset {offset}: market trade lend-lease trailer has invalid magic"
         ));
-        return;
+        return None;
     }
     let version = read_u16_le(trailer, 4);
     let header_len = read_u16_le(trailer, 6) as usize;
@@ -1398,7 +1473,7 @@ fn decode_lend_lease_trailer(
         summary.parse_errors.push(format!(
             "offset {offset}: unsupported lend-lease trailer version {version} header_len {header_len} row_len {row_len}"
         ));
-        return;
+        return None;
     }
     if reserved0 != 0 {
         summary.parse_errors.push(format!(
@@ -1407,12 +1482,12 @@ fn decode_lend_lease_trailer(
     }
     let expected_len = MARKET_TRADE_LEND_LEASE_HEADER_LEN
         .saturating_add((row_count as usize).saturating_mul(MARKET_TRADE_LEND_LEASE_ROW_LEN));
-    if trailer.len() != expected_len {
+    if trailer.len() < expected_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: lend-lease trailer is {} byte(s), expected {expected_len}",
+            "offset {offset}: lend-lease trailer is {} byte(s), expected at least {expected_len}",
             trailer.len()
         ));
-        return;
+        return None;
     }
 
     let mut cursor = MARKET_TRADE_LEND_LEASE_HEADER_LEN;
@@ -1482,6 +1557,155 @@ fn decode_lend_lease_trailer(
                 "offset {offset}: {name} header {expected} != decoded {computed}"
             ));
         }
+    }
+    Some(trailer_offset + expected_len)
+}
+
+fn decode_resource_flow_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut MarketTradePayloadSummary,
+) -> Option<usize> {
+    summary.resource_flow_trailer_present = true;
+    if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource-flow trailer is {} byte(s), expected at least {MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN}",
+            payload.len().saturating_sub(trailer_offset)
+        ));
+        return None;
+    }
+    let trailer = &payload[trailer_offset..];
+    if &trailer[0..4] != MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade resource-flow trailer has invalid magic"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_len = read_u16_le(trailer, 8) as usize;
+    let reserved0 = read_u16_le(trailer, 10);
+    let row_count = read_u32_le(trailer, 12);
+    let exported = read_u32_le(trailer, 16);
+    let scale_raw = read_u32_le(trailer, 20);
+    let resource_mask = read_u32_le(trailer, 24);
+    let reserved1 = read_u32_le(trailer, 28);
+
+    summary.resource_flow_rows = row_count;
+    summary.resource_flow_exported_rows = exported;
+    summary.resource_flow_scale_raw = scale_raw;
+    summary.resource_flow_resource_mask = resource_mask;
+
+    if version != MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION
+        || header_len != MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN
+        || row_len != MARKET_TRADE_RESOURCE_FLOW_ROW_LEN
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: unsupported resource-flow trailer version {version} header_len {header_len} row_len {row_len}"
+        ));
+        return None;
+    }
+    if reserved0 != 0 || reserved1 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource-flow trailer reserved header field is nonzero"
+        ));
+    }
+    if exported != row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource_flow_exported_rows {exported} != row_count {row_count}"
+        ));
+    }
+    if scale_raw != MARKET_TRADE_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource_flow_scale_raw {scale_raw} != {MARKET_TRADE_SCALE_RAW}"
+        ));
+    }
+    if resource_mask != MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource_flow_resource_mask {resource_mask:#X} != {MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK:#X}"
+        ));
+    }
+    let expected_len = MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN
+        .saturating_add((row_count as usize).saturating_mul(MARKET_TRADE_RESOURCE_FLOW_ROW_LEN));
+    if trailer.len() < expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource-flow trailer is {} byte(s), expected at least {expected_len}",
+            trailer.len()
+        ));
+        return None;
+    }
+
+    let mut cursor = MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN;
+    let mut seen_tags = BTreeSet::new();
+    let mut computed_exported = 0u32;
+    for row_index in 0..row_count {
+        let mut row = ResourceFlowRow {
+            tag_db_id: read_u32_le(trailer, cursor),
+            flow_kind: read_u32_le(trailer, cursor + 4),
+            resource_mask: read_u32_le(trailer, cursor + 8),
+            values_raw: [0; 7],
+        };
+        let reserved = read_u32_le(trailer, cursor + 12);
+        for (resource_index, value) in row.values_raw.iter_mut().enumerate() {
+            *value = read_i64_le(trailer, cursor + 16 + resource_index * 8);
+        }
+        cursor += MARKET_TRADE_RESOURCE_FLOW_ROW_LEN;
+
+        validate_resource_flow_row(offset, row_index as usize, &row, reserved, summary);
+        if row.flow_kind == MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
+            computed_exported = computed_exported.saturating_add(1);
+        }
+        if row.tag_db_id != 0 && !seen_tags.insert(row.tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: resource-flow row {row_index} duplicates tag_db_id {}",
+                row.tag_db_id
+            ));
+        }
+        summary.resource_flow_rows_decoded.push(row);
+    }
+    if exported != computed_exported {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource_flow_exported_rows header {exported} != decoded {computed_exported}"
+        ));
+    }
+    Some(trailer_offset + expected_len)
+}
+
+fn validate_resource_flow_row(
+    offset: usize,
+    row_index: usize,
+    row: &ResourceFlowRow,
+    reserved: u32,
+    summary: &mut MarketTradePayloadSummary,
+) {
+    if row.tag_db_id == 0 || row.tag_db_id > MARKET_TRADE_MAX_TAG_DB_ID {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource-flow row {row_index} invalid tag_db_id {}",
+            row.tag_db_id
+        ));
+    }
+    if row.flow_kind != MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource-flow row {row_index} invalid flow_kind {}",
+            row.flow_kind
+        ));
+    }
+    if row.resource_mask != MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource-flow row {row_index} resource_mask 0x{:X} != 0x{:X}",
+            row.resource_mask, MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
+        ));
+    }
+    if reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource-flow row {row_index} reserved field is nonzero"
+        ));
+    }
+    if row.values_raw.iter().all(|value| *value == 0) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource-flow row {row_index} has all-zero exported resources"
+        ));
     }
 }
 
@@ -2163,6 +2387,15 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                 summary.lend_lease_price_valid_rows_total = summary
                     .lend_lease_price_valid_rows_total
                     .saturating_add(payload_summary.lend_lease_price_valid_rows as u64);
+                if payload_summary.resource_flow_trailer_present {
+                    summary.resource_flow_records = summary.resource_flow_records.saturating_add(1);
+                }
+                summary.resource_flow_rows_total = summary
+                    .resource_flow_rows_total
+                    .saturating_add(payload_summary.resource_flow_rows as u64);
+                summary.resource_flow_exported_rows_total = summary
+                    .resource_flow_exported_rows_total
+                    .saturating_add(payload_summary.resource_flow_exported_rows as u64);
                 summary
                     .parse_errors
                     .extend(payload_summary.parse_errors.iter().cloned());
@@ -2317,7 +2550,7 @@ mod tests {
         assert_eq!(decoded.row_count, 1);
         assert!(decoded.residual_trailer_present);
         assert_eq!(decoded.residual_badge_rows as usize, badges.len());
-        assert_eq!(decoded.residual_source_blocked_rows, 3);
+        assert_eq!(decoded.residual_source_blocked_rows, 2);
         assert_eq!(decoded.residual_schema_blocked_rows, 0);
         assert_eq!(decoded.residual_owned_elsewhere_rows, 1);
         assert_eq!(decoded.residual_shared_patch_blocked_rows, 0);
@@ -2353,6 +2586,11 @@ mod tests {
                 && badge.status == RESIDUAL_STATUS_VALIDATED_SLICE));
         assert!(badges
             .iter()
+            .any(|badge| badge.name == "country_resource_import_export_flows"
+                && badge.status == RESIDUAL_STATUS_VALIDATED_SLICE
+                && badge.current_support == RESIDUAL_SUPPORT_VALIDATED_SLICE));
+        assert!(badges
+            .iter()
             .any(|badge| badge.status == RESIDUAL_STATUS_OWNED_ELSEWHERE_CONTEXT));
         assert!(badges
             .iter()
@@ -2379,7 +2617,7 @@ mod tests {
         assert!(gate.ok, "{:?}", gate.problems);
         assert_eq!(gate.summary.residual_badge_records, 1);
         assert_eq!(gate.summary.residual_badge_rows_total, badges.len() as u64);
-        assert_eq!(gate.summary.residual_source_blocked_rows_total, 3);
+        assert_eq!(gate.summary.residual_source_blocked_rows_total, 2);
     }
 
     #[test]
@@ -2465,6 +2703,75 @@ mod tests {
         assert_eq!(decoded.detail_delivery_route_valid_rows, 1);
         assert_eq!(decoded.detail_progress_valid_rows, 1);
         assert_eq!(decoded.detail_contracts, vec![detail]);
+    }
+
+    #[test]
+    fn resource_flow_trailer_decodes_after_detail_trailer() {
+        let detail = PurchaseContractDetailRow {
+            contract_id: 985,
+            flags: DETAIL_FLAG_PRICE_VALID | DETAIL_FLAG_AMOUNT_VALID,
+            price_raw: 250_000,
+            amount_raw: 30_000_000,
+            ..PurchaseContractDetailRow::default()
+        };
+        let resource_row = ResourceFlowRow {
+            tag_db_id: 67,
+            flow_kind: MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED,
+            resource_mask: MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK,
+            values_raw: [800_000, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000],
+        };
+        let mut payload = encode_payload_with_detail_rows(0, 0, 0, 0, &[], &[detail]);
+        payload.extend_from_slice(&encode_resource_flow_trailer(&[resource_row]));
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded.ok(), "{:?}", decoded.parse_errors);
+        assert!(decoded.detail_trailer_present);
+        assert!(decoded.resource_flow_trailer_present);
+        assert_eq!(decoded.resource_flow_rows, 1);
+        assert_eq!(decoded.resource_flow_exported_rows, 1);
+        assert_eq!(decoded.resource_flow_rows_decoded, vec![resource_row]);
+
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        append_compact_record(&mut stream, 2, 100, 0, RECORD_TYPE_FRAME_END, &[]);
+        let summary = summarize_compact_stream(&stream);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.detail_records, 1);
+        assert_eq!(summary.resource_flow_records, 1);
+        assert_eq!(summary.resource_flow_rows_total, 1);
+        assert_eq!(summary.resource_flow_exported_rows_total, 1);
+    }
+
+    #[test]
+    fn resource_flow_trailer_rejects_all_zero_export_row() {
+        let resource_row = ResourceFlowRow {
+            tag_db_id: 67,
+            flow_kind: MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED,
+            resource_mask: MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK,
+            values_raw: [0; 7],
+        };
+        let mut payload = encode_payload(0, 0, 0, 0, &[]);
+        payload.extend_from_slice(&encode_resource_flow_trailer(&[resource_row]));
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(!decoded.ok());
+        assert!(decoded
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("all-zero exported resources")));
     }
 
     #[test]

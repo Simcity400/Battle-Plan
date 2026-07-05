@@ -193,6 +193,21 @@ const MARKET_TRADE_DETAIL_FLAGS_KNOWN: u32 = MARKET_TRADE_DETAIL_FLAG_PRICE_VALI
     | MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID
     | MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
     | MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID;
+const MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
+const MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 1;
+const MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize = 32;
+const MARKET_TRADE_RESOURCE_FLOW_ROW_LEN: usize = 72;
+const MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED: u32 = 3;
+const MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = 0x7F;
+const MARKET_TRADE_RESOURCE_NAMES: [&str; 7] = [
+    "oil",
+    "aluminium",
+    "rubber",
+    "tungsten",
+    "steel",
+    "chromium",
+    "coal",
+];
 
 const DIVISIONS_DOMAIN_ID: u16 = 20;
 const WEATHER_DOMAIN_ID: u16 = 24;
@@ -578,6 +593,9 @@ pub struct WorldFold {
     war_state_wars_this_hour: Vec<capwar60::compact::WarRow>,
     /// D43 world-scoped market contracts; full-replaced by each successful frame.
     market_trade_contracts: Option<Vec<Value>>,
+    /// D43 validated exported-resource slice; full-replaced only by valid MTRF
+    /// trailers. Countries with zero exported resources remain absent.
+    market_trade_resource_exported: BTreeMap<u32, [i64; 7]>,
     /// D44 live supply proxy sidecar; full-replaced by each successful frame.
     supply: Option<Map<String, Value>>,
     /// D24 R2 weather overlay projected under `map._r2_weather_live`.
@@ -798,6 +816,7 @@ impl WorldFold {
             capitulation_war_state_known_this_hour: false,
             war_state_wars_this_hour: Vec::new(),
             market_trade_contracts: None,
+            market_trade_resource_exported: BTreeMap::new(),
             supply: None,
             weather_live: None,
             special_projects: None,
@@ -1239,6 +1258,35 @@ impl WorldFold {
                 projection.insert("r2_market_trade_projection".into(), json!(true));
                 ensure_json_array_mut(diplomacy, "lend_lease").push(Value::Object(projection));
             }
+        }
+    }
+
+    fn project_market_trade_resource_flow(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for (tag_db_id, values_raw) in &self.market_trade_resource_exported {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            let market = ensure_json_object_mut(country, "r2_market_trade_live");
+            let resource_flow = ensure_json_object_mut(market, "resource_flow");
+            let mut exported = Map::new();
+            let mut exported_raw = Map::new();
+            for (index, resource_name) in MARKET_TRADE_RESOURCE_NAMES.iter().enumerate() {
+                let value_raw = values_raw[index];
+                if value_raw != 0 {
+                    exported.insert(
+                        (*resource_name).into(),
+                        json!(value_raw as f64 / FIXED_SCALE),
+                    );
+                    exported_raw.insert((*resource_name).into(), json!(value_raw));
+                }
+            }
+            resource_flow.insert("exported".into(), Value::Object(exported));
+            resource_flow.insert("exported_raw".into(), Value::Object(exported_raw));
+            resource_flow.insert("scale_raw".into(), json!(FIXED_SCALE as u32));
+            resource_flow.insert("source".into(), json!("CCountryResources+0x5B0"));
+            resource_flow.insert("confidence".into(), json!("validated_slice"));
         }
     }
 
@@ -1771,6 +1819,7 @@ impl WorldFold {
         // D60 capitulation attaches from its persistent map (last proven frame
         // wins), creating country objects for capitulated minors if needed.
         self.project_capitulation_country_state(&mut countries, &mut unresolved);
+        self.project_market_trade_resource_flow(&mut countries, &mut unresolved);
 
         // States: merge sibling-domain fields with D22-owned map-control fields.
         // Unknown domains mask only their own fields, not the whole shared object.
@@ -9360,11 +9409,12 @@ impl WorldFold {
                 FIXED_SCALE as u32
             ));
         }
-        let detail_rows = if payload.len() > core_end {
-            parse_market_trade_detail_trailer(payload, core_end)?
+        let trailers = if payload.len() > core_end {
+            parse_market_trade_trailers(payload, core_end)?
         } else {
-            BTreeMap::new()
+            MarketTradeTrailersFold::default()
         };
+        let detail_rows = trailers.detail_rows;
 
         let mut contracts = Vec::with_capacity(row_count);
         let mut seen_contracts = BTreeSet::new();
@@ -9468,6 +9518,9 @@ impl WorldFold {
         }
 
         self.market_trade_contracts = Some(contracts);
+        if let Some(resource_exported) = trailers.resource_exported {
+            self.market_trade_resource_exported = resource_exported;
+        }
         Ok(())
     }
 
@@ -10814,6 +10867,12 @@ struct MarketTradeDetailFoldRow {
     equipment_transfer_progress_raw: i32,
 }
 
+#[derive(Default)]
+struct MarketTradeTrailersFold {
+    detail_rows: BTreeMap<u32, MarketTradeDetailFoldRow>,
+    resource_exported: Option<BTreeMap<u32, [i64; 7]>>,
+}
+
 struct FrdDecisionStatusState {
     tag_db_id: u32,
     active_timed_count: u32,
@@ -11721,10 +11780,43 @@ fn parse_production_license_trailer(
     Ok(out)
 }
 
+fn parse_market_trade_trailers(
+    payload: &[u8],
+    mut trailer_offset: usize,
+) -> Result<MarketTradeTrailersFold, String> {
+    let mut out = MarketTradeTrailersFold::default();
+    let mut detail_seen = false;
+    while trailer_offset < payload.len() {
+        need(payload, trailer_offset + 4, "market trade trailer magic")?;
+        let magic = &payload[trailer_offset..trailer_offset + 4];
+        if magic == MARKET_TRADE_DETAIL_TRAILER_MAGIC {
+            if detail_seen {
+                return Err("market trade has duplicate MTD1 detail trailer".to_string());
+            }
+            let (detail_rows, next_offset) =
+                parse_market_trade_detail_trailer(payload, trailer_offset)?;
+            out.detail_rows = detail_rows;
+            detail_seen = true;
+            trailer_offset = next_offset;
+        } else if magic == MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC {
+            if out.resource_exported.is_some() {
+                return Err("market trade has duplicate MTRF resource-flow trailer".to_string());
+            }
+            let (resource_exported, next_offset) =
+                parse_market_trade_resource_flow_trailer(payload, trailer_offset)?;
+            out.resource_exported = Some(resource_exported);
+            trailer_offset = next_offset;
+        } else {
+            return Err("market trade trailing bytes are not a known D43 trailer".to_string());
+        }
+    }
+    Ok(out)
+}
+
 fn parse_market_trade_detail_trailer(
     payload: &[u8],
     trailer_offset: usize,
-) -> Result<BTreeMap<u32, MarketTradeDetailFoldRow>, String> {
+) -> Result<(BTreeMap<u32, MarketTradeDetailFoldRow>, usize), String> {
     if payload.get(trailer_offset..trailer_offset.saturating_add(4))
         != Some(MARKET_TRADE_DETAIL_TRAILER_MAGIC.as_slice())
     {
@@ -11750,9 +11842,9 @@ fn parse_market_trade_detail_trailer(
     let expected = trailer_offset
         .saturating_add(header_len)
         .saturating_add(row_count.saturating_mul(row_len));
-    if payload.len() != expected {
+    if payload.len() < expected {
         return Err(format!(
-            "market trade MTD1 len {} != {expected}",
+            "market trade MTD1 len {} < {expected}",
             payload.len()
         ));
     }
@@ -11895,7 +11987,114 @@ fn parse_market_trade_detail_trailer(
             ));
         }
     }
-    Ok(rows)
+    Ok((rows, expected))
+}
+
+fn parse_market_trade_resource_flow_trailer(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<u32, [i64; 7]>, usize), String> {
+    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
+        != Some(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC.as_slice())
+    {
+        return Err("market trade trailing bytes are not MTRF resource-flow trailer".to_string());
+    }
+    need(
+        payload,
+        trailer_offset + MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN,
+        "market trade MTRF header",
+    )?;
+    let version = read_u16(payload, trailer_offset + 4);
+    let header_len = read_u16(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16(payload, trailer_offset + 10);
+    let row_count = read_u32(payload, trailer_offset + 12) as usize;
+    let exported_count = read_u32(payload, trailer_offset + 16) as usize;
+    let scale_raw = read_u32(payload, trailer_offset + 20);
+    let resource_mask = read_u32(payload, trailer_offset + 24);
+    let reserved1 = read_u32(payload, trailer_offset + 28);
+    if version != MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION
+        || header_len != MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN
+        || row_len != MARKET_TRADE_RESOURCE_FLOW_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+    {
+        return Err("market trade MTRF header shape is invalid".to_string());
+    }
+    if exported_count != row_count {
+        return Err(format!(
+            "market trade MTRF exported_count {exported_count} != row_count {row_count}"
+        ));
+    }
+    if scale_raw != FIXED_SCALE as u32 {
+        return Err(format!(
+            "market trade MTRF scale_raw {scale_raw} != {}",
+            FIXED_SCALE as u32
+        ));
+    }
+    if resource_mask != MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
+        return Err(format!(
+            "market trade MTRF resource_mask {resource_mask:#x} != {:#x}",
+            MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
+        ));
+    }
+    let expected = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() < expected {
+        return Err(format!(
+            "market trade MTRF len {} < {expected}",
+            payload.len()
+        ));
+    }
+
+    let mut rows = BTreeMap::new();
+    let mut cursor = trailer_offset + header_len;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(payload, cursor);
+        let flow_kind = read_u32(payload, cursor + 4);
+        let row_resource_mask = read_u32(payload, cursor + 8);
+        let reserved = read_u32(payload, cursor + 12);
+        let mut values_raw = [0i64; 7];
+        for (resource_index, value) in values_raw.iter_mut().enumerate() {
+            *value = read_i64(payload, cursor + 16 + resource_index * 8);
+        }
+        cursor += row_len;
+
+        if tag_db_id == 0
+            || tag_db_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+        {
+            return Err(format!(
+                "market trade MTRF row {row_index} has invalid tag_db_id {tag_db_id}"
+            ));
+        }
+        if flow_kind != MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
+            return Err(format!(
+                "market trade MTRF row {row_index} has unsupported flow_kind {flow_kind}"
+            ));
+        }
+        if row_resource_mask != MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
+            return Err(format!(
+                "market trade MTRF row {row_index} has resource_mask {row_resource_mask:#x}"
+            ));
+        }
+        if reserved != 0 {
+            return Err(format!(
+                "market trade MTRF row {row_index} reserved field is nonzero"
+            ));
+        }
+        if values_raw.iter().all(|value| *value == 0) {
+            return Err(format!(
+                "market trade MTRF row {row_index} has all-zero exported resources"
+            ));
+        }
+        if rows.insert(tag_db_id, values_raw).is_some() {
+            return Err(format!(
+                "market trade MTRF row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+    }
+    Ok((rows, expected))
 }
 
 fn apply_market_trade_detail_to_contract(

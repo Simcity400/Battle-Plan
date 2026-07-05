@@ -5051,6 +5051,29 @@ fn append_d43_mtd1_detail(payload: &mut Vec<u8>) {
     payload.extend_from_slice(&0u32.to_le_bytes());
 }
 
+fn append_d43_mtrf_resource_flow(payload: &mut Vec<u8>, rows: &[(u32, [i64; 7])]) {
+    payload.extend_from_slice(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION.to_le_bytes());
+    payload
+        .extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for (tag_db_id, values_raw) in rows {
+        payload.extend_from_slice(&tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for value in values_raw {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+}
+
 fn d43_empty_payload() -> Vec<u8> {
     let mut payload = Vec::new();
     payload.extend_from_slice(&0u64.to_le_bytes());
@@ -5491,6 +5514,62 @@ fn folds_d43_mtd1_detail_fields_without_discarding_partial_core_rows() {
             .as_str()
             .unwrap()
             .contains("market_trade_live partial status")));
+}
+
+#[test]
+fn folds_d43_mtd1_and_mtrf_exported_resource_flow() {
+    let mut payload = d43_payload(0);
+    append_d43_mtd1_detail(&mut payload);
+    append_d43_mtrf_resource_flow(
+        &mut payload,
+        &[(
+            67,
+            [800_000, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000],
+        )],
+    );
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, payload),
+    ]);
+
+    let contract = &snap["diplomacy_world"]["trade_contracts"][0];
+    assert_eq!(contract["delivery_country"], json!("ENG"));
+    let resource_flow = &snap["countries"]["ENG"]["r2_market_trade_live"]["resource_flow"];
+    assert!((resource_flow["exported"]["steel"].as_f64().unwrap() - 154.99941).abs() < 0.00001);
+    assert_eq!(resource_flow["exported_raw"]["coal"], json!(12_000_000));
+    assert_eq!(resource_flow["confidence"], json!("validated_slice"));
+}
+
+#[test]
+fn d43_bad_mtrf_retains_prior_exported_resource_flow() {
+    let mut first_payload = d43_empty_payload();
+    append_d43_mtrf_resource_flow(&mut first_payload, &[(67, [0, 0, 0, 0, 10_000_000, 0, 0])]);
+
+    let mut bad_payload = d43_empty_payload();
+    append_d43_mtrf_resource_flow(&mut bad_payload, &[(67, [0; 7])]);
+
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, first_payload),
+        ],
+        vec![(43, bad_payload)],
+    ]);
+
+    assert_eq!(
+        snaps[1]["countries"]["ENG"]["r2_market_trade_live"]["resource_flow"]["exported_raw"]
+            ["steel"],
+        json!(10_000_000)
+    );
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("market trade MTRF row 0 has all-zero exported resources")));
 }
 
 #[test]
