@@ -7,7 +7,16 @@ It is the only active extraction completion ledger. Older completion plans,
 scoped-status summaries, research notes, and lane handoff packets are archived
 under `extractor/documents/archive/` and are evidence only.
 
-- `extractor/documents/DOMAIN_REGISTRY.md` assigns compact domain IDs.
+- Compact domain IDs, status, and schedulability are single-sourced in
+  `extractor/native/domain_registry.json` (mirrored by the code-authoritative
+  `compact_contract::ASSIGNED_COMPACT_DOMAINS`). The former hand-maintained
+  `DOMAIN_REGISTRY.md` mirror was RETIRED 2026-07-05 (its lane-subagent ID
+  coordination workflow is no longer in use); its history is under
+  `archive/DOMAIN_REGISTRY.md`, and its one live section (recorder static
+  artifacts) now lives in this contract below.
+- `extractor/documents/EXTRACTION_ATLAS.md` is the exhaustive descriptive census
+  of every extractable datum (save paths, per-country schema, memory-only/UI
+  state, gaps) — the discovery map alongside this normative contract.
 - This file is the master contract: if every row here is closed, the extractor
   should have no known missed replay-relevant data.
 
@@ -471,6 +480,22 @@ for an authentic replay because compact records often carry token ids or handles
 | Game speed/pause commands | Speed changes and pauses for playback timing. | `PARTIAL:PAUSE_VALIDATED_SPEED_OPEN` | Domain 57 shared path emits pause state from the validated 2026-07-02 clock singleton/vtable/bool oracle under `_r2_session_multiplayer_metadata_live.pause`. | Game-speed root remains unpinned and is not folded; validate a live speed root/hook before exposing speed/session timing fields. |
 | Chat/messages | Multiplayer chat, system messages, notifications. | `FIXTURE_BLOCKED` | Domain 57 lane-local chat/system-message schema and replay proof exist; chat is MP-runtime and cannot be validated from an SP save. Disposition 2026-07-03: `SESSION_EVENT_DISPOSITION.md`. | Same-build MP session with unique chat text, `--expect-text` oracle, and a stable pollable message container with count/text delta. |
 | Alerts/notifications | UI alerts, important message log, popups. | `REJECTED` | Proof-backed rejection for v1 polling extraction 2026-07-03 (`SESSION_EVENT_DISPOSITION.md`): with active wartime alerts on screen, broad current-build RTTI found alert/message/notification classes but ZERO live heap instances, and a reachability walk from validated `CGameState`/human `CCountry`/child roots found no pollable container; RTTI shows an `NInterfaceMessages` listener/dispatch architecture, not stored state. Alerts are derived UI state reconstructable in the replay from underlying facts (domains 14/16/17/21/45/55). | Not required for 1:1 replay (derive alert-equivalents from replay facts). Future revisit only via code-hook instrumentation of the `NInterfaceMessages` dispatch path — outside the polling architecture, needs explicit sign-off. |
+
+## Static Artifacts Packed By Recorder
+
+(Migrated 2026-07-05 from the retired `DOMAIN_REGISTRY.md`.) The production
+recorder packs pre-built deterministic JSON artifacts as `role="static_artifact"`
+entries and records present/absent status in `index.json`. These W2 `game_defs`
+artifacts are required alongside the domain-59 templates/equipment catalog and
+the R3 localisation join bundle:
+
+| artifact name | recorder flag | payload path | schema | contents |
+| --- | --- | --- | --- | --- |
+| `decisions_static_definitions` | `--static-decisions-definitions` | `extractor/game_defs/out/decisions_static/decisions_static_definitions/decision_definitions_catalog.json` | `decisions_static_definitions.static_artifact.v1` | Static decision and category definitions for replay enrichment. |
+| `idea_tech_loc_xref_static` | `--static-idea-tech-loc-xref` | `extractor/game_defs/out/idea_tech_loc_xref/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json` | `idea_tech_loc_xref_static.static_artifact.v1` | Idea and technology token cross-reference to localisation keys. |
+| `ship_definitions_static` | `--static-ship-definitions` | `extractor/game_defs/out/ship_definitions_static/ship_definitions_static/ship_definitions_catalog.json` | `ship_definitions_static.static_artifact.v1` | Ship hull and ship module static definitions. |
+| `gfx_icon_asset_manifest_static` | `--static-gfx-icon-manifest` | `extractor/game_defs/out/gfx_icon_manifest/gfx_icon_asset_manifest_static/gfx_icon_manifest_catalog.json` | `gfx_icon_asset_manifest_static.static_artifact.v1` | Sprite/icon/flag asset manifest over vanilla+integrated_dlc+enabled dlc+mod layers with texture hashes; recorder rejects non-gate-passing manifests (unresolved refs, stale allowlist, parse gaps). |
+| `localisation_join` | `--static-localisation-join` | `extractor/game_defs/out/localisation_gate/static_localisation_join_r3/localisation_catalog.json` | `static_localisation_join_r3.static_artifact.v1` | English loc key -> {name, raw, source_layer, source_file} mod-over-vanilla map + per-category coverage. E11 (2026-07-04) added `resolved_joins` (schema `static_localisation_join_r3.resolved_joins.v1`): id->display-name tables the replay UI needs — `focus`{focus_id:name}, `state`{state_id:name}, `victory_point`{provid:name}, `country`.{`tags`{TAG:name}, `cosmetic_tags`{cosmetic_tag:name}}, mod-over-vanilla, no fabrication (absent best-candidate id OMITTED). Country display: `cosmetic_tags[active] else tags[country_tag] else raw tag`; dynamic (D01..) tags resolve at runtime. Live vanilla counts: 10602 focus / 1081 state / 1704 VP / 364 tags / 344 cosmetic. The per-category coverage step's `SOV.txt` failure was FIXED 2026-07-05 (commit b7cae4740; shipped file omits its final wrapper brace, precheck now tolerates a single balanced-nested unclosed root); full modset parses clean (ideas 6522, focus 7526, loc 139950 keys, 0 failures). |
 
 ## Closure Sweep Required Before Calling The Extractor Done
 
