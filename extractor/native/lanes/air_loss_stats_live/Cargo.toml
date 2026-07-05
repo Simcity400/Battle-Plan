@@ -1,0 +1,8 @@
+[package]
+name = "air_loss_stats_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "air_loss_stats_live_lane"
+path = "src/lib.rs"

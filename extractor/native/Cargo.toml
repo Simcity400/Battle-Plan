@@ -6,6 +6,7 @@ members = [
     "collector",
     "recorder_host",
     "lanes/air_wings_variants_lifecycle_live",
+    "lanes/air_loss_stats_live",
     "lanes/scripted_state_flags_variables_live",
     "lanes/occupation_resistance_compliance_live",
     "lanes/characters_leaders_cabinet_live",
