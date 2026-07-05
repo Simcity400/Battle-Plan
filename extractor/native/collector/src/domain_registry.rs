@@ -168,6 +168,14 @@ mod tests {
             Some(CompactDomainStatus::ValidatedPartialSlice)
         );
         assert_eq!(
+            registry.id_for_scheduled_name("hub_motorization_live"),
+            Some(62)
+        );
+        assert_eq!(
+            registry.by_id(62).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+        );
+        assert_eq!(
             assigned_descriptor_by_name("air_variant_archetypes_live").map(|d| d.id),
             Some(46)
         );

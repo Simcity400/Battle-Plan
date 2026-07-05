@@ -35,6 +35,7 @@ use compact_contract::{
 };
 use construction_buildings_state_damage_live_lane as domain48;
 use diplomacy_intel_operatives_live as diplomacy53;
+use hub_motorization_live_lane as hub62;
 use land_combat_detail_events_live_lane as land_detail55;
 use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
@@ -213,6 +214,7 @@ const STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID: u16 = 40;
 const SPECIAL_PROJECTS_DOMAIN_ID: u16 = 41;
 const AIR_COMBAT_LOSSES_DOMAIN_ID: u16 = 42;
 const AIR_LOSS_STATS_DOMAIN_ID: u16 = airloss61::DOMAIN_ID;
+const HUB_MOTORIZATION_DOMAIN_ID: u16 = hub62::DOMAIN_ID;
 const FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID: u16 = 45;
 const AIR_VARIANT_ARCHETYPES_DOMAIN_ID: u16 = 46;
 const CHARACTERS_LEADERS_CABINET_DOMAIN_ID: u16 = 47;
@@ -519,6 +521,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
+    62,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -657,6 +660,9 @@ pub struct WorldFold {
     /// D61 per-country cumulative air-loss statistics from statistic id 23.
     /// Full-replaced on clean frames and retained on non-clean frames.
     air_loss_stats: BTreeMap<u32, airloss61::AirLossStatRow>,
+    /// D62 per-country motorized supply-node memberships from CCountrySupplySystem.
+    /// Full-replaced on clean frames and retained on non-clean frames.
+    hub_motorization: BTreeMap<(u32, u32), hub62::HubMotorizationRow>,
     /// Persistent per-wing cumulative scalars (wave-3: air_accidents,
     /// experience), keyed by globally-unique wing_id. Updated by every
     /// scalar-bearing domain-42 row; deleted rows remove their wing.
@@ -837,6 +843,7 @@ impl WorldFold {
             air_superiority_inputs: BTreeMap::new(),
             air_combat_losses_this_hour: None,
             air_loss_stats: BTreeMap::new(),
+            hub_motorization: BTreeMap::new(),
             air_wing_cumulative: BTreeMap::new(),
             successful_fold_domains_seen: BTreeSet::new(),
             fold_domains_unknown_this_hour: BTreeSet::new(),
@@ -1599,6 +1606,7 @@ impl WorldFold {
             41 => self.fold_special_projects(payload),
             42 => self.fold_air_combat_losses(payload),
             61 => self.fold_air_loss_stats(payload),
+            62 => self.fold_hub_motorization(payload),
             43 => self.fold_market_trade(payload),
             44 => self.fold_supply_logistics_attrition(payload),
             45 => self.fold_focus_research_decisions_depth(payload, record_flags),
@@ -1910,7 +1918,7 @@ impl WorldFold {
             }
         }
 
-        let supply_value = if self.supply_unknown_this_hour {
+        let mut supply_value = if self.supply_unknown_this_hour {
             json!({
                 "by_province": Value::Null,
                 "source": Value::Null,
@@ -1924,6 +1932,9 @@ impl WorldFold {
         } else {
             json!({})
         };
+        if let Value::Object(supply) = &mut supply_value {
+            self.insert_hub_motorization(supply, &mut unresolved);
+        }
 
         let mut domains: Vec<Value> = self
             .domains_this_hour
@@ -3471,6 +3482,37 @@ impl WorldFold {
                                 "channels": channels,
                                 "raw": raw,
                                 "scale_raw": airloss61::FIELD_SCALE,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    fn insert_hub_motorization(
+        &self,
+        supply: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        if self.fold_domain_unknown(HUB_MOTORIZATION_DOMAIN_ID) {
+            supply.insert("_r2_hub_motorization_live".into(), Value::Null);
+        } else if self.fold_domain_seen(HUB_MOTORIZATION_DOMAIN_ID) {
+            supply.insert(
+                "_r2_hub_motorization_live".into(),
+                Value::Array(
+                    self.hub_motorization
+                        .values()
+                        .map(|row| {
+                            json!({
+                                "country": self.country_ref_json(row.owner_tag_db_id, unresolved),
+                                "owner_tag_db_id": row.owner_tag_db_id,
+                                "province_id": row.province_id,
+                                "state_id": row.state_id,
+                                "record_index": row.record_index,
+                                "map_size": row.map_size,
+                                "node_motorized": true,
+                                "scope": "node_membership",
                             })
                         })
                         .collect(),
@@ -5493,6 +5535,69 @@ impl WorldFold {
         }
         self.air_loss_stats = fresh;
         self.mark_fold_domain_success(AIR_LOSS_STATS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 62 hub_motorization_live (supply-node membership) ----------
+    fn fold_hub_motorization(&mut self, payload: &[u8]) -> Result<(), String> {
+        let (header, rows) = match hub62::decode_payload_rows(payload) {
+            Ok(decoded) => decoded,
+            Err(errors) => {
+                self.mark_fold_domain_unknown(
+                    HUB_MOTORIZATION_DOMAIN_ID,
+                    "payload_decode_failed",
+                    "hub_motorization_live state unknown this hour; accumulator retained",
+                );
+                return Err(errors.join("; "));
+            }
+        };
+        if self.handle_compact_failure(
+            HUB_MOTORIZATION_DOMAIN_ID,
+            "hub_motorization_live",
+            header.status_flags,
+        ) {
+            return Ok(());
+        }
+        let mut fresh = BTreeMap::new();
+        let mut map_entries = 0u64;
+        for row in rows {
+            if row.map_size == 0 {
+                self.mark_fold_domain_unknown(
+                    HUB_MOTORIZATION_DOMAIN_ID,
+                    "zero_map_size_row",
+                    "hub_motorization_live state unknown this hour; accumulator retained",
+                );
+                return Err("hub_motorization_live row has zero map_size".into());
+            }
+            map_entries = map_entries.saturating_add(u64::from(row.map_size));
+            if fresh
+                .insert((row.owner_tag_db_id, row.province_id), row)
+                .is_some()
+            {
+                self.mark_fold_domain_unknown(
+                    HUB_MOTORIZATION_DOMAIN_ID,
+                    "duplicate_country_province_row",
+                    "hub_motorization_live state unknown this hour; accumulator retained",
+                );
+                return Err(format!(
+                    "hub_motorization_live duplicate country/province row {}:{}",
+                    row.owner_tag_db_id, row.province_id
+                ));
+            }
+        }
+        if map_entries != u64::from(header.total_map_entries) {
+            self.mark_fold_domain_unknown(
+                HUB_MOTORIZATION_DOMAIN_ID,
+                "map_entry_total_mismatch",
+                "hub_motorization_live state unknown this hour; accumulator retained",
+            );
+            return Err(format!(
+                "hub_motorization_live map_entries {map_entries} != header {}",
+                header.total_map_entries
+            ));
+        }
+        self.hub_motorization = fresh;
+        self.mark_fold_domain_success(HUB_MOTORIZATION_DOMAIN_ID);
         Ok(())
     }
 

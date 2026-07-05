@@ -56,6 +56,7 @@ dependencies = [
  "compact_contract",
  "construction_buildings_state_damage_live",
  "diplomacy_intel_operatives_live",
+ "hub_motorization_live_lane",
  "land_combat_detail_events_live_lane",
  "naval_combat_live_lane",
  "naval_missions_status_live_lane",
@@ -141,6 +142,10 @@ dependencies = [
 
 [[package]]
 name = "focus_research_decisions_depth_live"
+version = "0.1.0"
+
+[[package]]
+name = "hub_motorization_live_lane"
 version = "0.1.0"
 
 [[package]]
@@ -234,6 +239,7 @@ dependencies = [
  "compact_contract",
  "construction_buildings_state_damage_live",
  "diplomacy_intel_operatives_live",
+ "hub_motorization_live_lane",
  "land_combat_detail_events_live_lane",
  "naval_combat_live_lane",
  "naval_missions_status_live_lane",

@@ -144,6 +144,7 @@ mod tests {
             id_for_scheduled_name("diplomacy_intel_operatives_live"),
             Some(53)
         );
+        assert_eq!(id_for_scheduled_name("hub_motorization_live"), Some(62));
         assert_eq!(
             wire_name_for_id(47),
             Some("characters_leaders_cabinet_live")
@@ -156,6 +157,7 @@ mod tests {
             wire_name_for_id(57),
             Some("session_multiplayer_metadata_live")
         );
+        assert_eq!(wire_name_for_id(62), Some("hub_motorization_live"));
         assert_eq!(id_for_scheduled_name("air_variant_archetypes_live"), None);
         assert_eq!(wire_name_for_id(46), Some("air_variant_archetypes"));
         assert_eq!(
@@ -166,6 +168,7 @@ mod tests {
         assert!(requires_data_record(53));
         assert!(requires_data_record(46));
         assert!(requires_data_record(57));
+        assert!(requires_data_record(62));
     }
 
     #[test]

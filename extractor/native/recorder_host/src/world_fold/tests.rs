@@ -8,6 +8,7 @@ use compact_contract::{
     COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_STATE_UNAVAILABLE,
     COMPACT_STATUS_TRANSITION_BASELINE_RESET, COMPACT_STATUS_WORKER_PANIC,
 };
+use hub_motorization_live_lane as hub62_lane;
 use session_multiplayer_metadata_live as session57_lane;
 
 // --- synthetic H4CR stream builders --------------------------------------
@@ -7957,6 +7958,99 @@ fn air_loss_stats_non_clean_masks_current_hour_sidecar() {
         snaps[1]["strategic_air"]["_r2_air_loss_stats_live"],
         Value::Null
     );
+}
+
+// --- DOMAIN 62 hub_motorization_live (P1) ---------------------------------
+
+fn hub_motorization_payload(
+    status_flags: u32,
+    total_settings_nodes: u32,
+    total_map_entries: u32,
+    rows: &[hub62_lane::HubMotorizationRow],
+) -> Vec<u8> {
+    hub62_lane::encode_payload(
+        &hub62_lane::HubMotorizationHeader {
+            elapsed_wall_ms: 2,
+            status_flags,
+            schema_version: hub62_lane::SCHEMA_VERSION,
+            total_settings_nodes,
+            total_map_entries,
+        },
+        rows,
+    )
+}
+
+fn hub_motorization_row() -> hub62_lane::HubMotorizationRow {
+    hub62_lane::HubMotorizationRow {
+        owner_tag_db_id: 16,
+        province_id: 13_071,
+        state_id: 5,
+        record_index: 7,
+        map_size: 3,
+        flags: hub62_lane::ROW_FLAG_COUNTRY_VERIFIED
+            | hub62_lane::ROW_FLAG_STRUCT_VERIFIED
+            | hub62_lane::ROW_FLAG_NODE_MOTORIZED,
+    }
+}
+
+#[test]
+fn hub_motorization_folds_supply_sidecar() {
+    let row = hub_motorization_row();
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(16, "D04")])),
+        (62, hub_motorization_payload(0, 44, 3, &[row])),
+    ]);
+
+    let rows = snap["supply"]["_r2_hub_motorization_live"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let d04 = &rows[0];
+    assert_eq!(d04["country"], json!("D04"));
+    assert_eq!(d04["owner_tag_db_id"], json!(16));
+    assert_eq!(d04["province_id"], json!(13_071));
+    assert_eq!(d04["state_id"], json!(5));
+    assert_eq!(d04["record_index"], json!(7));
+    assert_eq!(d04["map_size"], json!(3));
+    assert_eq!(d04["node_motorized"], json!(true));
+    assert_eq!(d04["scope"], json!("node_membership"));
+
+    let dom = snap["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap();
+    assert!(dom.iter().any(|d| d == "hub_motorization_live"));
+}
+
+#[test]
+fn hub_motorization_non_clean_masks_current_hour_and_retains_map() {
+    let clean = hub_motorization_row();
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(16, "D04")])),
+            (62, hub_motorization_payload(0, 44, 3, &[clean])),
+        ],
+        vec![
+            (18, country_identity_payload(&[(16, "D04")])),
+            (
+                62,
+                hub_motorization_payload(COMPACT_STATUS_PARTIAL_DATA, 0, 0, &[]),
+            ),
+        ],
+        vec![(18, country_identity_payload(&[(16, "D04")]))],
+    ]);
+    assert!(snaps[0]["supply"]["_r2_hub_motorization_live"].is_array());
+    assert_eq!(snaps[1]["supply"]["_r2_hub_motorization_live"], Value::Null);
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(62)
+            && problem["problem"] == json!("compact_status_failure")));
+    let retained = snaps[2]["supply"]["_r2_hub_motorization_live"]
+        .as_array()
+        .unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0]["province_id"], json!(13_071));
 }
 
 // --- DOMAIN 60 capitulation_war_state_live (E1) ---------------------------

@@ -6,6 +6,7 @@ use capitulation_war_state_live as capwar60;
 use characters_leaders_cabinet_live_lane as domain47;
 use construction_buildings_state_damage_live_lane as domain48;
 use diplomacy_intel_operatives_live as diplomacy53;
+use hub_motorization_live_lane as hub62;
 use land_combat_detail_events_live_lane as land_detail55;
 use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
@@ -103,6 +104,7 @@ const COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE: u16 = naval4950::DOMAIN_NAVAL_CO
 const COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE: u16 = session57::DOMAIN_ID;
 const COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE: u16 = capwar60::DOMAIN_ID;
 const COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE: u16 = airloss61::DOMAIN_ID;
+const COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE: u16 = hub62::DOMAIN_ID;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
 #[cfg(test)]
@@ -3351,6 +3353,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE => {
                         decode_compact_air_loss_stats_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE => {
+                        decode_compact_hub_motorization_live_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -8624,6 +8633,63 @@ fn decode_compact_air_loss_stats_live_data_payload(
             count,
         );
     }
+}
+
+fn decode_compact_hub_motorization_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = hub62::decode_payload(payload);
+    summary.status_flags_or |= lane_summary.status_flags;
+    summary.parse_errors.extend(
+        lane_summary
+            .parse_errors
+            .into_iter()
+            .map(|error| format!("offset {offset}: hub_motorization_live {error}")),
+    );
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE)
+    {
+        domain.status_flags_or |= lane_summary.status_flags;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.row_count);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.row_count);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
+        "hub_motorization_rows",
+        lane_summary.row_count as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
+        "hub_motorization_verified_rows",
+        lane_summary.verified_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
+        "hub_motorization_nodes",
+        lane_summary.motorized_nodes as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
+        "hub_motorization_settings_nodes",
+        lane_summary.total_settings_nodes as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
+        "hub_motorization_map_entries",
+        lane_summary.total_map_entries as usize,
+    );
 }
 
 fn decode_compact_army_battleplans_depth_live_data_payload(
@@ -16277,6 +16343,101 @@ mod tests {
             1,
             100,
             COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &bad_payload,
+        );
+        let bad_summary = summarize_compact_stream(&bad_raw);
+        assert!(bad_summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("row_len")));
+    }
+
+    #[test]
+    fn compact_summary_decodes_hub_motorization_live_data_record() {
+        let row = hub62::HubMotorizationRow {
+            owner_tag_db_id: 16,
+            province_id: 13_071,
+            state_id: 5,
+            record_index: 7,
+            map_size: 3,
+            flags: hub62::ROW_FLAG_COUNTRY_VERIFIED
+                | hub62::ROW_FLAG_STRUCT_VERIFIED
+                | hub62::ROW_FLAG_NODE_MOTORIZED,
+        };
+        let payload = hub62::encode_payload(
+            &hub62::HubMotorizationHeader {
+                elapsed_wall_ms: 4,
+                status_flags: 0,
+                schema_version: hub62::SCHEMA_VERSION,
+                total_settings_nodes: 42,
+                total_map_entries: 3,
+            },
+            &[row],
+        );
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE)
+            .unwrap();
+        assert_eq!(domain.data_record_count, 1);
+        assert_eq!(domain.data_rows_total, 1);
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("hub_motorization_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("hub_motorization_verified_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("hub_motorization_settings_nodes")
+                .copied(),
+            Some(42)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("hub_motorization_map_entries")
+                .copied(),
+            Some(3)
+        );
+        assert!(!summary
+            .unfolded_domain_data
+            .contains(&COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE));
+
+        let mut bad_payload = payload;
+        bad_payload[24..28].copy_from_slice(&48u32.to_le_bytes());
+        let mut bad_raw = Vec::new();
+        append_test_compact_record(
+            &mut bad_raw,
+            1,
+            100,
+            COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
             &bad_payload,
         );

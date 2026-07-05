@@ -873,6 +873,19 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // P1 (2026-07-05): node-level supply-hub motorization membership from the
+    // persistent CCountrySupplySystem settings object. D04 value validation:
+    // 223/223 rows, 1338/1338 emitted fields, 483/483 map entries, 0 mismatches.
+    // Inner per-tag level attribution remains intentionally unpromoted.
+    domain(
+        62,
+        "hub_motorization_live",
+        "hub_motorization_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -917,7 +930,7 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 1000,
+            55, 56, 57, 58, 59, 60, 61, 62, 1000,
         ];
         for id in expected {
             assert!(
