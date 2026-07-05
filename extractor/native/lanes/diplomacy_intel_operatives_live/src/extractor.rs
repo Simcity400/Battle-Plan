@@ -1,22 +1,23 @@
 use crate::compact::{
     decode_payload, encode_payload, AgencyCapacityClusterRow, AgencyRow, CountryDiplomacyRow,
-    CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, IntelMapRow, OperationAnchorRow,
-    OperationInstanceRow, OperativeRow, OpinionRow, RelationFlagRow, StateEventRow, SubjectRow,
-    WarRelationRow, DOMAIN_ID_PROPOSED, MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES,
-    MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW, MAX_OPERATION_ID, MAX_OPERATIVE_ID,
-    MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL, MAX_OPINION_ABS, MAX_TAG_DB_ID, MAX_XP_RAW,
-    REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE, REL_KIND_DOCKING_RIGHTS, REL_KIND_EMBARGO,
-    REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION, REL_KIND_GUARANTEE, REL_KIND_IMPROVE_RELATIONS,
-    REL_KIND_LICENCE_PRODUCTION, REL_KIND_MARKET_ACCESS_RIGHTS, REL_KIND_MILITARY_ACCESS,
-    REL_KIND_NAVAL_BLOCKADE, REL_KIND_NON_AGGRESSION_PACT, REL_KIND_PUPPET,
-    STATE_EVENT_KIND_OBSERVED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+    CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, IncomingActionQueueRow,
+    IntelMapRow, IntelNetworkGraphRow, OperationAnchorRow, OperationInstanceRow, OperativeRow,
+    OpinionRow, RelationFlagRow, StateEventRow, SubjectRow, WarRelationRow, DOMAIN_ID_PROPOSED,
+    MAX_ACTION_DATE_HOURS, MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES,
+    MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW, MAX_INTEL_NETWORK_STATE_ID, MAX_OPERATION_ID,
+    MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL, MAX_OPINION_ABS,
+    MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE, REL_KIND_DOCKING_RIGHTS,
+    REL_KIND_EMBARGO, REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION, REL_KIND_GUARANTEE,
+    REL_KIND_IMPROVE_RELATIONS, REL_KIND_LICENCE_PRODUCTION, REL_KIND_MARKET_ACCESS_RIGHTS,
+    REL_KIND_MILITARY_ACCESS, REL_KIND_NAVAL_BLOCKADE, REL_KIND_NON_AGGRESSION_PACT,
+    REL_KIND_PUPPET, STATE_EVENT_KIND_OBSERVED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
     STATE_EVENT_SOURCE_AGENCY_SCALAR, STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
     STATE_EVENT_SOURCE_CRYPTOLOGY, STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
     STATE_EVENT_SOURCE_RELATION_FLAG, STATE_EVENT_SOURCE_RELATION_OPINION,
     STATE_EVENT_SOURCE_SUBJECT_AUTONOMY, STATUS_FACTION_GROUP_UNVALIDATED,
     STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
-    STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
-    STATUS_WAR_ROOT_UNVALIDATED,
+    STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED, STATUS_OPERATIONS_DETAIL_RESISTED,
+    STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED, STATUS_WAR_ROOT_UNVALIDATED,
 };
 use compact_contract::build_profile as profile;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,6 +37,7 @@ pub const SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF: u64 = 1 << 8;
 pub const SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF: u64 = 1 << 9;
 pub const SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF: u64 = 1 << 10;
 pub const SOURCE_PROOF_FACTION_GROUP_870EBF: u64 = 1 << 11;
+pub const SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF: u64 = 1 << 12;
 
 pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -48,7 +50,8 @@ pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF
     | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
     | SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF
-    | SOURCE_PROOF_FACTION_GROUP_870EBF;
+    | SOURCE_PROOF_FACTION_GROUP_870EBF
+    | SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF;
 
 pub const CURRENT_VALIDATED_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -57,7 +60,9 @@ pub const CURRENT_VALIDATED_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF
     | SOURCE_PROOF_OPERATIVE_ROOT_870EBF
     | SOURCE_PROOF_WAR_ROOT_870EBF
-    | SOURCE_PROOF_FACTION_GROUP_870EBF;
+    | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
+    | SOURCE_PROOF_FACTION_GROUP_870EBF
+    | SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF;
 
 const RTTI_CCOUNTRY: &str = "CCountry";
 const RTTI_CINTELLIGENCE_AGENCY: &str = "CIntelligenceAgency";
@@ -108,6 +113,14 @@ pub const CURRENT_BUILD_ROOTS_870EBF: &[CurrentBuildRoot] = &[
         name: "war_relation_rows",
         evidence: "global row pool with tag ids +0x00/+0x04, date vtable +0x08 in {CGregorianDate module+0x2702190, CGameDate module+0x2702388}, casualties +0x40/+0x48 i32, echo +0x68/+0x6C; v13 warm validation 850/850",
     },
+    CurrentBuildRoot {
+        name: "incoming_diplomatic_action_queue",
+        evidence: "country+0xFF8 -> queue, queue+0x08 action pointer array, queue+0x10 size/cap, queue+0x20 recipient guard, CIncomingDiplomaticAction vtable module+0x2A209A0, handle +0x08, body +0x18 actor/recipient/date fields",
+    },
+    CurrentBuildRoot {
+        name: "intel_network_graph",
+        evidence: "CStrategicOperative vtable module+0x298B448, +0x08 operative index, +0x10 vector<CCountryIntelNetwork*>, +0x18 capacity, +0x1C size; CCountryIntelNetwork vtable module+0x298AB48, target +0x08, graph +0x18, graph+0x38 vertex array, graph+0x40 vertex count, 16-byte vertices state_id@+0",
+    },
 ];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -128,6 +141,8 @@ pub struct ExtractedDomain53Rows {
     pub state_events: Vec<StateEventRow>,
     /// Wave-5 running-operation instances (heap-discovered COperationInstance).
     pub operation_instances: Vec<OperationInstanceRow>,
+    pub incoming_actions: Vec<IncomingActionQueueRow>,
+    pub intel_network_graphs: Vec<IntelNetworkGraphRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,6 +224,8 @@ pub struct Domain53Discovery {
     /// background heap pass (no extra thread — rides the existing discovery
     /// cache). Consumed and revalidated fresh each frame.
     pub operation_instance_hits: Vec<u64>,
+    pub strategic_operative_hits: Vec<u64>,
+    pub country_intel_network_hits: Vec<u64>,
     pub scan_range_count: u32,
 }
 
@@ -244,6 +261,7 @@ struct AgencyRootRead {
 #[derive(Clone, Debug)]
 struct Domain53FrameRoots {
     module_base: u64,
+    current_game_hour: u32,
     countries: Vec<CountryRoot>,
 }
 
@@ -309,6 +327,14 @@ fn discover_domain53_heap_hits_for_module<M: Domain53Memory>(
     let date_vtables = domain53_war_date_vtables(module_base)?;
     let operation_instance_vtable =
         add_addr(module_base, profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA)?;
+    let strategic_operative_vtable = add_addr(
+        module_base,
+        profile::DOMAIN53_STRATEGIC_OPERATIVE_VTABLE_RVA,
+    )?;
+    let country_intel_network_vtable = add_addr(
+        module_base,
+        profile::DOMAIN53_COUNTRY_INTEL_NETWORK_VTABLE_RVA,
+    )?;
     Ok(Domain53Discovery {
         operative_hits: scan_qword_hits(mem, &ranges, operative_vtable)?,
         war_hits: [
@@ -318,6 +344,8 @@ fn discover_domain53_heap_hits_for_module<M: Domain53Memory>(
         // Wave-5: same heap pass, one more needle (the COperationInstance
         // vtable). Consumed by read_operations, revalidated fresh per frame.
         operation_instance_hits: scan_qword_hits(mem, &ranges, operation_instance_vtable)?,
+        strategic_operative_hits: scan_qword_hits(mem, &ranges, strategic_operative_vtable)?,
+        country_intel_network_hits: scan_qword_hits(mem, &ranges, country_intel_network_vtable)?,
         scan_range_count: ranges.len().min(u32::MAX as usize) as u32,
     })
 }
@@ -363,8 +391,12 @@ fn resolve_domain53_frame_roots<M: Domain53Memory>(
         ));
     }
 
+    let current_game_hour =
+        mem.read_u32(add_addr(game_state, profile::CGAMESTATE_CURRENT_HOUR)?)?;
+
     Ok(Domain53FrameRoots {
         module_base,
+        current_game_hour,
         countries,
     })
 }
@@ -375,6 +407,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     discovery: &Domain53Discovery,
 ) -> Result<ExtractedDomain53Frame, ExtractError> {
     let module_base = roots.module_base;
+    let current_game_hour = roots.current_game_hour;
     let countries = roots.countries;
     let mut acc = RowAccumulator::default();
     let mut source_proofs = SOURCE_PROOF_BUILD_SHA_870EBF | SOURCE_PROOF_COUNTRY_ROOTS_870EBF;
@@ -435,6 +468,9 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     family_counts.relation_rows = relation_rows.min(u32::MAX as usize) as u32;
     source_proofs |= SOURCE_PROOF_RELATION_ROOTS_870EBF;
 
+    read_incoming_action_queue_rows(mem, module_base, current_game_hour, &countries, &mut acc)?;
+    source_proofs |= SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF;
+
     let agency_roots = read_agency_rows(mem, module_base, &countries, &mut acc)?;
     family_counts.agency_roots = agency_roots.len().min(u32::MAX as usize) as u32;
     source_proofs |= SOURCE_PROOF_AGENCY_ROOT_870EBF;
@@ -466,6 +502,17 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     acc.rows.operation_instances = operation_instances;
     staleness.operation_total = discovery.operation_instance_hits.len();
     staleness.operation_stale_dropped = operation_stale_dropped;
+
+    if let Some(intel_network_graphs) = read_intel_network_graph_rows(
+        mem,
+        module_base,
+        &countries,
+        &discovery.strategic_operative_hits,
+        &discovery.country_intel_network_hits,
+    )? {
+        acc.rows.intel_network_graphs = intel_network_graphs;
+        source_proofs |= SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF;
+    }
 
     for agency in &mut acc.rows.agencies {
         agency.operative_count = acc
@@ -930,6 +977,190 @@ fn read_subject_relation<M: Domain53Memory>(
     }
 }
 
+fn read_incoming_action_queue_rows<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    current_game_hour: u32,
+    countries: &[CountryRoot],
+    acc: &mut RowAccumulator,
+) -> Result<(), ExtractError> {
+    let action_vtable = add_addr(module_base, profile::DOMAIN53_INCOMING_ACTION_VTABLE_RVA)?;
+    let valid_tags = countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect::<BTreeSet<_>>();
+    let mut seen_actions = BTreeSet::new();
+
+    for recipient in countries {
+        let queue = match mem.read_u64(add_addr(
+            recipient.country_ptr,
+            profile::DOMAIN53_INCOMING_ACTION_QUEUE,
+        )?) {
+            Ok(value) if is_heap_ptr(value) => value,
+            Ok(_) => continue,
+            Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        let packed = match mem.read_u64(add_addr(
+            queue,
+            profile::DOMAIN53_INCOMING_ACTION_QUEUE_PACKED_SIZE_CAP,
+        )?) {
+            Ok(value) => value,
+            Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        let size = (packed & 0xFFFF_FFFF) as u32;
+        let cap = (packed >> 32) as u32;
+        if size > cap || cap > profile::DOMAIN53_MAX_INCOMING_ACTION_ROWS {
+            acc.skip();
+            continue;
+        }
+        if size == 0 {
+            continue;
+        }
+        let owner_guard = match mem.read_u32(add_addr(
+            queue,
+            profile::DOMAIN53_INCOMING_ACTION_QUEUE_OWNER_GUARD,
+        )?) {
+            Ok(value) => value,
+            Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        if owner_guard != recipient.tag_db_id {
+            acc.skip();
+            continue;
+        }
+        let data = match mem.read_u64(add_addr(
+            queue,
+            profile::DOMAIN53_INCOMING_ACTION_QUEUE_DATA,
+        )?) {
+            Ok(value) if is_heap_ptr(value) => value,
+            _ => {
+                acc.skip();
+                continue;
+            }
+        };
+        for index in 0..size {
+            let slot = data
+                .checked_add(u64::from(index) * 8)
+                .ok_or(ExtractError::InvalidRoot(
+                    "domain53_incoming_action_queue_overflow",
+                ))?;
+            match read_incoming_action_row(
+                mem,
+                slot,
+                recipient.tag_db_id,
+                action_vtable,
+                current_game_hour,
+                &valid_tags,
+            ) {
+                Ok(row) if seen_actions.insert(row.action_id) => {
+                    acc.rows.incoming_actions.push(row);
+                    acc.observe();
+                }
+                Ok(_) => {
+                    acc.skip();
+                    continue;
+                }
+                Err(_) => {
+                    acc.skip();
+                    continue;
+                }
+            }
+        }
+    }
+    acc.rows
+        .incoming_actions
+        .sort_by_key(|row| (row.recipient_tag_db_id, row.action_id));
+    Ok(())
+}
+
+fn read_incoming_action_row<M: Domain53Memory>(
+    mem: &M,
+    slot: u64,
+    expected_recipient: u32,
+    action_vtable: u64,
+    current_game_hour: u32,
+    valid_tags: &BTreeSet<u32>,
+) -> Result<IncomingActionQueueRow, ExtractError> {
+    let action = mem.read_u64(slot)?;
+    if !is_heap_ptr(action) || mem.read_u64(action)? != action_vtable {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_incoming_action_vtable_invalid",
+        ));
+    }
+    let handle = mem.read_u64(add_addr(action, profile::DOMAIN53_INCOMING_ACTION_HANDLE)?)?;
+    let handle_type = (handle & 0xFFFF_FFFF) as u32;
+    if handle_type != profile::DOMAIN53_INCOMING_ACTION_HANDLE_TYPE {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_incoming_action_handle_type_invalid",
+        ));
+    }
+    let action_id = (handle >> 32) as u32;
+    if action_id == 0 || action_id > MAX_OPERATION_ID {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_incoming_action_id_invalid",
+        ));
+    }
+    let body = mem.read_u64(add_addr(action, profile::DOMAIN53_INCOMING_ACTION_BODY)?)?;
+    if !is_heap_ptr(body) {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_incoming_action_body_invalid",
+        ));
+    }
+    let action_type = mem.read_i32(add_addr(body, profile::DOMAIN53_INCOMING_ACTION_BODY_TYPE)?)?;
+    let actor = mem.read_u32(add_addr(body, profile::DOMAIN53_INCOMING_ACTION_ACTOR)?)?;
+    let original_actor = mem.read_u32(add_addr(
+        body,
+        profile::DOMAIN53_INCOMING_ACTION_ORIGINAL_ACTOR,
+    )?)?;
+    let recipient = mem.read_u32(add_addr(body, profile::DOMAIN53_INCOMING_ACTION_RECIPIENT)?)?;
+    let original_recipient = mem.read_u32(add_addr(
+        body,
+        profile::DOMAIN53_INCOMING_ACTION_ORIGINAL_RECIPIENT,
+    )?)?;
+    let date_hours = mem.read_u32(add_addr(body, profile::DOMAIN53_INCOMING_ACTION_DATE)?)?;
+    let last_command_date_hours = mem.read_u32(add_addr(
+        body,
+        profile::DOMAIN53_INCOMING_ACTION_LAST_COMMAND_DATE,
+    )?)?;
+    if actor != original_actor
+        || recipient != original_recipient
+        || recipient != expected_recipient
+        || !valid_tag_db_id(actor)
+        || !valid_tag_db_id(recipient)
+        || !valid_tags.contains(&actor)
+        || !valid_tags.contains(&recipient)
+    {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_incoming_action_tag_guard_invalid",
+        ));
+    }
+    if date_hours > current_game_hour
+        || last_command_date_hours > current_game_hour
+        || date_hours > MAX_ACTION_DATE_HOURS
+        || last_command_date_hours > MAX_ACTION_DATE_HOURS
+    {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_incoming_action_date_invalid",
+        ));
+    }
+    Ok(IncomingActionQueueRow {
+        recipient_tag_db_id: recipient,
+        actor_tag_db_id: actor,
+        action_id,
+        action_type,
+        date_hours,
+        last_command_date_hours,
+    })
+}
+
 fn read_agency_rows<M: Domain53Memory>(
     mem: &M,
     _module_base: u64,
@@ -1327,6 +1558,183 @@ fn read_operation_associated_country<M: Domain53Memory>(
         return None;
     }
     Some(tag_db_id)
+}
+
+fn read_intel_network_graph_rows<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    countries: &[CountryRoot],
+    strategic_operative_hits: &[u64],
+    country_intel_network_hits: &[u64],
+) -> Result<Option<Vec<IntelNetworkGraphRow>>, ExtractError> {
+    if strategic_operative_hits.is_empty() || country_intel_network_hits.is_empty() {
+        return Ok(None);
+    }
+    let strategic_vtable = add_addr(
+        module_base,
+        profile::DOMAIN53_STRATEGIC_OPERATIVE_VTABLE_RVA,
+    )?;
+    let network_vtable = add_addr(
+        module_base,
+        profile::DOMAIN53_COUNTRY_INTEL_NETWORK_VTABLE_RVA,
+    )?;
+    let valid_tags = countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect::<BTreeSet<_>>();
+
+    let mut networks = BTreeMap::new();
+    for &network in country_intel_network_hits {
+        match mem.read_u64(network) {
+            Ok(vtable) if vtable == network_vtable => {}
+            _ => return Ok(None),
+        }
+        let Ok(target) = mem.read_i32(add_addr(
+            network,
+            profile::DOMAIN53_COUNTRY_INTEL_NETWORK_TARGET,
+        )?) else {
+            return Ok(None);
+        };
+        if target <= 0 {
+            return Ok(None);
+        }
+        let target = target as u32;
+        if !valid_tags.contains(&target) {
+            return Ok(None);
+        }
+        let Ok(graph) = mem.read_u64(add_addr(
+            network,
+            profile::DOMAIN53_COUNTRY_INTEL_NETWORK_GRAPH,
+        )?) else {
+            return Ok(None);
+        };
+        if !is_heap_ptr(graph) {
+            return Ok(None);
+        }
+        let Ok(vertex_data) = mem.read_u64(add_addr(
+            graph,
+            profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_DATA,
+        )?) else {
+            return Ok(None);
+        };
+        let Ok(vertex_count) = mem.read_u32(add_addr(
+            graph,
+            profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_COUNT,
+        )?) else {
+            return Ok(None);
+        };
+        if vertex_count == 0 || vertex_count > profile::DOMAIN53_MAX_INTEL_NETWORK_STATES {
+            return Ok(None);
+        }
+        if !is_heap_ptr(vertex_data) {
+            return Ok(None);
+        }
+        let mut state_ids = Vec::with_capacity(vertex_count as usize);
+        for index in 0..vertex_count {
+            let vertex = add_addr(
+                vertex_data,
+                (index as usize)
+                    .saturating_mul(profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_STRIDE),
+            )?;
+            let Ok(state_id) = mem.read_i32(add_addr(
+                vertex,
+                profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_STATE_ID,
+            )?) else {
+                return Ok(None);
+            };
+            if state_id <= 0 || state_id as u32 > MAX_INTEL_NETWORK_STATE_ID {
+                return Ok(None);
+            }
+            state_ids.push(state_id as u32);
+        }
+        state_ids.sort_unstable();
+        if state_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Ok(None);
+        }
+        if networks.insert(network, (target, state_ids)).is_some() {
+            return Ok(None);
+        }
+    }
+
+    let mut reached = BTreeSet::new();
+    let mut rows = Vec::new();
+    let mut seen_slots = BTreeSet::new();
+    for &operative in strategic_operative_hits {
+        match mem.read_u64(operative) {
+            Ok(vtable) if vtable == strategic_vtable => {}
+            _ => return Ok(None),
+        }
+        let Ok(operative_index) = mem.read_u64(add_addr(
+            operative,
+            profile::DOMAIN53_STRATEGIC_OPERATIVE_INDEX,
+        )?) else {
+            return Ok(None);
+        };
+        if operative_index > u64::from(u32::MAX) {
+            return Ok(None);
+        }
+        let operative_index = operative_index as u32;
+        let Ok(data) = mem.read_u64(add_addr(
+            operative,
+            profile::DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_VECTOR,
+        )?) else {
+            return Ok(None);
+        };
+        let Ok(size) = mem.read_u32(add_addr(
+            operative,
+            profile::DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_SIZE,
+        )?) else {
+            return Ok(None);
+        };
+        let Ok(capacity) = mem.read_u32(add_addr(
+            operative,
+            profile::DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_CAPACITY,
+        )?) else {
+            return Ok(None);
+        };
+        if size == 0 {
+            continue;
+        }
+        if size > capacity || size > profile::DOMAIN53_MAX_INTEL_NETWORKS || !is_heap_ptr(data) {
+            return Ok(None);
+        }
+        for slot in 0..size {
+            let Ok(network) = mem.read_u64(add_addr(data, (slot as usize).saturating_mul(8))?)
+            else {
+                return Ok(None);
+            };
+            let Some((target, state_ids)) = networks.get(&network) else {
+                return Ok(None);
+            };
+            if !reached.insert(network) {
+                return Ok(None);
+            }
+            if !seen_slots.insert((operative_index, slot)) {
+                return Ok(None);
+            }
+            rows.push(IntelNetworkGraphRow {
+                strategic_operative_index: operative_index,
+                network_slot: slot,
+                target_tag_db_id: *target,
+                state_ids: state_ids.clone(),
+            });
+        }
+    }
+
+    if rows.is_empty() || reached.len() != networks.len() {
+        return Ok(None);
+    }
+    if networks.keys().any(|network| !reached.contains(network)) {
+        return Ok(None);
+    }
+    rows.sort_by_key(|row| {
+        (
+            row.strategic_operative_index,
+            row.network_slot,
+            row.target_tag_db_id,
+        )
+    });
+    Ok(Some(rows))
 }
 
 fn read_operatives<M: Domain53Memory>(
@@ -1817,6 +2225,8 @@ pub fn build_domain53_payload(
         intel_map: rows.intel_map,
         state_events: rows.state_events,
         operation_instances: rows.operation_instances,
+        incoming_actions: rows.incoming_actions,
+        intel_network_graphs: rows.intel_network_graphs,
     };
     let mut errors = Vec::new();
 
@@ -1874,6 +2284,20 @@ pub fn build_domain53_payload(
         source_proofs,
         SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF,
         "cryptology rows require SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF",
+        &mut errors,
+    );
+    require_rows(
+        !snapshot.incoming_actions.is_empty(),
+        source_proofs,
+        SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF,
+        "incoming diplomatic action rows require SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF",
+        &mut errors,
+    );
+    require_rows(
+        !snapshot.intel_network_graphs.is_empty(),
+        source_proofs,
+        SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF,
+        "intel-network graph rows require SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF",
         &mut errors,
     );
     require_rows(
@@ -1986,6 +2410,12 @@ pub fn build_domain53_payload(
         snapshot.status_flags &= !STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED;
     } else {
         snapshot.status_flags |= STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED;
+    }
+
+    if has(source_proofs, SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF) {
+        snapshot.status_flags &= !STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
+    } else {
+        snapshot.status_flags |= STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
     }
 
     let has_resisted_operations = snapshot
@@ -2134,6 +2564,40 @@ pub fn proof_fixture_rows() -> ExtractedDomain53Rows {
                 instance_id: 128_904,
                 def_ref_ok: true,
                 associated_country_tag_db_id: None,
+            },
+        ],
+        incoming_actions: vec![
+            IncomingActionQueueRow {
+                recipient_tag_db_id: 9,
+                actor_tag_db_id: 1,
+                action_id: 150_442,
+                action_type: 0,
+                date_hours: 60_830_000,
+                last_command_date_hours: 60_830_000,
+            },
+            IncomingActionQueueRow {
+                recipient_tag_db_id: 10,
+                actor_tag_db_id: 16,
+                action_id: 150_608,
+                action_type: 0,
+                date_hours: 60_830_024,
+                last_command_date_hours: 60_830_024,
+            },
+        ],
+        intel_network_graphs: vec![
+            IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 0,
+                target_tag_db_id: 2,
+                state_ids: vec![
+                    121, 122, 123, 125, 126, 127, 128, 129, 130, 131, 132, 133, 338, 931,
+                ],
+            },
+            IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 1,
+                target_tag_db_id: 3,
+                state_ids: vec![219, 253, 254],
             },
         ],
     }
@@ -2385,6 +2849,15 @@ mod tests {
         let leader1 = heap + 0xE_0000;
         let skill1 = heap + 0xF_0000;
         let war1 = heap + 0x10_0000;
+        let incoming_queue2 = heap + 0x11_0000;
+        let incoming_data2 = heap + 0x12_0000;
+        let incoming_action2 = heap + 0x13_0000;
+        let incoming_body2 = heap + 0x14_0000;
+        let strategic_operative1 = heap + 0x15_0000;
+        let strategic_network_vec1 = heap + 0x16_0000;
+        let intel_network1 = heap + 0x17_0000;
+        let intel_graph1 = heap + 0x18_0000;
+        let intel_vertices1 = heap + 0x19_0000;
 
         let mut mem = FakeMemory::new(module);
         mem.write_rtti(
@@ -2402,7 +2875,7 @@ mod tests {
         for (addr, len) in [
             (module + profile::CG_STATE_DATE_OFFSET as u64, 8),
             (module + profile::COUNTRY_DATABASE_OFFSET as u64, 8),
-            (game_state, 0x400),
+            (game_state, 0x500),
             (country_database, 0x100),
             (country_table, (FAKE_COUNTRY_ROWS as usize + 1) * 8),
             (country1, 0x1100),
@@ -2418,6 +2891,18 @@ mod tests {
             (crypto_records, profile::DOMAIN53_CRYPTOLOGY_RECORD_STRIDE),
             (skill1, 0x200),
             (war1, 0x80),
+            (incoming_queue2, 0x40),
+            (incoming_data2, 0x08),
+            (incoming_action2, 0x20),
+            (incoming_body2, 0x50),
+            (strategic_operative1, 0x40),
+            (strategic_network_vec1, 0x08),
+            (intel_network1, 0x30),
+            (intel_graph1, 0x60),
+            (
+                intel_vertices1,
+                profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_STRIDE * 3,
+            ),
         ] {
             mem.add_chunk(addr, len);
         }
@@ -2429,8 +2914,14 @@ mod tests {
             mem.add_chunk(fake_country_addr(heap, tag), 0x1100);
         }
         mem.add_range(war1, 0x80);
+        mem.add_range(strategic_operative1, 0x40);
+        mem.add_range(intel_network1, 0x30);
 
         mem.write_u64(module + profile::CG_STATE_DATE_OFFSET as u64, game_state);
+        mem.write_u32(
+            game_state + profile::CGAMESTATE_CURRENT_HOUR as u64,
+            60_830_441,
+        );
         mem.write_u64(
             module + profile::COUNTRY_DATABASE_OFFSET as u64,
             country_database,
@@ -2590,6 +3081,114 @@ mod tests {
         mem.write_u32(war1 + profile::DOMAIN53_WAR_ECHO_FIRST as u64, 1);
         mem.write_u32(war1 + profile::DOMAIN53_WAR_ECHO_SECOND as u64, 3);
 
+        mem.write_u64(
+            country2 + profile::DOMAIN53_INCOMING_ACTION_QUEUE as u64,
+            incoming_queue2,
+        );
+        mem.write_u64(
+            incoming_queue2 + profile::DOMAIN53_INCOMING_ACTION_QUEUE_DATA as u64,
+            incoming_data2,
+        );
+        mem.write_u64(
+            incoming_queue2 + profile::DOMAIN53_INCOMING_ACTION_QUEUE_PACKED_SIZE_CAP as u64,
+            (1u64 << 32) | 1,
+        );
+        mem.write_u32(
+            incoming_queue2 + profile::DOMAIN53_INCOMING_ACTION_QUEUE_OWNER_GUARD as u64,
+            2,
+        );
+        mem.write_u64(incoming_data2, incoming_action2);
+        mem.write_u64(
+            incoming_action2,
+            module + profile::DOMAIN53_INCOMING_ACTION_VTABLE_RVA as u64,
+        );
+        mem.write_u64(
+            incoming_action2 + profile::DOMAIN53_INCOMING_ACTION_HANDLE as u64,
+            (150_442u64 << 32) | u64::from(profile::DOMAIN53_INCOMING_ACTION_HANDLE_TYPE),
+        );
+        mem.write_u64(
+            incoming_action2 + profile::DOMAIN53_INCOMING_ACTION_BODY as u64,
+            incoming_body2,
+        );
+        mem.write_i32(
+            incoming_body2 + profile::DOMAIN53_INCOMING_ACTION_BODY_TYPE as u64,
+            0,
+        );
+        mem.write_u32(
+            incoming_body2 + profile::DOMAIN53_INCOMING_ACTION_ACTOR as u64,
+            1,
+        );
+        mem.write_u32(
+            incoming_body2 + profile::DOMAIN53_INCOMING_ACTION_ORIGINAL_ACTOR as u64,
+            1,
+        );
+        mem.write_u32(
+            incoming_body2 + profile::DOMAIN53_INCOMING_ACTION_RECIPIENT as u64,
+            2,
+        );
+        mem.write_u32(
+            incoming_body2 + profile::DOMAIN53_INCOMING_ACTION_ORIGINAL_RECIPIENT as u64,
+            2,
+        );
+        mem.write_u32(
+            incoming_body2 + profile::DOMAIN53_INCOMING_ACTION_DATE as u64,
+            60_830_000,
+        );
+        mem.write_u32(
+            incoming_body2 + profile::DOMAIN53_INCOMING_ACTION_LAST_COMMAND_DATE as u64,
+            60_830_000,
+        );
+
+        mem.write_u64(
+            strategic_operative1,
+            module + profile::DOMAIN53_STRATEGIC_OPERATIVE_VTABLE_RVA as u64,
+        );
+        mem.write_u64(
+            strategic_operative1 + profile::DOMAIN53_STRATEGIC_OPERATIVE_INDEX as u64,
+            1,
+        );
+        mem.write_u64(
+            strategic_operative1 + profile::DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_VECTOR as u64,
+            strategic_network_vec1,
+        );
+        mem.write_u32(
+            strategic_operative1 + profile::DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_SIZE as u64,
+            1,
+        );
+        mem.write_u32(
+            strategic_operative1 + profile::DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_CAPACITY as u64,
+            1,
+        );
+        mem.write_u64(strategic_network_vec1, intel_network1);
+        mem.write_u64(
+            intel_network1,
+            module + profile::DOMAIN53_COUNTRY_INTEL_NETWORK_VTABLE_RVA as u64,
+        );
+        mem.write_i32(
+            intel_network1 + profile::DOMAIN53_COUNTRY_INTEL_NETWORK_TARGET as u64,
+            3,
+        );
+        mem.write_u64(
+            intel_network1 + profile::DOMAIN53_COUNTRY_INTEL_NETWORK_GRAPH as u64,
+            intel_graph1,
+        );
+        mem.write_u64(
+            intel_graph1 + profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_DATA as u64,
+            intel_vertices1,
+        );
+        mem.write_u32(
+            intel_graph1 + profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_COUNT as u64,
+            3,
+        );
+        for (index, state_id) in [219u32, 253, 254].iter().enumerate() {
+            mem.write_i32(
+                intel_vertices1
+                    + (index * profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_STRIDE) as u64
+                    + profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_STATE_ID as u64,
+                *state_id as i32,
+            );
+        }
+
         mem
     }
 
@@ -2682,11 +3281,35 @@ mod tests {
         assert_eq!(extracted.rows.cryptology.len(), 1);
         assert_eq!(extracted.rows.operatives.len(), 1);
         assert_eq!(extracted.rows.wars.len(), 1);
+        assert_eq!(
+            extracted.rows.incoming_actions,
+            vec![IncomingActionQueueRow {
+                recipient_tag_db_id: 2,
+                actor_tag_db_id: 1,
+                action_id: 150_442,
+                action_type: 0,
+                date_hours: 60_830_000,
+                last_command_date_hours: 60_830_000,
+            }]
+        );
         assert!(extracted.rows.operation_anchors.is_empty());
         assert!(extracted.rows.intel_map.is_empty());
+        assert_eq!(
+            extracted.rows.intel_network_graphs,
+            vec![IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 0,
+                target_tag_db_id: 3,
+                state_ids: vec![219, 253, 254],
+            }]
+        );
         assert_ne!(extracted.source_proofs & SOURCE_PROOF_BUILD_SHA_870EBF, 0);
         assert_ne!(
             extracted.source_proofs & SOURCE_PROOF_FACTION_GROUP_870EBF,
+            0
+        );
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF,
             0
         );
         assert_ne!(
@@ -2697,11 +3320,14 @@ mod tests {
             extracted.source_proofs & SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
             0
         );
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF,
+            0
+        );
         assert_eq!(
             extracted.source_proofs
                 & (SOURCE_PROOF_OPERATION_DETAIL_870EBF
                     | SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF
-                    | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
                     | SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF),
             0
         );
@@ -3142,9 +3768,45 @@ mod tests {
             report.gate_summary.status_flags_or & STATUS_WAR_ROOT_UNVALIDATED,
             0
         );
-        assert_ne!(
+        assert_eq!(
             report.gate_summary.status_flags_or & STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED,
             0
+        );
+        assert_eq!(
+            report.gate_summary.status_flags_or & STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED,
+            0
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("incoming_action_queue_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("intel_network_graph_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("intel_network_graph_state_rows")
+                .copied(),
+            Some(17)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("incoming_action_queue_recipient_rows")
+                .copied(),
+            Some(2)
         );
         assert_ne!(
             report.gate_summary.status_flags_or & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
@@ -3205,6 +3867,46 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("war rows require SOURCE_PROOF_WAR_ROOT_870EBF")));
+    }
+
+    #[test]
+    fn rejects_incoming_action_rows_without_queue_source_proof() {
+        let rows = proof_fixture_rows();
+
+        let report = build_domain53_payload(
+            rows,
+            CURRENT_VALIDATED_SOURCE_PROOFS & !SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF,
+        );
+
+        assert!(!report.ok());
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("incoming diplomatic action rows require")));
+        assert_ne!(
+            report.gate_summary.status_flags_or & STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED,
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_intel_network_graph_rows_without_graph_source_proof() {
+        let rows = proof_fixture_rows();
+
+        let report = build_domain53_payload(
+            rows,
+            CURRENT_VALIDATED_SOURCE_PROOFS & !SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF,
+        );
+
+        assert!(!report.ok());
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("intel-network graph rows require")));
+        assert_ne!(
+            report.gate_summary.status_flags_or & STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED,
+            0
+        );
     }
 
     #[test]
@@ -3324,8 +4026,14 @@ mod tests {
         assert!(evidence.contains("module+0x29A6540"));
         assert!(evidence.contains("module+0x293F790"));
         assert!(evidence.contains("module+0x2702388"));
+        assert!(evidence.contains("module+0x298B448"));
+        assert!(evidence.contains("module+0x298AB48"));
         assert_ne!(
             CURRENT_VALIDATED_SOURCE_PROOFS & SOURCE_PROOF_WAR_ROOT_870EBF,
+            0
+        );
+        assert_ne!(
+            CURRENT_VALIDATED_SOURCE_PROOFS & SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF,
             0
         );
     }
@@ -3342,10 +4050,17 @@ mod tests {
         );
         assert_ne!(
             report.gate_summary.status_flags_or
-                & (STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
-                    | STATUS_OPERATIONS_DETAIL_RESISTED
+                & (STATUS_OPERATIONS_DETAIL_RESISTED
                     | STATUS_INTEL_MAP_RESISTED
                     | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED),
+            0
+        );
+        assert_eq!(
+            report.gate_summary.status_flags_or & STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED,
+            0
+        );
+        assert_eq!(
+            report.gate_summary.status_flags_or & STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED,
             0
         );
         assert_eq!(

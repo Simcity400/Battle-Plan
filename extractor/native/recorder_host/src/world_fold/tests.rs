@@ -580,7 +580,15 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
     let snapshot = snapshot_for_domain_records(vec![
         (
             18,
-            country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+            country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
         ),
         (53, domain53_validated_payload_with_war()),
     ]);
@@ -617,6 +625,50 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
             .unwrap()
             .iter()
             .any(|value| value == "operation_detail_fixture_blocked")
+    );
+    assert!(
+        !snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["omitted_unresolved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "incoming_action_queues_fixture_blocked")
+    );
+    assert!(
+        !snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["omitted_unresolved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "intel_network_graph_fixture_blocked")
+    );
+    let incoming =
+        &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["incoming_diplomatic_action_queue_rows"];
+    let incoming = incoming.as_array().unwrap();
+    assert_eq!(incoming.len(), 2);
+    let first_action = incoming
+        .iter()
+        .find(|row| row["action_id"] == json!(150_442))
+        .unwrap();
+    assert_eq!(first_action["recipient"], json!("CZE"));
+    assert_eq!(first_action["actor"], json!("GER"));
+    let second_action = incoming
+        .iter()
+        .find(|row| row["action_id"] == json!(150_608))
+        .unwrap();
+    assert_eq!(second_action["recipient"], json!("AUS"));
+    assert_eq!(second_action["actor"], json!("ITA"));
+    let graphs = &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["intel_network_graph_rows"];
+    let graphs = graphs.as_array().unwrap();
+    assert_eq!(graphs.len(), 2);
+    let eng_graph = graphs
+        .iter()
+        .find(|row| row["target"] == json!("ENG"))
+        .unwrap();
+    assert_eq!(eng_graph["strategic_operative_index"], json!(1));
+    assert_eq!(eng_graph["network_slot"], json!(0));
+    assert_eq!(eng_graph["vertex_count"], json!(14));
+    assert_eq!(
+        eng_graph["state_ids"],
+        json!([121, 122, 123, 125, 126, 127, 128, 129, 130, 131, 132, 133, 338, 931])
     );
     // Wave-5: the proof-fixture carries 2 operation instances in the OPIN
     // trailer -> folded as a world-scoped provisional sidecar.

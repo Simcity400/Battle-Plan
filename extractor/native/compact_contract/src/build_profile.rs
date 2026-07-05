@@ -30,6 +30,8 @@ pub const GET_LONG_STRING_OFFSET: usize = 0x526A40;
 
 /// Module RVA of the static current-date pointer slot.
 pub const CG_STATE_DATE_OFFSET: usize = 0x3316E90;
+/// Current game-hour counter inside CGameState, used as the paused-frame gate.
+pub const CGAMESTATE_CURRENT_HOUR: usize = 0x468;
 
 /// Module RVA of the static country database pointer slot.
 pub const COUNTRY_DATABASE_OFFSET: usize = 0x33189C8;
@@ -167,9 +169,9 @@ pub const DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS: u32 = 500_000;
 /// Provenance: 2026-07-03 live re-validation artifacts under
 /// `extractor/native/runs/domain53_revalidation_870ebf_20260703/`.
 /// Country, agency, cryptology, operative lifecycle, relation/faction
-/// structure, and war row-shape roots are current-build evidence. Operation
-/// detail, spy-network/intel-map percentages, and incoming diplomatic action
-/// queues remain unvalidated and must stay fail-closed. See the lane
+/// structure, war row-shape roots, and incoming diplomatic action queues are
+/// current-build evidence. Operation detail and spy-network/intel-map
+/// percentages remain unvalidated and must stay fail-closed. See the lane
 /// `REVALIDATION_870EBF.md` for the constant-by-constant audit table. These
 /// constants are raw layout evidence; lane code must keep unresolved semantics
 /// badged instead of renaming fields early.
@@ -255,6 +257,48 @@ pub const DOMAIN53_OPERATION_INSTANCE_HANDLE: usize = 0x08;
 pub const DOMAIN53_OPERATION_INSTANCE_HANDLE_TYPE: u32 = 4_713;
 pub const DOMAIN53_OPERATION_INSTANCE_DEF: usize = 0x48;
 pub const DOMAIN53_OPERATION_INSTANCE_TARGET_COUNTRY: usize = 0x50;
+// C3 incoming diplomatic-action queue (validated live 870ebf, paused D04,
+// melt oracle: 5/5 populated recipients, 7/7 actions, 0 false positives).
+// CCountry+0xFF8 -> CIncomingDiplomaticActionQueue; queue+0x08 points to the
+// CIncomingDiplomaticAction* array and queue+0x10 packs size low32/cap high32.
+// queue+0x20 low32 must equal the recipient/owner tag_db_id on populated
+// queues. Each action has vtable RVA below, handle @+0x08 (id=HI32,
+// type=LO32 MUST==4713), and body @+0x18 with actor/recipient/date fields.
+pub const DOMAIN53_INCOMING_ACTION_QUEUE: usize = 0xFF8;
+pub const DOMAIN53_INCOMING_ACTION_QUEUE_DATA: usize = 0x08;
+pub const DOMAIN53_INCOMING_ACTION_QUEUE_PACKED_SIZE_CAP: usize = 0x10;
+pub const DOMAIN53_INCOMING_ACTION_QUEUE_OWNER_GUARD: usize = 0x20;
+pub const DOMAIN53_INCOMING_ACTION_VTABLE_RVA: usize = 0x2A209A0;
+pub const DOMAIN53_INCOMING_ACTION_HANDLE: usize = 0x08;
+pub const DOMAIN53_INCOMING_ACTION_HANDLE_TYPE: u32 = 4_713;
+pub const DOMAIN53_INCOMING_ACTION_BODY: usize = 0x18;
+pub const DOMAIN53_INCOMING_ACTION_BODY_TYPE: usize = 0x10;
+pub const DOMAIN53_INCOMING_ACTION_ACTOR: usize = 0x14;
+pub const DOMAIN53_INCOMING_ACTION_ORIGINAL_ACTOR: usize = 0x18;
+pub const DOMAIN53_INCOMING_ACTION_RECIPIENT: usize = 0x1C;
+pub const DOMAIN53_INCOMING_ACTION_ORIGINAL_RECIPIENT: usize = 0x20;
+pub const DOMAIN53_INCOMING_ACTION_DATE: usize = 0x30;
+pub const DOMAIN53_INCOMING_ACTION_LAST_COMMAND_DATE: usize = 0x48;
+pub const DOMAIN53_MAX_INCOMING_ACTION_ROWS: u32 = 4_096;
+
+// C4 intel-network graph (validated live 870ebf, paused D04,
+// crackqueue2_c4_intel). The serialized save's strategic_operatives block is
+// backed by CStrategicOperative objects, each owning a vector of
+// CCountryIntelNetwork pointers. Graph vertices carry the covered state_id set.
+pub const DOMAIN53_STRATEGIC_OPERATIVE_VTABLE_RVA: usize = 0x298B448;
+pub const DOMAIN53_COUNTRY_INTEL_NETWORK_VTABLE_RVA: usize = 0x298AB48;
+pub const DOMAIN53_STRATEGIC_OPERATIVE_INDEX: usize = 0x08;
+pub const DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_VECTOR: usize = 0x10;
+pub const DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_CAPACITY: usize = 0x18;
+pub const DOMAIN53_STRATEGIC_OPERATIVE_NETWORK_SIZE: usize = 0x1C;
+pub const DOMAIN53_COUNTRY_INTEL_NETWORK_TARGET: usize = 0x08;
+pub const DOMAIN53_COUNTRY_INTEL_NETWORK_GRAPH: usize = 0x18;
+pub const DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_DATA: usize = 0x38;
+pub const DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_COUNT: usize = 0x40;
+pub const DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_STRIDE: usize = 0x10;
+pub const DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_STATE_ID: usize = 0x00;
+pub const DOMAIN53_MAX_INTEL_NETWORKS: u32 = 4_096;
+pub const DOMAIN53_MAX_INTEL_NETWORK_STATES: u32 = 2_048;
 pub const DOMAIN53_HEAP_LO: usize = 0x10000000000;
 pub const DOMAIN53_HEAP_HI: usize = 0x7FF000000000;
 pub const DOMAIN53_MAX_COUNTRY_TABLE_SLOTS: u32 = 4_096;

@@ -773,6 +773,8 @@ struct Domain53WorldOverlay {
     subjects: Vec<diplomacy53::compact::SubjectRow>,
     /// Wave-5 running-operation instances (world-scoped provisional sidecar).
     operation_instances: Vec<diplomacy53::compact::OperationInstanceRow>,
+    incoming_actions: Vec<diplomacy53::compact::IncomingActionQueueRow>,
+    intel_network_graphs: Vec<diplomacy53::compact::IntelNetworkGraphRow>,
 }
 
 #[derive(Default, Clone)]
@@ -2559,16 +2561,28 @@ impl WorldFold {
             "status_flags".into(),
             json!(self.domain53_world_overlay_this_hour.status_flags),
         );
+        let mut omitted_unresolved = vec![
+            json!("operation_detail_fixture_blocked"),
+            json!("spy_network_intel_map_percentages_fixture_blocked"),
+            json!("war_lifecycle_semantics_unvalidated"),
+            json!("agency_capacity_semantics_unresolved"),
+            json!("operative_full_semantics_unvalidated"),
+        ];
+        if self.domain53_world_overlay_this_hour.status_flags
+            & diplomacy53::compact::STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
+            != 0
+        {
+            omitted_unresolved.push(json!("incoming_action_queues_fixture_blocked"));
+        }
+        if self.domain53_world_overlay_this_hour.status_flags
+            & diplomacy53::compact::STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED
+            != 0
+        {
+            omitted_unresolved.push(json!("intel_network_graph_fixture_blocked"));
+        }
         extra.insert(
             "omitted_unresolved".into(),
-            json!([
-                "operation_detail_fixture_blocked",
-                "spy_network_intel_map_percentages_fixture_blocked",
-                "incoming_action_queues_fixture_blocked",
-                "war_lifecycle_semantics_unvalidated",
-                "agency_capacity_semantics_unresolved",
-                "operative_full_semantics_unvalidated"
-            ]),
+            Value::Array(omitted_unresolved),
         );
         if !self.domain53_world_overlay_this_hour.wars.is_empty() {
             extra.insert(
@@ -2607,6 +2621,58 @@ impl WorldFold {
                                 "subject_tag_db_id": row.subject_tag_db_id,
                                 "autonomy_state_hash": row.autonomy_state_hash,
                                 "autonomy_ratio_raw": row.autonomy_ratio_raw,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if !self
+            .domain53_world_overlay_this_hour
+            .incoming_actions
+            .is_empty()
+        {
+            extra.insert(
+                "incoming_diplomatic_action_queue_rows".into(),
+                Value::Array(
+                    self.domain53_world_overlay_this_hour
+                        .incoming_actions
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "recipient": self.country_ref_json(row.recipient_tag_db_id, unresolved),
+                                "actor": self.country_ref_json(row.actor_tag_db_id, unresolved),
+                                "recipient_tag_db_id": row.recipient_tag_db_id,
+                                "actor_tag_db_id": row.actor_tag_db_id,
+                                "action_id": row.action_id,
+                                "action_type": row.action_type,
+                                "date_hours": row.date_hours,
+                                "last_command_date_hours": row.last_command_date_hours,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if !self
+            .domain53_world_overlay_this_hour
+            .intel_network_graphs
+            .is_empty()
+        {
+            extra.insert(
+                "intel_network_graph_rows".into(),
+                Value::Array(
+                    self.domain53_world_overlay_this_hour
+                        .intel_network_graphs
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "strategic_operative_index": row.strategic_operative_index,
+                                "network_slot": row.network_slot,
+                                "target": self.country_ref_json(row.target_tag_db_id, unresolved),
+                                "target_tag_db_id": row.target_tag_db_id,
+                                "state_ids": row.state_ids.clone(),
+                                "vertex_count": row.state_ids.len(),
                             })
                         })
                         .collect(),
@@ -8642,6 +8708,8 @@ impl WorldFold {
             // Wave-5 running-operation instances (world-scoped: the +0x10 owner
             // is rejected, so instances are not per-country keyed).
             operation_instances: decoded.operation_instances,
+            incoming_actions: decoded.incoming_actions,
+            intel_network_graphs: decoded.intel_network_graphs,
         };
         self.domain53_known_this_hour = true;
         self.mark_fold_domain_success(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);

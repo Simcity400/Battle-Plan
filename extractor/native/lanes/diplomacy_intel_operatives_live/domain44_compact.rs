@@ -36,6 +36,7 @@ pub const STATUS_WAR_ROOT_UNVALIDATED: u32 = 1 << 18;
 pub const STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 = 1 << 19;
 pub const STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 = 1 << 20;
 pub const STATUS_FACTION_GROUP_UNVALIDATED: u32 = 1 << 21;
+pub const STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED: u32 = 1 << 22;
 
 pub const KNOWN_STATUS_FLAGS: u32 = STATUS_STATE_UNAVAILABLE
     | STATUS_BRIDGE_UNAVAILABLE
@@ -54,7 +55,8 @@ pub const KNOWN_STATUS_FLAGS: u32 = STATUS_STATE_UNAVAILABLE
     | STATUS_WAR_ROOT_UNVALIDATED
     | STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
     | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
-    | STATUS_FACTION_GROUP_UNVALIDATED;
+    | STATUS_FACTION_GROUP_UNVALIDATED
+    | STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
 
 pub const KIND_COUNTRY_DIPLOMACY: u16 = 1;
 pub const KIND_WAR_RELATION: u16 = 2;
@@ -133,6 +135,9 @@ pub const MAX_OPERATION_ID: u32 = i32::MAX as u32;
 pub const MAX_OPERATION_SLOTS: u32 = 16;
 pub const MAX_OPERATION_PHASES: u32 = 32;
 pub const MAX_INTEL_PERCENT_RAW: i32 = 100_000;
+pub const MAX_INTEL_NETWORK_ROWS: usize = 4_096;
+pub const MAX_INTEL_NETWORK_STATES: usize = 2_048;
+pub const MAX_INTEL_NETWORK_STATE_ID: u32 = compact_contract::build_profile::MAX_STATE_ID;
 pub const MAX_STATE_EVENT_VALUE_RAW: i64 = 1_000_000_000_000;
 
 const ROW_COUNTRY_LEN: usize = 24;
@@ -158,6 +163,18 @@ const OPERATION_INSTANCE_FLAG_DEF_REF_OK: u32 = 1;
 const OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT: u32 = 1 << 1;
 pub const MAX_OPERATION_INSTANCE_ROWS: usize = 4_096;
 
+const INCOMING_ACTION_QUEUE_TRAILER_MAGIC: &[u8; 4] = b"DIAQ";
+const INCOMING_ACTION_QUEUE_TRAILER_VERSION: u16 = 1;
+const INCOMING_ACTION_QUEUE_TRAILER_HEADER_LEN: usize = 12;
+const INCOMING_ACTION_QUEUE_TRAILER_ROW_LEN: usize = 24;
+pub const MAX_INCOMING_ACTION_QUEUE_ROWS: usize = 4_096;
+pub const MAX_ACTION_DATE_HOURS: u32 = 100_000_000;
+
+const INTEL_NETWORK_GRAPH_TRAILER_MAGIC: &[u8; 4] = b"INGR";
+const INTEL_NETWORK_GRAPH_TRAILER_VERSION: u16 = 1;
+const INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN: usize = 12;
+const INTEL_NETWORK_GRAPH_ROW_HEADER_LEN: usize = 16;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyIntelSnapshot {
     pub elapsed_wall_ms: u64,
@@ -180,6 +197,8 @@ pub struct DiplomacyIntelSnapshot {
     /// the self-delimiting base payload — NOT counted in `row_count()` (the
     /// base row loop must not see them). Absent trailer => empty (not measured).
     pub operation_instances: Vec<OperationInstanceRow>,
+    pub incoming_actions: Vec<IncomingActionQueueRow>,
+    pub intel_network_graphs: Vec<IntelNetworkGraphRow>,
 }
 
 impl DiplomacyIntelSnapshot {
@@ -327,6 +346,25 @@ pub struct OperationInstanceRow {
     /// Resolved associated-country tag_db_id (@+0x50 -> CCountry). `None` when
     /// the pointer was null/invalid (absent, never zero).
     pub associated_country_tag_db_id: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncomingActionQueueRow {
+    pub recipient_tag_db_id: u32,
+    pub actor_tag_db_id: u32,
+    pub action_id: u32,
+    pub action_type: i32,
+    pub date_hours: u32,
+    pub last_command_date_hours: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntelNetworkGraphRow {
+    pub strategic_operative_index: u32,
+    pub network_slot: u32,
+    pub target_tag_db_id: u32,
+    /// Sorted unique state ids from CCountryIntelNetwork graph vertices.
+    pub state_ids: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -552,6 +590,8 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         payload.extend_from_slice(&row.value_raw.to_le_bytes());
     }
     append_operation_instance_trailer(&mut payload, &snapshot.operation_instances);
+    append_incoming_action_queue_trailer(&mut payload, &snapshot.incoming_actions);
+    append_intel_network_graph_trailer(&mut payload, &snapshot.intel_network_graphs);
     payload
 }
 
@@ -589,6 +629,44 @@ fn append_operation_instance_trailer(payload: &mut Vec<u8>, rows: &[OperationIns
     }
 }
 
+fn append_incoming_action_queue_trailer(payload: &mut Vec<u8>, rows: &[IncomingActionQueueRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    payload.extend_from_slice(INCOMING_ACTION_QUEUE_TRAILER_MAGIC);
+    payload.extend_from_slice(&INCOMING_ACTION_QUEUE_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(INCOMING_ACTION_QUEUE_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    for row in rows {
+        payload.extend_from_slice(&row.recipient_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.actor_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.action_id.to_le_bytes());
+        payload.extend_from_slice(&row.action_type.to_le_bytes());
+        payload.extend_from_slice(&row.date_hours.to_le_bytes());
+        payload.extend_from_slice(&row.last_command_date_hours.to_le_bytes());
+    }
+}
+
+fn append_intel_network_graph_trailer(payload: &mut Vec<u8>, rows: &[IntelNetworkGraphRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    payload.extend_from_slice(INTEL_NETWORK_GRAPH_TRAILER_MAGIC);
+    payload.extend_from_slice(&INTEL_NETWORK_GRAPH_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    for row in rows {
+        payload.extend_from_slice(&row.strategic_operative_index.to_le_bytes());
+        payload.extend_from_slice(&row.network_slot.to_le_bytes());
+        payload.extend_from_slice(&row.target_tag_db_id.to_le_bytes());
+        payload
+            .extend_from_slice(&(row.state_ids.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        for state_id in &row.state_ids {
+            payload.extend_from_slice(&state_id.to_le_bytes());
+        }
+    }
+}
+
 /// Decode + gate the `OPIN` trailer at `trailer_offset`. Returns the decoded
 /// rows and appends any parse errors to `errors`. Strict: exact-end
 /// consumption, unique instance ids, flag/country consistency.
@@ -597,12 +675,12 @@ fn decode_operation_instance_trailer(
     payload: &[u8],
     trailer_offset: usize,
     errors: &mut Vec<String>,
-) -> Vec<OperationInstanceRow> {
+) -> (Vec<OperationInstanceRow>, usize) {
     let Some(trailer) = payload.get(trailer_offset..) else {
         errors.push(format!(
             "offset {offset}: operation-instance trailer offset {trailer_offset} beyond payload"
         ));
-        return Vec::new();
+        return (Vec::new(), 0);
     };
     if trailer.len() < OPERATION_INSTANCE_TRAILER_HEADER_LEN {
         errors.push(format!(
@@ -610,13 +688,13 @@ fn decode_operation_instance_trailer(
             trailer.len(),
             OPERATION_INSTANCE_TRAILER_HEADER_LEN
         ));
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     if &trailer[0..4] != OPERATION_INSTANCE_TRAILER_MAGIC {
         errors.push(format!(
             "offset {offset}: operation-instance trailer magic is invalid"
         ));
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let version = read_u16_le(trailer, 4);
     let header_len = read_u16_le(trailer, 6) as usize;
@@ -627,22 +705,22 @@ fn decode_operation_instance_trailer(
         errors.push(format!(
             "offset {offset}: operation-instance trailer header shape invalid (version {version}, header_len {header_len})"
         ));
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     if row_count > MAX_OPERATION_INSTANCE_ROWS {
         errors.push(format!(
             "offset {offset}: operation-instance trailer row_count {row_count} exceeds {MAX_OPERATION_INSTANCE_ROWS}"
         ));
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let expected = OPERATION_INSTANCE_TRAILER_HEADER_LEN
         .saturating_add(row_count.saturating_mul(OPERATION_INSTANCE_TRAILER_ROW_LEN));
-    if trailer.len() != expected {
+    if trailer.len() < expected {
         errors.push(format!(
-            "offset {offset}: operation-instance trailer len {} != {expected}",
+            "offset {offset}: operation-instance trailer len {} < {expected}",
             trailer.len()
         ));
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let mut rows = Vec::with_capacity(row_count);
     let mut seen = BTreeSet::new();
@@ -687,7 +765,295 @@ fn decode_operation_instance_trailer(
             associated_country_tag_db_id: country_present.then_some(country),
         });
     }
-    rows
+    (rows, expected)
+}
+
+#[derive(Default)]
+struct DecodedTrailers {
+    operation_instances: Vec<OperationInstanceRow>,
+    incoming_actions: Vec<IncomingActionQueueRow>,
+    intel_network_graphs: Vec<IntelNetworkGraphRow>,
+}
+
+fn decode_domain53_trailers(
+    offset: usize,
+    payload: &[u8],
+    mut cursor: usize,
+    errors: &mut Vec<String>,
+) -> DecodedTrailers {
+    let mut decoded = DecodedTrailers::default();
+    let mut seen_opin = false;
+    let mut seen_diaq = false;
+    let mut seen_ingr = false;
+    while cursor < payload.len() {
+        if payload.get(cursor..cursor + 4) == Some(OPERATION_INSTANCE_TRAILER_MAGIC) {
+            if seen_opin {
+                errors.push(format!(
+                    "offset {offset}: duplicate operation-instance trailer"
+                ));
+                return decoded;
+            }
+            let (rows, consumed) =
+                decode_operation_instance_trailer(offset, payload, cursor, errors);
+            if consumed == 0 {
+                return decoded;
+            }
+            decoded.operation_instances = rows;
+            seen_opin = true;
+            cursor += consumed;
+        } else if payload.get(cursor..cursor + 4) == Some(INCOMING_ACTION_QUEUE_TRAILER_MAGIC) {
+            if seen_diaq {
+                errors.push(format!(
+                    "offset {offset}: duplicate incoming-action queue trailer"
+                ));
+                return decoded;
+            }
+            let (rows, consumed) =
+                decode_incoming_action_queue_trailer(offset, payload, cursor, errors);
+            if consumed == 0 {
+                return decoded;
+            }
+            decoded.incoming_actions = rows;
+            seen_diaq = true;
+            cursor += consumed;
+        } else if payload.get(cursor..cursor + 4) == Some(INTEL_NETWORK_GRAPH_TRAILER_MAGIC) {
+            if seen_ingr {
+                errors.push(format!(
+                    "offset {offset}: duplicate intel-network graph trailer"
+                ));
+                return decoded;
+            }
+            let (rows, consumed) =
+                decode_intel_network_graph_trailer(offset, payload, cursor, errors);
+            if consumed == 0 {
+                return decoded;
+            }
+            decoded.intel_network_graphs = rows;
+            seen_ingr = true;
+            cursor += consumed;
+        } else {
+            errors.push(format!(
+                "offset {offset}: diplomacy/intel unknown trailer magic at byte {cursor}"
+            ));
+            return decoded;
+        }
+    }
+    decoded
+}
+
+fn decode_incoming_action_queue_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    errors: &mut Vec<String>,
+) -> (Vec<IncomingActionQueueRow>, usize) {
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        errors.push(format!(
+            "offset {offset}: incoming-action queue trailer offset {trailer_offset} beyond payload"
+        ));
+        return (Vec::new(), 0);
+    };
+    if trailer.len() < INCOMING_ACTION_QUEUE_TRAILER_HEADER_LEN {
+        errors.push(format!(
+            "offset {offset}: incoming-action queue trailer is {} byte(s), expected at least {}",
+            trailer.len(),
+            INCOMING_ACTION_QUEUE_TRAILER_HEADER_LEN
+        ));
+        return (Vec::new(), 0);
+    }
+    if &trailer[0..4] != INCOMING_ACTION_QUEUE_TRAILER_MAGIC {
+        errors.push(format!(
+            "offset {offset}: incoming-action queue trailer magic is invalid"
+        ));
+        return (Vec::new(), 0);
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_count = read_u32_le(trailer, 8) as usize;
+    if version != INCOMING_ACTION_QUEUE_TRAILER_VERSION
+        || header_len != INCOMING_ACTION_QUEUE_TRAILER_HEADER_LEN
+    {
+        errors.push(format!(
+            "offset {offset}: incoming-action queue trailer header shape invalid (version {version}, header_len {header_len})"
+        ));
+        return (Vec::new(), 0);
+    }
+    if row_count > MAX_INCOMING_ACTION_QUEUE_ROWS {
+        errors.push(format!(
+            "offset {offset}: incoming-action queue row_count {row_count} exceeds {MAX_INCOMING_ACTION_QUEUE_ROWS}"
+        ));
+        return (Vec::new(), 0);
+    }
+    let expected = INCOMING_ACTION_QUEUE_TRAILER_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(INCOMING_ACTION_QUEUE_TRAILER_ROW_LEN));
+    if trailer.len() < expected {
+        errors.push(format!(
+            "offset {offset}: incoming-action queue trailer len {} < {expected}",
+            trailer.len()
+        ));
+        return (Vec::new(), 0);
+    }
+    let mut rows = Vec::with_capacity(row_count);
+    let mut seen = BTreeSet::new();
+    let mut cursor = INCOMING_ACTION_QUEUE_TRAILER_HEADER_LEN;
+    for _ in 0..row_count {
+        let recipient = read_u32_le(trailer, cursor);
+        let actor = read_u32_le(trailer, cursor + 4);
+        let action_id = read_u32_le(trailer, cursor + 8);
+        let action_type = read_i32_le(trailer, cursor + 12);
+        let date_hours = read_u32_le(trailer, cursor + 16);
+        let last_command_date_hours = read_u32_le(trailer, cursor + 20);
+        cursor += INCOMING_ACTION_QUEUE_TRAILER_ROW_LEN;
+        if !valid_tag(recipient) {
+            errors.push(format!(
+                "offset {offset}: incoming-action row has invalid recipient {recipient}"
+            ));
+        }
+        if !valid_tag(actor) {
+            errors.push(format!(
+                "offset {offset}: incoming-action row has invalid actor {actor}"
+            ));
+        }
+        if action_id == 0 {
+            errors.push(format!(
+                "offset {offset}: incoming-action row has zero action_id"
+            ));
+        }
+        if !(0..=MAX_ACTION_DATE_HOURS).contains(&date_hours) {
+            errors.push(format!(
+                "offset {offset}: incoming-action row has invalid date_hours {date_hours}"
+            ));
+        }
+        if !(0..=MAX_ACTION_DATE_HOURS).contains(&last_command_date_hours) {
+            errors.push(format!(
+                "offset {offset}: incoming-action row has invalid last_command_date_hours {last_command_date_hours}"
+            ));
+        }
+        if !seen.insert(action_id) {
+            errors.push(format!(
+                "offset {offset}: incoming-action trailer duplicates action_id {action_id}"
+            ));
+        }
+        rows.push(IncomingActionQueueRow {
+            recipient_tag_db_id: recipient,
+            actor_tag_db_id: actor,
+            action_id,
+            action_type,
+            date_hours,
+            last_command_date_hours,
+        });
+    }
+    (rows, expected)
+}
+
+fn decode_intel_network_graph_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    errors: &mut Vec<String>,
+) -> (Vec<IntelNetworkGraphRow>, usize) {
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        errors.push(format!(
+            "offset {offset}: intel-network graph trailer offset {trailer_offset} beyond payload"
+        ));
+        return (Vec::new(), 0);
+    };
+    if trailer.len() < INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN {
+        errors.push(format!(
+            "offset {offset}: intel-network graph trailer is {} byte(s), expected at least {}",
+            trailer.len(),
+            INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN
+        ));
+        return (Vec::new(), 0);
+    }
+    if &trailer[0..4] != INTEL_NETWORK_GRAPH_TRAILER_MAGIC {
+        errors.push(format!(
+            "offset {offset}: intel-network graph trailer magic is invalid"
+        ));
+        return (Vec::new(), 0);
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_count = read_u32_le(trailer, 8) as usize;
+    if version != INTEL_NETWORK_GRAPH_TRAILER_VERSION
+        || header_len != INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN
+    {
+        errors.push(format!(
+            "offset {offset}: intel-network graph trailer header shape invalid (version {version}, header_len {header_len})"
+        ));
+        return (Vec::new(), 0);
+    }
+    if row_count > MAX_INTEL_NETWORK_ROWS {
+        errors.push(format!(
+            "offset {offset}: intel-network graph row_count {row_count} exceeds {MAX_INTEL_NETWORK_ROWS}"
+        ));
+        return (Vec::new(), 0);
+    }
+
+    let mut rows = Vec::with_capacity(row_count);
+    let mut seen = BTreeSet::new();
+    let mut cursor = INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN;
+    for _ in 0..row_count {
+        if trailer.len().saturating_sub(cursor) < INTEL_NETWORK_GRAPH_ROW_HEADER_LEN {
+            errors.push(format!(
+                "offset {offset}: intel-network graph row header truncated at byte {cursor}"
+            ));
+            return (Vec::new(), 0);
+        }
+        let strategic_operative_index = read_u32_le(trailer, cursor);
+        let network_slot = read_u32_le(trailer, cursor + 4);
+        let target = read_u32_le(trailer, cursor + 8);
+        let state_count = read_u32_le(trailer, cursor + 12) as usize;
+        cursor += INTEL_NETWORK_GRAPH_ROW_HEADER_LEN;
+        if state_count == 0 || state_count > MAX_INTEL_NETWORK_STATES {
+            errors.push(format!(
+                "offset {offset}: intel-network graph row has invalid state_count {state_count}"
+            ));
+            return (Vec::new(), 0);
+        }
+        let states_len = state_count.saturating_mul(4);
+        if trailer.len().saturating_sub(cursor) < states_len {
+            errors.push(format!(
+                "offset {offset}: intel-network graph state list truncated at byte {cursor}"
+            ));
+            return (Vec::new(), 0);
+        }
+        if !valid_tag(target) {
+            errors.push(format!(
+                "offset {offset}: intel-network graph row has invalid target {target}"
+            ));
+        }
+        if !seen.insert((strategic_operative_index, network_slot)) {
+            errors.push(format!(
+                "offset {offset}: intel-network graph duplicates operative {strategic_operative_index} slot {network_slot}"
+            ));
+        }
+        let mut state_ids = Vec::with_capacity(state_count);
+        let mut previous = None;
+        for _ in 0..state_count {
+            let state_id = read_u32_le(trailer, cursor);
+            cursor += 4;
+            if state_id == 0 || state_id > MAX_INTEL_NETWORK_STATE_ID {
+                errors.push(format!(
+                    "offset {offset}: intel-network graph row has invalid state_id {state_id}"
+                ));
+            }
+            if previous.is_some_and(|last| state_id <= last) {
+                errors.push(format!(
+                    "offset {offset}: intel-network graph state_ids are not strictly increasing"
+                ));
+            }
+            previous = Some(state_id);
+            state_ids.push(state_id);
+        }
+        rows.push(IntelNetworkGraphRow {
+            strategic_operative_index,
+            network_slot,
+            target_tag_db_id: target,
+            state_ids,
+        });
+    }
+    (rows, cursor)
 }
 
 pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
@@ -949,22 +1315,42 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         cursor += row_len;
     }
 
-    // Wave-5: any bytes after the self-delimiting base payload are the `OPIN`
-    // running-operation-instance trailer; anything else is a trailing-byte
-    // error exactly as before.
+    // Any bytes after the self-delimiting base payload are append-only
+    // trailers (`OPIN`, `DIAQ`); anything else is a trailing-byte error.
     let mut operation_instance_rows = 0usize;
     let mut operation_instance_country_rows = 0usize;
     let mut operation_instance_def_ref_ok_rows = 0usize;
+    let mut incoming_action_queue_rows = 0usize;
+    let mut incoming_action_queue_recipients = BTreeSet::new();
+    let mut intel_network_graph_rows = 0usize;
+    let mut intel_network_graph_state_rows = 0usize;
     if cursor != payload.len() {
         let trailer_rows =
-            decode_operation_instance_trailer(offset, payload, cursor, &mut summary.parse_errors);
-        operation_instance_rows = trailer_rows.len();
+            decode_domain53_trailers(offset, payload, cursor, &mut summary.parse_errors);
+        operation_instance_rows = trailer_rows.operation_instances.len();
         operation_instance_country_rows = trailer_rows
+            .operation_instances
             .iter()
             .filter(|row| row.associated_country_tag_db_id.is_some())
             .count();
-        operation_instance_def_ref_ok_rows =
-            trailer_rows.iter().filter(|row| row.def_ref_ok).count();
+        operation_instance_def_ref_ok_rows = trailer_rows
+            .operation_instances
+            .iter()
+            .filter(|row| row.def_ref_ok)
+            .count();
+        incoming_action_queue_rows = trailer_rows.incoming_actions.len();
+        incoming_action_queue_recipients.extend(
+            trailer_rows
+                .incoming_actions
+                .iter()
+                .map(|row| row.recipient_tag_db_id),
+        );
+        intel_network_graph_rows = trailer_rows.intel_network_graphs.len();
+        intel_network_graph_state_rows = trailer_rows
+            .intel_network_graphs
+            .iter()
+            .map(|row| row.state_ids.len())
+            .sum();
     }
     add_unit(
         &mut summary,
@@ -980,6 +1366,26 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         &mut summary,
         "operation_instance_def_ref_ok_rows",
         operation_instance_def_ref_ok_rows,
+    );
+    add_unit(
+        &mut summary,
+        "incoming_action_queue_rows",
+        incoming_action_queue_rows,
+    );
+    add_unit(
+        &mut summary,
+        "incoming_action_queue_recipient_rows",
+        incoming_action_queue_recipients.len(),
+    );
+    add_unit(
+        &mut summary,
+        "intel_network_graph_rows",
+        intel_network_graph_rows,
+    );
+    add_unit(
+        &mut summary,
+        "intel_network_graph_state_rows",
+        intel_network_graph_state_rows,
     );
     if decoded_counts != expected_counts {
         summary.parse_errors.push(format!(
@@ -1020,6 +1426,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel badges faction group unvalidated but emits {} country diplomacy row(s) and {} faction state event row(s)",
             decoded_counts.country, state_event_source_counts.country_faction_group
+        ));
+    }
+    if status_flags & STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED != 0 && intel_network_graph_rows != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel badges intel-network graph unvalidated but emits {intel_network_graph_rows} graph row(s)"
         ));
     }
 
@@ -1230,12 +1641,13 @@ pub fn decode_snapshot_payload(
         }
         cursor += row_len(kind).expect("decode_payload already validated row kind");
     }
-    // Wave-5: parse the `OPIN` running-operation-instance trailer (validated
-    // above by decode_payload, whose parse errors already gated this call).
+    // Parse append-only trailers (validated above by decode_payload).
     if cursor != payload.len() {
         let mut trailer_errors = Vec::new();
-        snapshot.operation_instances =
-            decode_operation_instance_trailer(offset, payload, cursor, &mut trailer_errors);
+        let trailers = decode_domain53_trailers(offset, payload, cursor, &mut trailer_errors);
+        snapshot.operation_instances = trailers.operation_instances;
+        snapshot.incoming_actions = trailers.incoming_actions;
+        snapshot.intel_network_graphs = trailers.intel_network_graphs;
         if !trailer_errors.is_empty() {
             return Err(trailer_errors);
         }
@@ -2488,6 +2900,160 @@ mod tests {
     }
 
     #[test]
+    fn incoming_action_queue_trailer_round_trips_with_operation_instances() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.operation_instances = vec![OperationInstanceRow {
+            instance_id: 129_014,
+            def_ref_ok: true,
+            associated_country_tag_db_id: Some(3),
+        }];
+        snapshot.incoming_actions = vec![
+            IncomingActionQueueRow {
+                recipient_tag_db_id: 9,
+                actor_tag_db_id: 1,
+                action_id: 150_442,
+                action_type: 0,
+                date_hours: 60_830_000,
+                last_command_date_hours: 60_830_000,
+            },
+            IncomingActionQueueRow {
+                recipient_tag_db_id: 9,
+                actor_tag_db_id: 16,
+                action_id: 150_608,
+                action_type: 0,
+                date_hours: 60_830_024,
+                last_command_date_hours: 60_830_024,
+            },
+        ];
+        let payload = encode_payload(&snapshot);
+        assert!(payload
+            .windows(4)
+            .any(|window| window == INCOMING_ACTION_QUEUE_TRAILER_MAGIC));
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("incoming_action_queue_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("incoming_action_queue_recipient_rows")
+                .copied(),
+            Some(1)
+        );
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert_eq!(decoded.operation_instances, snapshot.operation_instances);
+        assert_eq!(decoded.incoming_actions, snapshot.incoming_actions);
+    }
+
+    #[test]
+    fn incoming_action_queue_trailer_rejects_duplicate_action_id() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.incoming_actions = vec![
+            IncomingActionQueueRow {
+                recipient_tag_db_id: 9,
+                actor_tag_db_id: 1,
+                action_id: 150_442,
+                action_type: 0,
+                date_hours: 60_830_000,
+                last_command_date_hours: 60_830_000,
+            },
+            IncomingActionQueueRow {
+                recipient_tag_db_id: 10,
+                actor_tag_db_id: 16,
+                action_id: 150_442,
+                action_type: 0,
+                date_hours: 60_830_024,
+                last_command_date_hours: 60_830_024,
+            },
+        ];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("duplicates action_id 150442")));
+    }
+
+    #[test]
+    fn intel_network_graph_trailer_round_trips() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.intel_network_graphs = vec![
+            IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 0,
+                target_tag_db_id: 2,
+                state_ids: vec![121, 122, 123],
+            },
+            IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 1,
+                target_tag_db_id: 3,
+                state_ids: vec![219, 253, 254],
+            },
+        ];
+        let payload = encode_payload(&snapshot);
+        assert!(payload
+            .windows(4)
+            .any(|window| window == INTEL_NETWORK_GRAPH_TRAILER_MAGIC));
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("intel_network_graph_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("intel_network_graph_state_rows")
+                .copied(),
+            Some(6)
+        );
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert_eq!(decoded.intel_network_graphs, snapshot.intel_network_graphs);
+    }
+
+    #[test]
+    fn intel_network_graph_trailer_rejects_duplicate_slot() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.intel_network_graphs = vec![
+            IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 0,
+                target_tag_db_id: 2,
+                state_ids: vec![121, 122, 123],
+            },
+            IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 0,
+                target_tag_db_id: 3,
+                state_ids: vec![219, 253, 254],
+            },
+        ];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("duplicates operative 1 slot 0")));
+    }
+
+    #[test]
     fn operation_instance_trailer_rejects_duplicate_instance_id() {
         let mut snapshot = fixture_snapshot();
         snapshot.operation_instances = vec![
@@ -2716,6 +3282,8 @@ mod tests {
                 },
             ],
             operation_instances: Vec::new(),
+            incoming_actions: Vec::new(),
+            intel_network_graphs: Vec::new(),
         }
     }
 }
