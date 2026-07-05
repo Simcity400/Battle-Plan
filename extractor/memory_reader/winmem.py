@@ -98,10 +98,19 @@ class MEMORY_BASIC_INFORMATION(ctypes.Structure):
     ]
 
 
+class MODULEINFO(ctypes.Structure):
+    _fields_ = [
+        ("lpBaseOfDll", ctypes.c_void_p),
+        ("SizeOfImage", wt.DWORD),
+        ("EntryPoint", ctypes.c_void_p),
+    ]
+
+
 # --------------------------------------------------------------------------
 # kernel32 prototypes (explicit argtypes/restype -> no 64-bit truncation)
 # --------------------------------------------------------------------------
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_psapi = ctypes.WinDLL("psapi", use_last_error=True)
 
 _k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
 _k32.OpenProcess.restype = wt.HANDLE
@@ -127,8 +136,20 @@ _k32.VirtualQueryEx.argtypes = [
     ctypes.c_size_t,
 ]
 _k32.VirtualQueryEx.restype = ctypes.c_size_t
+_psapi.EnumProcessModulesEx.argtypes = [
+    wt.HANDLE, ctypes.POINTER(wt.HMODULE), wt.DWORD,
+    ctypes.POINTER(wt.DWORD), wt.DWORD,
+]
+_psapi.EnumProcessModulesEx.restype = wt.BOOL
+_psapi.GetModuleFileNameExW.argtypes = [wt.HANDLE, wt.HMODULE, wt.LPWSTR, wt.DWORD]
+_psapi.GetModuleFileNameExW.restype = wt.DWORD
+_psapi.GetModuleInformation.argtypes = [
+    wt.HANDLE, wt.HMODULE, ctypes.POINTER(MODULEINFO), wt.DWORD,
+]
+_psapi.GetModuleInformation.restype = wt.BOOL
 
 _INVALID_HANDLE = wt.HANDLE(-1).value
+_LIST_MODULES_ALL = 0x03
 
 
 # --------------------------------------------------------------------------
@@ -170,7 +191,8 @@ def _iter_modules(pid):
         if ctypes.get_last_error() not in (ERROR_BAD_LENGTH, ERROR_PARTIAL_COPY):
             break
     if not snap or snap == _INVALID_HANDLE:
-        raise OSError("module snapshot failed for pid %d (err %d)" % (pid, ctypes.get_last_error()))
+        yield from _iter_modules_psapi(pid)
+        return
     try:
         entry = MODULEENTRY32W()
         entry.dwSize = ctypes.sizeof(MODULEENTRY32W)
@@ -183,6 +205,48 @@ def _iter_modules(pid):
             ok = _k32.Module32NextW(snap, ctypes.byref(entry))
     finally:
         _k32.CloseHandle(snap)
+
+
+def _iter_modules_psapi(pid):
+    """Yield module snapshots via PSAPI when Toolhelp module snapshots are
+    blocked. This uses the same read-only/query process rights as Process."""
+    handle = _k32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
+    if not handle:
+        raise OSError("OpenProcess(%d) failed for PSAPI module fallback (err %d)"
+                      % (pid, ctypes.get_last_error()))
+    try:
+        modules = (wt.HMODULE * 4096)()
+        needed = wt.DWORD(0)
+        ok = _psapi.EnumProcessModulesEx(
+            handle, modules, ctypes.sizeof(modules),
+            ctypes.byref(needed), _LIST_MODULES_ALL,
+        )
+        if not ok or needed.value == 0:
+            raise OSError("PSAPI module enumeration failed for pid %d (err %d)"
+                          % (pid, ctypes.get_last_error()))
+        count = min(needed.value // ctypes.sizeof(wt.HMODULE), len(modules))
+        for i in range(count):
+            hmod = modules[i]
+            info = MODULEINFO()
+            if not _psapi.GetModuleInformation(
+                handle, hmod, ctypes.byref(info), ctypes.sizeof(info)
+            ):
+                continue
+            path_buf = ctypes.create_unicode_buffer(MAX_PATH)
+            chars = _psapi.GetModuleFileNameExW(handle, hmod, path_buf, MAX_PATH)
+            path = path_buf.value[:chars] if chars else ""
+            name = path.rsplit("\\", 1)[-1] if path else ""
+            entry = MODULEENTRY32W()
+            entry.dwSize = ctypes.sizeof(MODULEENTRY32W)
+            entry.th32ProcessID = pid
+            entry.modBaseAddr = info.lpBaseOfDll
+            entry.modBaseSize = info.SizeOfImage
+            entry.hModule = hmod
+            entry.szModule = name[:255]
+            entry.szExePath = path[:MAX_PATH - 1]
+            yield entry
+    finally:
+        _k32.CloseHandle(handle)
 
 
 # --------------------------------------------------------------------------
