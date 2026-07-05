@@ -3038,6 +3038,8 @@ impl WorldFold {
                     Some(seen) => json!(seen),
                     None => Value::Null,
                 };
+            let (ship_count, dominant_hull_class) =
+                self.naval_missions_status_ship_summary(row.task_force_id);
             rows.push(json!({
                 "task_force_id": row.task_force_id,
                 "fleet_id": row.fleet_id,
@@ -3045,6 +3047,8 @@ impl WorldFold {
                 "owner_tag_db_id": row.owner_tag_db_id,
                 "location_province_id": option_u32_json(row.location_province_id),
                 "strategic_region_id": option_u32_json(row.strategic_region_id),
+                "ship_count": ship_count,
+                "dominant_hull_class": dominant_hull_class,
                 "mission_enum": option_u32_json(row.mission_enum),
                 "mission_state": option_u32_json(row.mission_state),
                 "home_base_province_id": option_u32_json(row.home_base_province_id),
@@ -3085,6 +3089,8 @@ impl WorldFold {
             "task_force_count": rows.len(),
             "validated_location_rows": rows.iter().filter(|row| row.get("location_province_id") != Some(&Value::Null)).count(),
             "derived_region_rows": rows.iter().filter(|row| row.get("strategic_region_id") != Some(&Value::Null)).count(),
+            "ship_summary_rows": rows.iter().filter(|row| row.get("ship_count") != Some(&Value::Null)).count(),
+            "dominant_hull_rows": rows.iter().filter(|row| row.get("dominant_hull_class") != Some(&Value::Null)).count(),
             "fixture_required_rows": rows.iter().filter(|row| {
                 row.get("fixture_required").and_then(Value::as_bool).unwrap_or(false)
                     || row.get("active_battle_fixture_required").and_then(Value::as_bool).unwrap_or(false)
@@ -3094,6 +3100,44 @@ impl WorldFold {
             "oob_command_orphan_rows": orphan_rows,
             "task_forces": rows,
         })
+    }
+
+    fn naval_missions_status_ship_summary(&self, task_force_id: u32) -> (Value, Value) {
+        if self.fold_domain_unknown(SHIPS_DOMAIN_ID) || !self.fold_domain_seen(SHIPS_DOMAIN_ID) {
+            return (Value::Null, Value::Null);
+        }
+
+        let mut ship_count = 0u64;
+        let mut by_definition: BTreeMap<&str, u64> = BTreeMap::new();
+        for ship in self
+            .ships
+            .values()
+            .filter(|ship| ship.task_force_id == Some(task_force_id))
+        {
+            ship_count = ship_count.saturating_add(1);
+            if let Some(definition) = ship.definition.as_deref() {
+                *by_definition.entry(definition).or_default() += 1;
+            }
+        }
+
+        let mut dominant: Option<(&str, u64)> = None;
+        for (definition, count) in by_definition {
+            match dominant {
+                None => dominant = Some((definition, count)),
+                Some((best_definition, best_count))
+                    if count > best_count
+                        || (count == best_count && definition < best_definition) =>
+                {
+                    dominant = Some((definition, count));
+                }
+                _ => {}
+            }
+        }
+
+        (
+            json!(ship_count),
+            dominant.map_or(Value::Null, |(definition, _count)| json!(definition)),
+        )
     }
 
     fn naval_missions_status_oob_join_checked(&self) -> bool {

@@ -6537,6 +6537,8 @@ fn chunk2_folds_d56_naval_status_under_oob_extra_without_owning_entities() {
     assert_eq!(extra["task_force_count"], json!(1));
     assert_eq!(extra["validated_location_rows"], json!(1));
     assert_eq!(extra["derived_region_rows"], json!(0));
+    assert_eq!(extra["ship_summary_rows"], json!(0));
+    assert_eq!(extra["dominant_hull_rows"], json!(0));
     assert_eq!(extra["convoy_sunk_count_rows"], json!(1));
     assert_eq!(extra["oob_command_join_checked"], json!(true));
     assert_eq!(extra["oob_command_orphan_rows"], json!(0));
@@ -6547,6 +6549,8 @@ fn chunk2_folds_d56_naval_status_under_oob_extra_without_owning_entities() {
     assert_eq!(row["owner_tag_db_id"], json!(1));
     assert_eq!(row["location_province_id"], json!(12345));
     assert_eq!(row["strategic_region_id"], Value::Null);
+    assert_eq!(row["ship_count"], Value::Null);
+    assert_eq!(row["dominant_hull_class"], Value::Null);
     assert_eq!(row["mission_enum"], Value::Null);
     assert_eq!(row["home_base_province_id"], Value::Null);
     assert_eq!(row["repair_base_province_id"], Value::Null);
@@ -6565,6 +6569,35 @@ fn chunk2_folds_d56_naval_status_under_oob_extra_without_owning_entities() {
         .unwrap()
         .iter()
         .any(|domain| domain["domain_id"] == json!(56)));
+}
+
+#[test]
+fn chunk2_d56_task_force_rows_include_d29_ship_count_and_dominant_hull() {
+    let rows = [d56_row(201, 200, 1, 12345, 2)];
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            29,
+            d29_ships_payload(
+                &[
+                    (300, 201, 1, "ship_hull_light_1"),
+                    (301, 201, 1, "ship_hull_submarine_1"),
+                    (302, 201, 1, "ship_hull_submarine_1"),
+                    (303, 202, 1, "ship_hull_heavy_1"),
+                ],
+                0,
+            ),
+        ),
+        (56, d56_payload(0, &rows)),
+    ]);
+
+    let extra = &snap["order_of_battle"]["extra"]["naval_missions_status_live"];
+    assert_eq!(extra["ship_summary_rows"], json!(1));
+    assert_eq!(extra["dominant_hull_rows"], json!(1));
+    let row = &extra["task_forces"][0];
+    assert_eq!(row["task_force_id"], json!(201));
+    assert_eq!(row["ship_count"], json!(3));
+    assert_eq!(row["dominant_hull_class"], json!("ship_hull_submarine_1"));
 }
 
 #[test]

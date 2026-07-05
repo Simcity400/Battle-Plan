@@ -367,7 +367,7 @@ def collect_task_force_roots_from_fleet(
         return
     for offset in range(0, max(0, len(blob) - 8), 8):
         candidate = u64_from(blob, offset) or 0
-        maybe_insert_task_force(
+        maybe_insert_task_force_candidate(
             proc, module_base, candidate, fleet_roots_by_ptr, task_forces_by_ptr
         )
     for offset in range(0, max(0, len(blob) - 16), 8):
@@ -390,22 +390,36 @@ def collect_task_force_roots_from_fleet(
             continue
         for index in range(count):
             candidate = u64_from(raw, index * 8) or 0
-            if maybe_insert_task_force(
+            maybe_insert_task_force_candidate(
                 proc, module_base, candidate, fleet_roots_by_ptr, task_forces_by_ptr
-            ):
-                continue
-            if not is_heap_aligned(candidate):
-                continue
-            if safe_u64(proc, candidate) != module_base + TASK_FORCE_SUBOBJECT_VTABLE_RVA:
-                continue
-            for delta in TASK_FORCE_SUBOBJECT_TO_BODY_DELTAS:
-                body_ptr = candidate + delta
-                if body_ptr <= 0:
-                    continue
-                if maybe_insert_task_force(
-                    proc, module_base, body_ptr, fleet_roots_by_ptr, task_forces_by_ptr
-                ):
-                    break
+            )
+
+
+def maybe_insert_task_force_candidate(
+    proc: wm.Process,
+    module_base: int,
+    candidate: int,
+    fleet_roots_by_ptr: Dict[int, Dict[str, Any]],
+    task_forces_by_ptr: Dict[int, Dict[str, Any]],
+) -> bool:
+    inserted = False
+    if maybe_insert_task_force(
+        proc, module_base, candidate, fleet_roots_by_ptr, task_forces_by_ptr
+    ):
+        inserted = True
+    if not is_heap_aligned(candidate):
+        return inserted
+    if safe_u64(proc, candidate) != module_base + TASK_FORCE_SUBOBJECT_VTABLE_RVA:
+        return inserted
+    for delta in TASK_FORCE_SUBOBJECT_TO_BODY_DELTAS:
+        body_ptr = candidate + delta
+        if body_ptr <= 0:
+            continue
+        if maybe_insert_task_force(
+            proc, module_base, body_ptr, fleet_roots_by_ptr, task_forces_by_ptr
+        ):
+            inserted = True
+    return inserted
 
 
 def discover_compact_naval_roots(proc: wm.Process) -> Dict[str, Any]:
