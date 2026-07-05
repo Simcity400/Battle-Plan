@@ -50,6 +50,18 @@ const TECH_PROGRESS_SCALE: f64 = 1000.0;
 const TECH_LIVE_SCALE: f64 = 100_000.0;
 const FIXED_SCALE: f64 = 100_000.0;
 
+// W1 domain 63 country_core_scalars_live: fixed 48-byte per-country row.
+const COUNTRY_CORE_ROW_LEN: usize = 48;
+const COUNTRY_CORE_FLAG_MANPOWER_POOL: u32 = 1 << 0;
+const COUNTRY_CORE_FLAG_CONVOYS_DESTROYED: u32 = 1 << 1;
+const COUNTRY_CORE_FLAG_DIVISIONS_LOST: u32 = 1 << 2;
+const COUNTRY_CORE_FLAG_EXPERIENCE: u32 = 1 << 3;
+// Experience-status channels are raw signed int32 CFixedPoint (value / 32768).
+const COUNTRY_CORE_EXPERIENCE_SCALE: f64 = 32768.0;
+const COUNTRY_CORE_MAX_MANPOWER_POOL: u32 = 2_000_000_000;
+const COUNTRY_CORE_MAX_CONVOYS_DESTROYED: u32 = 100_000_000;
+const COUNTRY_CORE_MAX_DIVISIONS_LOST: u32 = 1_000_000;
+
 // E4: division row grew 92 -> 104 to carry strategic_redeployment,
 // current_manpower, and cumulative_losses (must stay in lockstep with the
 // collector and recorder-decode row lengths).
@@ -542,7 +554,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62,
+    62, 63,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -1682,6 +1694,7 @@ impl WorldFold {
             50 => self.fold_naval_combat_members(payload),
             56 => self.fold_naval_missions_status(payload),
             57 => self.fold_session_multiplayer_metadata(payload),
+            63 => self.fold_country_core_scalars(payload),
             60 => self.fold_capitulation_war_state(payload),
             _ => {
                 self.unfolded_domains_this_hour.insert(domain_id);
@@ -3795,6 +3808,128 @@ impl WorldFold {
             country.insert(
                 "fuel".into(),
                 json!({ "current": current, "max": max, "gain": gain, "cost": cost }),
+            );
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 63 country_core_scalars_live (full each frame) ---------
+    // W1: per-country core economy/counters — manpower_pool, convoys_destroyed,
+    // divisions_lost, and the 7-channel experience_status. Each field is
+    // presence-flagged: a clear flag folds `null` (absent != 0); a set flag on
+    // a validated value folds the value. Full-replace semantics (each frame the
+    // collector re-reads every country).
+    fn fold_country_core_scalars(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 20, "country_core_scalars header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let expected = 20 + row_count * COUNTRY_CORE_ROW_LEN;
+        if payload.len() != expected {
+            return Err(format!(
+                "country_core_scalars len {} != {expected}",
+                payload.len()
+            ));
+        }
+        for i in 0..row_count {
+            let base = 20 + i * COUNTRY_CORE_ROW_LEN;
+            let tag_db_id = read_u32(payload, base);
+            if tag_db_id == 0 {
+                return Err("country_core_scalars row with zero tag_db_id".into());
+            }
+            let flags = read_u32(payload, base + 4);
+            let manpower_pool = read_u32(payload, base + 8);
+            let convoys_destroyed = read_u32(payload, base + 12);
+            let divisions_lost = read_u32(payload, base + 16);
+            let exp_army = read_i32(payload, base + 20);
+            let exp_army_daily = read_i32(payload, base + 24);
+            let exp_navy = read_i32(payload, base + 28);
+            let exp_navy_daily = read_i32(payload, base + 32);
+            let exp_air = read_i32(payload, base + 36);
+            let exp_air_daily = read_i32(payload, base + 40);
+            let exp_num_armies = read_i32(payload, base + 44);
+
+            let has_manpower = flags & COUNTRY_CORE_FLAG_MANPOWER_POOL != 0;
+            let has_convoys = flags & COUNTRY_CORE_FLAG_CONVOYS_DESTROYED != 0;
+            let has_divisions_lost = flags & COUNTRY_CORE_FLAG_DIVISIONS_LOST != 0;
+            let has_experience = flags & COUNTRY_CORE_FLAG_EXPERIENCE != 0;
+
+            // Validate presence/range: a present value must be in range; an
+            // absent field must pack a zero (fail closed on a malformed row).
+            validate_optional_u32_field(
+                has_manpower,
+                manpower_pool,
+                0,
+                COUNTRY_CORE_MAX_MANPOWER_POOL,
+                "country_manpower_pool",
+            )?;
+            validate_optional_u32_field(
+                has_convoys,
+                convoys_destroyed,
+                0,
+                COUNTRY_CORE_MAX_CONVOYS_DESTROYED,
+                "convoys_destroyed",
+            )?;
+            validate_optional_u32_field(
+                has_divisions_lost,
+                divisions_lost,
+                0,
+                COUNTRY_CORE_MAX_DIVISIONS_LOST,
+                "divisions_lost",
+            )?;
+            // Experience channels only carry meaning when the flag is set; when
+            // absent they must be zero-packed.
+            if !has_experience
+                && (exp_army != 0
+                    || exp_army_daily != 0
+                    || exp_navy != 0
+                    || exp_navy_daily != 0
+                    || exp_air != 0
+                    || exp_air_daily != 0
+                    || exp_num_armies != 0)
+            {
+                return Err("country_core_scalars experience present without flag".into());
+            }
+
+            let country = self.country_mut(tag_db_id);
+            country.insert(
+                "manpower_pool".into(),
+                if has_manpower {
+                    json!(manpower_pool)
+                } else {
+                    Value::Null
+                },
+            );
+            country.insert(
+                "convoys_destroyed".into(),
+                if has_convoys {
+                    json!(convoys_destroyed)
+                } else {
+                    Value::Null
+                },
+            );
+            country.insert(
+                "divisions_lost".into(),
+                if has_divisions_lost {
+                    json!(divisions_lost)
+                } else {
+                    Value::Null
+                },
+            );
+            country.insert(
+                "experience_status".into(),
+                if has_experience {
+                    let s = COUNTRY_CORE_EXPERIENCE_SCALE;
+                    json!({
+                        "army_experience": exp_army as f64 / s,
+                        "army_experience_daily": exp_army_daily as f64 / s,
+                        "navy_experience": exp_navy as f64 / s,
+                        "navy_experience_daily": exp_navy_daily as f64 / s,
+                        "air_experience": exp_air as f64 / s,
+                        "air_experience_daily": exp_air_daily as f64 / s,
+                        "num_armies_for_training": exp_num_armies as f64 / s,
+                    })
+                } else {
+                    Value::Null
+                },
             );
         }
         Ok(())

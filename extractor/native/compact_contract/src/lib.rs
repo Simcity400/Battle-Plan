@@ -886,6 +886,23 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // W1 (2026-07-05): per-country CORE scalars lane — manpower_pool
+    // (CCountry+0x338), convoys_destroyed (+0x1334), divisions_lost
+    // (*(CCountry+0x70)+0x54 post_mortem count), and the 7-channel
+    // experience_status (+0x1588 -> CCountryExperienceStatus, i32/32768). D04
+    // live value validation: manpower 436/436, convoys 16/16 nonzero + 420/420
+    // absent-zero, experience 40/40 scalars (437/437 CES ptrs valid),
+    // divisions_lost 436/436. Distinct from the reserved economy-counter BADGE
+    // lane (domain 58): this carries live per-country scalar data.
+    domain(
+        63,
+        "country_core_scalars_live",
+        "country_core_scalars_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -930,7 +947,7 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 62, 1000,
+            55, 56, 57, 58, 59, 60, 61, 62, 63, 1000,
         ];
         for id in expected {
             assert!(
@@ -1086,6 +1103,11 @@ mod tests {
         assert!(
             profile_ids.contains(&50),
             "domain 50 is a validated slice with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&63),
+            "domain 63 (country_core_scalars_live) is a validated slice \
+             with explicit open gaps"
         );
         for excluded in [1, 18, 58, 59, 1000] {
             assert!(

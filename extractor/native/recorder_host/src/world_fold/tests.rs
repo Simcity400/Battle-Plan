@@ -190,6 +190,45 @@ fn fuel_payload(rows: &[(u32, i64, i64, i64, i64)]) -> Vec<u8> {
     p
 }
 
+/// W1 domain 63 country_core_scalars_live payload.
+/// Each row: (tag_db_id, manpower_pool?, convoys_destroyed?, divisions_lost?,
+/// experience? as 7 raw i32). `None` => absent (flag clear, zero-packed).
+#[allow(clippy::type_complexity)]
+fn country_core_scalars_payload(
+    rows: &[(u32, Option<u32>, Option<u32>, Option<u32>, Option<[i32; 7]>)],
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    for (tag, manpower, convoys, divisions, experience) in rows {
+        let mut flags = 0u32;
+        if manpower.is_some() {
+            flags |= 1 << 0;
+        }
+        if convoys.is_some() {
+            flags |= 1 << 1;
+        }
+        if divisions.is_some() {
+            flags |= 1 << 2;
+        }
+        if experience.is_some() {
+            flags |= 1 << 3;
+        }
+        let exp = experience.unwrap_or([0i32; 7]);
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&manpower.unwrap_or(0).to_le_bytes());
+        p.extend_from_slice(&convoys.unwrap_or(0).to_le_bytes());
+        p.extend_from_slice(&divisions.unwrap_or(0).to_le_bytes());
+        for channel in exp {
+            p.extend_from_slice(&channel.to_le_bytes());
+        }
+    }
+    p
+}
+
 /// One country, one stockpile row, one military line, one construction row.
 fn production_payload(tag: u32, stockpile_amount_raw: i64, active_factories: i32) -> Vec<u8> {
     let mut p = Vec::new();
@@ -8201,6 +8240,81 @@ fn chunk2_d20_e4_fields_fold_with_presence() {
     assert_eq!(c["strategic_redeployment"], Value::Null);
     assert_eq!(c["current_manpower"], Value::Null);
     assert_eq!(c["cumulative_losses"], Value::Null);
+}
+
+#[test]
+fn chunk2_d63_country_core_scalars_fold_with_presence() {
+    // W1 domain 63: per-country core scalars. Values are the exact D04
+    // live-validated readings (see runs/crack_fanout/W1_country_rowgrowth).
+    // GER (tag_db_id 1): all fields present. manpower 1640616, convoys 465,
+    //   divisions_lost 130; experience raw i32 channels: army raw 901134
+    //   (/32768 = 27.50042...), navy raw 13831573 (/32768 = 422.10611...),
+    //   air raw 500*32768 = 16384000 (== 500.0), num_armies raw 13815830
+    //   (/32768 = 421.62567...). Daily channels set to small raws.
+    // SOV (tag_db_id 3): convoys present-zero (a country that has destroyed 0
+    //   convoys still folds a present 0), divisions_lost 365, no experience.
+    // USA (tag_db_id 68): all absent -> null.
+    let ger_exp: [i32; 7] = [
+        901_134,    // army   -> 27.50042...
+        39_322,     // army_daily -> ~1.20001
+        13_831_573, // navy   -> 422.10611...
+        3_378,      // navy_daily -> ~0.10306
+        16_384_000, // air    -> 500.0
+        66_060,     // air_daily -> ~2.01630
+        13_815_830, // num_armies_for_training -> 421.62567...
+    ];
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV"), (68, "USA")]);
+    let econ = country_core_scalars_payload(&[
+        (1, Some(1_640_616), Some(465), Some(130), Some(ger_exp)),
+        (3, Some(1_030_000), Some(0), Some(365), None),
+        (68, None, None, None, None),
+    ]);
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+    let countries = &snap["countries"];
+
+    let ger = &countries["GER"];
+    assert_eq!(ger["manpower_pool"], json!(1_640_616));
+    assert_eq!(ger["convoys_destroyed"], json!(465));
+    assert_eq!(ger["divisions_lost"], json!(130));
+    let xp = &ger["experience_status"];
+    assert!((xp["army_experience"].as_f64().unwrap() - 27.500_427).abs() < 1e-4);
+    assert!((xp["navy_experience"].as_f64().unwrap() - 422.106_11).abs() < 1e-4);
+    assert!((xp["air_experience"].as_f64().unwrap() - 500.0).abs() < 1e-9);
+    assert!((xp["num_armies_for_training"].as_f64().unwrap() - 421.625_67).abs() < 1e-4);
+
+    let sov = &countries["SOV"];
+    assert_eq!(sov["manpower_pool"], json!(1_030_000));
+    assert_eq!(sov["convoys_destroyed"], json!(0)); // present zero, not null
+    assert_eq!(sov["divisions_lost"], json!(365));
+    assert_eq!(sov["experience_status"], Value::Null);
+
+    let usa = &countries["USA"];
+    assert_eq!(usa["manpower_pool"], Value::Null);
+    assert_eq!(usa["convoys_destroyed"], Value::Null);
+    assert_eq!(usa["divisions_lost"], Value::Null);
+    assert_eq!(usa["experience_status"], Value::Null);
+}
+
+#[test]
+fn chunk2_d63_country_core_scalars_rejects_malformed_row() {
+    // An experience channel carrying a nonzero value without the experience
+    // flag is a malformed row -> the fold fails closed (prior map retained,
+    // no country economy fields folded this frame).
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let mut econ =
+        country_core_scalars_payload(&[(1, Some(1_640_616), Some(465), Some(130), None)]);
+    // Corrupt: write a nonzero army-experience raw (row offset 20 within the
+    // 48-byte row, which starts at payload offset 20) while the experience flag
+    // stays clear.
+    let army_off = 20 + 20;
+    econ[army_off..army_off + 4].copy_from_slice(&999i32.to_le_bytes());
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+    // Fold failed -> GER has no economy fields (the country object may exist
+    // from identity but must not carry manpower_pool from the rejected frame).
+    let ger = &snap["countries"]["GER"];
+    assert!(ger.get("manpower_pool").is_none() || ger["manpower_pool"] == Value::Null);
 }
 
 #[test]

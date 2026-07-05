@@ -197,6 +197,21 @@ mod tests {
     }
 
     #[test]
+    fn country_core_scalars_lane_schedules() {
+        // W1: new per-country core-scalars lane (domain 63), distinct from the
+        // reserved economy-counter badge lane (domain 58).
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            registry.id_for_scheduled_name("country_core_scalars_live"),
+            Some(63)
+        );
+        assert_eq!(
+            registry.by_id(63).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+        );
+    }
+
+    #[test]
     fn naval_combat_lane_ids_schedule_after_shared_integration() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
