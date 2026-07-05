@@ -212,6 +212,91 @@ pub const DOMAIN65_PROGRAM_UNREAD_REWARDS_OFF: usize = 0x178;
 /// low32 > capacity, is a torn/aliased read that drops the record).
 pub const DOMAIN65_MAX_PROGRAMS_PER_RECORD: u32 = 4096;
 
+// --- W4 domain 66 occupation_state_extras_live -------------------------------
+// A NEW rooted per-occupied-state domain that re-walks the occupation chain in
+// the MAIN collector from validated country roots, keeping the forbidden d52
+// occupation_resistance_compliance_live lane byte-identical. All RVAs/offsets
+// are build 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad
+// and mirror the same-build values used by the committed d52 lane (agent D5,
+// validated vs the D04 melt oracle).
+//
+// Chain (per validated CCountry): +0xFD0 -> CCountryOccupationStatus
+// (vtable mb+0x296DD50, secondary vtable mb+0x296DD88 at +0x18) -> +0x48
+// occupation-data container -> (bounded qword scan) CCountryOccupationData
+// (vtable mb+0x296DD00; +0x08 back-ref to the status ptr; +0x10 occupied
+// tag_db_id) -> +0xB0 law hashmap AND +0xD8 garrison-list container ->
+// (bounded qword scan) CStateGarrisonData (vtable mb+0x296DCB0; +0x58 back-ref
+// to its CCountryOccupationData; +0x50 -> CState) -> +0x70 manpower-pool sub.
+/// CCountry+0xFD0: pointer to CCountryOccupationStatus.
+pub const DOMAIN66_COUNTRY_OCCUPATION_STATUS_OFF: usize = 0xFD0;
+/// CCountryOccupationStatus primary vtable RVA.
+pub const DOMAIN66_OCCUPATION_STATUS_VTABLE_RVA: usize = 0x296DD50;
+/// CCountryOccupationStatus secondary vtable RVA (stored at status+0x18).
+pub const DOMAIN66_OCCUPATION_STATUS_SECONDARY_VTABLE_RVA: usize = 0x296DD88;
+/// Offset within CCountryOccupationStatus holding the secondary vtable.
+pub const DOMAIN66_OCCUPATION_STATUS_SECONDARY_VTABLE_OFF: usize = 0x18;
+/// CCountryOccupationStatus+0x48: occupation-data container pointer.
+pub const DOMAIN66_OCCUPATION_STATUS_OCCUPATION_DATA_CONTAINER_OFF: usize = 0x48;
+/// CCountryOccupationData primary vtable RVA.
+pub const DOMAIN66_OCCUPATION_DATA_VTABLE_RVA: usize = 0x296DD00;
+/// CCountryOccupationData+0x08: back-ref to its parent CCountryOccupationStatus.
+pub const DOMAIN66_OCCUPATION_DATA_PARENT_STATUS_OFF: usize = 0x08;
+/// CCountryOccupationData+0x10: occupied-country tag_db_id.
+pub const DOMAIN66_OCCUPATION_DATA_OCCUPIED_TAG_OFF: usize = 0x10;
+/// CCountryOccupationData+0xB0: PDX open-addressing occupation-law hashmap
+/// header. +0xB0 u64 bucket_data ptr, +0xB8 u32 size, +0xBC u32 capacity.
+/// Buckets are 0x18 bytes: state_id u32 @+0x08, law* u64 @+0x10 (0 == empty).
+pub const DOMAIN66_OCCUPATION_DATA_LAW_MAP_OFF: usize = 0xB0;
+/// Byte offset (from the law-map header) to the u32 hashmap size.
+pub const DOMAIN66_LAW_MAP_SIZE_OFF: usize = 0x08;
+/// Byte offset (from the law-map header) to the u32 hashmap capacity.
+pub const DOMAIN66_LAW_MAP_CAP_OFF: usize = 0x0C;
+/// Occupation-law hashmap bucket stride.
+pub const DOMAIN66_LAW_MAP_BUCKET_STRIDE: usize = 0x18;
+/// Bucket +0x08: state_id (join key).
+pub const DOMAIN66_LAW_MAP_BUCKET_STATE_ID_OFF: usize = 0x08;
+/// Bucket +0x10: CBuildingOccupationLaw* (0 == empty/tombstone slot). The
+/// negative control (reading the law ptr at bucket+0x00 instead) gave 0/1155
+/// valid-law hits, proving +0x10 is the true slot.
+pub const DOMAIN66_LAW_MAP_BUCKET_LAW_PTR_OFF: usize = 0x10;
+/// CCountryOccupationData+0xD8: garrison-list container pointer.
+pub const DOMAIN66_OCCUPATION_DATA_GARRISON_LIST_CONTAINER_OFF: usize = 0xD8;
+/// CBuildingOccupationLaw vtable RVA (each accepted law ptr must match).
+pub const DOMAIN66_OCCUPATION_LAW_VTABLE_RVA: usize = 0x2928218;
+/// CBuildingOccupationLaw+0x10: PDX (SSO) law-token string.
+pub const DOMAIN66_OCCUPATION_LAW_NAME_OFF: usize = 0x10;
+/// CStateGarrisonData vtable RVA.
+pub const DOMAIN66_STATE_GARRISON_DATA_VTABLE_RVA: usize = 0x296DCB0;
+/// CStateGarrisonData+0x50: CState pointer (state-root join key).
+pub const DOMAIN66_STATE_GARRISON_DATA_STATE_OFF: usize = 0x50;
+/// CStateGarrisonData+0x58: back-ref to the CCountryOccupationData it belongs to.
+pub const DOMAIN66_STATE_GARRISON_DATA_OCCUPATION_DATA_OFF: usize = 0x58;
+/// CStateGarrisonData+0x70: manpower-pool sub-map pointer. +0x00 u32 supplying
+/// tag_db_id, +0x04 u32 manpower value (value redundant with committed
+/// army_manpower_need; only the supplying tag is emitted by d66).
+pub const DOMAIN66_STATE_GARRISON_DATA_MANPOWER_POOL_OFF: usize = 0x70;
+/// Manpower-pool sub +0x00: supplying-country tag_db_id.
+pub const DOMAIN66_MANPOWER_POOL_SOURCE_TAG_OFF: usize = 0x00;
+/// CState+0x58: state id (validated against this frame's state roots).
+pub const DOMAIN66_STATE_ID_OFF: usize = 0x58;
+/// CState vtable RVA (state-root validation).
+pub const DOMAIN66_STATE_VTABLE_RVA: usize = 0x29206C0;
+/// Bounded qword-scan length for the occupation-data and garrison-list
+/// containers (matches the committed d52 walk).
+pub const DOMAIN66_GARRISON_CONTAINER_SCAN_LEN: usize = 0x300;
+/// Blob length read from each candidate CStateGarrisonData.
+pub const DOMAIN66_STATE_GARRISON_READ_LEN: usize = 0x100;
+/// Fail-closed ceiling on the occupation-law hashmap capacity (a cap beyond
+/// this is a torn/aliased read and the whole map is skipped).
+pub const DOMAIN66_MAX_LAW_MAP_CAP: u32 = 65536;
+/// Maximum plausible state_id accepted from a law bucket (D5 guard: (0,70000)).
+pub const DOMAIN66_MAX_STATE_ID: u32 = 70000;
+/// Maximum plausible occupied/supplying tag_db_id (matches the d52 guard).
+pub const DOMAIN66_MAX_TAG_DB_ID: u32 = 1024;
+/// Fail-closed ceiling on the CCountryOccupationData records walked per country
+/// (bounds the bounded container scan's accepted-record count).
+pub const DOMAIN66_MAX_OCCUPATION_DATA_RECORDS: usize = 4096;
+
 /// Domain 53 diplomacy/intel/operative live roots for supported build
 /// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad.
 ///
@@ -481,6 +566,17 @@ pub const LINE_ACTIVE_FACTORIES: usize = 0x18;
 pub const LINE_COST: usize = 0x28;
 pub const LINE_PRODUCED: usize = 0x38;
 pub const LINE_CONSTRUCTION_SUB: usize = 0x70;
+/// W4 (2026-07-05, agent D5): CBuildingProductionLine+0x58 = u32 native
+/// hour-count of the construction line's created_date (same epoch encoding as
+/// the CGameState date word: gate 1944.2.11.18 == raw 60830441; the replay
+/// derives the calendar date raw->Y.M.D.H with the shared date codec). D5 live
+/// validation: 105/105 construction lines across GER/ENG/SOV/USA/ITA, 0 wrong,
+/// each keyed by unique line_id; entropy 136 distinct dates over 147 lines
+/// (rejects the "last-updated" hypothesis). +0x10 holds a constant that does
+/// NOT track the date and was rejected; +0x58 was the ONLY [0,0xC0) offset
+/// matching all lines. Melt anchor: line 966792 line_id 18354
+/// created_date=1943.9.23.4 -> live +0x58 == 60827043.
+pub const LINE_CREATED_DATE: usize = 0x58;
 pub const LINE_TYPE_CONSTRUCTION: u32 = 59;
 pub const CONSTRUCTION_TEMPLATE_ID: usize = 0x08;
 pub const CONSTRUCTION_TARGET_LOCATION_PTR: usize = 0x1D8;

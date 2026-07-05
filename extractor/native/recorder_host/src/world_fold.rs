@@ -80,6 +80,19 @@ const SPECIAL_PROJECT_PROGRAM_ROW_LEN: usize = 16;
 const SPECIAL_PROJECT_PROGRAM_HEADER_LEN: usize = 24;
 const SPECIAL_PROJECT_PROGRAM_DOMAIN_ID: u16 = 65;
 
+// W4 domain 66 occupation_state_extras_live: fixed 24-byte per-occupied-state
+// row (controller_tag u32, occupied_tag u32, state_id u32, flags u32,
+// occupation_law_token_id u32, garrison_manpower_source_tag_db_id u32),
+// preceded by a 20-byte header (elapsed_wall_ms u64, row_count u32 x2,
+// status_flags u32).
+const OCCUPATION_STATE_EXTRAS_ROW_LEN: usize = 24;
+const OCCUPATION_STATE_EXTRAS_HEADER_LEN: usize = 20;
+const OCCUPATION_STATE_EXTRAS_FLAG_LAW: u32 = 1 << 0;
+const OCCUPATION_STATE_EXTRAS_FLAG_GARRISON_SOURCE: u32 = 1 << 1;
+const OCCUPATION_STATE_EXTRAS_KNOWN_FLAGS: u32 =
+    OCCUPATION_STATE_EXTRAS_FLAG_LAW | OCCUPATION_STATE_EXTRAS_FLAG_GARRISON_SOURCE;
+const OCCUPATION_STATE_EXTRAS_DOMAIN_ID: u16 = 66;
+
 // E4: division row grew 92 -> 104 to carry strategic_redeployment,
 // current_manpower, and cumulative_losses (must stay in lockstep with the
 // collector and recorder-decode row lengths).
@@ -572,7 +585,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65,
+    62, 63, 64, 65, 66,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -1716,6 +1729,7 @@ impl WorldFold {
             63 => self.fold_country_core_scalars(payload),
             64 => self.fold_delayed_events(payload),
             65 => self.fold_special_project_programs(payload),
+            66 => self.fold_occupation_state_extras(payload),
             60 => self.fold_capitulation_war_state(payload),
             _ => {
                 self.unfolded_domains_this_hour.insert(domain_id);
@@ -4170,6 +4184,161 @@ impl WorldFold {
         for (owner, programs) in per_owner {
             self.country_mut(owner)
                 .insert("special_project_programs".into(), Value::Array(programs));
+        }
+        Ok(())
+    }
+
+    // --- W4 DOMAIN 66 occupation_state_extras_live (full replace) --------
+    // Per-occupied-state occupation extras, keyed by (controller, occupied,
+    // state_id): occupation_law_token_id (FNV of the live/effective law token)
+    // and garrison_manpower_source_tag_db_id (supplying-country tag). Both are
+    // placed under the state's `occupation` object (same per-state home the
+    // committed d52 lane uses), each present only when its collector presence
+    // bit is set. Full-replace: every state's two d66 keys are cleared first so
+    // a state that lost its occupation this frame does not keep a stale token
+    // (a failed frame instead retains the prior map via handle_compact_failure).
+    fn fold_occupation_state_extras(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            OCCUPATION_STATE_EXTRAS_HEADER_LEN,
+            "occupation_state_extras header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let expected =
+            OCCUPATION_STATE_EXTRAS_HEADER_LEN + row_count * OCCUPATION_STATE_EXTRAS_ROW_LEN;
+        if payload.len() != expected {
+            return Err(format!(
+                "occupation_state_extras len {} != {expected}",
+                payload.len()
+            ));
+        }
+        if self.handle_compact_failure(
+            OCCUPATION_STATE_EXTRAS_DOMAIN_ID,
+            "occupation_state_extras",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        // Decode + validate every row before mutating state (fail closed).
+        struct Extra {
+            state_id: u32,
+            controller_tag_db_id: u32,
+            occupied_tag_db_id: u32,
+            occupation_law_token_id: Option<u32>,
+            garrison_manpower_source_tag_db_id: Option<u32>,
+        }
+        let mut extras: Vec<Extra> = Vec::with_capacity(row_count);
+        let mut seen: BTreeSet<(u32, u32, u32)> = BTreeSet::new();
+        for i in 0..row_count {
+            let base = OCCUPATION_STATE_EXTRAS_HEADER_LEN + i * OCCUPATION_STATE_EXTRAS_ROW_LEN;
+            let controller_tag_db_id = read_u32(payload, base);
+            let occupied_tag_db_id = read_u32(payload, base + 4);
+            let state_id = read_u32(payload, base + 8);
+            let flags = read_u32(payload, base + 12);
+            let occupation_law_token_id = read_u32(payload, base + 16);
+            let garrison_manpower_source_tag_db_id = read_u32(payload, base + 20);
+            if controller_tag_db_id == 0 {
+                return Err("occupation_state_extras row with zero controller tag".into());
+            }
+            if occupied_tag_db_id == 0 {
+                return Err("occupation_state_extras row with zero occupied tag".into());
+            }
+            if state_id == 0 {
+                return Err("occupation_state_extras row with zero state_id".into());
+            }
+            if flags & !OCCUPATION_STATE_EXTRAS_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "occupation_state_extras row {i} unknown flags {flags:#x}"
+                ));
+            }
+            let has_law = flags & OCCUPATION_STATE_EXTRAS_FLAG_LAW != 0;
+            let has_source = flags & OCCUPATION_STATE_EXTRAS_FLAG_GARRISON_SOURCE != 0;
+            // An absent field must pack a zero (fail closed on a malformed row).
+            if !has_law && occupation_law_token_id != 0 {
+                return Err(format!(
+                    "occupation_state_extras row {i} law token without flag"
+                ));
+            }
+            if has_law && occupation_law_token_id == 0 {
+                return Err(format!(
+                    "occupation_state_extras row {i} law flag with zero token"
+                ));
+            }
+            if !has_source && garrison_manpower_source_tag_db_id != 0 {
+                return Err(format!(
+                    "occupation_state_extras row {i} garrison source without flag"
+                ));
+            }
+            if has_source && garrison_manpower_source_tag_db_id == 0 {
+                return Err(format!(
+                    "occupation_state_extras row {i} garrison flag with zero tag"
+                ));
+            }
+            // A row must carry at least one datum (the key alone is not data).
+            if !has_law && !has_source {
+                return Err(format!("occupation_state_extras row {i} carries no field"));
+            }
+            // (controller, occupied, state) is the join key and must be unique.
+            if !seen.insert((controller_tag_db_id, occupied_tag_db_id, state_id)) {
+                return Err(format!(
+                    "occupation_state_extras duplicate (controller {controller_tag_db_id}, occupied {occupied_tag_db_id}, state {state_id})"
+                ));
+            }
+            extras.push(Extra {
+                state_id,
+                controller_tag_db_id,
+                occupied_tag_db_id,
+                occupation_law_token_id: has_law.then_some(occupation_law_token_id),
+                garrison_manpower_source_tag_db_id: has_source
+                    .then_some(garrison_manpower_source_tag_db_id),
+            });
+        }
+        // Full-replace: clear the two d66 keys from every state's occupation
+        // object, then set the measured ones.
+        for state in self.states.values_mut() {
+            if let Some(Value::Object(occupation)) = state.get_mut("occupation") {
+                occupation.remove("occupation_law_token_id");
+                occupation.remove("occupation_law_token_encoding");
+                occupation.remove("occupation_controller_tag_db_id");
+                occupation.remove("garrison_manpower_source_tag_db_id");
+            }
+        }
+        for extra in extras {
+            let state = self.states.entry(extra.state_id.to_string()).or_default();
+            let occupation = match state
+                .entry("occupation".to_string())
+                .or_insert_with(|| Value::Object(Map::new()))
+            {
+                Value::Object(map) => map,
+                other => {
+                    *other = Value::Object(Map::new());
+                    match other {
+                        Value::Object(map) => map,
+                        _ => unreachable!(),
+                    }
+                }
+            };
+            occupation.insert(
+                "occupation_controller_tag_db_id".into(),
+                json!(extra.controller_tag_db_id),
+            );
+            // occupied_tag is carried for parity with the melt grouping; kept as
+            // a diagnostic under the same object.
+            occupation.insert("occupied_tag_db_id".into(), json!(extra.occupied_tag_db_id));
+            if let Some(token) = extra.occupation_law_token_id {
+                occupation.insert("occupation_law_token_id".into(), json!(token));
+                occupation.insert(
+                    "occupation_law_token_encoding".into(),
+                    json!("fnv1a32_of_law_token"),
+                );
+            }
+            if let Some(source_tag) = extra.garrison_manpower_source_tag_db_id {
+                occupation.insert(
+                    "garrison_manpower_source_tag_db_id".into(),
+                    json!(source_tag),
+                );
+            }
         }
         Ok(())
     }
@@ -9069,6 +9238,12 @@ impl WorldFold {
             obj.insert("cost_raw".into(), json!(row.cost_raw));
             obj.insert("produced_raw".into(), json!(row.produced_raw));
             obj.insert("priority".into(), json!(row.priority));
+            // W4: raw hour-count of the line's created_date (replay renders
+            // raw->Y.M.D.H with the shared date codec). Absent when the read
+            // failed/torn — omit the key rather than emit a fabricated 0.
+            if let Some(created_date_raw) = row.created_date_raw {
+                obj.insert("created_date_raw".into(), json!(created_date_raw));
+            }
             if !target_state_unavailable {
                 obj.insert(
                     "target_state_id".into(),

@@ -277,6 +277,36 @@ fn special_project_programs_payload(
     p
 }
 
+/// W4 domain 66 occupation_state_extras_live payload.
+/// Each row: (controller_tag, occupied_tag, state_id, law_token?, source_tag?).
+/// `None` => absent (flag clear, zero-packed).
+fn occupation_state_extras_payload(
+    rows: &[(u32, u32, u32, Option<u32>, Option<u32>)],
+    status_flags: u32,
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    for (controller, occupied, state_id, law, source) in rows {
+        let mut flags = 0u32;
+        if law.is_some() {
+            flags |= 1 << 0;
+        }
+        if source.is_some() {
+            flags |= 1 << 1;
+        }
+        p.extend_from_slice(&controller.to_le_bytes());
+        p.extend_from_slice(&occupied.to_le_bytes());
+        p.extend_from_slice(&state_id.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&law.unwrap_or(0).to_le_bytes());
+        p.extend_from_slice(&source.unwrap_or(0).to_le_bytes());
+    }
+    p
+}
+
 /// One country, one stockpile row, one military line, one construction row.
 fn production_payload(tag: u32, stockpile_amount_raw: i64, active_factories: i32) -> Vec<u8> {
     let mut p = Vec::new();
@@ -6381,6 +6411,8 @@ fn d48_payload(status_flags: u32, target_state_id: Option<u32>) -> Vec<u8> {
             produced_raw: 5_000_000,
             priority: 0,
             target_state_id,
+            // W4: melt-anchored created_date (GER line 18354 raw 60827043).
+            created_date_raw: Some(60_827_043),
         }],
         building_rows: vec![
             domain48::BuildingRow {
@@ -6460,6 +6492,7 @@ fn d48_sparse_partial_payload() -> Vec<u8> {
             produced_raw: 6_000_000,
             priority: 0,
             target_state_id: None,
+            created_date_raw: None,
         }],
         building_rows: Vec::new(),
         resource_rows: Vec::new(),
@@ -6477,6 +6510,7 @@ fn d48_construction_row(line_id: u32, produced_raw: i32) -> domain48::Constructi
         produced_raw,
         priority: line_id % 10,
         target_state_id: None,
+        created_date_raw: None,
     }
 }
 
@@ -7275,6 +7309,12 @@ fn chunk2_folds_d48_under_domain_owned_extras_without_d23_collisions() {
     assert_eq!(
         production_extra["construction_queue"][0]["template_id"],
         json!(20_013)
+    );
+    // W4: created_date_raw flows through the d48 fold (melt anchor GER line
+    // 18354 == raw 60827043 -> renders 1943.9.23.4 in the replay).
+    assert_eq!(
+        production_extra["construction_queue"][0]["created_date_raw"],
+        json!(60_827_043)
     );
 
     let state = snap["states"]["42"].as_object().unwrap();
@@ -8614,6 +8654,163 @@ fn chunk2_d65_special_project_programs_rejects_duplicate_join_key() {
         ger.get("special_project_programs").is_none()
             || ger["special_project_programs"] == Value::Null
     );
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_fold_melt_anchored() {
+    // W4 domain 66: per-occupied-state occupation extras. Melt-anchored (D04
+    // 00_d04_1944_melted.txt):
+    //   POR (47) controls ANG (180) state 891: occupation_law
+    //     local_police_force_garrison (FNV 304778569), garrison source POR (47)
+    //     (melt lines 1861550/1861556).
+    //   POR/ANG state 540: same law + source POR.
+    //   GER (1) controls SOV (3) state 218: military_governor_occupation
+    //     (FNV 1626184329), garrison source GER (1) (melt lines 1083781/1083810).
+    //   A law-only state (999) proves the presence bits fold independently.
+    let extras = occupation_state_extras_payload(
+        &[
+            (47, 180, 891, Some(304_778_569), Some(47)),
+            (47, 180, 540, Some(304_778_569), Some(47)),
+            (1, 3, 218, Some(1_626_184_329), Some(1)),
+            (1, 3, 999, Some(1_626_184_329), None),
+        ],
+        0,
+    );
+    let snap = snapshot_for_domain_records(vec![(66, extras)]);
+    let states = &snap["states"];
+
+    let s891 = &states["891"]["occupation"];
+    assert_eq!(s891["occupation_law_token_id"], json!(304_778_569));
+    assert_eq!(s891["garrison_manpower_source_tag_db_id"], json!(47));
+    assert_eq!(s891["occupation_controller_tag_db_id"], json!(47));
+    assert_eq!(s891["occupied_tag_db_id"], json!(180));
+
+    let s540 = &states["540"]["occupation"];
+    assert_eq!(s540["occupation_law_token_id"], json!(304_778_569));
+    assert_eq!(s540["garrison_manpower_source_tag_db_id"], json!(47));
+
+    let s218 = &states["218"]["occupation"];
+    assert_eq!(s218["occupation_law_token_id"], json!(1_626_184_329));
+    assert_eq!(s218["garrison_manpower_source_tag_db_id"], json!(1));
+
+    // Law-only state 999: token present, garrison source absent (key omitted,
+    // not a fabricated 0).
+    let s999 = &states["999"]["occupation"];
+    assert_eq!(s999["occupation_law_token_id"], json!(1_626_184_329));
+    assert!(s999.get("garrison_manpower_source_tag_db_id").is_none());
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_garrison_only_folds_without_law() {
+    // A garrison-source-only row: law absent (key omitted), source present.
+    let extras = occupation_state_extras_payload(&[(47, 180, 891, None, Some(47))], 0);
+    let snap = snapshot_for_domain_records(vec![(66, extras)]);
+    let occ = &snap["states"]["891"]["occupation"];
+    assert!(occ.get("occupation_law_token_id").is_none());
+    assert_eq!(occ["garrison_manpower_source_tag_db_id"], json!(47));
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_full_replace_clears_stale() {
+    // Full-replace: a state present in frame 1 whose d66 row is gone in frame 2
+    // must drop its stale law token, not retain it. This exercises the FOLD's
+    // clear path directly with a clean (flags==0) empty frame. NOTE: the
+    // COLLECTOR badges a genuinely-empty read SOURCE_UNAVAILABLE (which the fold
+    // retains, fail-closed, to avoid fabricating mass liberation on a failed
+    // read) — so in production this clear fires when a NON-empty frame simply no
+    // longer carries THIS state's row (e.g. the state left the occupation set
+    // while others remain), which is the case this test represents.
+    let raw = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_360 + 1);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        66,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &occupation_state_extras_payload(&[(47, 180, 891, Some(304_778_569), Some(47))], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: no d66 rows at all (state liberated).
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        66,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &occupation_state_extras_payload(&[], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d66_full_replace");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame1["states"]["891"]["occupation"]["occupation_law_token_id"],
+        json!(304_778_569)
+    );
+    // Frame 2: stale token cleared.
+    let occ2 = &frame2["states"]["891"]["occupation"];
+    assert!(occ2.get("occupation_law_token_id").is_none());
+    assert!(occ2.get("garrison_manpower_source_tag_db_id").is_none());
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_rejects_field_without_flag() {
+    // A law token packed without its presence flag is a malformed row -> fold
+    // fails closed (no state mutated).
+    let mut extras = occupation_state_extras_payload(&[(47, 180, 891, None, Some(47))], 0);
+    // Corrupt: write a nonzero law token into the law slot while the LAW flag
+    // stays clear. Row base = header(20); flags@+12, law_token@+16.
+    let law_off = 20 + 16;
+    extras[law_off..law_off + 4].copy_from_slice(&304_778_569u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(66, extras)]);
+    // The fold errored, so state 891 has no occupation object from d66.
+    assert!(snap["states"]
+        .get("891")
+        .and_then(|s| s.get("occupation"))
+        .and_then(|o| o.get("occupation_law_token_id"))
+        .is_none());
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_rejects_duplicate_key() {
+    // Two rows with the same (controller, occupied, state) is a malformed join.
+    let extras = occupation_state_extras_payload(
+        &[
+            (47, 180, 891, Some(304_778_569), Some(47)),
+            (47, 180, 891, Some(304_778_569), Some(47)),
+        ],
+        0,
+    );
+    let snap = snapshot_for_domain_records(vec![(66, extras)]);
+    assert!(snap["states"]
+        .get("891")
+        .and_then(|s| s.get("occupation"))
+        .and_then(|o| o.get("occupation_law_token_id"))
+        .is_none());
 }
 
 #[test]

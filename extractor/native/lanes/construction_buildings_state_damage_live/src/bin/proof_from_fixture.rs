@@ -44,6 +44,7 @@ fn main() -> Result<(), String> {
                 produced_raw: 5_500_000,
                 priority: 0,
                 target_state_id: None,
+                created_date_raw: Some(60_827_043),
             },
             ConstructionQueueRow {
                 tag_db_id: 369,
@@ -54,6 +55,7 @@ fn main() -> Result<(), String> {
                 produced_raw: 100_000,
                 priority: 1,
                 target_state_id: None,
+                created_date_raw: None,
             },
         ],
         building_rows: vec![

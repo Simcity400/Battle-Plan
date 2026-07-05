@@ -16667,6 +16667,7 @@ mod tests {
                 produced_raw: 5_000_000,
                 priority: 0,
                 target_state_id: Some(42),
+                created_date_raw: Some(60_827_043),
             }],
             building_rows: vec![domain48::BuildingRow {
                 scope: domain48::SCOPE_STATE,

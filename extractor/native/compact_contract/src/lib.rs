@@ -950,6 +950,37 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // W4 (2026-07-05): per-occupied-state occupation EXTRAS, a NEW rooted
+    // per-state domain that keeps the forbidden d52
+    // occupation_resistance_compliance_live lane byte-identical. Two fields
+    // (agent D5, validated vs the D04 melt oracle):
+    //   * occupation_law_token_id: the state's occupation law FNV1a32 token,
+    //     read from the controller's CCountryOccupationData+0xB0 PDX
+    //     open-addressing hashmap (0x18-byte buckets: state_id u32 @+0x08,
+    //     law* u64 @+0x10 -> CBuildingOccupationLaw vtable mb+0x2928218, PDX SSO
+    //     token @+0x10). Same FNV scheme as the committed d52 country
+    //     default_law token. D5: 279/279 live entries correct, 0 wrong; negative
+    //     control at bucket+0x00 gave 0/1155. This is the LIVE/EFFECTIVE law per
+    //     state (a same-value residual vs the serialized occupation_law_list was
+    //     flagged at discovery but showed 0 contradiction on the oracle), hence
+    //     validated_slice_open_gaps.
+    //   * garrison_manpower_source_tag_db_id: CStateGarrisonData+0x70 sub-map
+    //     +0x00 u32 supplying-country tag_db_id (who supplies garrison manpower;
+    //     usually the controller, occasionally not). D5: 276/276 tag match. The
+    //     adjacent +0x04 value is redundant with the committed d52
+    //     army_manpower_need and is NOT re-emitted here.
+    // Each field carries its own presence bit; a bucket/garrison that fails any
+    // guard is badged ABSENT (never fabricated). A row is emitted when EITHER
+    // field is present and the (controller, occupied_state) key is valid.
+    domain(
+        66,
+        "occupation_state_extras_live",
+        "occupation_state_extras_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -994,7 +1025,7 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 1000,
+            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 1000,
         ];
         for id in expected {
             assert!(
@@ -1164,6 +1195,11 @@ mod tests {
         assert!(
             profile_ids.contains(&65),
             "domain 65 (special_project_programs_live) is a validated slice \
+             with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&66),
+            "domain 66 (occupation_state_extras_live) is a validated slice \
              with explicit open gaps"
         );
         for excluded in [1, 18, 58, 59, 1000] {

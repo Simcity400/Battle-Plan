@@ -244,6 +244,7 @@ fn parse_construction_observations(
                 produced_raw,
                 priority,
                 target_state_id: Some(target_state_id),
+                created_date_raw: None,
             });
         }
     }

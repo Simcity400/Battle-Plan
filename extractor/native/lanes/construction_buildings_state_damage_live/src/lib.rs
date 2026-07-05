@@ -71,6 +71,16 @@ pub const LINE_ACTIVE_FACTORIES: usize = compact_contract::build_profile::LINE_A
 pub const LINE_COST: usize = compact_contract::build_profile::LINE_COST;
 pub const LINE_PRODUCED: usize = compact_contract::build_profile::LINE_PRODUCED;
 pub const LINE_CONSTRUCTION_SUB: usize = compact_contract::build_profile::LINE_CONSTRUCTION_SUB;
+// W4: CBuildingProductionLine+0x58 u32 created_date (native hour-count, same
+// epoch as the CGameState date word). D5-validated 105/105 lines.
+pub const LINE_CREATED_DATE: usize = compact_contract::build_profile::LINE_CREATED_DATE;
+// Fail-closed ceiling on a created_date raw hour-count. The date epoch offset is
+// 43799999 (raw = calendar_hours + 43799999), so the smallest plausible raw is
+// well above zero and no live line can approach u32::MAX; a raw at/above this
+// bound (or exactly 0) is a torn/uninitialised read and the field is badged
+// absent rather than emitted. 100_000_000 comfortably exceeds every D04 date
+// (gate 1944.2.11.18 == 60830441) with headroom for late-game saves.
+pub const MAX_CONSTRUCTION_CREATED_DATE_RAW: u32 = 100_000_000;
 pub const LINE_TYPE_CONSTRUCTION: u32 = compact_contract::build_profile::LINE_TYPE_CONSTRUCTION;
 pub const CONSTRUCTION_TEMPLATE_ID: usize =
     compact_contract::build_profile::CONSTRUCTION_TEMPLATE_ID;
@@ -92,6 +102,17 @@ pub const MAX_PROVINCE_ID: u32 = compact_contract::build_profile::MAX_PROVINCE_I
 
 pub const CONSTRUCTION_FLAG_TEMPLATE_PRESENT: u32 = 1;
 pub const CONSTRUCTION_FLAG_TARGET_STATE_PRESENT: u32 = 1 << 1;
+// W4: created_date_raw is carried in the previously-reserved trailing row u32
+// (row byte offset 36), gated by this presence bit. Repurposing the reserved
+// slot keeps CONSTRUCTION_ROW_LEN == 40 (no wire-size change): the decoder's
+// row-length header field and total-length check are unaffected, so this is
+// strictly safer than a 40->44 row growth (Codex-reviewed).
+pub const CONSTRUCTION_FLAG_CREATED_DATE_PRESENT: u32 = 1 << 2;
+// Every construction-row flag bit that is defined. An unknown bit in a decoded
+// row is a malformed/forward-incompatible payload and fails the gate closed.
+pub const CONSTRUCTION_ROW_KNOWN_FLAGS: u32 = CONSTRUCTION_FLAG_TEMPLATE_PRESENT
+    | CONSTRUCTION_FLAG_TARGET_STATE_PRESENT
+    | CONSTRUCTION_FLAG_CREATED_DATE_PRESENT;
 pub const BUILDING_FLAG_HEALTHY_PRESENT: u32 = 1;
 pub const BUILDING_FLAG_DAMAGED: u32 = 1 << 1;
 
@@ -158,6 +179,11 @@ pub struct ConstructionQueueRow {
     pub produced_raw: i32,
     pub priority: u32,
     pub target_state_id: Option<u32>,
+    /// W4: CBuildingProductionLine+0x58 native hour-count of the line's
+    /// created_date (absent when the read fails/torn or is an implausible 0/
+    /// out-of-range value). Carried in the reserved trailing row u32 (offset
+    /// 36), flag-gated by CONSTRUCTION_FLAG_CREATED_DATE_PRESENT.
+    pub created_date_raw: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,6 +399,12 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
             read_construction_target_location_id(mem, sub_ptr)
                 .and_then(|location_id| lookup.target_state_id(template_id, location_id))
         });
+        // W4: created_date at CBuildingProductionLine+0x58. Fail-closed — a read
+        // failure or an implausible raw (0, or beyond the sane ceiling) is
+        // badged absent (the row is still emitted with its validated fields).
+        let created_date_raw = mem
+            .read_u32(line_ptr.checked_add(LINE_CREATED_DATE)?)
+            .filter(|raw| *raw != 0 && *raw <= MAX_CONSTRUCTION_CREATED_DATE_RAW);
         read.push(ConstructionQueueRow {
             tag_db_id,
             line_id: mem.read_u32(line_ptr.checked_add(LINE_ID)?)?,
@@ -382,6 +414,7 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
             produced_raw,
             priority: (offset / CONSTRUCTION_STRIDE) as u32,
             target_state_id,
+            created_date_raw,
         });
     }
     Some(read)
@@ -701,6 +734,14 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
     let mut cursor = HEADER_LEN;
     let mut construction_rows = Vec::with_capacity(construction_count);
     for index in 0..construction_count {
+        // W4: reject any row carrying an unknown flag bit (forward-incompatible
+        // payload) — fail closed rather than silently drop the unknown field.
+        let flags = read_u32_le(bytes, cursor + 32);
+        if flags & !CONSTRUCTION_ROW_KNOWN_FLAGS != 0 {
+            return Err(format!(
+                "construction row {index} has unknown flags {flags:#x}"
+            ));
+        }
         let row = read_construction_row(bytes, cursor);
         validate_construction_row(index, &row)?;
         construction_rows.push(row);
@@ -863,6 +904,9 @@ fn write_construction_row(out: &mut Vec<u8>, row: &ConstructionQueueRow) {
     if row.target_state_id.is_some() {
         flags |= CONSTRUCTION_FLAG_TARGET_STATE_PRESENT;
     }
+    if row.created_date_raw.is_some() {
+        flags |= CONSTRUCTION_FLAG_CREATED_DATE_PRESENT;
+    }
     out.extend_from_slice(&row.tag_db_id.to_le_bytes());
     out.extend_from_slice(&row.line_id.to_le_bytes());
     out.extend_from_slice(&row.template_id.unwrap_or(u32::MAX).to_le_bytes());
@@ -872,7 +916,9 @@ fn write_construction_row(out: &mut Vec<u8>, row: &ConstructionQueueRow) {
     out.extend_from_slice(&row.priority.to_le_bytes());
     out.extend_from_slice(&row.target_state_id.unwrap_or(0).to_le_bytes());
     out.extend_from_slice(&flags.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
+    // W4: reserved trailing u32 now carries created_date_raw when present (0
+    // when absent — identical to the prior always-zero behaviour).
+    out.extend_from_slice(&row.created_date_raw.unwrap_or(0).to_le_bytes());
 }
 
 fn write_building_row(out: &mut Vec<u8>, row: &BuildingRow) {
@@ -904,6 +950,7 @@ fn read_construction_row(bytes: &[u8], offset: usize) -> ConstructionQueueRow {
     let template_raw = read_u32_le(bytes, offset + 8);
     let target_state_raw = read_u32_le(bytes, offset + 28);
     let flags = read_u32_le(bytes, offset + 32);
+    let created_date_raw = read_u32_le(bytes, offset + 36);
     ConstructionQueueRow {
         tag_db_id: read_u32_le(bytes, offset),
         line_id: read_u32_le(bytes, offset + 4),
@@ -914,6 +961,8 @@ fn read_construction_row(bytes: &[u8], offset: usize) -> ConstructionQueueRow {
         priority: read_u32_le(bytes, offset + 24),
         target_state_id: (flags & CONSTRUCTION_FLAG_TARGET_STATE_PRESENT != 0)
             .then_some(target_state_raw),
+        created_date_raw: (flags & CONSTRUCTION_FLAG_CREATED_DATE_PRESENT != 0)
+            .then_some(created_date_raw),
     }
 }
 
@@ -973,6 +1022,15 @@ fn validate_construction_row(index: usize, row: &ConstructionQueueRow) -> Result
         if state_id == 0 || state_id > MAX_STATE_ID {
             return Err(format!(
                 "construction row {index} invalid target_state_id {state_id}"
+            ));
+        }
+    }
+    // W4: a present created_date must be a plausible non-zero raw hour-count
+    // (fail closed on a torn/uninitialised value).
+    if let Some(created_date_raw) = row.created_date_raw {
+        if created_date_raw == 0 || created_date_raw > MAX_CONSTRUCTION_CREATED_DATE_RAW {
+            return Err(format!(
+                "construction row {index} invalid created_date_raw {created_date_raw}"
             ));
         }
     }
@@ -1428,6 +1486,69 @@ mod tests {
     }
 
     #[test]
+    fn compact_frame_round_trips_created_date_melt_anchored() {
+        // W4 melt anchor (00_d04_1944_melted.txt line 966792): GER construction
+        // line id 18354 created_date=1943.9.23.4 -> raw 60_827_043 (D5 live
+        // +0x58). The reserved trailing row slot carries it; row length is
+        // unchanged, so the decoder round-trips it exactly.
+        let mut frame = sample_frame();
+        frame.construction_rows[0].created_date_raw = Some(60_827_043);
+        let encoded = encode_lane_frame(&frame);
+        // Repurposing the reserved slot must NOT change the wire row size.
+        assert_eq!(CONSTRUCTION_ROW_LEN, 40);
+        let decoded = decode_lane_frame(&encoded).unwrap();
+        assert_eq!(
+            decoded.construction_rows[0].created_date_raw,
+            Some(60_827_043)
+        );
+        assert!(gate_lane_frame(&encoded).ok);
+    }
+
+    #[test]
+    fn compact_frame_round_trips_absent_created_date() {
+        // Absent created_date: flag clear, reserved slot stays zero (byte-for-
+        // byte the prior always-zero behaviour), decodes back to None.
+        let mut frame = sample_frame();
+        frame.construction_rows[0].created_date_raw = None;
+        let encoded = encode_lane_frame(&frame);
+        let decoded = decode_lane_frame(&encoded).unwrap();
+        assert_eq!(decoded.construction_rows[0].created_date_raw, None);
+        // The trailing row u32 (row offset 36) is zero when absent.
+        let row_start = HEADER_LEN;
+        assert_eq!(read_u32_le(&encoded, row_start + 36), 0);
+        assert!(gate_lane_frame(&encoded).ok);
+    }
+
+    #[test]
+    fn compact_gate_rejects_zero_created_date() {
+        // A present-but-zero created_date is a torn read and fails the gate.
+        let mut frame = sample_frame();
+        frame.construction_rows[0].created_date_raw = Some(0);
+        let encoded = encode_lane_frame(&frame);
+        let gate = gate_lane_frame(&encoded);
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("created_date_raw")));
+    }
+
+    #[test]
+    fn compact_decode_rejects_unknown_row_flag_bit() {
+        // Forward-incompatibility guard: an unknown flag bit in a construction
+        // row is rejected (fail closed) rather than silently dropped.
+        let frame = sample_frame();
+        let mut encoded = encode_lane_frame(&frame);
+        // Set an undefined high flag bit on the first construction row.
+        let flags_off = HEADER_LEN + 32;
+        let mut flags = read_u32_le(&encoded, flags_off);
+        flags |= 1 << 15;
+        encoded[flags_off..flags_off + 4].copy_from_slice(&flags.to_le_bytes());
+        let err = decode_lane_frame(&encoded).unwrap_err();
+        assert!(err.contains("unknown flags"), "{err}");
+    }
+
+    #[test]
     fn compact_gate_rejects_invalid_target_state_payload() {
         let mut frame = sample_frame();
         frame.source_flags &= !SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE;
@@ -1487,6 +1608,7 @@ mod tests {
             produced_raw: 100_000,
             priority: 1,
             target_state_id: None,
+            created_date_raw: None,
         });
 
         let encoded = encode_lane_frame(&frame);
@@ -1533,6 +1655,10 @@ mod tests {
                 produced_raw: 5_000_000,
                 priority: 0,
                 target_state_id: None,
+                // W4: melt-anchored created_date (GER line 18354 == raw
+                // 60827043 -> renders 1943.9.23.4). Exercises the reserved-slot
+                // round trip through encode/decode.
+                created_date_raw: Some(60_827_043),
             }],
             building_rows: vec![
                 BuildingRow {

@@ -235,6 +235,22 @@ mod tests {
     }
 
     #[test]
+    fn w4_occupation_state_extras_lane_schedules() {
+        // W4: rooted per-occupied-state occupation extras (domain 66):
+        // per-state occupation law FNV token + garrison manpower source tag.
+        // validated_slice_open_gaps; keeps the forbidden d52 lane byte-identical.
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            registry.id_for_scheduled_name("occupation_state_extras_live"),
+            Some(66)
+        );
+        assert_eq!(
+            registry.by_id(66).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+        );
+    }
+
+    #[test]
     fn naval_combat_lane_ids_schedule_after_shared_integration() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
