@@ -11,6 +11,77 @@ under `extractor/documents/archive/` and are evidence only.
 - This file is the master contract: if every row here is closed, the extractor
   should have no known missed replay-relevant data.
 
+## 2026-07-05 SESSION STATUS DELTA (authoritative — supersedes the 2026-07-04 delta and all stale rows below)
+
+This session wired + value-validated (vs the D04 1944.2.11.18 melt, independently
+re-verified by the orchestrator) and COMMITTED the following. Where the 2026-07-04
+delta listed one of these as "cracked, wiring queued", THIS delta closes it.
+
+SCHEDULED as new production domains (committed):
+- **air_loss_stats (C1) → domain 61 SCHEDULED** (71d6d89d6). CGS→registry `+0x690`→
+  mgr_array `+0x30`→mgr `+0x158`→stat-23 `CLoopHistory`; yearly window `+0x20` (the
+  load-bearing fix: `+0x10` read the daily ring), self-ref `lh+0x28==lh`, cap
+  `window+0x20==5`. 6 pinned channels. 23/23 countries × 89 fields = 2047/2047, 0 mismatches.
+- **hub_motorization → domain 62 SCHEDULED** (12109ae92). CCSS vtable pair `mod+0x298BBF8/
+  +0x298BC48`, country `+0x78`, node array `+0x188`, per-node province `+0`/state `+4`/
+  map_size `+0x1c` (motorized ⇔ map_size>0). 223/223 rows, 189/189 provinces, 483/483
+  map entries, 69/69 per-country counts. Node-level membership only (inner warlord
+  attribution intentionally unpromoted).
+
+WIRED as trailers onto existing domains (committed) — these CLOSE 07-04 "wiring queued" rows:
+- **Market MTRF exported resource-flow → D43 trailer** (3211e5fcd). `CCountryResources=
+  u64[CCountry+0x11F8]`→exported pool `+0x5B0`, `/1e5`. 95/95 oracle countries, 665/665
+  exported fields (orchestrator re-verified 436 countries / 3052 fields). Sibling pools
+  produced/imported/used/to_export/base_export OMITTED (value-validation failed) → stay DERIVED/OPEN.
+- **E12 naval OOB fix + D56 sidecar** (d667480b1). Fixed D28/D29 task-force UNDER-reporting
+  (expand direct CFleet subobject candidates + accumulate all valid body deltas); D56 fold
+  now carries `ship_count` + `dominant_hull_class` from clean D29 (null when unavailable).
+  1690/1690 active ships, 206/206 task forces, 0 mismatches.
+- **E8 diplomacy queue (DIAQ) → D53 trailer** (b1924589b). `CCountry+0xFF8` incoming queue,
+  action vtable `mod+0x2A209A0`. 5/5 recipients (CZE2/AUS2/LIT1/EST1/LAT1) = 7/7 actions,
+  0 false positives. (Closes 07-04 "diplomacy action queue: cracked".)
+- **E9 intel graph (INGR) → D53 trailer** (b1924589b). `CStrategicOperative+0x10`→
+  `CCountryIntelNetwork` (vt `mod+0x298AB48`)→target `+0x08`, graph `+0x18`→vertices
+  `+0x38`/count `+0x40`. 66/66 network rows exact (target + sorted state-set multisets).
+  (Closes 07-04 "intel-network/spy-map graph C4: wiring queued".)
+- **E10/R6 naval supremacy (NSUP) → D56 trailer** (684b46d43). `CStrategicRegion`
+  (vt `mod+0x29569A8`/`+0x29569F8`)→naval dominance `+0xE8`→`CDominanceValues` (vt
+  `mod+0x296DFC0`, stride `0x50`, dup-echo tag guard). 47/47 region/controller rows,
+  282/282 fields exact. (Closes replay-request R6 / task N2.)
+- **E4/D20 strategic redeployment + division losses** (08f7fa137). `CDivision+0x29F` (SR
+  bool), `+0x3D0→+0x4` (current manpower), `+0x668` (cumulative losses). 220/220 SR,
+  2359/2359 manpower, losses non-negative 0..131347. D20 row grows to 104B with presence
+  bits. (Closes 07-04 "strategic-redeploy / division manpower+losses: cracked".)
+
+VALIDATED (no code change needed) + DOCS:
+- **d53 base relations VALUE-PROVEN** (3170465e4). `mgr=u64[CCountry+0xF88]`, `table+0x08`,
+  `rel=table+tgt*8`, `cached_sum=i32[rel+0x300]`, `border_friction=i32[rel+0x308]/1e5`.
+  10354/10354 cached_sum + 44382/44382 border_friction, 0 mismatches. Production already
+  decouples the open op/intel/action/war gaps as non-failure diagnostics — no Rust change.
+- **EXTRACTION_ATLAS.md** (63f9fd059) — new authoritative census of EVERY extractable datum
+  (81 unique save top-level structures / 82,154 canonical paths / 249 per-country
+  sub-structures mapped to all 53 domains; memory-only UI/menu census w/ 450 RTTI class
+  candidates; derived/recompute; deduped fixture-blocked catalog; P0–P3 gap backlog).
+- **game_defs loc parser** (b7cae4740) — tolerate shipped files omitting the final wrapper
+  brace (vanilla `ideas/SOV.txt`); full modset parses clean.
+
+STILL OPEN (in progress, Codex run active at time of writing):
+- **E5 combat attribution matrix** — 50 land_combat + 4 naval_combat blocks in the D04 melt
+  to validate against; wiring in progress.
+- **E3 naval combat detail RE-CRACK** — on the current build, 3/5 side scalars still validate
+  8/8 (positioning_dominance_bonus, total_initial_strength, total_damage_dealt); positioning
+  (1/8) + anti_air (5/8) DRIFTED — differential re-scan in progress; partial promotion authorized.
+- **D23 map_detail speed optimization** — profile-and-cache attempt in progress; honest
+  "no measurable win, reverted" is an accepted outcome.
+
+Genuine USER-fixture floor unchanged (need a live/save fixture, not effort): game-speed
+enum root (C2/R4, task #22), focus-paused bit, hub inner warlord attribution, convoy/port
+disrupted PRESSURE, MP chat/hotjoin/tag-switch, finest per-entity combat killer. Reserved
+domains 58 (country_economy_counters) / 59 (templates_equipment_catalog live joins) still open.
+The remaining engineering acceptance gate is a fresh speed-5 end-to-end capture proving all
+newly-scheduled domains emit at <100ms/frame with zero skipped hours (all validation this
+session was against the PAUSED D04 fixture).
+
 ## 2026-07-04 SESSION STATUS DELTA (authoritative — supersedes stale rows below)
 
 The rows in the checklist below predate the 2026-07-04 crack/wire session. The
