@@ -180,6 +180,49 @@ pub const DOMAIN64_COUNTRY_DELAYED_EVENT_VECTOR_PACKED_OFF: usize = 0x1298;
 /// this is a torn/aliased read). D04's busiest country has 2; 4096 is safe.
 pub const DOMAIN64_MAX_DELAYED_EVENTS_PER_COUNTRY: u32 = 4096;
 
+// --- W5 domain 67 country_dynamic_modifiers_live: ROOTED per-country walk -----
+// The country's OWN active dynamic-modifier definition ids (agent D2, D04 melt
+// oracle: 6/6 countries exact multiset + 159/47/144 database-wide). ROOTED walk
+// of the inline CDynamicModifierContainer at CCountry+0xE58 (its own vtable is
+// mb+0x27BFDE8; a +0x08 back-ref u64 that MUST == the owning CCountry object
+// pointer hard-guards ownership — opinion/relation modifiers between OTHER
+// countries live in different containers and would fail this guard). The entry
+// array pointer is at container+0x28; the u32 count is at container+0x34 (packed
+// as one u64 with capacity at +0x30). Each entry is 0x40 bytes; entry+0x18 ->
+// CDynamicModifier (vtable mb+0x27BFD48), whose modifier DEFINITION id is the
+// MSVC std::string at +0x28. The CDynamicModifier is a SHARED/interned def per
+// modifier-id (fine: membership is per-country via the guarded entry array; the
+// id token is the def's name = the melt `modifier="..."`). Per-instance
+// value/expiry is UNRESOLVED-BY-ABSENCE in D04 and is not emitted. 390/437
+// countries have count==0 (the array is never walked when count==0).
+/// CCountry+0xE58: inline CDynamicModifierContainer (the container object begins
+/// here; its own vtable is DOMAIN67_DYNAMIC_MODIFIER_CONTAINER_VTABLE_RVA).
+pub const DOMAIN67_COUNTRY_DYNAMIC_MODIFIER_CONTAINER_OFF: usize = 0xE58;
+/// CDynamicModifierContainer vtable RVA (mb-relative); the inline container's
+/// first qword must equal mb+this.
+pub const DOMAIN67_DYNAMIC_MODIFIER_CONTAINER_VTABLE_RVA: usize = 0x27BFDE8;
+/// container+0x08: back-ref to the owning CCountry (hard ownership guard).
+pub const DOMAIN67_DYNAMIC_MODIFIER_CONTAINER_BACKREF_OFF: usize = 0x08;
+/// container+0x28: u64 pointer to the SDynamicModifierEntry[] array.
+pub const DOMAIN67_DYNAMIC_MODIFIER_CONTAINER_ENTRY_ARRAY_OFF: usize = 0x28;
+/// container+0x34: u32 entry count (capacity is the sibling u32 at +0x30).
+pub const DOMAIN67_DYNAMIC_MODIFIER_CONTAINER_COUNT_OFF: usize = 0x34;
+/// SDynamicModifierEntry stride.
+pub const DOMAIN67_DYNAMIC_MODIFIER_ENTRY_STRIDE: usize = 0x40;
+/// entry+0x18: u64 pointer to the shared CDynamicModifier definition object.
+pub const DOMAIN67_DYNAMIC_MODIFIER_ENTRY_DEF_PTR_OFF: usize = 0x18;
+/// CDynamicModifier vtable RVA (mb-relative); each def object's first qword
+/// must equal mb+this before its id string is read.
+pub const DOMAIN67_DYNAMIC_MODIFIER_DEF_VTABLE_RVA: usize = 0x27BFD48;
+/// CDynamicModifier+0x28: MSVC std::string = the modifier DEFINITION id.
+pub const DOMAIN67_DYNAMIC_MODIFIER_DEF_ID_OFF: usize = 0x28;
+/// Fail-closed ceiling on the per-country dynamic-modifier count (a u32 beyond
+/// this is a torn/aliased read). D04's busiest country has 10; 4096 is safe.
+pub const DOMAIN67_MAX_DYNAMIC_MODIFIERS_PER_COUNTRY: u32 = 4096;
+/// Maximum modifier-id string length accepted (a longer MSVC string is a torn
+/// read and drops that entry).
+pub const DOMAIN67_MAX_DYNAMIC_MODIFIER_ID_LEN: usize = 128;
+
 // --- W3 domain 65 special_project_programs_live: ROOTED owner-joined walk -----
 // CCountry+0xFA8 -> CProgramStatus, an array of up to 3 records (stride 0x160).
 // Each record's own vtable must == the CProgramStatus primary vtable

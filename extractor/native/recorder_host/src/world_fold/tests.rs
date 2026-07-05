@@ -255,6 +255,34 @@ fn delayed_events_payload(rows: &[(u32, u32, Option<u32>, Option<u32>)]) -> Vec<
     p
 }
 
+/// W5 domain 67 country_dynamic_modifiers_live payload. Each row is
+/// (tag_db_id, list of modifier ids). Empty countries must NOT be passed (the
+/// collector emits no row for count==0). Builds the 20-byte header, the 12-byte
+/// row table, then the concatenated id blob (u16 len + utf8 per id).
+fn country_dynamic_modifiers_payload(rows: &[(u32, &[&str])], status_flags: u32) -> Vec<u8> {
+    let total_ids: usize = rows.iter().map(|(_, ids)| ids.len()).sum();
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // country_count
+    p.extend_from_slice(&(total_ids as u32).to_le_bytes()); // total_id_count
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    let mut cursor = 0u32;
+    for (tag, ids) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+        p.extend_from_slice(&cursor.to_le_bytes());
+        cursor += ids.len() as u32;
+    }
+    for (_, ids) in rows {
+        for id in *ids {
+            let bytes = id.as_bytes();
+            p.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            p.extend_from_slice(bytes);
+        }
+    }
+    p
+}
+
 /// W3 domain 65 special_project_programs_live payload.
 /// Each row: (owner_tag_db_id, program_id, province, unread_prototype_rewards).
 fn special_project_programs_payload(
@@ -8580,6 +8608,330 @@ fn chunk2_d64_delayed_events_rejects_zero_event_id() {
     let snap = snapshot_for_domain_records(vec![(18, ident), (64, de)]);
     let ger = &snap["countries"]["GER"];
     assert!(ger.get("delayed_events").is_none() || ger["delayed_events"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_fold_melt_anchored() {
+    // W5 domain 67: per-country OWN dynamic-modifier id SET. Melt-anchored (D04
+    // multiset counts, agent D2): GER 9, USA 1 (ABDA_supreme_command), ITA 5.
+    // ENG is identity-only (no modifier row) -> empty list (absent == none).
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA"), (16, "ITA"), (3, "ENG")]);
+    let ger_ids: Vec<String> = (0..9).map(|i| format!("GER_dm_{i}")).collect();
+    let ita_ids: Vec<String> = (0..5).map(|i| format!("ITA_dm_{i}")).collect();
+    let ger_refs: Vec<&str> = ger_ids.iter().map(String::as_str).collect();
+    let ita_refs: Vec<&str> = ita_ids.iter().map(String::as_str).collect();
+    let dm = country_dynamic_modifiers_payload(
+        &[
+            (1, &ger_refs),
+            (68, &["ABDA_supreme_command"]),
+            (16, &ita_refs),
+        ],
+        0,
+    );
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (67, dm)]);
+    let countries = &snap["countries"];
+
+    // GER: 9 modifiers, sorted for a stable multiset.
+    let ger = &countries["GER"]["dynamic_modifier"];
+    assert_eq!(ger.as_array().unwrap().len(), 9);
+    let mut expected = ger_ids.clone();
+    expected.sort();
+    let got: Vec<String> = ger
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(got, expected);
+
+    // USA: exactly one, the shared/interned ABDA_supreme_command def.
+    let usa = &countries["USA"]["dynamic_modifier"];
+    assert_eq!(usa.as_array().unwrap().len(), 1);
+    assert_eq!(usa[0], json!("ABDA_supreme_command"));
+
+    // ITA: 5 modifiers.
+    let ita = &countries["ITA"]["dynamic_modifier"];
+    assert_eq!(ita.as_array().unwrap().len(), 5);
+
+    // ENG: identity-only -> empty list (full-replace cleared it, no row set it).
+    let eng = &countries["ENG"];
+    assert!(eng.get("dynamic_modifier").is_none() || eng["dynamic_modifier"] == json!([]));
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_full_replace_clears_stale() {
+    // Full-replace: a country that HAD a modifier in frame 1 and NONE in frame 2
+    // must show an empty list in frame 2, never a stale modifier.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    // Frame 1: GER has one modifier.
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (68, "USA")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2 (advance one hour): GER's modifier expired -> no GER row; USA now
+    // carries one. The frame is non-empty (USA present) so it is not treated as
+    // an all-absent source-unavailable frame; GER's list must be cleared.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (68, "USA")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(68, &["USA_focus_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d67_full_replace");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    // Frame 1: GER has its modifier.
+    assert_eq!(
+        frame1["countries"]["GER"]["dynamic_modifier"][0],
+        json!("GER_army_modifier")
+    );
+    // Frame 2: full-replace cleared GER's stale modifier -> empty list; USA set.
+    assert_eq!(frame2["countries"]["GER"]["dynamic_modifier"], json!([]));
+    assert_eq!(
+        frame2["countries"]["USA"]["dynamic_modifier"][0],
+        json!("USA_focus_modifier")
+    );
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_rejects_truncated_blob() {
+    // A row claiming more ids than the blob supplies is a torn payload -> the
+    // fold fails closed (no dynamic_modifier field folded this frame).
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let mut dm = country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0);
+    // Corrupt the row's id_count (row table starts at 20; id_count is at +4).
+    let id_count_off = 20 + 4;
+    dm[id_count_off..id_count_off + 4].copy_from_slice(&5u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(18, ident), (67, dm)]);
+    let ger = &snap["countries"]["GER"];
+    assert!(ger.get("dynamic_modifier").is_none() || ger["dynamic_modifier"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_rejects_noncontiguous_window() {
+    // A row whose id_blob_offset skips ids (a hole) or overlaps another row is a
+    // crafted/torn payload -> fold fails closed. Build a valid 2-country payload
+    // then corrupt the SECOND row's id_blob_offset so it points back at 0
+    // (overlap) instead of the expected running cursor.
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA")]);
+    let mut dm = country_dynamic_modifiers_payload(
+        &[(1, &["GER_army_modifier"]), (68, &["USA_focus_modifier"])],
+        0,
+    );
+    // Row 1 (USA) starts at header(20) + one 12-byte row = 32; its
+    // id_blob_offset is at +8 within that row.
+    let usa_offset_field = 20 + COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN + 8;
+    dm[usa_offset_field..usa_offset_field + 4].copy_from_slice(&0u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(18, ident), (67, dm)]);
+    // Fold rejected the whole frame -> neither country carries a folded list.
+    let ger = &snap["countries"]["GER"];
+    assert!(ger.get("dynamic_modifier").is_none() || ger["dynamic_modifier"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_empty_frame_clears_all() {
+    // Q4 fail-closed correctness: a SUCCESSFUL frame in which zero countries
+    // carry a modifier (country_count==0, clean status) must CLEAR every known
+    // country's list, not retain a stale set. Frame 1 sets GER; frame 2 is an
+    // empty (0-row) successful frame -> GER's list must become empty.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: empty successful d67 frame (no rows, clean status).
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d67_empty_clears");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["dynamic_modifier"],
+        json!([]),
+        "an empty successful frame must clear the stale set, not retain it"
+    );
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_partial_data_retains_prior() {
+    // Q2/Q4 fail-closed: when the collector marks the frame torn (PARTIAL_DATA,
+    // which is NOT an expected-partial tolerance for d67), the fold must RETAIN
+    // the prior per-country set rather than publish a truncated set or clear it.
+    // Frame 1 sets GER; frame 2 carries PARTIAL_DATA -> GER's set is retained.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: a torn (PARTIAL_DATA) d67 frame with no rows. The prior GER set
+    // must survive (the collector drops rows on torn and sets PARTIAL_DATA).
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[], COMPACT_STATUS_PARTIAL_DATA),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d67_partial_retains");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["dynamic_modifier"][0],
+        json!("GER_army_modifier"),
+        "a torn (PARTIAL_DATA) frame must retain the prior set, not clear it"
+    );
 }
 
 #[test]

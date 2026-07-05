@@ -251,6 +251,23 @@ mod tests {
     }
 
     #[test]
+    fn w5_country_dynamic_modifiers_lane_schedules() {
+        // W5: rooted per-country dynamic-modifier id set (domain 67), the
+        // country's OWN active dynamic-modifier definition ids off
+        // CCountry+0xE58. Variable-length per-country string set;
+        // validated_slice_open_gaps.
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            registry.id_for_scheduled_name("country_dynamic_modifiers_live"),
+            Some(67)
+        );
+        assert_eq!(
+            registry.by_id(67).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+        );
+    }
+
+    #[test]
     fn naval_combat_lane_ids_schedule_after_shared_integration() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(

@@ -981,6 +981,33 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // W5 (2026-07-05): per-country DYNAMIC MODIFIER id set, a NEW rooted
+    // per-country domain carrying the country's OWN active dynamic-modifier
+    // definition ids (agent D2). ROOTED walk of the inline
+    // CDynamicModifierContainer at CCountry+0xE58 (own vtable
+    // mb+0x27BFDE8; +0x08 backref u64 == the owning CCountry, hard guard),
+    // entry array ptr @+0x28, u32 count @+0x34, entry stride 0x40, each entry
+    // +0x18 -> CDynamicModifier (mb+0x27BFD48), and the modifier definition id
+    // is that def's MSVC std::string @+0x28. D2 discovery validation vs the D04
+    // melt oracle: 6/6 countries exact multiset (GER 9, SOV 7, USA 1, ENG 1,
+    // ITA 5, JAP 10) plus a database-wide cross-check (159 tokens / 47 countries
+    // / 144 distinct ids, ABDA_supreme_command x5, CHI_warlord_army_dynamic_modifier
+    // x6) exactly matching the melt. This is a VARIABLE-LENGTH per-country string
+    // set that does not fit the fixed-width d63 country_core_scalars row, hence a
+    // new rooted domain (mirrors the d64 delayed_events_live precedent for a
+    // variable-length per-country repeated collection). Per-instance
+    // value/expiry is UNRESOLVED-BY-ABSENCE in D04 (no timed country modifier)
+    // and is intentionally not emitted; only the membership id set is carried.
+    // 390/437 countries have count==0 (the array is never walked when count==0).
+    domain(
+        67,
+        "country_dynamic_modifiers_live",
+        "country_dynamic_modifiers_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -1025,7 +1052,7 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 1000,
+            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 1000,
         ];
         for id in expected {
             assert!(
@@ -1200,6 +1227,11 @@ mod tests {
         assert!(
             profile_ids.contains(&66),
             "domain 66 (occupation_state_extras_live) is a validated slice \
+             with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&67),
+            "domain 67 (country_dynamic_modifiers_live) is a validated slice \
              with explicit open gaps"
         );
         for excluded in [1, 18, 58, 59, 1000] {

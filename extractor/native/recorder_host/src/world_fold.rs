@@ -93,6 +93,19 @@ const OCCUPATION_STATE_EXTRAS_KNOWN_FLAGS: u32 =
     OCCUPATION_STATE_EXTRAS_FLAG_LAW | OCCUPATION_STATE_EXTRAS_FLAG_GARRISON_SOURCE;
 const OCCUPATION_STATE_EXTRAS_DOMAIN_ID: u16 = 66;
 
+// W5 domain 67 country_dynamic_modifiers_live: 20-byte header
+// (elapsed_wall_ms u64, country_count u32, total_id_count u32, status_flags u32),
+// then country_count fixed 12-byte rows (tag_db_id u32, id_count u32,
+// id_blob_offset u32), then a single concatenated id blob where each id is a
+// u16 length prefix + utf8 bytes.
+const COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN: usize = 20;
+const COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN: usize = 12;
+const COUNTRY_DYNAMIC_MODIFIERS_DOMAIN_ID: u16 = 67;
+// Fail-closed ceiling on a modifier-id string length (matches the collector
+// DOMAIN67_MAX_DYNAMIC_MODIFIER_ID_LEN). A longer length in the blob is a torn
+// payload -> the whole frame folds closed (prior map retained).
+const COUNTRY_DYNAMIC_MODIFIER_MAX_ID_LEN: usize = 128;
+
 // E4: division row grew 92 -> 104 to carry strategic_redeployment,
 // current_manpower, and cumulative_losses (must stay in lockstep with the
 // collector and recorder-decode row lengths).
@@ -585,7 +598,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65, 66,
+    62, 63, 64, 65, 66, 67,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -1730,6 +1743,7 @@ impl WorldFold {
             64 => self.fold_delayed_events(payload),
             65 => self.fold_special_project_programs(payload),
             66 => self.fold_occupation_state_extras(payload),
+            67 => self.fold_country_dynamic_modifiers(payload),
             60 => self.fold_capitulation_war_state(payload),
             _ => {
                 self.unfolded_domains_this_hour.insert(domain_id);
@@ -4089,6 +4103,155 @@ impl WorldFold {
         for (owner, events) in per_owner {
             self.country_mut(owner)
                 .insert("delayed_events".into(), Value::Array(events));
+        }
+        Ok(())
+    }
+
+    // --- W5 DOMAIN 67 country_dynamic_modifiers_live (full replace) -----
+    // Per-country OWN active dynamic-modifier id SET, rooted at the inline
+    // CDynamicModifierContainer (CCountry+0xE58). The wire payload is a fixed
+    // 20-byte header, then country_count fixed 12-byte rows
+    // (tag_db_id, id_count, id_blob_offset), then a single concatenated id blob
+    // where each id is a u16 length prefix + utf8 bytes. Each country's ids are
+    // `id_count` consecutive blob entries starting at `id_blob_offset`. Emits
+    // `countries.<TAG>.dynamic_modifier = [ids...]` (SORTED for a stable
+    // multiset comparison against the melt). Full-replace: every known country's
+    // list is cleared first so a country whose last modifier expired shows an
+    // empty list, not a stale one. Any bounds/utf8/torn failure returns Err so
+    // the whole frame folds closed (prior map retained) — no partial rows.
+    fn fold_country_dynamic_modifiers(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN,
+            "country_dynamic_modifiers header",
+        )?;
+        let country_count = read_u32(payload, 8) as usize;
+        let total_id_count = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        if self.handle_compact_failure(
+            COUNTRY_DYNAMIC_MODIFIERS_DOMAIN_ID,
+            "country_dynamic_modifiers",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let table_len = COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN
+            + country_count
+                .checked_mul(COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN)
+                .ok_or("country_dynamic_modifiers row table overflow")?;
+        need(payload, table_len, "country_dynamic_modifiers row table")?;
+
+        // Guard the declared id count BEFORE allocating: each on-wire id needs at
+        // least 3 bytes (u16 length prefix + >=1 byte), so total_id_count can
+        // never exceed the blob's byte budget. This bounds the with_capacity
+        // allocation so a crafted header cannot request a huge allocation.
+        let blob_budget = payload.len().saturating_sub(table_len);
+        if total_id_count > blob_budget / 3 {
+            return Err(format!(
+                "country_dynamic_modifiers total_id_count {total_id_count} exceeds blob budget {}",
+                blob_budget / 3
+            ));
+        }
+
+        // First pass: parse the id blob into a flat Vec<String>, validating
+        // every length prefix stays in bounds. The blob starts after the row
+        // table and must contain exactly total_id_count entries that consume the
+        // remainder of the payload exactly (no trailing/short bytes).
+        let mut ids: Vec<String> = Vec::with_capacity(total_id_count);
+        let mut cursor = table_len;
+        for _ in 0..total_id_count {
+            if cursor + 2 > payload.len() {
+                return Err("country_dynamic_modifiers id blob truncated (length prefix)".into());
+            }
+            let len = read_u16(payload, cursor) as usize;
+            cursor += 2;
+            if len == 0 || len > COUNTRY_DYNAMIC_MODIFIER_MAX_ID_LEN {
+                return Err(format!(
+                    "country_dynamic_modifiers id length {len} out of range"
+                ));
+            }
+            if cursor + len > payload.len() {
+                return Err("country_dynamic_modifiers id blob truncated (bytes)".into());
+            }
+            let id = std::str::from_utf8(&payload[cursor..cursor + len])
+                .map_err(|_| "country_dynamic_modifiers id not utf8".to_string())?;
+            ids.push(id.to_string());
+            cursor += len;
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "country_dynamic_modifiers trailing bytes: consumed {cursor} of {}",
+                payload.len()
+            ));
+        }
+
+        // Second pass: assemble each country's id set from the blob slice its
+        // row references. The collector writes CONTIGUOUS, non-overlapping
+        // windows in row order, so we require each row's id_blob_offset to equal
+        // a running cursor and the final cursor to cover the id vector EXACTLY
+        // (no holes, no overlaps, no orphan ids). This rejects a crafted payload
+        // whose windows would double-count or ignore parsed ids.
+        let mut per_country: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        let mut expected_offset = 0usize;
+        for i in 0..country_count {
+            let base = COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN + i * COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN;
+            let tag_db_id = read_u32(payload, base);
+            let id_count = read_u32(payload, base + 4) as usize;
+            let id_blob_offset = read_u32(payload, base + 8) as usize;
+            if tag_db_id == 0 {
+                return Err("country_dynamic_modifiers row with zero tag_db_id".into());
+            }
+            if id_count == 0 {
+                return Err(format!(
+                    "country_dynamic_modifiers row {i} has zero id_count (empty countries emit no row)"
+                ));
+            }
+            if id_blob_offset != expected_offset {
+                return Err(format!(
+                    "country_dynamic_modifiers row {i} id_blob_offset {id_blob_offset} != expected {expected_offset} (non-contiguous)"
+                ));
+            }
+            let end = id_blob_offset
+                .checked_add(id_count)
+                .ok_or("country_dynamic_modifiers id window overflow")?;
+            if end > ids.len() {
+                return Err(format!(
+                    "country_dynamic_modifiers row {i} id window [{id_blob_offset},{end}) exceeds {} ids",
+                    ids.len()
+                ));
+            }
+            if per_country.contains_key(&tag_db_id) {
+                return Err(format!(
+                    "country_dynamic_modifiers duplicate tag_db_id {tag_db_id}"
+                ));
+            }
+            let mut set: Vec<String> = ids[id_blob_offset..end].to_vec();
+            // Sort for a stable, order-independent multiset representation.
+            set.sort();
+            per_country.insert(tag_db_id, set);
+            expected_offset = end;
+        }
+        // Every parsed id must belong to exactly one country window.
+        if expected_offset != ids.len() {
+            return Err(format!(
+                "country_dynamic_modifiers windows cover {expected_offset} of {} ids (orphan ids)",
+                ids.len()
+            ));
+        }
+
+        // Full-replace: clear every known country's list, then set the measured
+        // sets. A country with no row this frame shows an empty list.
+        let known: Vec<String> = self.countries.keys().cloned().collect();
+        for key in known {
+            if let Ok(id) = key.parse::<u32>() {
+                self.country_mut(id)
+                    .insert("dynamic_modifier".into(), Value::Array(Vec::new()));
+            }
+        }
+        for (tag_db_id, set) in per_country {
+            let arr = set.into_iter().map(Value::String).collect();
+            self.country_mut(tag_db_id)
+                .insert("dynamic_modifier".into(), Value::Array(arr));
         }
         Ok(())
     }
