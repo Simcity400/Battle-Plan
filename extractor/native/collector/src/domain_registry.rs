@@ -268,6 +268,35 @@ mod tests {
     }
 
     #[test]
+    fn w6_session_header_and_tech_sharing_groups_lanes_schedule() {
+        // W6: rooted top-level session header (domain 68) and tech-sharing
+        // groups (domain 69). Both validated_slice_open_gaps; distinct from the
+        // existing d57 session_multiplayer_metadata_live lane.
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            registry.id_for_scheduled_name("session_header_live"),
+            Some(68)
+        );
+        assert_eq!(
+            registry.id_for_scheduled_name("tech_sharing_groups_live"),
+            Some(69)
+        );
+        assert_eq!(
+            registry.by_id(68).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+        );
+        assert_eq!(
+            registry.by_id(69).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+        );
+        // d57 stays a distinct lane (not clobbered by the new session header).
+        assert_eq!(
+            registry.id_for_scheduled_name("session_multiplayer_metadata_live"),
+            Some(57)
+        );
+    }
+
+    #[test]
     fn naval_combat_lane_ids_schedule_after_shared_integration() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(

@@ -106,6 +106,52 @@ const COUNTRY_DYNAMIC_MODIFIERS_DOMAIN_ID: u16 = 67;
 // payload -> the whole frame folds closed (prior map retained).
 const COUNTRY_DYNAMIC_MODIFIER_MAX_ID_LEN: usize = 128;
 
+// W6 domain 68 session_header_live: 16-byte header (elapsed_wall_ms u64,
+// field_presence_flags u32, status_flags u32), then a fixed scalar block of
+// 5 x u32 (player_tag_db_id, dlcs, start_date_raw, save_version, session), then
+// three length-prefixed utf8 strings (ideology, cosmetic_tag, version), each a
+// u16 length + bytes. A field is meaningful only when its presence bit is set.
+const SESSION_HEADER_HEADER_LEN: usize = 16;
+const SESSION_HEADER_SCALAR_BLOCK_LEN: usize = 20;
+const SESSION_HEADER_DOMAIN_ID: u16 = 68;
+const SESSION_HEADER_FLAG_PLAYER: u32 = 1 << 0;
+const SESSION_HEADER_FLAG_DLCS: u32 = 1 << 1;
+const SESSION_HEADER_FLAG_START_DATE: u32 = 1 << 2;
+const SESSION_HEADER_FLAG_SAVE_VERSION: u32 = 1 << 3;
+const SESSION_HEADER_FLAG_SESSION: u32 = 1 << 4;
+const SESSION_HEADER_FLAG_IDEOLOGY: u32 = 1 << 5;
+const SESSION_HEADER_FLAG_COSMETIC_TAG: u32 = 1 << 6;
+const SESSION_HEADER_FLAG_VERSION: u32 = 1 << 7;
+const SESSION_HEADER_KNOWN_FLAGS: u32 = SESSION_HEADER_FLAG_PLAYER
+    | SESSION_HEADER_FLAG_DLCS
+    | SESSION_HEADER_FLAG_START_DATE
+    | SESSION_HEADER_FLAG_SAVE_VERSION
+    | SESSION_HEADER_FLAG_SESSION
+    | SESSION_HEADER_FLAG_IDEOLOGY
+    | SESSION_HEADER_FLAG_COSMETIC_TAG
+    | SESSION_HEADER_FLAG_VERSION;
+// Fail-closed ceiling on a session-header token/banner length. Matches the
+// collector's DOMAIN68_MAX_TOKEN_LEN / DOMAIN68_MAX_VERSION_LEN (128): a longer
+// string is impossible writer output and folds closed (prior header retained).
+const SESSION_HEADER_MAX_STRING_LEN: usize = 128;
+// Fail-closed ceiling on the player tag_db_id (matches the collector guard).
+const SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
+
+// W6 domain 69 tech_sharing_groups_live: 16-byte header (elapsed_wall_ms u64,
+// group_count u32, status_flags u32), then group_count fixed 12-byte rows
+// (id_token u32, member_count u32, member_blob_offset u32 in u32 units), then a
+// single concatenated blob of u32 tag_db_ids.
+const TECH_SHARING_GROUPS_HEADER_LEN: usize = 16;
+const TECH_SHARING_GROUPS_ROW_LEN: usize = 12;
+const TECH_SHARING_GROUPS_DOMAIN_ID: u16 = 69;
+// Fail-closed ceiling on the number of groups (the collector iterates exactly 9
+// fixed manager slots; a payload claiming more is a torn/crafted record).
+const TECH_SHARING_GROUP_MAX_GROUPS: usize = 9;
+// Fail-closed ceiling on a group's member count (matches the collector guard).
+const TECH_SHARING_GROUP_MAX_MEMBERS: u32 = 512;
+// Fail-closed ceiling on a member tag_db_id (matches the collector guard).
+const TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
+
 // E4: division row grew 92 -> 104 to carry strategic_redeployment,
 // current_manpower, and cumulative_losses (must stay in lockstep with the
 // collector and recorder-decode row lengths).
@@ -598,7 +644,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65, 66, 67,
+    62, 63, 64, 65, 66, 67, 68, 69,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -706,6 +752,15 @@ pub struct WorldFold {
     naval_supremacy: BTreeMap<(u32, u32), NavalSupremacyFoldRow>,
     /// D57 validated partial session metadata sidecar for the current hour.
     session_multiplayer_metadata_this_hour: Option<Domain57FoldState>,
+    /// W6 D68 session header (persistent last-value-wins). The last successfully
+    /// folded save/session header (player/ideology/cosmetic_tag/dlcs/start_date/
+    /// save_version/session/version). Fields absent from the record stay at
+    /// their previous value (static fields never change; the mutable ones are
+    /// change-detected downstream). A failed frame retains the prior header.
+    session_header: Option<SessionHeaderFoldState>,
+    /// W6 D69 tech-sharing groups (persistent last-value-wins). The last proven
+    /// complete group set (all decoded slots). Retained on a failed/partial frame.
+    tech_sharing_groups: Option<Vec<TechSharingGroupFoldState>>,
     /// D54 R2-projected active army battleplan depth annotations. D27 owns
     /// `battle_plan_orders`; D54 writes only its named extra bucket.
     army_battleplans_depth: BTreeMap<ArmyBattleplanDepthKey, ArmyBattleplanDepthOrder>,
@@ -857,6 +912,31 @@ struct Domain57PlayerCountryProjection {
     valid_from_hour_raw: i32,
 }
 
+/// W6 D68 session-header fold state (persistent last-value-wins). Each field is
+/// `None` until a record carries it; once set, a record that omits the field
+/// leaves the prior value in place (static fields never change; the mutable
+/// player/ideology/cosmetic_tag are refreshed whenever a record carries them).
+#[derive(Default, Clone)]
+struct SessionHeaderFoldState {
+    player_tag_db_id: Option<u32>,
+    dlcs: Option<u32>,
+    start_date_raw: Option<u32>,
+    save_version: Option<u32>,
+    session: Option<u32>,
+    ideology: Option<String>,
+    cosmetic_tag: Option<String>,
+    version: Option<String>,
+}
+
+/// W6 D69 one tech-sharing group's folded membership: the group id token and
+/// the (sorted) member tag_db_id set. The static group id STRING is not decoded
+/// (the replay resolves the token via installed content).
+#[derive(Clone)]
+struct TechSharingGroupFoldState {
+    id_token: u32,
+    member_tag_db_ids: Vec<u32>,
+}
+
 impl WorldFold {
     pub fn new(game_id: impl Into<String>) -> Self {
         WorldFold {
@@ -910,6 +990,8 @@ impl WorldFold {
             naval_missions_status: BTreeMap::new(),
             naval_supremacy: BTreeMap::new(),
             session_multiplayer_metadata_this_hour: None,
+            session_header: None,
+            tech_sharing_groups: None,
             army_battleplans_depth: BTreeMap::new(),
             army_battleplans_depth_unknown_this_hour: false,
             army_battleplans_depth_omitted_non_exact_this_hour: 0,
@@ -1689,6 +1771,67 @@ impl WorldFold {
         }))
     }
 
+    // W6 D68: build the top-level `session_header` value from the carried
+    // last-value-wins header. Returns None (attach nothing) until at least one
+    // header field has ever been folded. player is emitted with both its
+    // tag_db_id and resolved TAG (an unmapped id stays numeric and is recorded
+    // in `unresolved`). start_date carries the raw hour-count; the replay derives
+    // the calendar date with the shared codec.
+    fn build_session_header_value(
+        &self,
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) -> Option<Value> {
+        let header = self.session_header.as_ref()?;
+        let player = match header.player_tag_db_id {
+            Some(id) => {
+                let tag = self.resolve_country_key(&id.to_string(), unresolved);
+                json!({ "tag_db_id": id, "country_tag": tag })
+            }
+            None => Value::Null,
+        };
+        Some(json!({
+            "player": player,
+            "ideology": header.ideology.clone().map(Value::String).unwrap_or(Value::Null),
+            "cosmetic_tag": header.cosmetic_tag.clone().map(Value::String).unwrap_or(Value::Null),
+            "dlcs": header.dlcs.map(|v| json!(v)).unwrap_or(Value::Null),
+            "start_date_raw": header.start_date_raw.map(|v| json!(v)).unwrap_or(Value::Null),
+            "save_version": header.save_version.map(|v| json!(v)).unwrap_or(Value::Null),
+            "session": header.session.map(|v| json!(v)).unwrap_or(Value::Null),
+            "version": header.version.clone().map(Value::String).unwrap_or(Value::Null),
+        }))
+    }
+
+    // W6 D69: build the top-level `tech_sharing_group` value from the carried
+    // group set. Returns None until a proven frame has folded (a proven-empty
+    // frame folds Some([])). Each group carries its id token and its member
+    // set (both tag_db_ids and resolved TAGs; unmapped ids stay numeric and are
+    // recorded in `unresolved`).
+    fn build_tech_sharing_groups_value(
+        &self,
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) -> Option<Value> {
+        let groups = self.tech_sharing_groups.as_ref()?;
+        let rows: Vec<Value> = groups
+            .iter()
+            .map(|group| {
+                let member_tags: Vec<String> = group
+                    .member_tag_db_ids
+                    .iter()
+                    .map(|id| self.resolve_country_key(&id.to_string(), unresolved))
+                    .collect();
+                json!({
+                    "id_token": group.id_token,
+                    "member_tag_db_ids": group.member_tag_db_ids,
+                    "members": member_tags,
+                })
+            })
+            .collect();
+        Some(json!({
+            "count": rows.len(),
+            "groups": rows,
+        }))
+    }
+
     fn apply_domain_data(&mut self, domain_id: u16, payload: &[u8], record_flags: u32) {
         let result = match domain_id {
             10 => self.fold_fuel(payload),
@@ -1744,6 +1887,8 @@ impl WorldFold {
             65 => self.fold_special_project_programs(payload),
             66 => self.fold_occupation_state_extras(payload),
             67 => self.fold_country_dynamic_modifiers(payload),
+            68 => self.fold_session_header(payload),
+            69 => self.fold_tech_sharing_groups(payload),
             60 => self.fold_capitulation_war_state(payload),
             _ => {
                 self.unfolded_domains_this_hour.insert(domain_id);
@@ -2214,6 +2359,11 @@ impl WorldFold {
         let world_value = self.build_world_value();
         let special_projects_value = self.build_special_projects_value(&mut unresolved);
         let session_multiplayer_metadata_value = self.build_domain57_session_sidecar();
+        // W6: top-level session header (d68) + tech-sharing groups (d69). Both
+        // can reference country tag_db_ids, so build them BEFORE the resolved
+        // gate below so any unmapped id is counted.
+        let session_header_value = self.build_session_header_value(&mut unresolved);
+        let tech_sharing_groups_value = self.build_tech_sharing_groups_value(&mut unresolved);
 
         // resolved only when we have a map AND every keyed/referenced id
         // resolved. Keep this after all section builders: OOB, designs, naval
@@ -2294,6 +2444,18 @@ impl WorldFold {
         if let Some(value) = session_multiplayer_metadata_value {
             if let Some(obj) = snapshot.as_object_mut() {
                 obj.insert(DOMAIN57_R2_KEY.into(), value);
+            }
+        }
+        // W6: attach the top-level session header (d68) and tech-sharing groups
+        // (d69) only once their domains have folded (absent != null != empty).
+        if let Some(value) = session_header_value {
+            if let Some(obj) = snapshot.as_object_mut() {
+                obj.insert("session_header".into(), value);
+            }
+        }
+        if let Some(value) = tech_sharing_groups_value {
+            if let Some(obj) = snapshot.as_object_mut() {
+                obj.insert("tech_sharing_group".into(), value);
             }
         }
         snapshot
@@ -4253,6 +4415,253 @@ impl WorldFold {
             self.country_mut(tag_db_id)
                 .insert("dynamic_modifier".into(), Value::Array(arr));
         }
+        Ok(())
+    }
+
+    // --- W6 DOMAIN 68 session_header_live (persistent last-value-wins) ---
+    // TOP-LEVEL save/session header. Each present field UPDATES the carried
+    // header; an absent field leaves the prior value in place. A hard-failure
+    // frame retains the whole prior header. The wire payload is a 16-byte header
+    // (elapsed_wall_ms u64, presence flags u32, status_flags u32), a fixed 20-byte
+    // scalar block (5 x u32), then three length-prefixed utf8 strings (ideology,
+    // cosmetic_tag, version). A field's value is meaningful only when its
+    // presence bit is set; every parse failure returns Err (frame folds closed,
+    // prior header retained) so a torn payload never overwrites good state.
+    fn fold_session_header(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, SESSION_HEADER_HEADER_LEN, "session_header header")?;
+        let presence = read_u32(payload, 8);
+        let status_flags = read_u32(payload, 12);
+        if self.handle_compact_failure(SESSION_HEADER_DOMAIN_ID, "session_header", status_flags) {
+            return Ok(());
+        }
+        if presence & !SESSION_HEADER_KNOWN_FLAGS != 0 {
+            return Err(format!(
+                "session_header unknown presence flags {presence:#x}"
+            ));
+        }
+        need(
+            payload,
+            SESSION_HEADER_HEADER_LEN + SESSION_HEADER_SCALAR_BLOCK_LEN,
+            "session_header scalar block",
+        )?;
+        let scalars_base = SESSION_HEADER_HEADER_LEN;
+        let player_tag_db_id = read_u32(payload, scalars_base);
+        let dlcs = read_u32(payload, scalars_base + 4);
+        let start_date_raw = read_u32(payload, scalars_base + 8);
+        let save_version = read_u32(payload, scalars_base + 12);
+        let session = read_u32(payload, scalars_base + 16);
+
+        let has_player = presence & SESSION_HEADER_FLAG_PLAYER != 0;
+        let has_dlcs = presence & SESSION_HEADER_FLAG_DLCS != 0;
+        let has_start_date = presence & SESSION_HEADER_FLAG_START_DATE != 0;
+        let has_save_version = presence & SESSION_HEADER_FLAG_SAVE_VERSION != 0;
+        let has_session = presence & SESSION_HEADER_FLAG_SESSION != 0;
+        let has_ideology = presence & SESSION_HEADER_FLAG_IDEOLOGY != 0;
+        let has_cosmetic = presence & SESSION_HEADER_FLAG_COSMETIC_TAG != 0;
+        let has_version = presence & SESSION_HEADER_FLAG_VERSION != 0;
+
+        // An absent scalar must pack a zero (fail closed on a malformed row).
+        if !has_player && player_tag_db_id != 0 {
+            return Err("session_header player_tag_db_id without flag".into());
+        }
+        if has_player
+            && (player_tag_db_id == 0 || player_tag_db_id > SESSION_HEADER_MAX_PLAYER_TAG_DB_ID)
+        {
+            return Err(format!(
+                "session_header player_tag_db_id {player_tag_db_id} out of range"
+            ));
+        }
+        if !has_dlcs && dlcs != 0 {
+            return Err("session_header dlcs without flag".into());
+        }
+        if !has_start_date && start_date_raw != 0 {
+            return Err("session_header start_date without flag".into());
+        }
+        if !has_save_version && save_version != 0 {
+            return Err("session_header save_version without flag".into());
+        }
+        if !has_session && session != 0 {
+            return Err("session_header session without flag".into());
+        }
+
+        // Three length-prefixed utf8 strings: ideology, cosmetic_tag, version.
+        // Each is present in the blob (u16 len + bytes) regardless of its flag;
+        // an absent field must pack len==0.
+        let mut cursor = SESSION_HEADER_HEADER_LEN + SESSION_HEADER_SCALAR_BLOCK_LEN;
+        let mut read_token = |flag_present: bool, name: &str| -> Result<Option<String>, String> {
+            if cursor + 2 > payload.len() {
+                return Err(format!("session_header {name} length prefix truncated"));
+            }
+            let len = read_u16(payload, cursor) as usize;
+            cursor += 2;
+            if len > SESSION_HEADER_MAX_STRING_LEN {
+                return Err(format!("session_header {name} length {len} out of range"));
+            }
+            if cursor + len > payload.len() {
+                return Err(format!("session_header {name} bytes truncated"));
+            }
+            let value = if len == 0 {
+                None
+            } else {
+                Some(
+                    std::str::from_utf8(&payload[cursor..cursor + len])
+                        .map_err(|_| format!("session_header {name} not utf8"))?
+                        .to_string(),
+                )
+            };
+            cursor += len;
+            if !flag_present && value.is_some() {
+                return Err(format!("session_header {name} bytes without flag"));
+            }
+            if flag_present && value.is_none() {
+                return Err(format!("session_header {name} flag set but empty"));
+            }
+            Ok(value)
+        };
+        let ideology = read_token(has_ideology, "ideology")?;
+        let cosmetic_tag = read_token(has_cosmetic, "cosmetic_tag")?;
+        let version = read_token(has_version, "version")?;
+        if cursor != payload.len() {
+            return Err(format!(
+                "session_header trailing bytes: consumed {cursor} of {}",
+                payload.len()
+            ));
+        }
+
+        // Merge present fields into the carried header (last-value-wins). Static
+        // fields never change; player/ideology/cosmetic_tag refresh on change.
+        let header = self.session_header.get_or_insert_with(Default::default);
+        if has_player {
+            header.player_tag_db_id = Some(player_tag_db_id);
+        }
+        if has_dlcs {
+            header.dlcs = Some(dlcs);
+        }
+        if has_start_date {
+            header.start_date_raw = Some(start_date_raw);
+        }
+        if has_save_version {
+            header.save_version = Some(save_version);
+        }
+        if has_session {
+            header.session = Some(session);
+        }
+        if has_ideology {
+            header.ideology = ideology;
+        }
+        if has_cosmetic {
+            header.cosmetic_tag = cosmetic_tag;
+        }
+        if has_version {
+            header.version = version;
+        }
+        self.mark_fold_domain_success(SESSION_HEADER_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- W6 DOMAIN 69 tech_sharing_groups_live (persistent last-value-wins) --
+    // TOP-LEVEL research-sharing groups. A proven frame FULL-REPLACES the carried
+    // group set; a hard-failure frame retains the prior set. Wire payload: 16-byte
+    // header (elapsed_wall_ms u64, group_count u32, status_flags u32), then
+    // group_count fixed 12-byte rows (id_token u32, member_count u32,
+    // member_blob_offset u32 in u32 units), then a single concatenated blob of
+    // u32 tag_db_ids. Windows must be contiguous and cover the blob exactly. Any
+    // bounds/torn failure returns Err (frame folds closed, prior set retained).
+    fn fold_tech_sharing_groups(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            TECH_SHARING_GROUPS_HEADER_LEN,
+            "tech_sharing_groups header",
+        )?;
+        let group_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 12);
+        if self.handle_compact_failure(
+            TECH_SHARING_GROUPS_DOMAIN_ID,
+            "tech_sharing_groups",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if group_count > TECH_SHARING_GROUP_MAX_GROUPS {
+            return Err(format!(
+                "tech_sharing_groups group_count {group_count} exceeds {TECH_SHARING_GROUP_MAX_GROUPS} fixed slots"
+            ));
+        }
+        let table_len = TECH_SHARING_GROUPS_HEADER_LEN
+            + group_count
+                .checked_mul(TECH_SHARING_GROUPS_ROW_LEN)
+                .ok_or("tech_sharing_groups row table overflow")?;
+        need(payload, table_len, "tech_sharing_groups row table")?;
+
+        // The member blob is the payload remainder: a flat array of u32 tag_db_ids.
+        let blob = &payload[table_len..];
+        if blob.len() % 4 != 0 {
+            return Err(format!(
+                "tech_sharing_groups member blob {} bytes not u32-aligned",
+                blob.len()
+            ));
+        }
+        let member_total = blob.len() / 4;
+
+        let mut groups: Vec<TechSharingGroupFoldState> = Vec::with_capacity(group_count);
+        let mut expected_offset = 0usize;
+        for i in 0..group_count {
+            let base = TECH_SHARING_GROUPS_HEADER_LEN + i * TECH_SHARING_GROUPS_ROW_LEN;
+            let id_token = read_u32(payload, base);
+            let member_count = read_u32(payload, base + 4) as usize;
+            let member_blob_offset = read_u32(payload, base + 8) as usize;
+            if id_token == 0 {
+                return Err(format!("tech_sharing_groups row {i} zero id_token"));
+            }
+            if member_count == 0 {
+                return Err(format!("tech_sharing_groups row {i} zero member_count"));
+            }
+            if member_count > TECH_SHARING_GROUP_MAX_MEMBERS as usize {
+                return Err(format!(
+                    "tech_sharing_groups row {i} member_count {member_count} out of range"
+                ));
+            }
+            if member_blob_offset != expected_offset {
+                return Err(format!(
+                    "tech_sharing_groups row {i} member_blob_offset {member_blob_offset} != expected {expected_offset} (non-contiguous)"
+                ));
+            }
+            let end = member_blob_offset
+                .checked_add(member_count)
+                .ok_or("tech_sharing_groups member window overflow")?;
+            if end > member_total {
+                return Err(format!(
+                    "tech_sharing_groups row {i} member window [{member_blob_offset},{end}) exceeds {member_total} members"
+                ));
+            }
+            let mut member_tag_db_ids: Vec<u32> = (member_blob_offset..end)
+                .map(|idx| read_u32(blob, idx * 4))
+                .collect();
+            for tag in &member_tag_db_ids {
+                if *tag == 0 || *tag > TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID {
+                    return Err(format!(
+                        "tech_sharing_groups row {i} member tag_db_id {tag} out of range"
+                    ));
+                }
+            }
+            // Sort for a stable, order-independent multiset representation.
+            member_tag_db_ids.sort_unstable();
+            groups.push(TechSharingGroupFoldState {
+                id_token,
+                member_tag_db_ids,
+            });
+            expected_offset = end;
+        }
+        if expected_offset != member_total {
+            return Err(format!(
+                "tech_sharing_groups windows cover {expected_offset} of {member_total} members (orphans)"
+            ));
+        }
+
+        // A proven frame with zero groups is a genuine empty set (distinct from
+        // unknown). Full-replace the carried set.
+        self.tech_sharing_groups = Some(groups);
+        self.mark_fold_domain_success(TECH_SHARING_GROUPS_DOMAIN_ID);
         Ok(())
     }
 

@@ -340,6 +340,91 @@ pub const DOMAIN66_MAX_TAG_DB_ID: u32 = 1024;
 /// (bounds the bounded container scan's accepted-record count).
 pub const DOMAIN66_MAX_OCCUPATION_DATA_RECORDS: usize = 4096;
 
+// --- W6 domain 68 session_header_live: TOP-LEVEL session header --------------
+// A NEW rooted top-level (non-per-country) domain that snapshots the mostly-
+// static save/session header off the CGameState singleton (agent D3, all fields
+// live-validated vs the D04 melt oracle at discovery). One record per frame,
+// last-value-wins in the fold (static fields never change; player/ideology/
+// cosmetic_tag are change-detected downstream from the last emitted value).
+// Root: gs = u64[module_base + DOMAIN57_CGAMESTATE_SINGLETON_RVA (0x3316E90)].
+//
+// player:       CHuman(gs+0xA8) +0x70 = u32 controlled-country tag_db_id
+//               (melt player="D04" == tag_db_id 368).
+// ideology:     CIdeologyGroup(gs+0xC8) +0x18 = inline MSVC std::string
+//               (melt ideology=fascism).
+// cosmetic_tag: gs+0x70 = inline MSVC std::string (melt "FRA_VICHY").
+// dlcs:         gs+0xD4 = u32 bitmask (melt 257535 = 0x3EDFF).
+// start_date:   gs+0x4A8 = u32 native hour-count (melt 1936.1.1.12 == 60759371;
+//               the replay derives the calendar date with the shared codec).
+// save_version: gs+0x58 = u32 (melt 33). Provisional (small int, single save).
+// session:      gs+0x490 = u32 (melt 43695). Provisional (weak int, single save).
+// version:      module-static .rdata NUL-terminated ascii @ RVA 0x2701108
+//               ("Operation Postern v1.19.2.0.a729"); best-effort build banner,
+//               NOT a save-header field (the melt "(d245)" checksum suffix is
+//               assembled separately). Guarded by module-bounds + prefix check.
+/// CHuman pointer offset within CGameState.
+pub const DOMAIN68_CGAMESTATE_HUMAN_OFF: usize = 0xA8;
+/// CHuman+0x70: controlled-country tag_db_id (u32).
+pub const DOMAIN68_CHUMAN_PLAYER_TAG_OFF: usize = 0x70;
+/// CIdeologyGroup pointer offset within CGameState.
+pub const DOMAIN68_CGAMESTATE_IDEOLOGY_GROUP_OFF: usize = 0xC8;
+/// CIdeologyGroup+0x18: inline MSVC std::string ideology-group token.
+pub const DOMAIN68_IDEOLOGY_GROUP_TOKEN_OFF: usize = 0x18;
+/// CGameState+0x70: inline MSVC std::string player/host cosmetic tag.
+pub const DOMAIN68_CGAMESTATE_COSMETIC_TAG_OFF: usize = 0x70;
+/// CGameState+0xD4: u32 enabled-DLC bitmask.
+pub const DOMAIN68_CGAMESTATE_DLCS_OFF: usize = 0xD4;
+/// CGameState+0x4A8: u32 campaign start_date native hour-count.
+pub const DOMAIN68_CGAMESTATE_START_DATE_OFF: usize = 0x4A8;
+/// CGameState+0x58: u32 save_version.
+pub const DOMAIN68_CGAMESTATE_SAVE_VERSION_OFF: usize = 0x58;
+/// CGameState+0x490: u32 session id.
+pub const DOMAIN68_CGAMESTATE_SESSION_OFF: usize = 0x490;
+/// Module .rdata RVA of the build banner cstr ("Operation Postern v...").
+pub const DOMAIN68_VERSION_BANNER_RVA: usize = 0x2701108;
+/// Maximum bytes scanned for the version banner NUL terminator.
+pub const DOMAIN68_MAX_VERSION_LEN: usize = 128;
+/// Expected ASCII prefix of the version banner (guards a bad RVA / patch drift;
+/// a banner not starting with this is treated as unavailable, fail-closed).
+pub const DOMAIN68_VERSION_BANNER_PREFIX: &str = "Operation Postern";
+/// Maximum accepted ideology/cosmetic MSVC-string length (a longer read is torn
+/// and the field is badged absent).
+pub const DOMAIN68_MAX_TOKEN_LEN: usize = 128;
+/// Fail-closed ceiling on the player tag_db_id (a value beyond this is a torn
+/// read; the player field is badged absent).
+pub const DOMAIN68_MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
+
+// --- W6 domain 69 tech_sharing_groups_live: TOP-LEVEL research-sharing groups -
+// A NEW rooted top-level domain (agent D8, 9/9 groups + membership multisets
+// validated vs the D04 melt oracle at discovery). Root:
+// gs = u64[module_base + 0x3316E90]; CGameState+0x3A0 -> tech-sharing manager.
+// The manager holds 9 inline pointer slots @ +0x00..+0x40 (stride 8), each ->
+// CTechnologySharingGroup (vtable RVA 0x270B720). Per group:
+//   +0x08 = u32 group id token (a FNV/db token; the group's static id string
+//           lives behind the +0x48 template ptr and is NOT decoded here),
+//   +0x18 = begin ptr of the member array (u32 tag_db_ids, stride 4),
+//   +0x20 = u32 member count.
+// A full-heap vtable census found EXACTLY 9 such objects == melt's 9 groups.
+/// CGameState+0x3A0: pointer to the tech-sharing manager.
+pub const DOMAIN69_CGAMESTATE_TECH_SHARING_MANAGER_OFF: usize = 0x3A0;
+/// CTechnologySharingGroup vtable RVA (each of the 9 slot pointers must match).
+pub const DOMAIN69_TECH_SHARING_GROUP_VTABLE_RVA: usize = 0x270B720;
+/// Number of inline group pointer slots in the manager (fixed at 9).
+pub const DOMAIN69_TECH_SHARING_GROUP_SLOTS: usize = 9;
+/// Byte offset of the first group pointer slot within the manager.
+pub const DOMAIN69_TECH_SHARING_MANAGER_SLOTS_OFF: usize = 0x00;
+/// Group +0x08: u32 group id token.
+pub const DOMAIN69_TECH_SHARING_GROUP_ID_TOKEN_OFF: usize = 0x08;
+/// Group +0x18: begin ptr of the member tag_db_id array (u32, stride 4).
+pub const DOMAIN69_TECH_SHARING_GROUP_MEMBERS_BEGIN_OFF: usize = 0x18;
+/// Group +0x20: u32 member count.
+pub const DOMAIN69_TECH_SHARING_GROUP_MEMBERS_COUNT_OFF: usize = 0x20;
+/// Fail-closed ceiling on a group's member count (a count beyond this is a torn
+/// read; that group is skipped).
+pub const DOMAIN69_MAX_MEMBERS_PER_GROUP: u32 = 512;
+/// Fail-closed ceiling on a member tag_db_id.
+pub const DOMAIN69_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
+
 /// Domain 53 diplomacy/intel/operative live roots for supported build
 /// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad.
 ///

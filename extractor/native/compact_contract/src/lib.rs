@@ -1008,6 +1008,52 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // W6 (2026-07-05): TOP-LEVEL session header, a NEW rooted top-level
+    // (non-per-country) domain snapshotting the mostly-static save/session
+    // header off the CGameState singleton (agent D3, every field live-validated
+    // vs the D04 melt oracle at discovery). Root gs = u64[mb+0x3316E90]. Fields
+    // (each presence-flagged, fail-closed): player tag_db_id (CHuman(gs+0xA8)
+    // +0x70; melt player="D04"), ideology (CIdeologyGroup(gs+0xC8)+0x18 MSVC;
+    // melt fascism), cosmetic_tag (gs+0x70 MSVC; melt "FRA_VICHY"), dlcs (gs+0xD4
+    // u32; melt 257535), start_date (gs+0x4A8 u32 hour-count; melt 1936.1.1.12),
+    // save_version (gs+0x58 u32; melt 33; provisional), session (gs+0x490 u32;
+    // melt 43695; provisional), version (module .rdata RVA 0x2701108 banner;
+    // best-effort, not a save field). Emitted as a full record every frame;
+    // the fold is last-value-wins (static fields never change; player/ideology/
+    // cosmetic_tag are change-detected downstream from the last emitted value).
+    // DISTINCT from d57 session_multiplayer_metadata_live (player ROSTER + pause
+    // event), which is left untouched — d68 carries the header scalars/strings
+    // d57 does not.
+    domain(
+        68,
+        "session_header_live",
+        "session_header_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
+    // W6 (2026-07-05): TOP-LEVEL tech-sharing groups, a NEW rooted top-level
+    // domain (agent D8, 9/9 groups + membership multisets validated vs the D04
+    // melt oracle at discovery). Root gs = u64[mb+0x3316E90]; CGameState+0x3A0 ->
+    // tech-sharing manager holding 9 inline pointer slots (+0x00..+0x40 stride 8),
+    // each -> CTechnologySharingGroup (vtable RVA 0x270B720). Per group: id token
+    // (+0x08 u32), member tag_db_ids (begin +0x18, count +0x20 u32, stride 4). A
+    // full-heap vtable census found EXACTLY 9 objects == the melt's 9 groups
+    // (commonwealth_research{6}, CHI_technological_cooperation{10}, SOV_soviet
+    // _academies{2}, HUN_joint_air{7}, BUL_italian{2}, FIN_joint{1}, MEX_USA{2},
+    // BUL_axis{2}, VIC_learn_from_the_enemy{2}). The static group id STRING lives
+    // behind the +0x48 template ptr and is NOT decoded here (only the id token +
+    // member tag_db_id set); the replay resolves the token->name via installed content.
+    domain(
+        69,
+        "tech_sharing_groups_live",
+        "tech_sharing_groups_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -1052,7 +1098,7 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 1000,
+            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 1000,
         ];
         for id in expected {
             assert!(
@@ -1232,6 +1278,16 @@ mod tests {
         assert!(
             profile_ids.contains(&67),
             "domain 67 (country_dynamic_modifiers_live) is a validated slice \
+             with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&68),
+            "domain 68 (session_header_live) is a validated slice \
+             with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&69),
+            "domain 69 (tech_sharing_groups_live) is a validated slice \
              with explicit open gaps"
         );
         for excluded in [1, 18, 58, 59, 1000] {

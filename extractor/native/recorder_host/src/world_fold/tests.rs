@@ -9933,3 +9933,572 @@ fn capitulation_war_rows_without_badge_are_skipped_whole() {
         .iter()
         .any(|note| note.as_str().unwrap().contains("domain 60 fold skipped")));
 }
+
+// --- W6 domain 68 session_header_live + domain 69 tech_sharing_groups_live --
+
+/// W6 domain 68 session_header_live payload builder. Fields are Option: None ->
+/// presence bit clear (scalar packs 0, string packs len=0). Mirrors the
+/// collector's compact_session_header_data_payload byte layout exactly.
+#[allow(clippy::too_many_arguments)]
+fn session_header_payload(
+    player_tag_db_id: Option<u32>,
+    dlcs: Option<u32>,
+    start_date_raw: Option<u32>,
+    save_version: Option<u32>,
+    session: Option<u32>,
+    ideology: Option<&str>,
+    cosmetic_tag: Option<&str>,
+    version: Option<&str>,
+    status_flags: u32,
+) -> Vec<u8> {
+    let mut presence = 0u32;
+    if player_tag_db_id.is_some() {
+        presence |= 1 << 0;
+    }
+    if dlcs.is_some() {
+        presence |= 1 << 1;
+    }
+    if start_date_raw.is_some() {
+        presence |= 1 << 2;
+    }
+    if save_version.is_some() {
+        presence |= 1 << 3;
+    }
+    if session.is_some() {
+        presence |= 1 << 4;
+    }
+    if ideology.is_some() {
+        presence |= 1 << 5;
+    }
+    if cosmetic_tag.is_some() {
+        presence |= 1 << 6;
+    }
+    if version.is_some() {
+        presence |= 1 << 7;
+    }
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&presence.to_le_bytes());
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    p.extend_from_slice(&player_tag_db_id.unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&dlcs.unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&start_date_raw.unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&save_version.unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&session.unwrap_or(0).to_le_bytes());
+    for token in [ideology, cosmetic_tag, version] {
+        match token {
+            Some(value) => push_str(&mut p, value),
+            None => p.extend_from_slice(&0u16.to_le_bytes()),
+        }
+    }
+    p
+}
+
+/// W6 domain 69 tech_sharing_groups_live payload builder. Each group is
+/// (id_token, list of member tag_db_ids). Mirrors the collector's
+/// compact_tech_sharing_groups_data_payload byte layout exactly.
+fn tech_sharing_groups_payload(groups: &[(u32, &[u32])], status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(groups.len() as u32).to_le_bytes()); // group_count
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    let mut cursor = 0u32;
+    for (id_token, members) in groups {
+        p.extend_from_slice(&id_token.to_le_bytes());
+        p.extend_from_slice(&(members.len() as u32).to_le_bytes());
+        p.extend_from_slice(&cursor.to_le_bytes());
+        cursor += members.len() as u32;
+    }
+    for (_, members) in groups {
+        for tag in *members {
+            p.extend_from_slice(&tag.to_le_bytes());
+        }
+    }
+    p
+}
+
+#[test]
+fn w6_d68_session_header_fold_melt_anchored() {
+    // W6 domain 68: TOP-LEVEL save/session header, melt-anchored to the D04 save
+    // (00_d04_1944_melted.txt): player="D04" (tag_db_id 368), ideology=fascism,
+    // cosmetic_tag="FRA_VICHY", dlcs=257535, start_date=1936.1.1.12 (raw
+    // 60759371), save_version=33, session=43695, version banner stem
+    // "Operation Postern v1.19.2.0.a729".
+    let ident = country_identity_payload(&[(368, "D04")]);
+    let header = session_header_payload(
+        Some(368),
+        Some(257_535),
+        Some(60_759_371),
+        Some(33),
+        Some(43_695),
+        Some("fascism"),
+        Some("FRA_VICHY"),
+        Some("Operation Postern v1.19.2.0.a729"),
+        0,
+    );
+    let snap = snapshot_for_domain_records(vec![(18, ident), (68, header)]);
+    let sh = &snap["session_header"];
+    assert_eq!(sh["player"]["tag_db_id"], json!(368));
+    // player tag_db_id 368 resolves to TAG "D04" via the domain-18 map.
+    assert_eq!(sh["player"]["country_tag"], json!("D04"));
+    assert_eq!(sh["ideology"], json!("fascism"));
+    assert_eq!(sh["cosmetic_tag"], json!("FRA_VICHY"));
+    assert_eq!(sh["dlcs"], json!(257_535));
+    assert_eq!(sh["start_date_raw"], json!(60_759_371));
+    assert_eq!(sh["save_version"], json!(33));
+    assert_eq!(sh["session"], json!(43_695));
+    assert_eq!(sh["version"], json!("Operation Postern v1.19.2.0.a729"));
+}
+
+#[test]
+fn w6_d68_session_header_last_value_wins_partial_update() {
+    // A later frame that carries only the mutable fields (ideology + cosmetic +
+    // player) must UPDATE those while the static fields (dlcs/start_date/
+    // save_version/session/version) from the earlier frame REMAIN (last-value-
+    // wins merge, not full-replace to null).
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    // Frame 1: full header.
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        68,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &session_header_payload(
+            Some(368),
+            Some(257_535),
+            Some(60_759_371),
+            Some(33),
+            Some(43_695),
+            Some("fascism"),
+            Some("FRA_VICHY"),
+            Some("Operation Postern v1.19.2.0.a729"),
+            0,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: only the mutable fields (a mid-game ideology + cosmetic change,
+    // and a hypothetical player switch to tag 2). Static fields omitted.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        68,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &session_header_payload(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some("democratic"),
+            Some("ENG_RAJ"),
+            None,
+            0,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d68_lvw");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    let sh = &frame2["session_header"];
+    // Mutable fields updated.
+    assert_eq!(sh["player"]["tag_db_id"], json!(2));
+    assert_eq!(sh["ideology"], json!("democratic"));
+    assert_eq!(sh["cosmetic_tag"], json!("ENG_RAJ"));
+    // Static fields retained from frame 1.
+    assert_eq!(sh["dlcs"], json!(257_535));
+    assert_eq!(sh["start_date_raw"], json!(60_759_371));
+    assert_eq!(sh["save_version"], json!(33));
+    assert_eq!(sh["session"], json!(43_695));
+    assert_eq!(sh["version"], json!("Operation Postern v1.19.2.0.a729"));
+}
+
+#[test]
+fn w6_d68_session_header_source_unavailable_retains_prior() {
+    // A SOURCE_UNAVAILABLE frame (a failure flag) must retain the whole prior
+    // header rather than clear it.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        68,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &session_header_payload(
+            Some(368),
+            Some(257_535),
+            None,
+            None,
+            None,
+            Some("fascism"),
+            None,
+            None,
+            0,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: gs unreadable -> SOURCE_UNAVAILABLE, no fields. Prior retained.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        68,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &session_header_payload(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d68_retain");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    let sh = &frame2["session_header"];
+    assert_eq!(sh["player"]["tag_db_id"], json!(368));
+    assert_eq!(sh["ideology"], json!("fascism"));
+    assert_eq!(sh["dlcs"], json!(257_535));
+}
+
+#[test]
+fn w6_d68_session_header_rejects_scalar_without_flag() {
+    // A malformed payload where a scalar is nonzero but its presence bit is
+    // clear must fold closed (Err) and attach no session_header. Hand-build a
+    // payload with dlcs=999 but presence=0.
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&0u32.to_le_bytes()); // presence = 0
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&0u32.to_le_bytes()); // player
+    p.extend_from_slice(&999u32.to_le_bytes()); // dlcs nonzero without flag
+    p.extend_from_slice(&0u32.to_le_bytes()); // start_date
+    p.extend_from_slice(&0u32.to_le_bytes()); // save_version
+    p.extend_from_slice(&0u32.to_le_bytes()); // session
+    p.extend_from_slice(&0u16.to_le_bytes()); // ideology len 0
+    p.extend_from_slice(&0u16.to_le_bytes()); // cosmetic len 0
+    p.extend_from_slice(&0u16.to_le_bytes()); // version len 0
+    let snap = snapshot_for_domain_records(vec![(68, p)]);
+    assert!(
+        snap.get("session_header").is_none(),
+        "a malformed session_header frame must not attach the section"
+    );
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_fold_melt_anchored() {
+    // W6 domain 69: TOP-LEVEL tech-sharing groups, membership melt-anchored to
+    // the D04 save's 9 groups (00_d04_1944_melted.txt L5626904+). Uses the
+    // discovery tag_db_ids (GER 1, ENG 2, SOV 3, FRA 5, ITA 16, JAP 48, USA 68)
+    // plus synthetic ids for minors, and asserts the fold reproduces each group's
+    // member multiset exactly. id_token values are synthetic per-group.
+    // The four smallest fully-known groups are asserted by TAG; the full set is
+    // asserted by member COUNT to match the melt's 6,10,2,7,2,1,2,2,2.
+    let ident = country_identity_payload(&[
+        (1, "GER"),
+        (2, "ENG"),
+        (3, "SOV"),
+        (5, "FRA"),
+        (16, "ITA"),
+        (48, "JAP"),
+        (68, "USA"),
+        (100, "BUL"),
+        (101, "MEX"),
+        (102, "FIN"),
+        (368, "D04"),
+    ]);
+    // Groups in melt order with synthetic minors where the exact db_id is not in
+    // the discovery test set. Member COUNTS mirror the melt exactly.
+    let groups: Vec<(u32, Vec<u32>)> = vec![
+        (0x0001, vec![2, 900, 901, 902, 903, 904]), // commonwealth_research (6)
+        (
+            0x0002,
+            vec![905, 906, 907, 908, 909, 910, 911, 912, 913, 914],
+        ), // CHI_tech (10)
+        (0x0003, vec![3, 915]),                     // SOV_soviet_academies (2)
+        (0x0004, vec![1, 16, 100, 916, 917, 918, 919]), // HUN_joint_air (7)
+        (0x0005, vec![16, 100]),                    // BUL_italian (2)
+        (0x0006, vec![102]),                        // FIN_joint (1)
+        (0x0007, vec![68, 101]),                    // MEX_USA (2)
+        (0x0008, vec![100, 1]),                     // BUL_axis (2)
+        (0x0009, vec![368, 1]),                     // VIC_learn_from_the_enemy (2)
+    ];
+    let group_refs: Vec<(u32, &[u32])> = groups.iter().map(|(t, m)| (*t, m.as_slice())).collect();
+    let payload = tech_sharing_groups_payload(&group_refs, 0);
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (69, payload)]);
+    let tsg = &snap["tech_sharing_group"];
+    assert_eq!(tsg["count"], json!(9));
+    let rows = tsg["groups"].as_array().unwrap();
+    assert_eq!(rows.len(), 9);
+    // Member counts match the melt's 6,10,2,7,2,1,2,2,2.
+    let counts: Vec<usize> = rows
+        .iter()
+        .map(|g| g["member_tag_db_ids"].as_array().unwrap().len())
+        .collect();
+    assert_eq!(counts, vec![6, 10, 2, 7, 2, 1, 2, 2, 2]);
+
+    // VIC_learn_from_the_enemy = {D04, GER} resolves to TAGs {"D04","GER"}
+    // (sorted tag_db_ids [1, 368]).
+    let vic = &rows[8];
+    assert_eq!(vic["member_tag_db_ids"], json!([1, 368]));
+    let vic_members: Vec<&str> = vic["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(vic_members, vec!["GER", "D04"]);
+
+    // MEX_USA = {USA=68, MEX=101} resolves USA by TAG.
+    let mex_usa = &rows[6];
+    assert_eq!(mex_usa["member_tag_db_ids"], json!([68, 101]));
+    assert_eq!(mex_usa["members"][0], json!("USA"));
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_source_unavailable_retains_prior() {
+    // A SOURCE_UNAVAILABLE frame retains the prior group set (last-value-wins).
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (368, "D04")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_payload(&[(0x0009, &[368, 1])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: manager unreadable -> SOURCE_UNAVAILABLE, no groups. Prior kept.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (368, "D04")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_payload(&[], COMPACT_STATUS_SOURCE_UNAVAILABLE),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d69_retain");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    let tsg = &frame2["tech_sharing_group"];
+    assert_eq!(tsg["count"], json!(1));
+    assert_eq!(tsg["groups"][0]["member_tag_db_ids"], json!([1, 368]));
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_rejects_noncontiguous_window() {
+    // A crafted payload whose member_blob_offset is non-contiguous must fold
+    // closed (Err) and attach no tech_sharing_group section.
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&1u32.to_le_bytes()); // group_count = 1
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&0x0009u32.to_le_bytes()); // id_token
+    p.extend_from_slice(&2u32.to_le_bytes()); // member_count = 2
+    p.extend_from_slice(&5u32.to_le_bytes()); // member_blob_offset = 5 (should be 0)
+    p.extend_from_slice(&1u32.to_le_bytes()); // member tag 1
+    p.extend_from_slice(&368u32.to_le_bytes()); // member tag 368
+    let snap = snapshot_for_domain_records(vec![(69, p)]);
+    assert!(
+        snap.get("tech_sharing_group").is_none(),
+        "a non-contiguous tech_sharing_groups frame must not attach the section"
+    );
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_rejects_member_out_of_range() {
+    // A member tag_db_id beyond the guard ceiling folds closed.
+    let payload = tech_sharing_groups_payload(&[(0x0009, &[1, 999_999])], 0);
+    let snap = snapshot_for_domain_records(vec![(69, payload)]);
+    assert!(
+        snap.get("tech_sharing_group").is_none(),
+        "an out-of-range member tag_db_id must not attach the section"
+    );
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_rejects_group_count_over_nine() {
+    // The collector iterates exactly 9 fixed manager slots; a payload declaring
+    // 10 groups is a torn/crafted record and must fold closed.
+    let groups: Vec<(u32, &[u32])> = (1..=10u32).map(|i| (i, &[1u32][..])).collect();
+    let payload = tech_sharing_groups_payload(&groups, 0);
+    let snap = snapshot_for_domain_records(vec![(69, payload)]);
+    assert!(
+        snap.get("tech_sharing_group").is_none(),
+        "a group_count > 9 must not attach the section"
+    );
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_partial_data_retains_prior() {
+    // Regression for the Codex DEFECT: a torn manager slot makes the collector
+    // emit a SHORT group set badged PARTIAL_DATA. Because d69 has no expected-
+    // partial tolerance, the fold must RETAIN the prior complete set rather than
+    // full-replace with a group missing. Frame 1: two groups. Frame 2: one group
+    // + PARTIAL_DATA -> the two-group set from frame 1 survives.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (68, "USA"), (101, "MEX"), (368, "D04")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_payload(&[(0x0007, &[68, 101]), (0x0009, &[368, 1])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: a torn slot -> only one group emitted + PARTIAL_DATA. Prior kept.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (68, "USA"), (101, "MEX"), (368, "D04")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_payload(&[(0x0007, &[68, 101])], COMPACT_STATUS_PARTIAL_DATA),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d69_partial_retains");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    let tsg = &frame2["tech_sharing_group"];
+    assert_eq!(
+        tsg["count"],
+        json!(2),
+        "a PARTIAL_DATA frame must retain the prior 2-group set, not shrink to 1"
+    );
+}
