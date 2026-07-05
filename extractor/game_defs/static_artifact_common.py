@@ -14,10 +14,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from paradox_parser import Node
+from paradox_parser import Node, tokenize
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_OPERATOR_TOKENS = {">", "<", "!", "=", ">=", "<=", "!=", "=="}
 
 
 CLAUSEWITZ_SYNTAX_QUIRK_ALLOWLIST = {
@@ -102,6 +103,51 @@ def _syntax_allowlist_hit(rel: str, error: ValueError, allowlist: dict[str, dict
     }
 
 
+def _unclosed_top_level_wrapper_key(text: str) -> str | None:
+    """Return the key for ``key = { ... EOF`` when only that root brace is open.
+
+    Some shipped the game definition files omit the final closing brace for their
+    document wrapper while all nested blocks inside the wrapper are complete.
+    The tolerant parser can recover those files exactly; this precheck should
+    only reject cases where a nested block is still open or a closing brace is
+    unmatched.
+    """
+
+    stack: list[int] = []
+    tokens = tokenize(text)
+    for idx, (kind, _value) in enumerate(tokens):
+        if kind == "lbrace":
+            stack.append(idx)
+            continue
+        if kind == "rbrace":
+            if not stack:
+                return None
+            stack.pop()
+    if len(stack) != 1:
+        return None
+    lbrace_idx = stack[0]
+    if lbrace_idx < 2 or tokens[lbrace_idx - 1][0] != "eq":
+        return None
+    key_kind, key_value = tokens[lbrace_idx - 2]
+    if key_kind in {"str", "bare"} and key_value not in _OPERATOR_TOKENS:
+        return key_value
+    return None
+
+
+def _missing_final_wrapper_hit(rel: str, error: ValueError, text: str) -> dict[str, str] | None:
+    key = _unclosed_top_level_wrapper_key(text)
+    if not key:
+        return None
+    return {
+        "source_file": rel,
+        "matched_error": str(error),
+        "reason": (
+            f"Missing final top-level {key} brace; nested braces are balanced "
+            "and the tolerant parser recovers the complete wrapper before EOF."
+        ),
+    }
+
+
 def validate_clausewitz_text(
     text: str,
     rel: str,
@@ -172,6 +218,9 @@ def validate_clausewitz_text(
             hit = _syntax_allowlist_hit(rel, exc, allowlist)
             if hit:
                 return hit
+        hit = _missing_final_wrapper_hit(rel, exc, text)
+        if hit:
+            return hit
         raise
     return None
 

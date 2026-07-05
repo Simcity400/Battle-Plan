@@ -23,6 +23,7 @@ import parse_idea_tech_loc  # noqa: E402
 import parse_decisions  # noqa: E402
 import localisation_gate  # noqa: E402
 import idea_tech_static_gate  # noqa: E402
+from static_artifact_common import validate_clausewitz_text  # noqa: E402
 
 
 def _write(root: Path, rel: str, text: str):
@@ -300,6 +301,50 @@ political_actions = {
 """)
     with pytest.raises(RuntimeError, match="unbalanced braces"):
         parse_decisions.parse_decisions([Layer("vanilla", vanilla)])
+
+
+def test_sov_style_missing_final_ideas_wrapper_is_tolerated(tmp_path):
+    vanilla = tmp_path / "vanilla"
+    _write(vanilla, "common/ideas/SOV.txt", """
+ideas = {
+  country = {
+    SOV_fixture_industrial_concern = {
+      name = SOV_fixture_industrial_concern_name
+      custom_modifier_tooltip = "quoted { brace } # not a comment"
+      allowed = {
+        has_start_date >= 1940.1.1
+      }
+      visible = {
+        has_country_flag = { flag = SOV_gosproyektstroy_level_2_flag value = 4 } #JAP
+        has_country_flag = { flag = SOV_gosproyektstroy_level_3_flag value = 3 } #DOCK
+      }
+      modifier = {
+        production_speed_industrial_complex_factor = 0.05
+        production_speed_arms_factory_factor = 0.05
+      }
+    }
+  }
+""")
+    out = parse_idea_tech_loc.parse_idea_tech_loc_keys([Layer("vanilla", vanilla)])
+
+    idea = out["tokens"]["ideas"]["SOV_fixture_industrial_concern"]
+    assert idea["loc_key"] == "SOV_fixture_industrial_concern_name"
+    assert out["meta"]["idea_files_parsed"] == 1
+    assert out["meta"]["warnings"] == []
+    assert out["meta"]["syntax_allowlist_hits"] == [{
+        "kind": "idea",
+        "source_file": "common/ideas/SOV.txt",
+        "matched_error": "common/ideas/SOV.txt: unbalanced braces at EOF (depth 1)",
+        "reason": (
+            "Missing final top-level ideas brace; nested braces are balanced "
+            "and the tolerant parser recovers the complete wrapper before EOF."
+        ),
+    }]
+
+
+def test_missing_final_wrapper_tolerance_rejects_operator_artifact():
+    with pytest.raises(ValueError, match="unbalanced braces"):
+        validate_clausewitz_text("foo >= { bar = yes", "common/ideas/bad_operator.txt")
 
 
 def test_idea_tech_gate_fails_wrapperless_idea_file(tmp_path):
