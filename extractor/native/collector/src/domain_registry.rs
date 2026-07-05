@@ -99,11 +99,10 @@ mod tests {
 
     impl CollectorDomainModule for TestLaneModule {
         fn descriptor(&self) -> CollectorDomainDescriptor {
-            // Deliberately the next UNASSIGNED id (60 became the builtin
-            // capitulation_war_state_live domain) so this exercises
+            // Deliberately outside the active production id sequence so this exercises
             // registering a brand-new lane on top of the builtins.
             domain(
-                61,
+                999,
                 "test_lane_live",
                 "test_lane_live",
                 CompactDomainStatus::ActiveIntegration,
@@ -214,9 +213,9 @@ mod tests {
         let mut registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         TestLaneModule.register(&mut registry).unwrap();
 
-        assert_eq!(registry.id_for_scheduled_name("test_lane_live"), Some(61));
+        assert_eq!(registry.id_for_scheduled_name("test_lane_live"), Some(999));
         assert_eq!(
-            registry.by_id(61).map(|d| d.status),
+            registry.by_id(999).map(|d| d.status),
             Some(CompactDomainStatus::ActiveIntegration)
         );
         // The real domain 60 builtin stays intact alongside the test lane.

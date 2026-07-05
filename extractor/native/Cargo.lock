@@ -48,6 +48,7 @@ dependencies = [
 name = "collector"
 version = "0.1.0"
 dependencies = [
+ "air_loss_stats_live_lane",
  "air_wings_variants_lifecycle_live_lane",
  "army_battleplans_depth_live_lane",
  "capitulation_war_state_live",
@@ -225,6 +226,7 @@ dependencies = [
 name = "recorder_host"
 version = "0.1.0"
 dependencies = [
+ "air_loss_stats_live_lane",
  "air_wings_variants_lifecycle_live_lane",
  "army_battleplans_depth_live_lane",
  "capitulation_war_state_live",

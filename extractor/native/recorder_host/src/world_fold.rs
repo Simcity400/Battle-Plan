@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use air_loss_stats_live_lane as airloss61;
 use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as ace46;
 use army_battleplans_depth_live_lane as battleplans54;
 use capitulation_war_state_live as capwar60;
@@ -211,6 +212,7 @@ const AIR_VARIANT_UPGRADES_DOMAIN_ID: u16 = 39;
 const STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID: u16 = 40;
 const SPECIAL_PROJECTS_DOMAIN_ID: u16 = 41;
 const AIR_COMBAT_LOSSES_DOMAIN_ID: u16 = 42;
+const AIR_LOSS_STATS_DOMAIN_ID: u16 = airloss61::DOMAIN_ID;
 const FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID: u16 = 45;
 const AIR_VARIANT_ARCHETYPES_DOMAIN_ID: u16 = 46;
 const CHARACTERS_LEADERS_CABINET_DOMAIN_ID: u16 = 47;
@@ -516,7 +518,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 /// The set of domains this fold understands and folds into world state.
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
-    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60,
+    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -652,6 +654,9 @@ pub struct WorldFold {
     air_variant_reserves: BTreeMap<AirVariantReserveKey, AirVariantReserveState>,
     air_superiority_inputs: BTreeMap<AirSuperiorityInputKey, AirSuperiorityInputState>,
     air_combat_losses_this_hour: Option<Vec<AirCombatLossState>>,
+    /// D61 per-country cumulative air-loss statistics from statistic id 23.
+    /// Full-replaced on clean frames and retained on non-clean frames.
+    air_loss_stats: BTreeMap<u32, airloss61::AirLossStatRow>,
     /// Persistent per-wing cumulative scalars (wave-3: air_accidents,
     /// experience), keyed by globally-unique wing_id. Updated by every
     /// scalar-bearing domain-42 row; deleted rows remove their wing.
@@ -831,6 +836,7 @@ impl WorldFold {
             air_variant_reserves: BTreeMap::new(),
             air_superiority_inputs: BTreeMap::new(),
             air_combat_losses_this_hour: None,
+            air_loss_stats: BTreeMap::new(),
             air_wing_cumulative: BTreeMap::new(),
             successful_fold_domains_seen: BTreeSet::new(),
             fold_domains_unknown_this_hour: BTreeSet::new(),
@@ -1592,6 +1598,7 @@ impl WorldFold {
             40 => self.fold_variant_upgrades(payload, STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID),
             41 => self.fold_special_projects(payload),
             42 => self.fold_air_combat_losses(payload),
+            61 => self.fold_air_loss_stats(payload),
             43 => self.fold_market_trade(payload),
             44 => self.fold_supply_logistics_attrition(payload),
             45 => self.fold_focus_research_decisions_depth(payload, record_flags),
@@ -3292,6 +3299,7 @@ impl WorldFold {
         self.insert_air_region_activity(&mut out, unresolved);
         self.insert_air_superiority_inputs(&mut out, unresolved);
         self.insert_air_combat_losses(&mut out, unresolved);
+        self.insert_air_loss_stats(&mut out, unresolved);
         Value::Object(out)
     }
 
@@ -3325,6 +3333,7 @@ impl WorldFold {
         self.insert_air_region_activity(&mut out, unresolved);
         self.insert_air_superiority_inputs(&mut out, unresolved);
         self.insert_air_combat_losses(&mut out, unresolved);
+        self.insert_air_loss_stats(&mut out, unresolved);
         Value::Object(out)
     }
 
@@ -3425,6 +3434,43 @@ impl WorldFold {
                                 "air_accidents": state.air_accidents,
                                 "experience": state.experience_raw as f64 / FIXED_SCALE,
                                 "experience_raw": state.experience_raw,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    fn insert_air_loss_stats(&self, out: &mut Map<String, Value>, unresolved: &mut BTreeSet<u32>) {
+        if self.fold_domain_unknown(AIR_LOSS_STATS_DOMAIN_ID) {
+            out.insert("_r2_air_loss_stats_live".into(), Value::Null);
+        } else if self.fold_domain_seen(AIR_LOSS_STATS_DOMAIN_ID) {
+            out.insert(
+                "_r2_air_loss_stats_live".into(),
+                Value::Array(
+                    self.air_loss_stats
+                        .values()
+                        .map(|row| {
+                            let mut channels = Map::new();
+                            let mut raw = Map::new();
+                            for (index, (_, label)) in airloss61::PINNED_CHANNELS.iter().enumerate()
+                            {
+                                channels.insert(
+                                    (*label).into(),
+                                    json!(
+                                        row.channels[index] as f64 / airloss61::FIELD_SCALE as f64
+                                    ),
+                                );
+                                raw.insert((*label).into(), json!(row.channels[index]));
+                            }
+                            json!({
+                                "country": self.country_ref_json(row.owner_tag_db_id, unresolved),
+                                "owner_tag_db_id": row.owner_tag_db_id,
+                                "country_idx": row.country_idx,
+                                "channels": channels,
+                                "raw": raw,
+                                "scale_raw": airloss61::FIELD_SCALE,
                             })
                         })
                         .collect(),
@@ -5419,6 +5465,34 @@ impl WorldFold {
         }
         self.air_combat_losses_this_hour = Some(rows);
         self.mark_fold_domain_success(AIR_COMBAT_LOSSES_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 61 air_loss_stats_live (per-country cumulative stat-23) ----
+    fn fold_air_loss_stats(&mut self, payload: &[u8]) -> Result<(), String> {
+        let (header, rows) =
+            airloss61::decode_payload_rows(payload).map_err(|errors| errors.join("; "))?;
+        if self.handle_compact_failure(
+            AIR_LOSS_STATS_DOMAIN_ID,
+            "air_loss_stats_live",
+            header.status_flags,
+        ) {
+            return Ok(());
+        }
+        let mut fresh = BTreeMap::new();
+        for row in rows {
+            if row.owner_tag_db_id != row.country_idx {
+                return Err("air_loss_stats_live owner_tag_db_id != country_idx".into());
+            }
+            if fresh.insert(row.owner_tag_db_id, row).is_some() {
+                return Err(format!(
+                    "air_loss_stats_live duplicate country row {}",
+                    row.owner_tag_db_id
+                ));
+            }
+        }
+        self.air_loss_stats = fresh;
+        self.mark_fold_domain_success(AIR_LOSS_STATS_DOMAIN_ID);
         Ok(())
     }
 

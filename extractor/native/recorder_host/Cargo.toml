@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 compact_contract = { path = "../compact_contract" }
+air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
 air_wings_variants_lifecycle_live_lane = { path = "../lanes/air_wings_variants_lifecycle_live" }
 characters_leaders_cabinet_live_lane = { package = "characters_leaders_cabinet_live", path = "../lanes/characters_leaders_cabinet_live" }
 construction_buildings_state_damage_live_lane = { package = "construction_buildings_state_damage_live", path = "../lanes/construction_buildings_state_damage_live" }

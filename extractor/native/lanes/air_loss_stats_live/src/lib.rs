@@ -11,7 +11,7 @@
 //! country_mgr = u64[mgr_array + country_idx*8]
 //! stat_base   = u64[country_mgr + 0x158]        // 89-field aggregate-history array base
 //! loophist    = u64[stat_base + 23*8]           // CLoopHistory* (air = stat key 23)
-//! record      = u64[ u64[loophist+0x10] + 0x30 ]
+//! record      = u64[ u64[loophist+0x20] + 0x30 ]
 //! field[i]    = i64[ u64[record] + i*8 ] / 100000
 //! ```
 //!
@@ -24,19 +24,17 @@
 //!     table to exactly the 1939.12 belligerent set — GER richest, SOV+FIN share the
 //!     Winter-War stat key, ITA at idx 16 carries air key 23; see EVIDENCE_FINISH §B).
 //!   * Any torn/invalid read, a CLoopHistory vtable mismatch, a field_count != 89, an absent
-//!     air stat, or an out-of-bounds value FAILS THE ROW CLOSED (absent, never 0).
+//!     air stat, a failed self-ref/yearly-window guard, or an out-of-bounds
+//!     value FAILS THE ROW CLOSED (absent, never 0).
 //!
 //! SEMANTICS: only the six VALUE-PINNED channels are emitted with labels (the remaining ~18
 //! of the 24 channels are still a residual multi-writer trace — do NOT label them here). The
 //! raw record is available for the labeled indices only; unlabeled fields are intentionally
 //! omitted so the packet never promotes an unproven label.
 //!
-//! SCHEDULING: domain 61 is registered `Reserved` / `schedulable=false` (mirrors domain 58
-//! country_economy_counters). The root chain + binding are proven, but the per-frame air-loss
-//! VALUES cannot be value-validated on the current IRE 1939 fixture (early-game air losses are
-//! ~0; only ITA even carries key 23). Production scheduling of this packet is gated on a
-//! populated fixture (D04 1944, where the prior 89/89 byte-exact value match stands) — see
-//! INTEGRATION_PACKET.md. Until then the packet is defined + tested but not emitted.
+//! SCHEDULING: domain 61 is production-scheduled after the D04 1944 populated
+//! fixture revalidation proved 23/23 countries and 2047/2047 fields against the
+//! melt oracle with the yearly `lh+0x20` cumulative window.
 
 use std::collections::BTreeMap;
 
@@ -50,10 +48,13 @@ pub const MGR_ARRAY_OFF: u64 = 0x30;
 pub const STAT_BASE_OFF: u64 = 0x158;
 pub const AIR_STAT_KEY: u64 = 23;
 pub const LOOPHIST_VTABLE_RVA: u64 = 0x29BBE58;
+pub const LOOPHIST_SELF_REF_OFF: u64 = 0x28;
 pub const LOOPHIST_FIELDCOUNT_OFF: u64 = 0x34;
-pub const LOOPHIST_WINDOW_OFF: u64 = 0x10;
+pub const LOOPHIST_WINDOW_OFF: u64 = 0x20;
 pub const LOOPHIST_RECFLDS_OFF: u64 = 0x30;
+pub const LOOPHIST_WINDOW_CAPACITY_OFF: u64 = 0x20;
 pub const EXPECTED_FIELD_COUNT: u32 = 89;
+pub const EXPECTED_YEARLY_CAPACITY: u32 = 5;
 pub const FIELD_SCALE: i64 = 100_000;
 
 // ---- binding guard offsets (the EXTRACTOR's own country index) ----
@@ -87,9 +88,8 @@ pub const STATUS_OK: u32 = 0;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 0;
 pub const STATUS_BINDING_UNVERIFIED: u32 = 1 << 1;
 pub const STATUS_PARTIAL: u32 = 1 << 2;
-/// Set on every payload emitted before a populated-fixture value validation (the current
-/// state of this packet). A downstream that requires validated data must treat this as
-/// "structure/binding proven, values fixture-gated".
+/// Legacy lane-local status from the pre-promotion packet. Production emission
+/// no longer sets this after D04 1944 value validation.
 pub const STATUS_VALUE_VALIDATION_FIXTURE_REQUIRED: u32 = 1 << 3;
 
 pub const ROW_FLAG_BINDING_VERIFIED: u32 = 1 << 0;
@@ -219,6 +219,87 @@ pub fn decode_payload(payload: &[u8]) -> AirLossGateSummary {
     s
 }
 
+pub fn decode_payload_rows(
+    payload: &[u8],
+) -> Result<(AirLossStatHeader, Vec<AirLossStatRow>), Vec<String>> {
+    let mut errors = Vec::new();
+    if payload.len() < PAYLOAD_HEADER_LEN {
+        return Err(vec![format!(
+            "payload {} < header {}",
+            payload.len(),
+            PAYLOAD_HEADER_LEN
+        )]);
+    }
+    let header = AirLossStatHeader {
+        elapsed_wall_ms: u64::from_le_bytes(payload[0..8].try_into().unwrap()),
+        status_flags: u32::from_le_bytes(payload[12..16].try_into().unwrap()),
+        schema_version: u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+        field_count: u32::from_le_bytes(payload[20..24].try_into().unwrap()),
+    };
+    let declared_rows = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+    let row_len = u32::from_le_bytes(payload[24..28].try_into().unwrap()) as usize;
+    if header.schema_version != SCHEMA_VERSION {
+        errors.push(format!(
+            "schema_version {} != {}",
+            header.schema_version, SCHEMA_VERSION
+        ));
+    }
+    if header.field_count != EXPECTED_FIELD_COUNT {
+        errors.push(format!(
+            "field_count {} != {}",
+            header.field_count, EXPECTED_FIELD_COUNT
+        ));
+    }
+    if row_len != ROW_LEN {
+        errors.push(format!("row_len {} != {}", row_len, ROW_LEN));
+    }
+    let expected_len = PAYLOAD_HEADER_LEN.saturating_add(declared_rows.saturating_mul(ROW_LEN));
+    if payload.len() != expected_len {
+        errors.push(format!(
+            "payload len {} != expected {}",
+            payload.len(),
+            expected_len
+        ));
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut rows = Vec::with_capacity(declared_rows);
+    for i in 0..declared_rows {
+        let o = PAYLOAD_HEADER_LEN + i * ROW_LEN;
+        let flags = u32::from_le_bytes(payload[o + 8..o + 12].try_into().unwrap());
+        if flags & !(ROW_FLAG_BINDING_VERIFIED | ROW_FLAG_STRUCT_VERIFIED) != 0 {
+            errors.push(format!("row {i} has unknown flags {flags:#x}"));
+        }
+        if flags & (ROW_FLAG_BINDING_VERIFIED | ROW_FLAG_STRUCT_VERIFIED)
+            != (ROW_FLAG_BINDING_VERIFIED | ROW_FLAG_STRUCT_VERIFIED)
+        {
+            errors.push(format!("row {i} is missing required validation flags"));
+        }
+        let mut channels = [0i64; 6];
+        for (k, (_, label)) in PINNED_CHANNELS.iter().enumerate() {
+            let vo = o + 16 + k * 8;
+            let raw = i64::from_le_bytes(payload[vo..vo + 8].try_into().unwrap());
+            if raw < 0 || raw > MAX_CHANNEL_RAW {
+                errors.push(format!("row {i} channel {label} raw {raw} out of range"));
+            }
+            channels[k] = raw;
+        }
+        rows.push(AirLossStatRow {
+            owner_tag_db_id: u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()),
+            country_idx: u32::from_le_bytes(payload[o + 4..o + 8].try_into().unwrap()),
+            flags,
+            channels,
+        });
+    }
+    if errors.is_empty() {
+        Ok((header, rows))
+    } else {
+        Err(errors)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // live derivation (fail-closed) — testable via the Mem trait (no live process needed)
 // ---------------------------------------------------------------------------
@@ -289,8 +370,20 @@ pub fn derive_country_row<M: Mem>(
     if mem.u32(loophist + LOOPHIST_FIELDCOUNT_OFF)? != EXPECTED_FIELD_COUNT {
         return None;
     }
+    if mem.u64(loophist + LOOPHIST_SELF_REF_OFF)? != loophist {
+        return None;
+    }
     let window = mem.u64(loophist + LOOPHIST_WINDOW_OFF)?;
+    if !ok_ptr(window) {
+        return None;
+    }
+    if mem.u32(window + LOOPHIST_WINDOW_CAPACITY_OFF)? != EXPECTED_YEARLY_CAPACITY {
+        return None;
+    }
     let recflds = mem.u64(window + LOOPHIST_RECFLDS_OFF)?;
+    if !ok_ptr(recflds) {
+        return None;
+    }
     let arr = mem.u64(recflds)?;
     if !ok_ptr(arr) {
         return None;
@@ -381,8 +474,13 @@ mod tests {
         m.su(country_mgr + STAT_BASE_OFF, stat_base);
         m.su(stat_base + AIR_STAT_KEY * 8, loophist);
         m.su(loophist, BASE + LOOPHIST_VTABLE_RVA);
+        m.su(loophist + LOOPHIST_SELF_REF_OFF, loophist);
         m.sw(loophist + LOOPHIST_FIELDCOUNT_OFF, EXPECTED_FIELD_COUNT);
         m.su(loophist + LOOPHIST_WINDOW_OFF, window);
+        m.sw(
+            window + LOOPHIST_WINDOW_CAPACITY_OFF,
+            EXPECTED_YEARLY_CAPACITY,
+        );
         m.su(window + LOOPHIST_RECFLDS_OFF, recflds);
         m.su(recflds, arr);
         // pinned channel values (planes × scale)
@@ -431,6 +529,20 @@ mod tests {
     fn fails_closed_on_wrong_loophistory_vtable() {
         let mut m = good_image(1);
         m.su(0x2700_0000, BASE + 0x1234);
+        assert!(derive_country_row(&m, BASE, 1).is_none());
+    }
+
+    #[test]
+    fn fails_closed_on_loophistory_self_ref_mismatch() {
+        let mut m = good_image(1);
+        m.su(0x2700_0000 + LOOPHIST_SELF_REF_OFF, 0x2700_0010);
+        assert!(derive_country_row(&m, BASE, 1).is_none());
+    }
+
+    #[test]
+    fn fails_closed_on_yearly_capacity_mismatch() {
+        let mut m = good_image(1);
+        m.sw(0x2800_0000 + LOOPHIST_WINDOW_CAPACITY_OFF, 1);
         assert!(derive_country_row(&m, BASE, 1).is_none());
     }
 
@@ -522,6 +634,23 @@ mod tests {
         let payload = encode_payload(&header, &[]);
         let s = decode_payload(&payload);
         assert!(s.parse_errors.iter().any(|e| e.contains("field_count")));
+    }
+
+    #[test]
+    fn decode_rows_returns_strict_rows() {
+        let row = derive_country_row(&good_image(1), BASE, 1).unwrap();
+        let payload = encode_payload(
+            &AirLossStatHeader {
+                elapsed_wall_ms: 7,
+                status_flags: STATUS_OK,
+                schema_version: SCHEMA_VERSION,
+                field_count: EXPECTED_FIELD_COUNT,
+            },
+            &[row],
+        );
+        let (header, rows) = decode_payload_rows(&payload).expect("strict rows");
+        assert_eq!(header.elapsed_wall_ms, 7);
+        assert_eq!(rows, vec![row]);
     }
 
     #[test]

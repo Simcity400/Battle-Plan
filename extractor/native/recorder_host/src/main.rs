@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+use air_loss_stats_live_lane as airloss61;
 use army_battleplans_depth_live_lane as battleplans54;
 use capitulation_war_state_live as capwar60;
 use characters_leaders_cabinet_live_lane as domain47;
@@ -101,6 +102,7 @@ const COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE: u16 = naval4950::DOMAIN_NAVAL_
 const COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE: u16 = naval4950::DOMAIN_NAVAL_COMBAT_MEMBERS;
 const COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE: u16 = session57::DOMAIN_ID;
 const COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE: u16 = capwar60::DOMAIN_ID;
+const COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE: u16 = airloss61::DOMAIN_ID;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
 #[cfg(test)]
@@ -3342,6 +3344,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE => {
                         decode_compact_capitulation_war_state_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE => {
+                        decode_compact_air_loss_stats_live_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -8567,6 +8576,54 @@ fn decode_compact_capitulation_war_state_live_data_payload(
         "war_rows",
         lane_summary.war_rows as usize,
     );
+}
+
+fn decode_compact_air_loss_stats_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = airloss61::decode_payload(payload);
+    summary.status_flags_or |= lane_summary.status_flags;
+    summary.parse_errors.extend(
+        lane_summary
+            .parse_errors
+            .into_iter()
+            .map(|error| format!("offset {offset}: air_loss_stats_live {error}")),
+    );
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE)
+    {
+        domain.status_flags_or |= lane_summary.status_flags;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.row_count);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.row_count);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE,
+        "air_loss_stat_rows",
+        lane_summary.row_count as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE,
+        "air_loss_binding_verified_rows",
+        lane_summary.binding_verified_rows as usize,
+    );
+    for (label, total) in lane_summary.channel_totals {
+        let count = if total > 0 { total as usize } else { 0 };
+        add_compact_domain_data_unit(
+            summary,
+            COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE,
+            &format!("air_loss_{label}_raw_sum"),
+            count,
+        );
+    }
 }
 
 fn decode_compact_army_battleplans_depth_live_data_payload(
@@ -16148,6 +16205,86 @@ mod tests {
             .parse_errors
             .iter()
             .any(|error| error.contains("running-accumulator badge")));
+    }
+
+    #[test]
+    fn compact_summary_decodes_air_loss_stats_live_data_record() {
+        let row = airloss61::AirLossStatRow {
+            owner_tag_db_id: 16,
+            country_idx: 16,
+            flags: airloss61::ROW_FLAG_BINDING_VERIFIED | airloss61::ROW_FLAG_STRUCT_VERIFIED,
+            channels: [
+                10_400_000,
+                300_000,
+                4_400_000,
+                500_000,
+                900_000,
+                21_872_000_000,
+            ],
+        };
+        let payload = airloss61::encode_payload(
+            &airloss61::AirLossStatHeader {
+                elapsed_wall_ms: 4,
+                status_flags: 0,
+                schema_version: airloss61::SCHEMA_VERSION,
+                field_count: airloss61::EXPECTED_FIELD_COUNT,
+            },
+            &[row],
+        );
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE)
+            .unwrap();
+        assert_eq!(domain.data_record_count, 1);
+        assert_eq!(domain.data_rows_total, 1);
+        assert_eq!(
+            domain.data_units_total.get("air_loss_stat_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("air_loss_our_fighters_lost_raw_sum")
+                .copied(),
+            Some(10_400_000)
+        );
+        assert!(!summary
+            .unfolded_domain_data
+            .contains(&COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE));
+
+        let mut bad_payload = payload;
+        bad_payload[24..28].copy_from_slice(&48u32.to_le_bytes());
+        let mut bad_raw = Vec::new();
+        append_test_compact_record(
+            &mut bad_raw,
+            1,
+            100,
+            COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &bad_payload,
+        );
+        let bad_summary = summarize_compact_stream(&bad_raw);
+        assert!(bad_summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("row_len")));
     }
 
     #[test]

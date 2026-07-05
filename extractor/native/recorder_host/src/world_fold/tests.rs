@@ -1,4 +1,5 @@
 use super::*;
+use air_loss_stats_live_lane as airloss61_lane;
 use characters_leaders_cabinet_live_lane as domain47_lane;
 use compact_contract::{
     calendar::DATE_EPOCH_CONST, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
@@ -7873,6 +7874,89 @@ fn chunk2_malformed_payload_is_rejected_not_treated_as_empty() {
         .unwrap()
         .iter()
         .any(|note| note.as_str().unwrap().contains("domain 42 fold skipped")));
+}
+
+// --- DOMAIN 61 air_loss_stats_live (C1) -----------------------------------
+
+fn air_loss_stats_payload(status_flags: u32, rows: &[airloss61_lane::AirLossStatRow]) -> Vec<u8> {
+    airloss61_lane::encode_payload(
+        &airloss61_lane::AirLossStatHeader {
+            elapsed_wall_ms: 2,
+            status_flags,
+            schema_version: airloss61_lane::SCHEMA_VERSION,
+            field_count: airloss61_lane::EXPECTED_FIELD_COUNT,
+        },
+        rows,
+    )
+}
+
+#[test]
+fn air_loss_stats_folds_value_pinned_country_sidecar() {
+    let row = airloss61_lane::AirLossStatRow {
+        owner_tag_db_id: 16,
+        country_idx: 16,
+        flags: airloss61_lane::ROW_FLAG_BINDING_VERIFIED | airloss61_lane::ROW_FLAG_STRUCT_VERIFIED,
+        channels: [
+            10_400_000,
+            300_000,
+            4_400_000,
+            500_000,
+            900_000,
+            21_872_000_000,
+        ],
+    };
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(16, "D04")])),
+        (61, air_loss_stats_payload(0, &[row])),
+    ]);
+
+    let rows = snap["strategic_air"]["_r2_air_loss_stats_live"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let d04 = &rows[0];
+    assert_eq!(d04["country"], json!("D04"));
+    assert_eq!(d04["owner_tag_db_id"], json!(16));
+    assert_eq!(d04["country_idx"], json!(16));
+    assert_eq!(d04["channels"]["our_fighters_lost"], json!(104.0));
+    assert_eq!(d04["raw"]["our_fighters_lost"], json!(10_400_000));
+    assert_eq!(d04["channels"]["enemy_bombers_disrupted"], json!(218_720.0));
+    assert_eq!(d04["scale_raw"], json!(100_000));
+    assert_eq!(
+        d04["channels"].as_object().unwrap().len(),
+        airloss61_lane::PINNED_CHANNELS.len()
+    );
+    assert!(d04["channels"].get("buildings_bombed").is_none());
+
+    let dom = snap["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap();
+    assert!(dom.iter().any(|d| d == "air_loss_stats_live"));
+}
+
+#[test]
+fn air_loss_stats_non_clean_masks_current_hour_sidecar() {
+    let clean = airloss61_lane::AirLossStatRow {
+        owner_tag_db_id: 16,
+        country_idx: 16,
+        flags: airloss61_lane::ROW_FLAG_BINDING_VERIFIED | airloss61_lane::ROW_FLAG_STRUCT_VERIFIED,
+        channels: [1, 2, 3, 4, 5, 6],
+    };
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(16, "D04")])),
+            (61, air_loss_stats_payload(0, &[clean])),
+        ],
+        vec![
+            (18, country_identity_payload(&[(16, "D04")])),
+            (61, air_loss_stats_payload(COMPACT_STATUS_PARTIAL_DATA, &[])),
+        ],
+    ]);
+    assert!(snaps[0]["strategic_air"]["_r2_air_loss_stats_live"].is_array());
+    assert_eq!(
+        snaps[1]["strategic_air"]["_r2_air_loss_stats_live"],
+        Value::Null
+    );
 }
 
 // --- DOMAIN 60 capitulation_war_state_live (E1) ---------------------------

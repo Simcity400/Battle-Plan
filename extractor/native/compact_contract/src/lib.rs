@@ -860,17 +860,16 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         &[],
     ),
     // C1 (2026-07-05): per-country CUMULATIVE air-combat loss statistics (statistic id 23,
-    // the 89-field CLoopHistory record). Root chain + country_idx binding are proven
-    // (runs/cracklist_c1_air_stats/EVIDENCE.md + EVIDENCE_FINISH); the six value-pinned
-    // channels are labeled. Reserved / not scheduled: the per-frame air-loss VALUES are
-    // fixture-gated (IRE 1939 early-game air losses are ~0) — see
-    // lanes/air_loss_stats_live/INTEGRATION_PACKET.md.
+    // the 89-field CLoopHistory record). The corrected yearly-window chain is
+    // D04 value-validated: 23/23 countries, 2047/2047 fields, 0 mismatches.
+    // Only the six value-pinned channels are labeled; other channels remain
+    // unpromoted.
     domain(
         61,
         "air_loss_stats_live",
         "air_loss_stats_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
         true,
         &[],
     ),
@@ -1050,6 +1049,10 @@ mod tests {
         assert!(
             profile_ids.contains(&57),
             "domain 57 is a validated partial slice"
+        );
+        assert!(
+            profile_ids.contains(&61),
+            "domain 61 is a validated slice with explicit open gaps"
         );
         assert!(
             profile_ids.contains(&54),
