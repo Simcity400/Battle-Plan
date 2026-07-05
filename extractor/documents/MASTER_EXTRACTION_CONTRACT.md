@@ -70,6 +70,7 @@ fixture, but hard); **C** derived → replay layer, not a DLL crack; **D** commi
 - [ ] B7. raids per-raid decode — `CCountryRaidStatus` internal layout (D8: container `RVA 0x29B6198` proven, per-raid UNRESOLVED)
 - [ ] B8. Construction building token/name — resolve numeric type id → token via game-file map (D5 PARTIAL; may be replay-derived)
 - [ ] B9. Subject ratio — `CSubjectRelation+0x60` has no melt oracle to validate against (D4 UNVALIDATED)
+- [ ] B10. `CProgram` owner-tag offset — to attribute the 5 aliased special-project facilities that d65 currently fail-closed drops (W3: production has no oracle to disambiguate shared `CProgramStatus` facility vectors; d65 emits 21/26 single-owner). Needs live D04.
 
 ### C. DERIVED / RECOMPUTE — replay layer, NOT a DLL crack (track the replay-side work)
 - [ ] C1. World tension / average_major_ic / tension_scaling_base_country — derived decayed sum of the threat event list (D3)
