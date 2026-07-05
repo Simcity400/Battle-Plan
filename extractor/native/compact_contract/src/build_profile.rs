@@ -202,6 +202,37 @@ pub const DOMAIN53_SUBJECT_SUBJECT: usize = 0x14;
 pub const DOMAIN53_SUBJECT_STATE_DB: usize = 0x58;
 pub const DOMAIN53_SUBJECT_STATE_NAME: usize = 0x08;
 pub const DOMAIN53_SUBJECT_RATIO: usize = 0x60;
+/// Pointer at `CRelationStatus+0x288` to the heap-allocated `CSubjectRelation`.
+/// The committed inline-window vtable scan never matches (the CSubjectRelation
+/// vtable is NOT embedded inline in the relation object), so subjects must be
+/// reached through this pointer hop. Live-validated 38/38 pairs on 870ebf.
+pub const DOMAIN53_RELATION_SUBJECT_PTR: usize = 0x288;
+/// `CSubjectRelation+0x20` i32 engine-hour subject start_date. Emit RAW; the
+/// replay layer derives the display date (raw = the game calendar hours + a fixed
+/// epoch offset; deltas match the melt to the hour). Live-validated 38/38.
+pub const DOMAIN53_SUBJECT_START_DATE: usize = 0x20;
+
+/// CFactionSystem: `CGameState+0x3F8 -> CFactionSystem`. The faction pointer
+/// array (`CFaction*[]`) begins at `+0x20`; `+0x28` packs the element count as
+/// two u32 fields (size lo32, capacity hi32). Per faction: id/type at `+0x08`
+/// (id = HI32, type = LO32, real factions carry type == 88), display name is an
+/// MSVC std::string at `+0x38`, members are `CCountry*[]` at `+0x58` with a u32
+/// count at `+0x64`, and the leader is `members[0]`. Live-validated 6/6 with
+/// exact member multisets + leaders (GER/ENG/SOV/JAP/CHI/ETH) on 870ebf.
+pub const DOMAIN53_CGAMESTATE_FACTION_SYSTEM: usize = 0x3F8;
+pub const DOMAIN53_FACTION_ARRAY: usize = 0x20;
+pub const DOMAIN53_FACTION_COUNT: usize = 0x28;
+pub const DOMAIN53_FACTION_ID: usize = 0x08;
+pub const DOMAIN53_FACTION_NAME: usize = 0x38;
+pub const DOMAIN53_FACTION_MEMBERS: usize = 0x58;
+pub const DOMAIN53_FACTION_MEMBERS_SIZE: usize = 0x64;
+/// Real factions carry this LO32 type discriminator; the array tail past the
+/// live element count holds nulls/garbage with other type values, so gate on it.
+pub const DOMAIN53_FACTION_TYPE_EXPECTED: u32 = 88;
+/// Upper sanity bound on the faction vector size/capacity (guards a torn count).
+pub const DOMAIN53_FACTION_MAX_SLOTS: u32 = 512;
+/// Upper sanity bound on a faction's member count.
+pub const DOMAIN53_FACTION_MAX_MEMBERS: u32 = 256;
 pub const DOMAIN53_COUNTRY_AGENCY_PTR: usize = 0xFC0;
 pub const DOMAIN53_AGENCY_VTABLE_RVA: usize = 0x296B338;
 pub const DOMAIN53_AGENCY_NAME: usize = 0x80;

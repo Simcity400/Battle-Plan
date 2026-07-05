@@ -175,6 +175,18 @@ const INTEL_NETWORK_GRAPH_TRAILER_VERSION: u16 = 1;
 const INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN: usize = 12;
 const INTEL_NETWORK_GRAPH_ROW_HEADER_LEN: usize = 16;
 
+// `FACS` faction-roster trailer (tail-appended after the base self-delimiting
+// payload; DIAQ/INGR precedent). Per faction: a fixed row header + a
+// variable-length sorted member tag_db_id list. Emitted only when >=1 faction.
+const FACTION_TRAILER_MAGIC: &[u8; 4] = b"FACS";
+const FACTION_TRAILER_VERSION: u16 = 1;
+const FACTION_TRAILER_HEADER_LEN: usize = 12;
+// row header: faction_id u32, faction_type u32, name_hash u32,
+//             leader_tag_db_id u32, member_count u32
+const FACTION_ROW_HEADER_LEN: usize = 20;
+pub const MAX_FACTION_ROWS: usize = 4_096;
+pub const MAX_FACTION_MEMBERS: usize = 256;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyIntelSnapshot {
     pub elapsed_wall_ms: u64,
@@ -199,6 +211,10 @@ pub struct DiplomacyIntelSnapshot {
     pub operation_instances: Vec<OperationInstanceRow>,
     pub incoming_actions: Vec<IncomingActionQueueRow>,
     pub intel_network_graphs: Vec<IntelNetworkGraphRow>,
+    /// Factions from the CFactionSystem. Carried in the `FACS` trailer AFTER the
+    /// self-delimiting base payload — NOT counted in `row_count()`. Absent
+    /// trailer => empty.
+    pub factions: Vec<FactionRow>,
 }
 
 impl DiplomacyIntelSnapshot {
@@ -278,7 +294,25 @@ pub struct SubjectRow {
     pub overlord_tag_db_id: u32,
     pub subject_tag_db_id: u32,
     pub autonomy_state_hash: u32,
+    /// UNVALIDATED — `CSubjectRelation+0x60`; no melt oracle. Emitted for
+    /// completeness but must NOT be treated as validated by consumers.
     pub autonomy_ratio_raw: i32,
+    /// `CSubjectRelation+0x20` i32 engine-hour subject start_date (RAW). The
+    /// replay layer derives the display date. Live-validated 38/38 on 870ebf.
+    pub start_date_raw: i32,
+}
+
+/// A faction from the CFactionSystem (`CGameState+0x3F8`). Members are carried
+/// as a sorted list of country tag_db_ids; the leader is `members[0]` in engine
+/// order (captured separately because the emitted member list is sorted).
+/// Live-validated 6/6 with exact member multisets + leaders on 870ebf.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactionRow {
+    pub faction_id: u32,
+    pub faction_type: u32,
+    pub name_hash: u32,
+    pub leader_tag_db_id: u32,
+    pub member_tag_db_ids: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -466,7 +500,9 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         payload.extend_from_slice(&row.subject_tag_db_id.to_le_bytes());
         payload.extend_from_slice(&row.autonomy_state_hash.to_le_bytes());
         payload.extend_from_slice(&row.autonomy_ratio_raw.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        // Trailing 4 bytes (formerly reserved 0) now carry the validated i32
+        // engine-hour subject start_date. Row length is unchanged (24 bytes).
+        payload.extend_from_slice(&row.start_date_raw.to_le_bytes());
     }
     for row in &snapshot.agencies {
         let mut flags = 0u16;
@@ -592,7 +628,36 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
     append_operation_instance_trailer(&mut payload, &snapshot.operation_instances);
     append_incoming_action_queue_trailer(&mut payload, &snapshot.incoming_actions);
     append_intel_network_graph_trailer(&mut payload, &snapshot.intel_network_graphs);
+    append_faction_trailer(&mut payload, &snapshot.factions);
     payload
+}
+
+/// Append the `FACS` faction-roster trailer after the self-delimiting base
+/// payload. Trailer layout (header_len = 12):
+///   magic "FACS" (4) | version u16 | header_len u16 (=12) | row_count u32
+/// then per faction: {faction_id u32, faction_type u32, name_hash u32,
+/// leader_tag_db_id u32, member_count u32} followed by member_count u32
+/// tag_db_ids (sorted ascending). Emitted only when >=1 faction present.
+fn append_faction_trailer(payload: &mut Vec<u8>, rows: &[FactionRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    payload.extend_from_slice(FACTION_TRAILER_MAGIC);
+    payload.extend_from_slice(&FACTION_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(FACTION_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    for row in rows {
+        payload.extend_from_slice(&row.faction_id.to_le_bytes());
+        payload.extend_from_slice(&row.faction_type.to_le_bytes());
+        payload.extend_from_slice(&row.name_hash.to_le_bytes());
+        payload.extend_from_slice(&row.leader_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(
+            &(row.member_tag_db_ids.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+        );
+        for member in &row.member_tag_db_ids {
+            payload.extend_from_slice(&member.to_le_bytes());
+        }
+    }
 }
 
 /// Wave-5: append the `OPIN` running-operation-instance trailer after the
@@ -773,6 +838,7 @@ struct DecodedTrailers {
     operation_instances: Vec<OperationInstanceRow>,
     incoming_actions: Vec<IncomingActionQueueRow>,
     intel_network_graphs: Vec<IntelNetworkGraphRow>,
+    factions: Vec<FactionRow>,
 }
 
 fn decode_domain53_trailers(
@@ -785,6 +851,7 @@ fn decode_domain53_trailers(
     let mut seen_opin = false;
     let mut seen_diaq = false;
     let mut seen_ingr = false;
+    let mut seen_facs = false;
     while cursor < payload.len() {
         if payload.get(cursor..cursor + 4) == Some(OPERATION_INSTANCE_TRAILER_MAGIC) {
             if seen_opin {
@@ -830,6 +897,18 @@ fn decode_domain53_trailers(
             }
             decoded.intel_network_graphs = rows;
             seen_ingr = true;
+            cursor += consumed;
+        } else if payload.get(cursor..cursor + 4) == Some(FACTION_TRAILER_MAGIC) {
+            if seen_facs {
+                errors.push(format!("offset {offset}: duplicate faction trailer"));
+                return decoded;
+            }
+            let (rows, consumed) = decode_faction_trailer(offset, payload, cursor, errors);
+            if consumed == 0 {
+                return decoded;
+            }
+            decoded.factions = rows;
+            seen_facs = true;
             cursor += consumed;
         } else {
             errors.push(format!(
@@ -1051,6 +1130,123 @@ fn decode_intel_network_graph_trailer(
             network_slot,
             target_tag_db_id: target,
             state_ids,
+        });
+    }
+    (rows, cursor)
+}
+
+/// Decode + gate the `FACS` faction-roster trailer at `trailer_offset`. Strict:
+/// unique faction_id, valid leader/member tag_db_ids, leader present in members,
+/// sorted+deduped member list, exact-end consumption. Returns rows + bytes
+/// consumed (0 on any error).
+fn decode_faction_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    errors: &mut Vec<String>,
+) -> (Vec<FactionRow>, usize) {
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        errors.push(format!(
+            "offset {offset}: faction trailer offset {trailer_offset} beyond payload"
+        ));
+        return (Vec::new(), 0);
+    };
+    if trailer.len() < FACTION_TRAILER_HEADER_LEN {
+        errors.push(format!(
+            "offset {offset}: faction trailer is {} byte(s), expected at least {}",
+            trailer.len(),
+            FACTION_TRAILER_HEADER_LEN
+        ));
+        return (Vec::new(), 0);
+    }
+    if &trailer[0..4] != FACTION_TRAILER_MAGIC {
+        errors.push(format!("offset {offset}: faction trailer magic is invalid"));
+        return (Vec::new(), 0);
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_count = read_u32_le(trailer, 8) as usize;
+    if version != FACTION_TRAILER_VERSION || header_len != FACTION_TRAILER_HEADER_LEN {
+        errors.push(format!(
+            "offset {offset}: faction trailer header shape invalid (version {version}, header_len {header_len})"
+        ));
+        return (Vec::new(), 0);
+    }
+    if row_count > MAX_FACTION_ROWS {
+        errors.push(format!(
+            "offset {offset}: faction row_count {row_count} exceeds {MAX_FACTION_ROWS}"
+        ));
+        return (Vec::new(), 0);
+    }
+
+    let mut rows = Vec::with_capacity(row_count);
+    let mut seen = BTreeSet::new();
+    let mut cursor = FACTION_TRAILER_HEADER_LEN;
+    for _ in 0..row_count {
+        if trailer.len().saturating_sub(cursor) < FACTION_ROW_HEADER_LEN {
+            errors.push(format!(
+                "offset {offset}: faction row header truncated at byte {cursor}"
+            ));
+            return (Vec::new(), 0);
+        }
+        let faction_id = read_u32_le(trailer, cursor);
+        let faction_type = read_u32_le(trailer, cursor + 4);
+        let name_hash = read_u32_le(trailer, cursor + 8);
+        let leader = read_u32_le(trailer, cursor + 12);
+        let member_count = read_u32_le(trailer, cursor + 16) as usize;
+        cursor += FACTION_ROW_HEADER_LEN;
+        if member_count == 0 || member_count > MAX_FACTION_MEMBERS {
+            errors.push(format!(
+                "offset {offset}: faction row has invalid member_count {member_count}"
+            ));
+            return (Vec::new(), 0);
+        }
+        let members_len = member_count.saturating_mul(4);
+        if trailer.len().saturating_sub(cursor) < members_len {
+            errors.push(format!(
+                "offset {offset}: faction member list truncated at byte {cursor}"
+            ));
+            return (Vec::new(), 0);
+        }
+        if !seen.insert(faction_id) {
+            errors.push(format!(
+                "offset {offset}: faction trailer duplicates faction_id {faction_id}"
+            ));
+        }
+        if !valid_tag(leader) {
+            errors.push(format!(
+                "offset {offset}: faction row {faction_id} has invalid leader {leader}"
+            ));
+        }
+        let mut member_tag_db_ids = Vec::with_capacity(member_count);
+        let mut previous = None;
+        for _ in 0..member_count {
+            let member = read_u32_le(trailer, cursor);
+            cursor += 4;
+            if !valid_tag(member) {
+                errors.push(format!(
+                    "offset {offset}: faction row {faction_id} has invalid member {member}"
+                ));
+            }
+            if previous.is_some_and(|last| member <= last) {
+                errors.push(format!(
+                    "offset {offset}: faction row {faction_id} members are not strictly increasing"
+                ));
+            }
+            previous = Some(member);
+            member_tag_db_ids.push(member);
+        }
+        if !member_tag_db_ids.contains(&leader) {
+            errors.push(format!(
+                "offset {offset}: faction row {faction_id} leader {leader} not present in members"
+            ));
+        }
+        rows.push(FactionRow {
+            faction_id,
+            faction_type,
+            name_hash,
+            leader_tag_db_id: leader,
+            member_tag_db_ids,
         });
     }
     (rows, cursor)
@@ -1324,6 +1520,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut incoming_action_queue_recipients = BTreeSet::new();
     let mut intel_network_graph_rows = 0usize;
     let mut intel_network_graph_state_rows = 0usize;
+    let mut faction_rows = 0usize;
+    let mut faction_member_rows = 0usize;
     if cursor != payload.len() {
         let trailer_rows =
             decode_domain53_trailers(offset, payload, cursor, &mut summary.parse_errors);
@@ -1350,6 +1548,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             .intel_network_graphs
             .iter()
             .map(|row| row.state_ids.len())
+            .sum();
+        faction_rows = trailer_rows.factions.len();
+        faction_member_rows = trailer_rows
+            .factions
+            .iter()
+            .map(|row| row.member_tag_db_ids.len())
             .sum();
     }
     add_unit(
@@ -1387,6 +1591,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         "intel_network_graph_state_rows",
         intel_network_graph_state_rows,
     );
+    add_unit(&mut summary, "faction_rows", faction_rows);
+    add_unit(&mut summary, "faction_member_rows", faction_member_rows);
     if decoded_counts != expected_counts {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel per-kind counts decoded {:?} != header {:?}",
@@ -1544,6 +1750,7 @@ pub fn decode_snapshot_payload(
                     subject_tag_db_id: read_u32_le(payload, cursor + 8),
                     autonomy_state_hash: read_u32_le(payload, cursor + 12),
                     autonomy_ratio_raw: read_i32_le(payload, cursor + 16),
+                    start_date_raw: read_i32_le(payload, cursor + 20),
                 });
             }
             KIND_AGENCY => {
@@ -1648,6 +1855,7 @@ pub fn decode_snapshot_payload(
         snapshot.operation_instances = trailers.operation_instances;
         snapshot.incoming_actions = trailers.incoming_actions;
         snapshot.intel_network_graphs = trailers.intel_network_graphs;
+        snapshot.factions = trailers.factions;
         if !trailer_errors.is_empty() {
             return Err(trailer_errors);
         }
@@ -1974,7 +2182,7 @@ fn validate_subject_row(
     let subject = read_u32_le(payload, cursor + 8);
     let autonomy_state_hash = read_u32_le(payload, cursor + 12);
     let autonomy_ratio_raw = read_i32_le(payload, cursor + 16);
-    let reserved = read_u32_le(payload, cursor + 20);
+    let start_date_raw = read_i32_le(payload, cursor + 20);
     if flags != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: subject row {row_index} has unknown flags {flags}"
@@ -1996,9 +2204,11 @@ fn validate_subject_row(
             "offset {offset}: subject row {row_index} has invalid autonomy_ratio_raw {autonomy_ratio_raw}"
         ));
     }
-    if reserved != 0 {
+    // start_date_raw is an i32 engine-hour count; a subject cannot start before
+    // the epoch, so gate strictly positive. Fail-closed on a torn/zero value.
+    if start_date_raw <= 0 {
         summary.parse_errors.push(format!(
-            "offset {offset}: subject row {row_index} reserved field is nonzero"
+            "offset {offset}: subject row {row_index} has non-positive start_date_raw {start_date_raw}"
         ));
     }
 }
@@ -3028,6 +3238,204 @@ mod tests {
         assert_eq!(decoded.intel_network_graphs, snapshot.intel_network_graphs);
     }
 
+    // === FACS faction trailer (melt-anchored: D04 1944.2.11 had 6 factions;
+    // ids {1,2,3,5,6,7}, leaders GER/ENG/SOV/JAP/CHI/ETH = members[0], member
+    // counts {18,31,3,8,10,1}). Synthetic tag_db_ids stand in for the real tags
+    // but the faction id/count/leader shape mirrors the melt exactly. ===
+    fn melt_faction_rows() -> Vec<FactionRow> {
+        // (faction_id, leader_tag_db_id, member_count) taken from the melt.
+        // Member tag_db_ids are disjoint blocks of 100 within the valid tag
+        // range [1, MAX_TAG_DB_ID(=2048)]; the leader is the block's first tag.
+        let shape = [
+            (1u32, 100u32, 18usize),
+            (2, 200, 31),
+            (3, 400, 3),
+            (5, 600, 10),
+            (6, 800, 8),
+            (7, 1000, 1),
+        ];
+        shape
+            .iter()
+            .map(|(fid, leader, count)| {
+                // Members are the leader plus (count-1) other distinct in-range
+                // tags, sorted ascending (decoder requires strictly-increasing).
+                let mut members: Vec<u32> = (0..*count as u32).map(|k| *leader + k).collect();
+                members.sort_unstable();
+                members.dedup();
+                FactionRow {
+                    faction_id: *fid,
+                    faction_type: 88,
+                    name_hash: stable_hash32(&format!("faction_{fid}")),
+                    leader_tag_db_id: *leader,
+                    member_tag_db_ids: members,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn faction_trailer_round_trips_six_melt_factions() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.factions = melt_faction_rows();
+        let payload = encode_payload(&snapshot);
+        assert!(payload
+            .windows(4)
+            .any(|window| window == FACTION_TRAILER_MAGIC));
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        // 6 factions, 18+31+3+10+8+1 = 71 member rows total.
+        assert_eq!(
+            summary.data_units_total.get("faction_rows").copied(),
+            Some(6)
+        );
+        assert_eq!(
+            summary.data_units_total.get("faction_member_rows").copied(),
+            Some(71)
+        );
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert_eq!(decoded.factions, snapshot.factions);
+        // Leader is members[0] in the melt; verify each decoded leader is a
+        // member and the member counts match the melt shape.
+        let counts: Vec<usize> = decoded
+            .factions
+            .iter()
+            .map(|f| f.member_tag_db_ids.len())
+            .collect();
+        assert_eq!(counts, vec![18, 31, 3, 10, 8, 1]);
+        for f in &decoded.factions {
+            assert!(f.member_tag_db_ids.contains(&f.leader_tag_db_id));
+            assert_eq!(f.faction_type, 88);
+        }
+    }
+
+    #[test]
+    fn faction_trailer_rejects_unsorted_members() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.factions = vec![FactionRow {
+            faction_id: 1,
+            faction_type: 88,
+            name_hash: stable_hash32("Axis"),
+            leader_tag_db_id: 10,
+            // Not strictly increasing.
+            member_tag_db_ids: vec![10, 30, 20],
+        }];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("members are not strictly increasing")));
+    }
+
+    #[test]
+    fn faction_trailer_rejects_leader_not_in_members() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.factions = vec![FactionRow {
+            faction_id: 1,
+            faction_type: 88,
+            name_hash: stable_hash32("Axis"),
+            leader_tag_db_id: 99,
+            member_tag_db_ids: vec![10, 20, 30],
+        }];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("leader 99 not present in members")));
+    }
+
+    #[test]
+    fn faction_trailer_rejects_duplicate_faction_id() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.factions = vec![
+            FactionRow {
+                faction_id: 1,
+                faction_type: 88,
+                name_hash: stable_hash32("Axis"),
+                leader_tag_db_id: 10,
+                member_tag_db_ids: vec![10, 20],
+            },
+            FactionRow {
+                faction_id: 1,
+                faction_type: 88,
+                name_hash: stable_hash32("Allies"),
+                leader_tag_db_id: 30,
+                member_tag_db_ids: vec![30, 40],
+            },
+        ];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("duplicates faction_id 1")));
+    }
+
+    #[test]
+    fn no_factions_emits_no_facs_trailer() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.factions = Vec::new();
+        let payload = encode_payload(&snapshot);
+        assert!(!payload
+            .windows(4)
+            .any(|window| window == FACTION_TRAILER_MAGIC));
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert!(decoded.factions.is_empty());
+    }
+
+    #[test]
+    fn subject_start_date_round_trips() {
+        // Melt: GER->DEN autonomy_reichsprotectorate started 1940.2.14.20, which
+        // is engine-hour raw 60_795_475 (DATE_EPOCH_CONST + calendar hours).
+        let mut snapshot = fixture_snapshot();
+        snapshot.subjects = vec![SubjectRow {
+            overlord_tag_db_id: 1,
+            subject_tag_db_id: 22,
+            autonomy_state_hash: stable_hash32("autonomy_reichsprotectorate"),
+            autonomy_ratio_raw: 40_000,
+            start_date_raw: 60_795_475,
+        }];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert_eq!(decoded.subjects.len(), 1);
+        assert_eq!(decoded.subjects[0].start_date_raw, 60_795_475);
+        // The shared calendar decodes the raw to the exact melt date.
+        assert_eq!(
+            compact_contract::calendar::date_from_raw(decoded.subjects[0].start_date_raw)
+                .as_deref(),
+            Some("1940.2.14.20")
+        );
+    }
+
+    #[test]
+    fn subject_rejects_non_positive_start_date() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.subjects = vec![SubjectRow {
+            overlord_tag_db_id: 1,
+            subject_tag_db_id: 22,
+            autonomy_state_hash: stable_hash32("autonomy_puppet"),
+            autonomy_ratio_raw: 40_000,
+            start_date_raw: 0,
+        }];
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("non-positive start_date_raw")));
+    }
+
     #[test]
     fn intel_network_graph_trailer_rejects_duplicate_slot() {
         let mut snapshot = fixture_snapshot();
@@ -3154,6 +3562,7 @@ mod tests {
                 subject_tag_db_id: 22,
                 autonomy_state_hash: stable_hash32("autonomy_puppet"),
                 autonomy_ratio_raw: 40_000,
+                start_date_raw: 60_795_475,
             }],
             agencies: vec![AgencyRow {
                 owner_tag_db_id: 1,
@@ -3284,6 +3693,7 @@ mod tests {
             operation_instances: Vec::new(),
             incoming_actions: Vec::new(),
             intel_network_graphs: Vec::new(),
+            factions: Vec::new(),
         }
     }
 }

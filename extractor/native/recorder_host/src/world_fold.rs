@@ -796,6 +796,7 @@ struct Domain53WorldOverlay {
     operation_instances: Vec<diplomacy53::compact::OperationInstanceRow>,
     incoming_actions: Vec<diplomacy53::compact::IncomingActionQueueRow>,
     intel_network_graphs: Vec<diplomacy53::compact::IntelNetworkGraphRow>,
+    factions: Vec<diplomacy53::compact::FactionRow>,
 }
 
 #[derive(Default, Clone)]
@@ -2663,13 +2664,49 @@ impl WorldFold {
                         .subjects
                         .iter()
                         .map(|row| {
+                            let start_date = compact_contract::calendar::date_from_raw(
+                                row.start_date_raw,
+                            )
+                            .map(Value::from)
+                            .unwrap_or(Value::Null);
                             json!({
                                 "overlord": self.country_ref_json(row.overlord_tag_db_id, unresolved),
                                 "subject": self.country_ref_json(row.subject_tag_db_id, unresolved),
                                 "overlord_tag_db_id": row.overlord_tag_db_id,
                                 "subject_tag_db_id": row.subject_tag_db_id,
                                 "autonomy_state_hash": row.autonomy_state_hash,
+                                // ratio has no melt oracle — carried UNVALIDATED.
                                 "autonomy_ratio_raw": row.autonomy_ratio_raw,
+                                "start_date": start_date,
+                                "start_date_raw": row.start_date_raw,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if !self.domain53_world_overlay_this_hour.factions.is_empty() {
+            extra.insert(
+                "faction_rows".into(),
+                Value::Array(
+                    self.domain53_world_overlay_this_hour
+                        .factions
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "faction_id": row.faction_id,
+                                "faction_type": row.faction_type,
+                                "name_hash": row.name_hash,
+                                "leader": self.country_ref_json(row.leader_tag_db_id, unresolved),
+                                "leader_tag_db_id": row.leader_tag_db_id,
+                                "member_tag_db_ids": row.member_tag_db_ids.clone(),
+                                "members": Value::Array(
+                                    row.member_tag_db_ids
+                                        .iter()
+                                        .map(|tag| self.country_ref_json(*tag, unresolved))
+                                        .collect(),
+                                ),
+                                "member_count": row.member_tag_db_ids.len(),
                             })
                         })
                         .collect(),
@@ -9039,6 +9076,7 @@ impl WorldFold {
             operation_instances: decoded.operation_instances,
             incoming_actions: decoded.incoming_actions,
             intel_network_graphs: decoded.intel_network_graphs,
+            factions: decoded.factions,
         };
         self.domain53_known_this_hour = true;
         self.mark_fold_domain_success(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);

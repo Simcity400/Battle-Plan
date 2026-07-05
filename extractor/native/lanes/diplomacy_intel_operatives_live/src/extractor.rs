@@ -1,6 +1,6 @@
 use crate::compact::{
     decode_payload, encode_payload, AgencyCapacityClusterRow, AgencyRow, CountryDiplomacyRow,
-    CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, IncomingActionQueueRow,
+    CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, FactionRow, IncomingActionQueueRow,
     IntelMapRow, IntelNetworkGraphRow, OperationAnchorRow, OperationInstanceRow, OperativeRow,
     OpinionRow, RelationFlagRow, StateEventRow, SubjectRow, WarRelationRow, DOMAIN_ID_PROPOSED,
     MAX_ACTION_DATE_HOURS, MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES,
@@ -38,6 +38,9 @@ pub const SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF: u64 = 1 << 9;
 pub const SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF: u64 = 1 << 10;
 pub const SOURCE_PROOF_FACTION_GROUP_870EBF: u64 = 1 << 11;
 pub const SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF: u64 = 1 << 12;
+/// CFactionSystem roster (`CGameState+0x3F8`) — faction id/type/name/members/
+/// leader. Distinct from SOURCE_PROOF_FACTION_GROUP (per-country ideology bucket).
+pub const SOURCE_PROOF_FACTION_SYSTEM_870EBF: u64 = 1 << 13;
 
 pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -51,7 +54,8 @@ pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
     | SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF
     | SOURCE_PROOF_FACTION_GROUP_870EBF
-    | SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF;
+    | SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF
+    | SOURCE_PROOF_FACTION_SYSTEM_870EBF;
 
 pub const CURRENT_VALIDATED_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -62,7 +66,8 @@ pub const CURRENT_VALIDATED_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_WAR_ROOT_870EBF
     | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
     | SOURCE_PROOF_FACTION_GROUP_870EBF
-    | SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF;
+    | SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF
+    | SOURCE_PROOF_FACTION_SYSTEM_870EBF;
 
 const RTTI_CCOUNTRY: &str = "CCountry";
 const RTTI_CINTELLIGENCE_AGENCY: &str = "CIntelligenceAgency";
@@ -143,6 +148,8 @@ pub struct ExtractedDomain53Rows {
     pub operation_instances: Vec<OperationInstanceRow>,
     pub incoming_actions: Vec<IncomingActionQueueRow>,
     pub intel_network_graphs: Vec<IntelNetworkGraphRow>,
+    /// CFactionSystem roster (carried in the FACS trailer).
+    pub factions: Vec<FactionRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,6 +268,7 @@ struct AgencyRootRead {
 #[derive(Clone, Debug)]
 struct Domain53FrameRoots {
     module_base: u64,
+    game_state: u64,
     current_game_hour: u32,
     countries: Vec<CountryRoot>,
 }
@@ -396,6 +404,7 @@ fn resolve_domain53_frame_roots<M: Domain53Memory>(
 
     Ok(Domain53FrameRoots {
         module_base,
+        game_state,
         current_game_hour,
         countries,
     })
@@ -407,6 +416,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     discovery: &Domain53Discovery,
 ) -> Result<ExtractedDomain53Frame, ExtractError> {
     let module_base = roots.module_base;
+    let game_state = roots.game_state;
     let current_game_hour = roots.current_game_hour;
     let countries = roots.countries;
     let mut acc = RowAccumulator::default();
@@ -457,7 +467,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         }
     }
 
-    read_relation_rows(mem, module_base, &countries, &mut acc)?;
+    read_relation_rows(mem, module_base, current_game_hour, &countries, &mut acc)?;
     let relation_rows =
         acc.rows.opinions.len() + acc.rows.relation_flags.len() + acc.rows.subjects.len();
     if relation_rows == 0 {
@@ -467,6 +477,15 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     }
     family_counts.relation_rows = relation_rows.min(u32::MAX as usize) as u32;
     source_proofs |= SOURCE_PROOF_RELATION_ROOTS_870EBF;
+
+    // CFactionSystem roster (id/type/name/members/leader). Non-fatal: a
+    // structurally-invalid faction system leaves the roster empty (no proof),
+    // never fails the whole frame.
+    let faction_rows = read_faction_rows(mem, module_base, game_state, &countries)?;
+    if !faction_rows.is_empty() {
+        acc.rows.factions = faction_rows;
+        source_proofs |= SOURCE_PROOF_FACTION_SYSTEM_870EBF;
+    }
 
     read_incoming_action_queue_rows(mem, module_base, current_game_hour, &countries, &mut acc)?;
     source_proofs |= SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF;
@@ -728,6 +747,186 @@ fn read_faction_groups<M: Domain53Memory>(
     }
 }
 
+/// Read the CFactionSystem roster: `CGameState+0x3F8 -> CFactionSystem`, faction
+/// pointer array at `+0x20`, live element count at `+0x28` (lo32=size,
+/// hi32=capacity). Per faction: id/type at `+0x08` (id=HI32, type=LO32; real
+/// factions carry type==88), name MSVC string at `+0x38`, members `CCountry*[]`
+/// at `+0x58` with a u32 count at `+0x64`, leader = members[0]. Member country
+/// pointers resolve to their tag_db_id (echo-checked against a validated
+/// CCountry). Fail-closed: a torn/implausible header or member array yields no
+/// factions (never a fabricated roster).
+fn read_faction_rows<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    game_state: u64,
+    countries: &[CountryRoot],
+) -> Result<Vec<FactionRow>, ExtractError> {
+    let valid_country_tags: BTreeSet<u32> =
+        countries.iter().map(|country| country.tag_db_id).collect();
+
+    let faction_system = match mem.read_u64(add_addr(
+        game_state,
+        profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM,
+    )?) {
+        Ok(value) if is_heap_ptr(value) => value,
+        // No faction system resident — not an error; emit no roster.
+        Ok(_) => return Ok(Vec::new()),
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let array_base = match mem.read_u64(add_addr(faction_system, profile::DOMAIN53_FACTION_ARRAY)?)
+    {
+        Ok(value) if is_heap_ptr(value) => value,
+        _ => return Ok(Vec::new()),
+    };
+    // +0x28 packs {size: u32, capacity: u32}.
+    let packed_count =
+        match mem.read_u64(add_addr(faction_system, profile::DOMAIN53_FACTION_COUNT)?) {
+            Ok(value) => value,
+            Err(_) => return Ok(Vec::new()),
+        };
+    let size = (packed_count & 0xFFFF_FFFF) as u32;
+    let capacity = ((packed_count >> 32) & 0xFFFF_FFFF) as u32;
+    if size == 0 || size > capacity || capacity > profile::DOMAIN53_FACTION_MAX_SLOTS {
+        return Ok(Vec::new());
+    }
+
+    let expected_country_vtable = add_addr(module_base, profile::DOMAIN53_COUNTRY_VTABLE_RVA)?;
+    let mut rows = Vec::new();
+    let mut seen_ids = BTreeSet::new();
+    // `size` is the EXACT live faction count (the array tail past it holds
+    // garbage, but it is NOT inside `0..size`). Therefore every counted slot
+    // MUST resolve to a well-formed faction; ANY anomaly is a torn/corrupt read,
+    // so we FAIL CLOSED for the whole roster (return an empty Vec, no partial or
+    // truncated roster is ever emitted). `read_faction_row` returns `None` on
+    // such an anomaly.
+    for slot in 0..size {
+        let slot_addr = array_base
+            .checked_add(u64::from(slot) * 8)
+            .ok_or(ExtractError::InvalidRoot("domain53_faction_array_overflow"))?;
+        match read_faction_row(
+            mem,
+            slot_addr,
+            expected_country_vtable,
+            &valid_country_tags,
+            &mut seen_ids,
+        )? {
+            Some(row) => rows.push(row),
+            // A single malformed faction in the counted range means the roster
+            // read is torn — abandon the whole roster (fail closed).
+            None => return Ok(Vec::new()),
+        }
+    }
+    Ok(rows)
+}
+
+/// Read one CFaction from `slot_addr` (a `CFaction*` array slot). Returns
+/// `Ok(None)` if the faction is malformed in any way (the caller treats that as
+/// a torn roster and fails closed). Never fabricates.
+fn read_faction_row<M: Domain53Memory>(
+    mem: &M,
+    slot_addr: u64,
+    expected_country_vtable: u64,
+    valid_country_tags: &BTreeSet<u32>,
+    seen_ids: &mut BTreeSet<u32>,
+) -> Result<Option<FactionRow>, ExtractError> {
+    let faction_ptr = match mem.read_u64(slot_addr) {
+        Ok(value) if is_heap_ptr(value) => value,
+        _ => return Ok(None),
+    };
+    let raw_id = match mem.read_u64(add_addr(faction_ptr, profile::DOMAIN53_FACTION_ID)?) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let faction_type = (raw_id & 0xFFFF_FFFF) as u32;
+    let faction_id = ((raw_id >> 32) & 0xFFFF_FFFF) as u32;
+    // Real factions carry type == 88 and a nonzero id. A different type inside
+    // the counted range is a corrupt read.
+    if faction_type != profile::DOMAIN53_FACTION_TYPE_EXPECTED || faction_id == 0 {
+        return Ok(None);
+    }
+    if !seen_ids.insert(faction_id) {
+        return Ok(None);
+    }
+
+    let member_count = match mem.read_u32(add_addr(
+        faction_ptr,
+        profile::DOMAIN53_FACTION_MEMBERS_SIZE,
+    )?) {
+        Ok(value) if value > 0 && value <= profile::DOMAIN53_FACTION_MAX_MEMBERS => value,
+        _ => return Ok(None),
+    };
+    let members_base = match mem.read_u64(add_addr(faction_ptr, profile::DOMAIN53_FACTION_MEMBERS)?)
+    {
+        Ok(value) if is_heap_ptr(value) => value,
+        _ => return Ok(None),
+    };
+
+    let mut leader_tag_db_id = 0u32;
+    let mut member_tag_db_ids = Vec::with_capacity(member_count as usize);
+    for member_slot in 0..member_count {
+        let member_slot_addr = members_base.checked_add(u64::from(member_slot) * 8).ok_or(
+            ExtractError::InvalidRoot("domain53_faction_member_overflow"),
+        )?;
+        let member_ptr = match mem.read_u64(member_slot_addr) {
+            Ok(value) if is_heap_ptr(value) => value,
+            _ => return Ok(None),
+        };
+        // Echo-check: the member must be a validated CCountry.
+        match mem.read_u64(member_ptr) {
+            Ok(vtable) if vtable == expected_country_vtable => {}
+            _ => return Ok(None),
+        }
+        let member_tag = match mem.read_u32(add_addr(member_ptr, profile::DOMAIN53_OBJ_TAG_DB_ID)?)
+        {
+            Ok(value) if valid_tag_db_id(value) && valid_country_tags.contains(&value) => value,
+            _ => return Ok(None),
+        };
+        // Leader is members[0] in engine order (captured BEFORE sorting the
+        // emitted member list).
+        if member_slot == 0 {
+            leader_tag_db_id = member_tag;
+        }
+        member_tag_db_ids.push(member_tag);
+    }
+    if leader_tag_db_id == 0 {
+        return Ok(None);
+    }
+
+    // Name is a display string; hash it (DIAQ/INGR string convention). A
+    // missing/invalid name hashes a stable sentinel so downstream never sees a
+    // fabricated value.
+    let name_hash = match read_msvc_string(
+        mem,
+        add_addr(faction_ptr, profile::DOMAIN53_FACTION_NAME)?,
+        128,
+    ) {
+        StringRead::Value(value) => crate::compact::stable_hash32(&value),
+        StringRead::Missing => crate::compact::stable_hash32("faction_name_unknown"),
+        StringRead::Invalid => crate::compact::stable_hash32("faction_name_invalid_utf8"),
+    };
+
+    // Emit the member list sorted+deduped (the FACS trailer decoder requires
+    // strictly-increasing members); the leader is carried separately. A member
+    // list that dedups shorter than the engine count means a duplicate member —
+    // treat as corrupt.
+    member_tag_db_ids.sort_unstable();
+    member_tag_db_ids.dedup();
+    if member_tag_db_ids.len() != member_count as usize
+        || !member_tag_db_ids.contains(&leader_tag_db_id)
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(FactionRow {
+        faction_id,
+        faction_type,
+        name_hash,
+        leader_tag_db_id,
+        member_tag_db_ids,
+    }))
+}
+
 fn resolve_country_roots<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
@@ -793,6 +992,7 @@ fn resolve_country_roots<M: Domain53Memory>(
 fn read_relation_rows<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
+    current_game_hour: u32,
     countries: &[CountryRoot],
     acc: &mut RowAccumulator,
 ) -> Result<(), ExtractError> {
@@ -864,6 +1064,26 @@ fn read_relation_rows<M: Domain53Memory>(
                 }
             }
 
+            // Subject (puppet) relations are NOT embedded inline in the relation
+            // object on this build: `CRelationStatus+0x288` is a POINTER to a
+            // heap `CSubjectRelation`. The committed inline vtable scan therefore
+            // never matched (0 subjects). Read the pointer hop directly, gated on
+            // the CSubjectRelation vtable + a valid (overlord,subject) pair that
+            // agrees with the current relation-table direction; emit exactly once
+            // from the overlord's own table entry (the subject's mirrored entry
+            // shares the same object and is skipped).
+            read_subject_relation(
+                mem,
+                module_base,
+                relation_entry,
+                src.tag_db_id,
+                target.tag_db_id,
+                current_game_hour,
+                acc,
+                &mut seen_subjects,
+                &mut seen_flags,
+            );
+
             let scan_bytes = profile::DOMAIN53_RELATION_SCAN_BYTES;
             let bytes = match mem.read_bytes(relation_entry, scan_bytes) {
                 Ok(bytes) => bytes,
@@ -880,12 +1100,10 @@ fn read_relation_rows<M: Domain53Memory>(
                         .expect("qword scan slice"),
                 );
                 if let Some(flag_kind) = relation_vtables.get(&qword).copied() {
-                    let object_addr = relation_entry.checked_add(offset as u64).ok_or(
-                        ExtractError::InvalidRoot("domain53_relation_object_overflow"),
-                    )?;
-                    if flag_kind == REL_KIND_PUPPET {
-                        read_subject_relation(mem, object_addr, acc, &mut seen_subjects);
-                    } else {
+                    // PUPPET is handled by the +0x288 pointer hop above (its
+                    // vtable is never inline); skip it here to avoid a spurious
+                    // inline match and duplicate flag row.
+                    if flag_kind != REL_KIND_PUPPET {
                         let key = (src.tag_db_id, target.tag_db_id, flag_kind);
                         if seen_flags.insert(key) {
                             acc.rows.relation_flags.push(RelationFlagRow {
@@ -913,19 +1131,95 @@ fn read_relation_rows<M: Domain53Memory>(
     Ok(())
 }
 
+/// Read a subject (puppet) relation through the `CRelationStatus+0x288` pointer
+/// hop and emit a subject row + its puppet relation flag. Called once per
+/// relation-table entry `(src, target)`. The `CSubjectRelation` object is shared
+/// between the overlord's and the subject's mirrored table entries, so we emit
+/// ONLY from the overlord's own entry (`src == overlord && target == subject`);
+/// the mirror direction is silently ignored. Fail-closed: absent pointer →
+/// nothing; torn/short read or an object whose fields disagree with the
+/// relation-table direction → skip (never fabricate).
+#[allow(clippy::too_many_arguments)]
 fn read_subject_relation<M: Domain53Memory>(
     mem: &M,
-    object_addr: u64,
+    module_base: u64,
+    relation_entry: u64,
+    src_tag_db_id: u32,
+    target_tag_db_id: u32,
+    current_game_hour: u32,
     acc: &mut RowAccumulator,
     seen_subjects: &mut BTreeSet<(u32, u32)>,
+    seen_flags: &mut BTreeSet<(u32, u32, u16)>,
 ) {
+    // The subject pointer at +0x288 is absent for the vast majority of relation
+    // entries (only actual overlord/subject pairs carry one). Resolve the field
+    // address fail-closed (an overflow here would be a corrupt relation_entry).
+    let subject_ptr_addr = match add_addr(relation_entry, profile::DOMAIN53_RELATION_SUBJECT_PTR) {
+        Ok(value) => value,
+        Err(_) => {
+            acc.skip();
+            return;
+        }
+    };
+    let subject_ptr = match mem.read_u64(subject_ptr_addr) {
+        Ok(value) => value,
+        // A torn/short read of the pointer field is a real failure — count it so
+        // the fail-closed majority gate can react (do NOT silently omit).
+        Err(_) => {
+            acc.skip();
+            return;
+        }
+    };
+    // A null / non-heap pointer is the normal non-puppet case — return quietly
+    // WITHOUT a skip so every non-puppet relation does not perturb the gate.
+    if !is_heap_ptr(subject_ptr) {
+        return;
+    }
+    // Primary type guard: the pointed object must be a CSubjectRelation.
+    let expected_vtable = match add_addr(module_base, profile::DOMAIN53_REL_SUBJECT_VTABLE_RVA) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    match mem.read_u64(subject_ptr) {
+        Ok(vtable) if vtable == expected_vtable => {}
+        // A readable but wrong vtable is a TYPE REJECTION, not a torn read: this
+        // +0x288 slot simply is not a CSubjectRelation for this relation kind.
+        // Return quietly (do NOT count a skip) — same as an inline flag-scan
+        // vtable miss. Counting it would fail-close the frame on benign
+        // non-subject data.
+        Ok(_) => return,
+        // An UNreadable vtable at a heap pointer we already dereferenced is a
+        // torn read → count a skip so the fail-closed gate can react.
+        Err(_) => {
+            acc.skip();
+            return;
+        }
+    }
+
     let read = (|| -> Result<SubjectRow, ExtractError> {
-        let overlord = mem.read_u32(add_addr(object_addr, profile::DOMAIN53_SUBJECT_OVERLORD)?)?;
-        let subject = mem.read_u32(add_addr(object_addr, profile::DOMAIN53_SUBJECT_SUBJECT)?)?;
+        let overlord = mem.read_u32(add_addr(subject_ptr, profile::DOMAIN53_SUBJECT_OVERLORD)?)?;
+        let subject = mem.read_u32(add_addr(subject_ptr, profile::DOMAIN53_SUBJECT_SUBJECT)?)?;
         if !valid_tag_db_id(overlord) || !valid_tag_db_id(subject) || overlord == subject {
             return Err(ExtractError::InvalidRoot("domain53_subject_tag_invalid"));
         }
-        let state_db = mem.read_u64(add_addr(object_addr, profile::DOMAIN53_SUBJECT_STATE_DB)?)?;
+        // Direction consistency. The SAME CSubjectRelation object is reachable
+        // from BOTH the overlord's table entry (src==overlord && target==subject)
+        // and the subject's mirrored entry (src==subject && target==overlord).
+        //   * overlord entry  -> emit (below).
+        //   * mirror entry     -> benign expected duplicate: skip WITHOUT counting
+        //     a skipped row (distinct sentinel, matched separately).
+        //   * anything else    -> the +0x288 pointer of THIS relation entry points
+        //     at a CSubjectRelation for an UNRELATED pair: that is a real
+        //     inconsistency, so fall through to a counted skip.
+        if src_tag_db_id == subject && target_tag_db_id == overlord {
+            return Err(ExtractError::InvalidRoot("domain53_subject_direction_skip"));
+        }
+        if src_tag_db_id != overlord || target_tag_db_id != subject {
+            return Err(ExtractError::InvalidRoot(
+                "domain53_subject_direction_mismatch",
+            ));
+        }
+        let state_db = mem.read_u64(add_addr(subject_ptr, profile::DOMAIN53_SUBJECT_STATE_DB)?)?;
         let state_hash = if is_heap_ptr(state_db) {
             match read_msvc_string(
                 mem,
@@ -942,21 +1236,59 @@ fn read_subject_relation<M: Domain53Memory>(
         } else {
             crate::compact::stable_hash32("autonomy_state_unknown")
         };
-        let ratio = mem.read_i32(add_addr(object_addr, profile::DOMAIN53_SUBJECT_RATIO)?)?;
+        // ratio (+0x60) has no melt oracle — carried UNVALIDATED, range-gated.
+        let ratio = mem.read_i32(add_addr(subject_ptr, profile::DOMAIN53_SUBJECT_RATIO)?)?;
         if !(-MAX_FIXED_RAW..=MAX_FIXED_RAW).contains(&ratio) {
             return Err(ExtractError::InvalidRoot("domain53_subject_ratio_invalid"));
+        }
+        // start_date (+0x20) i32 engine-hour, RAW. A subject cannot start in the
+        // future; gate strictly positive and no later than the current game hour
+        // (with a small margin for live-read drift during capture).
+        let start_date_raw =
+            mem.read_i32(add_addr(subject_ptr, profile::DOMAIN53_SUBJECT_START_DATE)?)?;
+        let clock_ceiling = i64::from(current_game_hour) + 24;
+        if start_date_raw <= 0 || i64::from(start_date_raw) > clock_ceiling {
+            return Err(ExtractError::InvalidRoot(
+                "domain53_subject_start_date_invalid",
+            ));
         }
         Ok(SubjectRow {
             overlord_tag_db_id: overlord,
             subject_tag_db_id: subject,
             autonomy_state_hash: state_hash,
             autonomy_ratio_raw: ratio,
+            start_date_raw,
         })
     })();
 
     match read {
         Ok(row) => {
             if seen_subjects.insert((row.overlord_tag_db_id, row.subject_tag_db_id)) {
+                // Synthesize the puppet relation flag (directed overlord->subject)
+                // — the inline vtable scan never sees it, so it would otherwise be
+                // silently dropped.
+                let flag_key = (
+                    row.overlord_tag_db_id,
+                    row.subject_tag_db_id,
+                    REL_KIND_PUPPET,
+                );
+                if seen_flags.insert(flag_key) {
+                    acc.rows.relation_flags.push(RelationFlagRow {
+                        src_tag_db_id: row.overlord_tag_db_id,
+                        target_tag_db_id: row.subject_tag_db_id,
+                        flag_kind: REL_KIND_PUPPET,
+                        directed: true,
+                    });
+                    acc.rows.state_events.push(state_event(
+                        row.overlord_tag_db_id,
+                        Some(row.subject_tag_db_id),
+                        STATE_EVENT_SOURCE_RELATION_FLAG,
+                        &format!("relation_flag_kind_{REL_KIND_PUPPET}"),
+                        "directed_true",
+                        i64::from(REL_KIND_PUPPET),
+                    ));
+                    acc.observe();
+                }
                 acc.rows.state_events.push(StateEventRow {
                     owner_tag_db_id: row.overlord_tag_db_id,
                     target_tag_db_id: Some(row.subject_tag_db_id),
@@ -973,6 +1305,10 @@ fn read_subject_relation<M: Domain53Memory>(
                 acc.observe();
             }
         }
+        // A direction skip is the expected mirror-entry case, not an error;
+        // do not count it as a skipped row (that would trip the fail-closed
+        // majority gate). Only true read/validation failures count as skips.
+        Err(ExtractError::InvalidRoot("domain53_subject_direction_skip")) => {}
         Err(_) => acc.skip(),
     }
 }
@@ -2227,6 +2563,7 @@ pub fn build_domain53_payload(
         operation_instances: rows.operation_instances,
         incoming_actions: rows.incoming_actions,
         intel_network_graphs: rows.intel_network_graphs,
+        factions: rows.factions,
     };
     let mut errors = Vec::new();
 
@@ -2298,6 +2635,13 @@ pub fn build_domain53_payload(
         source_proofs,
         SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF,
         "intel-network graph rows require SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF",
+        &mut errors,
+    );
+    require_rows(
+        !snapshot.factions.is_empty(),
+        source_proofs,
+        SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+        "faction roster rows require SOURCE_PROOF_FACTION_SYSTEM_870EBF",
         &mut errors,
     );
     require_rows(
@@ -2491,6 +2835,7 @@ pub fn proof_fixture_rows() -> ExtractedDomain53Rows {
             subject_tag_db_id: 22,
             autonomy_state_hash: crate::compact::stable_hash32("autonomy_puppet"),
             autonomy_ratio_raw: 40_000,
+            start_date_raw: 60_795_475,
         }],
         agencies: vec![AgencyRow {
             owner_tag_db_id: 1,
@@ -2600,6 +2945,13 @@ pub fn proof_fixture_rows() -> ExtractedDomain53Rows {
                 state_ids: vec![219, 253, 254],
             },
         ],
+        factions: vec![FactionRow {
+            faction_id: 1,
+            faction_type: profile::DOMAIN53_FACTION_TYPE_EXPECTED,
+            name_hash: crate::compact::stable_hash32("Axis"),
+            leader_tag_db_id: 1,
+            member_tag_db_ids: vec![1, 3, 22],
+        }],
     }
 }
 
@@ -2858,6 +3210,11 @@ mod tests {
         let intel_network1 = heap + 0x17_0000;
         let intel_graph1 = heap + 0x18_0000;
         let intel_vertices1 = heap + 0x19_0000;
+        let subject_object = heap + 0x1A_0000;
+        let faction_system = heap + 0x1B_0000;
+        let faction_array = heap + 0x1C_0000;
+        let faction1 = heap + 0x1D_0000;
+        let faction_members = heap + 0x1E_0000;
 
         let mut mem = FakeMemory::new(module);
         mem.write_rtti(
@@ -2903,6 +3260,11 @@ mod tests {
                 intel_vertices1,
                 profile::DOMAIN53_INTEL_NETWORK_GRAPH_VERTEX_STRIDE * 3,
             ),
+            (subject_object, 0x80),
+            (faction_system, 0x40),
+            (faction_array, 0x20),
+            (faction1, 0x80),
+            (faction_members, 0x20),
         ] {
             mem.add_chunk(addr, len);
         }
@@ -2958,6 +3320,36 @@ mod tests {
             );
         }
 
+        // CFactionSystem: one faction (id=1, type=88) with members [country1,
+        // country2]; leader = members[0] = country1 (tag 1). Array count packs
+        // {size=1, capacity=1} at +0x28.
+        mem.write_u64(
+            game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64,
+            faction_system,
+        );
+        mem.write_u64(
+            faction_system + profile::DOMAIN53_FACTION_ARRAY as u64,
+            faction_array,
+        );
+        mem.write_u64(
+            faction_system + profile::DOMAIN53_FACTION_COUNT as u64,
+            (1u64 << 32) | 1u64,
+        );
+        mem.write_u64(faction_array, faction1);
+        // id = HI32, type = LO32.
+        mem.write_u64(
+            faction1 + profile::DOMAIN53_FACTION_ID as u64,
+            (1u64 << 32) | u64::from(profile::DOMAIN53_FACTION_TYPE_EXPECTED),
+        );
+        mem.write_inline_string(faction1 + profile::DOMAIN53_FACTION_NAME as u64, "Axis");
+        mem.write_u64(
+            faction1 + profile::DOMAIN53_FACTION_MEMBERS as u64,
+            faction_members,
+        );
+        mem.write_u32(faction1 + profile::DOMAIN53_FACTION_MEMBERS_SIZE as u64, 2);
+        mem.write_u64(faction_members, country1);
+        mem.write_u64(faction_members + 8, country2);
+
         if include_relations {
             mem.write_u64(
                 country1 + profile::DOMAIN53_RELATION_MANAGER as u64,
@@ -2969,22 +3361,40 @@ mod tests {
             );
             mem.write_u64(rel_table1 + 2 * 8, rel12);
             mem.write_u64(rel_table1 + 3 * 8, rel13);
+            // rel12 is the CRelationStatus for country1->country2. The subject
+            // (puppet) relation is NOT inline: rel12+0x288 points to a separate
+            // heap CSubjectRelation object.
+            mem.write_i32(rel12 + profile::DOMAIN53_RELATION_OPINION as u64, 10);
             mem.write_u64(
-                rel12,
+                rel12 + profile::DOMAIN53_RELATION_SUBJECT_PTR as u64,
+                subject_object,
+            );
+            mem.write_u64(
+                subject_object,
                 module + profile::DOMAIN53_REL_SUBJECT_VTABLE_RVA as u64,
             );
-            mem.write_u32(rel12 + profile::DOMAIN53_SUBJECT_OVERLORD as u64, 1);
-            mem.write_u32(rel12 + profile::DOMAIN53_SUBJECT_SUBJECT as u64, 2);
+            mem.write_u32(
+                subject_object + profile::DOMAIN53_SUBJECT_OVERLORD as u64,
+                1,
+            );
+            mem.write_u32(subject_object + profile::DOMAIN53_SUBJECT_SUBJECT as u64, 2);
             mem.write_u64(
-                rel12 + profile::DOMAIN53_SUBJECT_STATE_DB as u64,
+                subject_object + profile::DOMAIN53_SUBJECT_STATE_DB as u64,
                 autonomy_state,
             );
-            mem.write_i32(rel12 + profile::DOMAIN53_SUBJECT_RATIO as u64, 40_000);
+            mem.write_i32(
+                subject_object + profile::DOMAIN53_SUBJECT_RATIO as u64,
+                40_000,
+            );
+            // start_date raw = 1940.2.14.20 (matches the GER->DEN melt subject).
+            mem.write_i32(
+                subject_object + profile::DOMAIN53_SUBJECT_START_DATE as u64,
+                60_795_475,
+            );
             mem.write_inline_string(
                 autonomy_state + profile::DOMAIN53_SUBJECT_STATE_NAME as u64,
                 "aut_puppet",
             );
-            mem.write_i32(rel12 + profile::DOMAIN53_RELATION_OPINION as u64, 10);
 
             mem.write_u64(
                 rel13,
@@ -3274,8 +3684,23 @@ mod tests {
         assert_eq!(extracted.skipped_rows, 0);
         assert_eq!(extracted.rows.countries.len(), FAKE_COUNTRY_ROWS as usize);
         assert_eq!(extracted.rows.opinions.len(), 2);
-        assert_eq!(extracted.rows.relation_flags.len(), 1);
+        // Guarantee flag (1->3) + synthesized puppet flag (1->2 from the +0x288
+        // subject hop) = 2 relation flags.
+        assert_eq!(extracted.rows.relation_flags.len(), 2);
+        assert!(extracted.rows.relation_flags.iter().any(|row| {
+            row.src_tag_db_id == 1 && row.target_tag_db_id == 2 && row.flag_kind == REL_KIND_PUPPET
+        }));
         assert_eq!(extracted.rows.subjects.len(), 1);
+        // The +0x288 pointer hop carries the validated fields incl. start_date.
+        assert_eq!(extracted.rows.subjects[0].overlord_tag_db_id, 1);
+        assert_eq!(extracted.rows.subjects[0].subject_tag_db_id, 2);
+        assert_eq!(extracted.rows.subjects[0].start_date_raw, 60_795_475);
+        // CFactionSystem roster: one faction, leader = members[0].
+        assert_eq!(extracted.rows.factions.len(), 1);
+        assert_eq!(extracted.rows.factions[0].faction_id, 1);
+        assert_eq!(extracted.rows.factions[0].faction_type, 88);
+        assert_eq!(extracted.rows.factions[0].leader_tag_db_id, 1);
+        assert_eq!(extracted.rows.factions[0].member_tag_db_ids, vec![1, 2]);
         assert_eq!(extracted.rows.agencies.len(), 1);
         assert_eq!(extracted.rows.agency_capacity_clusters.len(), 1);
         assert_eq!(extracted.rows.cryptology.len(), 1);
@@ -3324,6 +3749,10 @@ mod tests {
             extracted.source_proofs & SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF,
             0
         );
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+            0
+        );
         assert_eq!(
             extracted.source_proofs
                 & (SOURCE_PROOF_OPERATION_DETAIL_870EBF
@@ -3342,6 +3771,111 @@ mod tests {
             report.gate_summary.status_flags_or & STATUS_FACTION_GROUP_UNVALIDATED,
             0
         );
+    }
+
+    /// Build a minimal single-faction CFactionSystem in fake memory. `members`
+    /// is a list of (tag, is_valid_country) — an invalid member models a torn
+    /// pointer / non-country object. Returns (mem, game_state, countries).
+    fn fake_faction_system(
+        members: &[(u32, bool)],
+        member_count_override: Option<u32>,
+    ) -> (FakeMemory, u64, Vec<CountryRoot>) {
+        let module = 0x1400_0000_0;
+        let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
+        let game_state = heap + 0x100;
+        let faction_system = heap + 0x1000;
+        let faction_array = heap + 0x2000;
+        let faction1 = heap + 0x3000;
+        let faction_members = heap + 0x4000;
+        let country_base = heap + 0x5000;
+
+        let mut mem = FakeMemory::new(module);
+        mem.add_chunk(game_state, 0x500);
+        mem.add_chunk(faction_system, 0x40);
+        mem.add_chunk(faction_array, 0x20);
+        mem.add_chunk(faction1, 0x80);
+        mem.add_chunk(faction_members, 0x100);
+
+        let mut countries = Vec::new();
+        for (idx, (tag, is_country)) in members.iter().enumerate() {
+            let cptr = country_base + (idx as u64) * 0x200;
+            mem.add_chunk(cptr, 0x100);
+            if *is_country {
+                mem.write_u64(cptr, module + profile::DOMAIN53_COUNTRY_VTABLE_RVA as u64);
+                mem.write_u32(cptr + profile::DOMAIN53_OBJ_TAG_DB_ID as u64, *tag);
+                countries.push(CountryRoot {
+                    tag_db_id: *tag,
+                    country_ptr: cptr,
+                });
+            } else {
+                // Wrong vtable => not a validated CCountry.
+                mem.write_u64(cptr, module + 0x00DE_AD00);
+            }
+            mem.write_u64(faction_members + (idx as u64) * 8, cptr);
+        }
+
+        mem.write_u64(
+            game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64,
+            faction_system,
+        );
+        mem.write_u64(
+            faction_system + profile::DOMAIN53_FACTION_ARRAY as u64,
+            faction_array,
+        );
+        mem.write_u64(
+            faction_system + profile::DOMAIN53_FACTION_COUNT as u64,
+            (1u64 << 32) | 1u64,
+        );
+        mem.write_u64(faction_array, faction1);
+        mem.write_u64(
+            faction1 + profile::DOMAIN53_FACTION_ID as u64,
+            (1u64 << 32) | u64::from(profile::DOMAIN53_FACTION_TYPE_EXPECTED),
+        );
+        mem.write_inline_string(faction1 + profile::DOMAIN53_FACTION_NAME as u64, "Axis");
+        mem.write_u64(
+            faction1 + profile::DOMAIN53_FACTION_MEMBERS as u64,
+            faction_members,
+        );
+        mem.write_u32(
+            faction1 + profile::DOMAIN53_FACTION_MEMBERS_SIZE as u64,
+            member_count_override.unwrap_or(members.len() as u32),
+        );
+        (mem, game_state, countries)
+    }
+
+    #[test]
+    fn faction_reader_fails_closed_when_a_member_is_not_a_country() {
+        // Second member is a non-country object -> the whole roster is torn -> [].
+        let (mem, game_state, countries) = fake_faction_system(&[(1, true), (2, false)], None);
+        let rows =
+            read_faction_rows(&mem, mem.module_base, game_state, &countries).expect("faction read");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn faction_reader_fails_closed_on_oversized_member_count() {
+        // member_count tears UPWARD to 5 while only 2 member slots are populated
+        // (slots 2..5 read 0 => non-heap). The reader must NOT emit a partial
+        // faction: any unreadable member => whole roster empty. (A DOWNWARD tear
+        // that stays internally consistent is indistinguishable from a genuinely
+        // smaller faction without an external oracle; the orchestrator's melt
+        // member-count check — {18,31,3,8,10,1} — is the defense there.)
+        let (mem, game_state, countries) = fake_faction_system(&[(1, true), (2, true)], Some(5));
+        let rows =
+            read_faction_rows(&mem, mem.module_base, game_state, &countries).expect("faction read");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn faction_reader_emits_clean_roster() {
+        let (mem, game_state, countries) =
+            fake_faction_system(&[(1, true), (2, true), (3, true)], None);
+        let rows =
+            read_faction_rows(&mem, mem.module_base, game_state, &countries).expect("faction read");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].faction_id, 1);
+        assert_eq!(rows[0].leader_tag_db_id, 1);
+        assert_eq!(rows[0].member_tag_db_ids, vec![1, 2, 3]);
     }
 
     #[test]

@@ -791,6 +791,30 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
         .find(|row| row["instance_id"] == json!(128_904))
         .unwrap();
     assert_eq!(no_country["associated_country"], Value::Null);
+
+    // W2: subject-relation rows carry the validated start_date (raw + decoded).
+    // The proof fixture's subject is overlord=1 (GER) -> subject=22 (BUL) with
+    // start_date_raw 60_795_475 = 1940.2.14.20 (the GER->DEN melt anchor).
+    let subjects = &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["subject_autonomy_rows"];
+    let subjects = subjects.as_array().unwrap();
+    assert_eq!(subjects.len(), 1);
+    assert_eq!(subjects[0]["overlord"], json!("GER"));
+    assert_eq!(subjects[0]["subject"], json!("BUL"));
+    assert_eq!(subjects[0]["start_date_raw"], json!(60_795_475));
+    assert_eq!(subjects[0]["start_date"], json!("1940.2.14.20"));
+
+    // W2: CFactionSystem roster rows. The proof fixture carries one faction
+    // (id=1, type=88, leader=1=GER, members [1,3,22] = GER/POL/BUL).
+    let factions = &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"];
+    let factions = factions.as_array().unwrap();
+    assert_eq!(factions.len(), 1);
+    assert_eq!(factions[0]["faction_id"], json!(1));
+    assert_eq!(factions[0]["faction_type"], json!(88));
+    assert_eq!(factions[0]["leader"], json!("GER"));
+    assert_eq!(factions[0]["member_count"], json!(3));
+    assert_eq!(factions[0]["member_tag_db_ids"], json!([1, 3, 22]));
+    assert_eq!(factions[0]["members"], json!(["GER", "POL", "BUL"]));
+
     assert!(snapshot["provenance"]["collector"]["domains"]
         .as_array()
         .unwrap()
