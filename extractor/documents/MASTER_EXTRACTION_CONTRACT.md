@@ -81,8 +81,8 @@ fixture, but hard); **C** derived → replay layer, not a DLL crack; **D** commi
 - [ ] C6. Alerts/notifications/outliner/message UI — derive alert-equivalents from replay facts (not pollable without hooks)
 
 ### D. COMMITTED-CODE FIXES — bugs found by discovery, apply during wiring
-- [ ] D1. d53 subject-relation reads 0 subjects on 870ebf — committed inline-vtable scan misses; add the `CRelationStatus+0x288` pointer hop → 38/38 (found by D4)
-- [ ] D2. Naval positioning read emits a bogus constant 1.0 (`f32@NavalCombatSide+0x288`) — make it fail-closed / ABSENT (found by E3)
+- [x] D1. d53 subject-relation reads 0 subjects on 870ebf — FIXED in W2 (2c3c1e98e): added the `CRelationStatus+0x288` pointer hop → 38/38.
+- [x] D2. Naval positioning read emits a bogus constant 1.0 (`f32@NavalCombatSide+0x288`) — FIXED in W5 (1ac13f761): now fail-closed → None; d49 wire layout byte-identical.
 
 ### E. DEPRIORITIZED / LOW-VALUE TAIL — disposition consciously (don't silently drop)
 Save-backed but judged low replay value or redundant; each needs a one-line decision (crack-if-cheap /
