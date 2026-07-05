@@ -4,7 +4,7 @@ Build: `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`
 
 Evidence run: `extractor/native/runs/domain53_revalidation_870ebf_20260703/`
 
-Summary: 71 `DOMAIN53_*` constants audited; 44 `VALIDATED`, 27
+Summary: 71 `DOMAIN53_*` constants audited; 47 `VALIDATED`, 24
 `STRUCTURAL-ONLY`, 0 `NOT-VALIDATED`.
 
 `STRUCTURAL-ONLY` means the 2026-07-03 probe walked the structure on the
@@ -21,9 +21,9 @@ Those gates are listed below the table.
 | `DOMAIN53_COUNTRY_VTABLE_RVA` | `0x27D0E90` | `probe_870ebf_diplomacy.json::country_vtable_candidates.current_870ebf.status=validated`, `valid_country_count=435`, `rva=0x27d0e90` | `VALIDATED` |
 | `DOMAIN53_OBJ_TAG_DB_ID` | `0x08` | `probe_870ebf_diplomacy.json::country_vtable_candidates.current_870ebf.samples`, tag echo read by script constant `OBJ_TAG_DB_ID` | `VALIDATED` |
 | `DOMAIN53_COUNTRY_FACTION_GROUP` | `0x598` | `probe_870ebf_diplomacy.json::factions.status=validated_structural`, `offset=0x598` | `STRUCTURAL-ONLY` |
-| `DOMAIN53_RELATION_MANAGER` | `0xF88` | `probe_870ebf_diplomacy.json::relations.country_relation_manager_offset=0xf88`, `manager_ok=435` | `STRUCTURAL-ONLY` |
-| `DOMAIN53_RELATION_TABLE` | `0x08` | `probe_870ebf_diplomacy.json::relations.relation_table_offset=0x8`, `table_ok=435` | `STRUCTURAL-ONLY` |
-| `DOMAIN53_RELATION_OPINION` | `0x300` | `probe_870ebf_diplomacy.json::relations.opinion_offset=0x300`, `relation_entries_with_plausible_opinion=188790` | `STRUCTURAL-ONLY` |
+| `DOMAIN53_RELATION_MANAGER` | `0xF88` | `cracklist_b4_d53_base` D04 melt/live validation plus 2026-07-05 PID 19204 refresh; relation root chain matched `cached_sum` 10354/10354 non-missing rows and `border_friction` 44382/44382 non-missing rows, 0 mismatches | `VALIDATED` |
+| `DOMAIN53_RELATION_TABLE` | `0x08` | `cracklist_b4_d53_base` D04 melt/live validation plus 2026-07-05 PID 19204 refresh; `mgr+0x08` table indexed by target tag-db id resolved all non-missing relation rows, 0 value mismatches | `VALIDATED` |
+| `DOMAIN53_RELATION_OPINION` | `0x300` | `cracklist_b4_d53_base` D04 melt/live validation plus 2026-07-05 PID 19204 refresh; `rel+0x300` i32 matched melt `cached_sum` 10354/10354 non-missing rows, 0 mismatches | `VALIDATED` |
 | `DOMAIN53_RELATION_SCAN_BYTES` | `0x340` | `probe_870ebf_diplomacy.json::relation_flags.scan_bytes_per_relation=832` | `STRUCTURAL-ONLY` |
 | `DOMAIN53_REL_NON_AGGRESSION_PACT_VTABLE_RVA` | `0x2949D98` | `probe_870ebf_diplomacy.json::relation_flags.candidate_sets.current_870ebf_rtti.non_aggression_pact`, observed hits in `hits_by_candidate_set.current_870ebf_rtti.non_aggression_pact=1248` | `STRUCTURAL-ONLY` |
 | `DOMAIN53_REL_SUBJECT_VTABLE_RVA` | `0x2949F18` | `probe_870ebf_diplomacy.json::relation_flags.candidate_sets.current_870ebf_rtti.subject_or_puppet`, observed hits `subject_or_puppet=74`, `subjects` decoded | `STRUCTURAL-ONLY` |
@@ -106,10 +106,13 @@ Those gates are listed below the table.
   nonzero group exists, and at least one nonzero group has multiple members. If
   the gate fails, faction group values are absent and
   `STATUS_FACTION_GROUP_UNVALIDATED` is set.
-- Relations: enabled as structural. Per frame requires valid country roots
-  first, relation manager/table heap pointers, plausible opinion range, exact
-  current RTTI relation vtables, known relation kind, and valid source and
-  target tags. Zero worldwide relation rows is a hard fail.
+- Relations: base manager/table/opinion chain is value-validated against the
+  D04 melt. Per frame requires valid country roots first, relation
+  manager/table heap pointers, plausible opinion range, exact current RTTI
+  relation vtables, known relation kind, and valid source and target tags. Zero
+  worldwide relation rows is a hard fail. Relation flags and subject/autonomy
+  rows still rely on their per-row structural gates until their individual
+  serialized values are fixture-closed.
 - Subjects: enabled as structural relation rows. Per frame requires exact
   `CSubjectRelation` vtable discovery through the relation scan, valid overlord
   and subject tags, non-self pair, bounded autonomy ratio, and hashed autonomy
