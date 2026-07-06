@@ -325,8 +325,14 @@ pub const DOMAIN66_STATE_ID_OFF: usize = 0x58;
 /// CState vtable RVA (state-root validation).
 pub const DOMAIN66_STATE_VTABLE_RVA: usize = 0x29206C0;
 /// Bounded qword-scan length for the occupation-data and garrison-list
-/// containers (matches the committed d52 walk).
-pub const DOMAIN66_GARRISON_CONTAINER_SCAN_LEN: usize = 0x300;
+/// containers. These are PDX hashmaps with inline buckets (stride 0x18, record
+/// pointer at bucket+0x10); the window must span the whole bucket array. 0x300
+/// (32 buckets) truncated the largest occupier — ENG (British Empire, 52
+/// occupied nations, ~64 buckets) surfaced only 21/52 records. 0x1800 (256
+/// buckets) covers ENG live-verified 52/52 with headroom; the per-record vtable
+/// + parent-back-ref + dedup guards make a wider window over-collection-safe
+/// (live-verified 0x1800 and 0x3000 both yield exactly 52 for ENG).
+pub const DOMAIN66_GARRISON_CONTAINER_SCAN_LEN: usize = 0x1800;
 /// Blob length read from each candidate CStateGarrisonData.
 pub const DOMAIN66_STATE_GARRISON_READ_LEN: usize = 0x100;
 /// Fail-closed ceiling on the occupation-law hashmap capacity (a cap beyond
