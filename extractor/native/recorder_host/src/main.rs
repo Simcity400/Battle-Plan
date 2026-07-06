@@ -214,6 +214,93 @@ const COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK: u32 =
         | COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID
         | COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
         | COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID;
+// MTRF: optional market-trade resource-flow trailer (per-country resource
+// import/export flow), appended AFTER the MTD1 detail trailer. 32-byte header
+// (magic, version u16, header_len u16, row_len u16, reserved u16, row_count u32,
+// row_count-dup u32, scale u32, resource_mask u32, reserved u32); then row_count
+// fixed 72-byte rows (tag_db_id u32, flow_kind u32, resource_mask u32, reserved
+// u32, then 7 x i64 per-resource values). Mirrors the collector's
+// append_compact_market_trade_resource_flow_trailer wire layout.
+const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
+const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 1;
+const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize = 32;
+const COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_LEN: usize = 72;
+const COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = 0x7F;
+
+// --- W1-W6 newly wired domains 63-69: summarizer decode constants ----------
+// These mirror the collector emit and the world_fold parse (recorder_host
+// world_fold.rs). The summarizer decode below re-validates the wire shape and
+// accounts row counts so the manifest carries zero parse_errors for these.
+const COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE: u16 = 63;
+const COMPACT_COUNTRY_CORE_HEADER_LEN: usize = 20;
+const COMPACT_COUNTRY_CORE_ROW_LEN: usize = 48;
+const COMPACT_COUNTRY_CORE_FLAG_MANPOWER_POOL: u32 = 1 << 0;
+const COMPACT_COUNTRY_CORE_FLAG_CONVOYS_DESTROYED: u32 = 1 << 1;
+const COMPACT_COUNTRY_CORE_FLAG_DIVISIONS_LOST: u32 = 1 << 2;
+const COMPACT_COUNTRY_CORE_FLAG_EXPERIENCE: u32 = 1 << 3;
+const COMPACT_COUNTRY_CORE_KNOWN_FLAGS: u32 = COMPACT_COUNTRY_CORE_FLAG_MANPOWER_POOL
+    | COMPACT_COUNTRY_CORE_FLAG_CONVOYS_DESTROYED
+    | COMPACT_COUNTRY_CORE_FLAG_DIVISIONS_LOST
+    | COMPACT_COUNTRY_CORE_FLAG_EXPERIENCE;
+const COMPACT_COUNTRY_CORE_MAX_MANPOWER_POOL: u32 = 2_000_000_000;
+const COMPACT_COUNTRY_CORE_MAX_CONVOYS_DESTROYED: u32 = 100_000_000;
+const COMPACT_COUNTRY_CORE_MAX_DIVISIONS_LOST: u32 = 1_000_000;
+
+const COMPACT_DOMAIN_DELAYED_EVENTS_LIVE: u16 = 64;
+const COMPACT_DELAYED_EVENTS_HEADER_LEN: usize = 20;
+const COMPACT_DELAYED_EVENT_ROW_LEN: usize = 20;
+const COMPACT_DELAYED_EVENT_FLAG_DUE_REMAINING_HOURS: u32 = 1 << 0;
+const COMPACT_DELAYED_EVENT_FLAG_ORIGINATOR: u32 = 1 << 1;
+const COMPACT_DELAYED_EVENT_KNOWN_FLAGS: u32 =
+    COMPACT_DELAYED_EVENT_FLAG_DUE_REMAINING_HOURS | COMPACT_DELAYED_EVENT_FLAG_ORIGINATOR;
+const COMPACT_DELAYED_EVENT_MAX_DUE_REMAINING_HOURS: u32 = 500_000;
+
+const COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE: u16 = 65;
+const COMPACT_SPECIAL_PROJECT_PROGRAM_HEADER_LEN: usize = 24;
+const COMPACT_SPECIAL_PROJECT_PROGRAM_ROW_LEN: usize = 16;
+
+const COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE: u16 = 66;
+const COMPACT_OCCUPATION_STATE_EXTRAS_HEADER_LEN: usize = 20;
+const COMPACT_OCCUPATION_STATE_EXTRAS_ROW_LEN: usize = 24;
+const COMPACT_OCCUPATION_STATE_EXTRAS_FLAG_LAW: u32 = 1 << 0;
+const COMPACT_OCCUPATION_STATE_EXTRAS_FLAG_GARRISON_SOURCE: u32 = 1 << 1;
+const COMPACT_OCCUPATION_STATE_EXTRAS_KNOWN_FLAGS: u32 =
+    COMPACT_OCCUPATION_STATE_EXTRAS_FLAG_LAW | COMPACT_OCCUPATION_STATE_EXTRAS_FLAG_GARRISON_SOURCE;
+
+const COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE: u16 = 67;
+const COMPACT_COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN: usize = 20;
+const COMPACT_COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN: usize = 12;
+const COMPACT_COUNTRY_DYNAMIC_MODIFIER_MAX_ID_LEN: usize = 128;
+
+const COMPACT_DOMAIN_SESSION_HEADER_LIVE: u16 = 68;
+const COMPACT_SESSION_HEADER_HEADER_LEN: usize = 16;
+const COMPACT_SESSION_HEADER_SCALAR_BLOCK_LEN: usize = 20;
+const COMPACT_SESSION_HEADER_FLAG_PLAYER: u32 = 1 << 0;
+const COMPACT_SESSION_HEADER_FLAG_DLCS: u32 = 1 << 1;
+const COMPACT_SESSION_HEADER_FLAG_START_DATE: u32 = 1 << 2;
+const COMPACT_SESSION_HEADER_FLAG_SAVE_VERSION: u32 = 1 << 3;
+const COMPACT_SESSION_HEADER_FLAG_SESSION: u32 = 1 << 4;
+const COMPACT_SESSION_HEADER_FLAG_IDEOLOGY: u32 = 1 << 5;
+const COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG: u32 = 1 << 6;
+const COMPACT_SESSION_HEADER_FLAG_VERSION: u32 = 1 << 7;
+const COMPACT_SESSION_HEADER_KNOWN_FLAGS: u32 = COMPACT_SESSION_HEADER_FLAG_PLAYER
+    | COMPACT_SESSION_HEADER_FLAG_DLCS
+    | COMPACT_SESSION_HEADER_FLAG_START_DATE
+    | COMPACT_SESSION_HEADER_FLAG_SAVE_VERSION
+    | COMPACT_SESSION_HEADER_FLAG_SESSION
+    | COMPACT_SESSION_HEADER_FLAG_IDEOLOGY
+    | COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG
+    | COMPACT_SESSION_HEADER_FLAG_VERSION;
+const COMPACT_SESSION_HEADER_MAX_STRING_LEN: usize = 128;
+const COMPACT_SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
+
+const COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE: u16 = 69;
+const COMPACT_TECH_SHARING_GROUPS_HEADER_LEN: usize = 16;
+const COMPACT_TECH_SHARING_GROUPS_ROW_LEN: usize = 12;
+const COMPACT_TECH_SHARING_GROUP_MAX_GROUPS: usize = 9;
+const COMPACT_TECH_SHARING_GROUP_MAX_MEMBERS: usize = 512;
+const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
+
 const COMPACT_SUPPLY_LOGISTICS_HEADER_LEN: usize = 48;
 const COMPACT_SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
 const COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
@@ -3366,6 +3453,47 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE => {
                         decode_compact_hub_motorization_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE => {
+                        decode_compact_country_core_scalars_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_DELAYED_EVENTS_LIVE => {
+                        decode_compact_delayed_events_data_payload(offset, payload, &mut summary)
+                    }
+                    COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE => {
+                        decode_compact_special_project_programs_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE => {
+                        decode_compact_occupation_state_extras_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE => {
+                        decode_compact_country_dynamic_modifiers_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_SESSION_HEADER_LIVE => {
+                        decode_compact_session_header_data_payload(offset, payload, &mut summary)
+                    }
+                    COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE => {
+                        decode_compact_tech_sharing_groups_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -10460,21 +10588,57 @@ fn decode_compact_market_trade_data_payload(
             ));
         }
     }
+    // The core rows may be followed by an optional MTD1 detail trailer and/or an
+    // optional MTRF resource-flow trailer. The collector appends MTD1 only when
+    // there are detail rows and MTRF only when resource flow is present, and the
+    // two are independent — so MTRF can appear WITHOUT MTD1. Dispatch by trailer
+    // magic (mirroring the world_fold trailer walk) rather than assuming MTD1 is
+    // always first; otherwise an MTD1-absent/MTRF-present record false-fails.
     if cursor < payload.len() {
-        let detail_rows = decode_compact_market_trade_detail_trailer(
-            offset,
-            payload,
-            cursor,
-            &seen_contracts,
-            summary,
-        );
-        add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", detail_rows);
-        add_compact_domain_data_unit(
-            summary,
-            43,
-            "market_trade_detail_omitted_rows",
-            row_count.saturating_sub(detail_rows),
-        );
+        let magic = payload.get(cursor..cursor.saturating_add(4));
+        if magic == Some(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC.as_slice()) {
+            let (detail_rows, mtd1_end) = decode_compact_market_trade_detail_trailer(
+                offset,
+                payload,
+                cursor,
+                &seen_contracts,
+                summary,
+            );
+            add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", detail_rows);
+            add_compact_domain_data_unit(
+                summary,
+                43,
+                "market_trade_detail_omitted_rows",
+                row_count.saturating_sub(detail_rows),
+            );
+            // An MTRF resource-flow trailer may follow the MTD1 block.
+            if mtd1_end < payload.len() {
+                decode_compact_market_trade_resource_flow_trailer(
+                    offset, payload, mtd1_end, summary,
+                );
+            }
+        } else if magic == Some(COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC.as_slice()) {
+            // MTRF present without a preceding MTD1 block.
+            add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", 0);
+            add_compact_domain_data_unit(
+                summary,
+                43,
+                "market_trade_detail_omitted_rows",
+                row_count,
+            );
+            decode_compact_market_trade_resource_flow_trailer(offset, payload, cursor, summary);
+        } else {
+            add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", 0);
+            add_compact_domain_data_unit(
+                summary,
+                43,
+                "market_trade_detail_omitted_rows",
+                row_count,
+            );
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade trailing bytes are neither MTD1 nor MTRF trailer"
+            ));
+        }
     } else {
         add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", 0);
         add_compact_domain_data_unit(summary, 43, "market_trade_detail_omitted_rows", row_count);
@@ -10487,14 +10651,14 @@ fn decode_compact_market_trade_detail_trailer(
     trailer_offset: usize,
     core_contracts: &BTreeSet<u32>,
     summary: &mut CompactSummary,
-) -> usize {
+) -> (usize, usize) {
     if payload.get(trailer_offset..trailer_offset.saturating_add(4))
         != Some(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC.as_slice())
     {
         summary.parse_errors.push(format!(
             "offset {offset}: market trade trailing bytes are not MTD1 detail trailer"
         ));
-        return 0;
+        return (0, payload.len());
     }
     if let Err(err) = require_compact_remaining(
         payload,
@@ -10503,7 +10667,7 @@ fn decode_compact_market_trade_detail_trailer(
         "market trade MTD1 trailer header",
     ) {
         summary.parse_errors.push(format!("offset {offset}: {err}"));
-        return 0;
+        return (0, payload.len());
     }
 
     let version = read_u16_le(payload, trailer_offset + 4);
@@ -10526,20 +10690,34 @@ fn decode_compact_market_trade_detail_trailer(
         || row_len != COMPACT_MARKET_TRADE_DETAIL_ROW_LEN
         || reserved0 != 0
     {
+        // Return early: the fixed-offset row reads below assume the canonical
+        // 32-byte header and 64-byte rows. A crafted header claiming a different
+        // header_len/row_len (e.g. row_len=0) would otherwise let mtd1_end pass
+        // the bounds check yet index past each short row and panic. The fold
+        // likewise bails on a bad MTD1 header shape.
         summary.parse_errors.push(format!(
             "offset {offset}: market trade MTD1 header shape is invalid"
         ));
+        return (row_count, payload.len());
     }
 
-    let expected_len = trailer_offset
+    // The MTD1 detail trailer occupies exactly `header_len + row_count*row_len`
+    // bytes starting at `trailer_offset`. It may be followed by an optional MTRF
+    // resource-flow trailer, so the MTD1 block must fit WITHIN the payload (its
+    // end is a running cursor the caller resumes from) rather than consume the
+    // payload to its very end. Requiring `== payload.len()` here would false-fail
+    // every record that carries the resource-flow trailer (the observed
+    // "MTD1 len 10904 != 6912" is exactly this: 6912 is the MTD1 end, the extra
+    // 3992 bytes are the trailing MTRF block).
+    let mtd1_end = trailer_offset
         .saturating_add(header_len)
         .saturating_add(row_count.saturating_mul(row_len));
-    if payload.len() != expected_len {
+    if mtd1_end > payload.len() {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTD1 len {} != {expected_len}",
+            "offset {offset}: market trade MTD1 end {mtd1_end} exceeds payload len {}",
             payload.len()
         ));
-        return row_count;
+        return (row_count, payload.len());
     }
 
     let mut seen_detail_contracts = BTreeSet::new();
@@ -10799,7 +10977,960 @@ fn decode_compact_market_trade_detail_trailer(
         "market_trade_detail_progress_valid_rows",
         computed_progress,
     );
-    row_count
+    (row_count, mtd1_end)
+}
+
+// Decode the optional MTRF resource-flow trailer that follows the MTD1 detail
+// trailer. Validates the magic, header shape, and that the trailer's fixed-width
+// rows consume the payload EXACTLY to its end (any residual bytes are a torn
+// payload). Structural-only: it accounts for the bytes and surfaces the row
+// count as a data unit; it does not re-derive per-resource semantics (those are
+// folded by world_fold, not the summarizer).
+fn decode_compact_market_trade_resource_flow_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut CompactSummary,
+) {
+    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
+        != Some(COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC.as_slice())
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade trailing bytes are not MTRF resource-flow trailer"
+        ));
+        return;
+    }
+    if let Err(err) = require_compact_remaining(
+        payload,
+        trailer_offset,
+        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN,
+        "market trade MTRF trailer header",
+    ) {
+        summary.parse_errors.push(format!("offset {offset}: {err}"));
+        return;
+    }
+
+    let version = read_u16_le(payload, trailer_offset + 4);
+    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16_le(payload, trailer_offset + 10);
+    let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
+    let row_count_dup = read_u32_le(payload, trailer_offset + 16) as usize;
+    let scale_raw = read_u32_le(payload, trailer_offset + 20);
+    let resource_mask = read_u32_le(payload, trailer_offset + 24);
+    let reserved1 = read_u32_le(payload, trailer_offset + 28);
+
+    if version != COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRF version {version} != {}",
+            COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION
+        ));
+    }
+    if header_len != COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN
+        || row_len != COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+    {
+        // Return early: `expected_len` below multiplies by the attacker-supplied
+        // row_len, so a bad header shape must not be trusted to derive the length.
+        // Mirrors the fold, which rejects a torn MTRF header (incl. nonzero
+        // reserved fields).
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRF header shape is invalid"
+        ));
+        return;
+    }
+    if row_count_dup != row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRF row_count {row_count} != dup {row_count_dup}"
+        ));
+    }
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRF scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    if resource_mask != COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRF resource_mask {resource_mask:#x} != {:#x}",
+            COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
+        ));
+    }
+
+    let expected_len = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRF len {} != {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+
+    add_compact_domain_data_unit(summary, 43, "market_trade_resource_flow_rows", row_count);
+}
+
+// --- W1 domain 63 country_core_scalars_live -------------------------------
+// 20-byte header (elapsed_wall_ms u64, row_count u32, changed_rows u32,
+// status_flags u32), then row_count fixed 48-byte rows. Each row: tag_db_id u32,
+// flags u32, manpower_pool u32, convoys_destroyed u32, divisions_lost u32, then
+// 7 x i32 experience channels. Mirrors world_fold::fold_country_core_scalars.
+fn decode_compact_country_core_scalars_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_COUNTRY_CORE_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_core_scalars payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_COUNTRY_CORE_HEADER_LEN
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    summary.status_flags_or |= status_flags;
+    let expected = COMPACT_COUNTRY_CORE_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(COMPACT_COUNTRY_CORE_ROW_LEN));
+    if payload.len() != expected {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_core_scalars len {} != {expected}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_core_scalars changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    for i in 0..row_count {
+        let base = COMPACT_COUNTRY_CORE_HEADER_LEN + i * COMPACT_COUNTRY_CORE_ROW_LEN;
+        let tag_db_id = read_u32_le(payload, base);
+        let flags = read_u32_le(payload, base + 4);
+        let manpower_pool = read_u32_le(payload, base + 8);
+        let convoys_destroyed = read_u32_le(payload, base + 12);
+        let divisions_lost = read_u32_le(payload, base + 16);
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_core_scalars row {i} has zero tag_db_id"
+            ));
+            continue;
+        }
+        if flags & !COMPACT_COUNTRY_CORE_KNOWN_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_core_scalars row {i} has unknown flags {flags:#x}"
+            ));
+        }
+        let has_manpower = flags & COMPACT_COUNTRY_CORE_FLAG_MANPOWER_POOL != 0;
+        let has_convoys = flags & COMPACT_COUNTRY_CORE_FLAG_CONVOYS_DESTROYED != 0;
+        let has_divisions = flags & COMPACT_COUNTRY_CORE_FLAG_DIVISIONS_LOST != 0;
+        let has_experience = flags & COMPACT_COUNTRY_CORE_FLAG_EXPERIENCE != 0;
+        validate_compact_optional_u32(
+            summary,
+            offset,
+            i,
+            "country_core_scalars",
+            "manpower_pool",
+            manpower_pool,
+            has_manpower,
+            COMPACT_COUNTRY_CORE_MAX_MANPOWER_POOL,
+        );
+        validate_compact_optional_u32(
+            summary,
+            offset,
+            i,
+            "country_core_scalars",
+            "convoys_destroyed",
+            convoys_destroyed,
+            has_convoys,
+            COMPACT_COUNTRY_CORE_MAX_CONVOYS_DESTROYED,
+        );
+        validate_compact_optional_u32(
+            summary,
+            offset,
+            i,
+            "country_core_scalars",
+            "divisions_lost",
+            divisions_lost,
+            has_divisions,
+            COMPACT_COUNTRY_CORE_MAX_DIVISIONS_LOST,
+        );
+        // 7 experience channels (i32) at +20..+48; when the experience flag is
+        // clear every channel must be zero-packed.
+        if !has_experience {
+            for k in 0..7 {
+                if read_i32_le(payload, base + 20 + k * 4) != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: country_core_scalars row {i} experience present without flag"
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE,
+        "country_core_scalars_rows",
+        row_count,
+    );
+}
+
+// --- W3 domain 64 delayed_events_live -------------------------------------
+// 20-byte header (elapsed_wall_ms u64, row_count u32, changed_rows u32,
+// status_flags u32), then row_count fixed 20-byte rows: owner_tag_db_id u32,
+// event_id u32, flags u32, originator u32, due_remaining_hours u32.
+fn decode_compact_delayed_events_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_DELAYED_EVENTS_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_events payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_DELAYED_EVENTS_HEADER_LEN
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    summary.status_flags_or |= status_flags;
+    let expected = COMPACT_DELAYED_EVENTS_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(COMPACT_DELAYED_EVENT_ROW_LEN));
+    if payload.len() != expected {
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_events len {} != {expected}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_events changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    for i in 0..row_count {
+        let base = COMPACT_DELAYED_EVENTS_HEADER_LEN + i * COMPACT_DELAYED_EVENT_ROW_LEN;
+        let owner_tag_db_id = read_u32_le(payload, base);
+        let event_id = read_u32_le(payload, base + 4);
+        let flags = read_u32_le(payload, base + 8);
+        let originator = read_u32_le(payload, base + 12);
+        let due_remaining_hours = read_u32_le(payload, base + 16);
+        if owner_tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: delayed_events row {i} has zero owner tag_db_id"
+            ));
+        }
+        if event_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: delayed_events row {i} has zero event_id"
+            ));
+        }
+        if flags & !COMPACT_DELAYED_EVENT_KNOWN_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: delayed_events row {i} has unknown flags {flags:#x}"
+            ));
+        }
+        let has_due = flags & COMPACT_DELAYED_EVENT_FLAG_DUE_REMAINING_HOURS != 0;
+        let has_originator = flags & COMPACT_DELAYED_EVENT_FLAG_ORIGINATOR != 0;
+        if !has_due && due_remaining_hours != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: delayed_events row {i} due_remaining_hours without flag"
+            ));
+        }
+        if has_due && due_remaining_hours > COMPACT_DELAYED_EVENT_MAX_DUE_REMAINING_HOURS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: delayed_events row {i} due_remaining_hours {due_remaining_hours} out of range"
+            ));
+        }
+        if !has_originator && originator != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: delayed_events row {i} originator without flag"
+            ));
+        }
+    }
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_DELAYED_EVENTS_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_DELAYED_EVENTS_LIVE,
+        "delayed_events_rows",
+        row_count,
+    );
+}
+
+// --- W3 domain 65 special_project_programs_live ---------------------------
+// 24-byte header (elapsed_wall_ms u64, row_count u32, changed_rows u32,
+// status_flags u32, dropped_ambiguous u32), then row_count fixed 16-byte rows:
+// owner_tag_db_id u32, program_id u32, province u32, unread_prototype_rewards u32.
+fn decode_compact_special_project_programs_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_SPECIAL_PROJECT_PROGRAM_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: special_project_programs payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_SPECIAL_PROJECT_PROGRAM_HEADER_LEN
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let dropped_ambiguous = read_u32_le(payload, 20);
+    summary.status_flags_or |= status_flags;
+    let expected = COMPACT_SPECIAL_PROJECT_PROGRAM_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(COMPACT_SPECIAL_PROJECT_PROGRAM_ROW_LEN));
+    if payload.len() != expected {
+        summary.parse_errors.push(format!(
+            "offset {offset}: special_project_programs len {} != {expected}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: special_project_programs changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for i in 0..row_count {
+        let base = COMPACT_SPECIAL_PROJECT_PROGRAM_HEADER_LEN
+            + i * COMPACT_SPECIAL_PROJECT_PROGRAM_ROW_LEN;
+        let owner_tag_db_id = read_u32_le(payload, base);
+        let program_id = read_u32_le(payload, base + 4);
+        if owner_tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: special_project_programs row {i} has zero owner tag_db_id"
+            ));
+        }
+        if program_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: special_project_programs row {i} has zero program_id"
+            ));
+        }
+        if !seen.insert((owner_tag_db_id, program_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: special_project_programs row {i} duplicates (owner {owner_tag_db_id}, program_id {program_id})"
+            ));
+        }
+    }
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE,
+        "special_project_programs_rows",
+        row_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE,
+        "special_project_programs_dropped_ambiguous",
+        dropped_ambiguous as usize,
+    );
+}
+
+// --- W4 domain 66 occupation_state_extras_live ----------------------------
+// 20-byte header (elapsed_wall_ms u64, row_count u32, changed_rows u32,
+// status_flags u32), then row_count fixed 24-byte rows: controller_tag u32,
+// occupied_tag u32, state_id u32, flags u32, occupation_law_token_id u32,
+// garrison_manpower_source_tag_db_id u32.
+fn decode_compact_occupation_state_extras_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_OCCUPATION_STATE_EXTRAS_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation_state_extras payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_OCCUPATION_STATE_EXTRAS_HEADER_LEN
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    summary.status_flags_or |= status_flags;
+    let expected = COMPACT_OCCUPATION_STATE_EXTRAS_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(COMPACT_OCCUPATION_STATE_EXTRAS_ROW_LEN));
+    if payload.len() != expected {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation_state_extras len {} != {expected}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation_state_extras changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    let mut seen: BTreeSet<(u32, u32, u32)> = BTreeSet::new();
+    for i in 0..row_count {
+        let base = COMPACT_OCCUPATION_STATE_EXTRAS_HEADER_LEN
+            + i * COMPACT_OCCUPATION_STATE_EXTRAS_ROW_LEN;
+        let controller_tag_db_id = read_u32_le(payload, base);
+        let occupied_tag_db_id = read_u32_le(payload, base + 4);
+        let state_id = read_u32_le(payload, base + 8);
+        let flags = read_u32_le(payload, base + 12);
+        let occupation_law_token_id = read_u32_le(payload, base + 16);
+        let garrison_manpower_source_tag_db_id = read_u32_le(payload, base + 20);
+        if controller_tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} has zero controller tag"
+            ));
+        }
+        if occupied_tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} has zero occupied tag"
+            ));
+        }
+        if state_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} has zero state_id"
+            ));
+        }
+        if flags & !COMPACT_OCCUPATION_STATE_EXTRAS_KNOWN_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} has unknown flags {flags:#x}"
+            ));
+        }
+        let has_law = flags & COMPACT_OCCUPATION_STATE_EXTRAS_FLAG_LAW != 0;
+        let has_source = flags & COMPACT_OCCUPATION_STATE_EXTRAS_FLAG_GARRISON_SOURCE != 0;
+        if !has_law && occupation_law_token_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} law token without flag"
+            ));
+        }
+        if has_law && occupation_law_token_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} law flag with zero token"
+            ));
+        }
+        if !has_source && garrison_manpower_source_tag_db_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} garrison source without flag"
+            ));
+        }
+        if has_source && garrison_manpower_source_tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} garrison flag with zero tag"
+            ));
+        }
+        if !has_law && !has_source {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} carries no field"
+            ));
+        }
+        if !seen.insert((controller_tag_db_id, occupied_tag_db_id, state_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation_state_extras row {i} duplicates (controller {controller_tag_db_id}, occupied {occupied_tag_db_id}, state {state_id})"
+            ));
+        }
+    }
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE,
+        "occupation_state_extras_rows",
+        row_count,
+    );
+}
+
+// --- W5 domain 67 country_dynamic_modifiers_live --------------------------
+// 20-byte header (elapsed_wall_ms u64, country_count u32, total_id_count u32,
+// status_flags u32), then country_count fixed 12-byte rows (tag_db_id u32,
+// id_count u32, id_blob_offset u32 in id units), then a single concatenated id
+// blob where each id is a u16 length prefix + utf8 bytes. Windows must be
+// contiguous and cover the blob exactly.
+fn decode_compact_country_dynamic_modifiers_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_dynamic_modifiers payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN
+        ));
+        return;
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let total_id_count = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    summary.status_flags_or |= status_flags;
+    let table_len = match country_count.checked_mul(COMPACT_COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN) {
+        Some(rows) => COMPACT_COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN.saturating_add(rows),
+        None => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers row table overflow"
+            ));
+            return;
+        }
+    };
+    if payload.len() < table_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_dynamic_modifiers payload is {} byte(s), expected at least {table_len}",
+            payload.len()
+        ));
+        return;
+    }
+    let blob_budget = payload.len().saturating_sub(table_len);
+    if total_id_count > blob_budget / 3 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_dynamic_modifiers total_id_count {total_id_count} exceeds blob budget {}",
+            blob_budget / 3
+        ));
+        return;
+    }
+    // Parse the id blob (u16 length prefix + bytes), validating bounds/utf8.
+    let mut id_count_parsed = 0usize;
+    let mut cursor = table_len;
+    let mut torn = false;
+    for _ in 0..total_id_count {
+        if cursor + 2 > payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers id blob truncated (length prefix)"
+            ));
+            torn = true;
+            break;
+        }
+        let len = read_u16_le(payload, cursor) as usize;
+        cursor += 2;
+        if len == 0 || len > COMPACT_COUNTRY_DYNAMIC_MODIFIER_MAX_ID_LEN {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers id length {len} out of range"
+            ));
+            torn = true;
+            break;
+        }
+        if cursor + len > payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers id blob truncated (bytes)"
+            ));
+            torn = true;
+            break;
+        }
+        if std::str::from_utf8(&payload[cursor..cursor + len]).is_err() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers id not utf8"
+            ));
+            torn = true;
+            break;
+        }
+        cursor += len;
+        id_count_parsed += 1;
+    }
+    if !torn && cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_dynamic_modifiers trailing bytes: consumed {cursor} of {}",
+            payload.len()
+        ));
+    }
+    // Validate the contiguous, exact-cover row windows against the parsed ids.
+    let mut expected_offset = 0usize;
+    let mut seen: BTreeSet<u32> = BTreeSet::new();
+    for i in 0..country_count {
+        let base = COMPACT_COUNTRY_DYNAMIC_MODIFIERS_HEADER_LEN
+            + i * COMPACT_COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN;
+        let tag_db_id = read_u32_le(payload, base);
+        let id_count = read_u32_le(payload, base + 4) as usize;
+        let id_blob_offset = read_u32_le(payload, base + 8) as usize;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers row {i} has zero tag_db_id"
+            ));
+        }
+        if id_count == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers row {i} has zero id_count"
+            ));
+        }
+        if id_blob_offset != expected_offset {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers row {i} id_blob_offset {id_blob_offset} != expected {expected_offset} (non-contiguous)"
+            ));
+        }
+        let end = id_blob_offset.saturating_add(id_count);
+        if end > id_count_parsed {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers row {i} id window [{id_blob_offset},{end}) exceeds {id_count_parsed} ids"
+            ));
+        }
+        if !seen.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_dynamic_modifiers duplicate tag_db_id {tag_db_id}"
+            ));
+        }
+        expected_offset = end;
+    }
+    if !torn && expected_offset != id_count_parsed {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_dynamic_modifiers windows cover {expected_offset} of {id_count_parsed} ids (orphans)"
+        ));
+    }
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_count as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE,
+        "country_dynamic_modifiers_countries",
+        country_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE,
+        "country_dynamic_modifiers_ids",
+        id_count_parsed,
+    );
+}
+
+// --- W6 domain 68 session_header_live -------------------------------------
+// 16-byte header (elapsed_wall_ms u64, presence_flags u32, status_flags u32),
+// a fixed 20-byte scalar block (player_tag u32, dlcs u32, start_date u32,
+// save_version u32, session u32), then three length-prefixed utf8 strings
+// (ideology, cosmetic_tag, version), each a u16 length + bytes.
+fn decode_compact_session_header_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_SESSION_HEADER_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_SESSION_HEADER_HEADER_LEN
+        ));
+        return;
+    }
+    let presence = read_u32_le(payload, 8);
+    let status_flags = read_u32_le(payload, 12);
+    summary.status_flags_or |= status_flags;
+    if presence & !COMPACT_SESSION_HEADER_KNOWN_FLAGS != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header unknown presence flags {presence:#x}"
+        ));
+    }
+    let scalars_end = COMPACT_SESSION_HEADER_HEADER_LEN + COMPACT_SESSION_HEADER_SCALAR_BLOCK_LEN;
+    if payload.len() < scalars_end {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header payload is {} byte(s), expected at least {scalars_end}",
+            payload.len()
+        ));
+        return;
+    }
+    let scalars_base = COMPACT_SESSION_HEADER_HEADER_LEN;
+    let player_tag_db_id = read_u32_le(payload, scalars_base);
+    let dlcs = read_u32_le(payload, scalars_base + 4);
+    let start_date_raw = read_u32_le(payload, scalars_base + 8);
+    let save_version = read_u32_le(payload, scalars_base + 12);
+    let session = read_u32_le(payload, scalars_base + 16);
+    let has_player = presence & COMPACT_SESSION_HEADER_FLAG_PLAYER != 0;
+    let has_dlcs = presence & COMPACT_SESSION_HEADER_FLAG_DLCS != 0;
+    let has_start_date = presence & COMPACT_SESSION_HEADER_FLAG_START_DATE != 0;
+    let has_save_version = presence & COMPACT_SESSION_HEADER_FLAG_SAVE_VERSION != 0;
+    let has_session = presence & COMPACT_SESSION_HEADER_FLAG_SESSION != 0;
+    let has_ideology = presence & COMPACT_SESSION_HEADER_FLAG_IDEOLOGY != 0;
+    let has_cosmetic = presence & COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG != 0;
+    let has_version = presence & COMPACT_SESSION_HEADER_FLAG_VERSION != 0;
+    if !has_player && player_tag_db_id != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header player_tag_db_id without flag"
+        ));
+    }
+    if has_player
+        && (player_tag_db_id == 0 || player_tag_db_id > COMPACT_SESSION_HEADER_MAX_PLAYER_TAG_DB_ID)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header player_tag_db_id {player_tag_db_id} out of range"
+        ));
+    }
+    if !has_dlcs && dlcs != 0 {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: session_header dlcs without flag"));
+    }
+    if !has_start_date && start_date_raw != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header start_date without flag"
+        ));
+    }
+    if !has_save_version && save_version != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header save_version without flag"
+        ));
+    }
+    if !has_session && session != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header session without flag"
+        ));
+    }
+    // Three length-prefixed utf8 tokens must consume the payload exactly.
+    let mut cursor = scalars_end;
+    for (flag_present, name) in [
+        (has_ideology, "ideology"),
+        (has_cosmetic, "cosmetic_tag"),
+        (has_version, "version"),
+    ] {
+        if cursor + 2 > payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: session_header {name} length prefix truncated"
+            ));
+            return;
+        }
+        let len = read_u16_le(payload, cursor) as usize;
+        cursor += 2;
+        if len > COMPACT_SESSION_HEADER_MAX_STRING_LEN {
+            summary.parse_errors.push(format!(
+                "offset {offset}: session_header {name} length {len} out of range"
+            ));
+            return;
+        }
+        if cursor + len > payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: session_header {name} bytes truncated"
+            ));
+            return;
+        }
+        let has_bytes = if len == 0 {
+            false
+        } else if std::str::from_utf8(&payload[cursor..cursor + len]).is_err() {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: session_header {name} not utf8"));
+            true
+        } else {
+            true
+        };
+        cursor += len;
+        if !flag_present && has_bytes {
+            summary.parse_errors.push(format!(
+                "offset {offset}: session_header {name} bytes without flag"
+            ));
+        }
+        if flag_present && !has_bytes {
+            summary.parse_errors.push(format!(
+                "offset {offset}: session_header {name} flag set but empty"
+            ));
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: session_header trailing bytes: consumed {cursor} of {}",
+            payload.len()
+        ));
+    }
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_SESSION_HEADER_LIVE)
+    {
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_SESSION_HEADER_LIVE,
+        "session_header_present_fields",
+        (presence & COMPACT_SESSION_HEADER_KNOWN_FLAGS).count_ones() as usize,
+    );
+}
+
+// --- W6 domain 69 tech_sharing_groups_live --------------------------------
+// 16-byte header (elapsed_wall_ms u64, group_count u32, status_flags u32), then
+// group_count fixed 12-byte rows (id_token u32, member_count u32,
+// member_blob_offset u32 in u32 units), then a flat u32 tag_db_id member blob.
+// Windows must be contiguous and cover the blob exactly.
+fn decode_compact_tech_sharing_groups_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_TECH_SHARING_GROUPS_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech_sharing_groups payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_TECH_SHARING_GROUPS_HEADER_LEN
+        ));
+        return;
+    }
+    let group_count = read_u32_le(payload, 8) as usize;
+    let status_flags = read_u32_le(payload, 12);
+    summary.status_flags_or |= status_flags;
+    if group_count > COMPACT_TECH_SHARING_GROUP_MAX_GROUPS {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech_sharing_groups group_count {group_count} exceeds {COMPACT_TECH_SHARING_GROUP_MAX_GROUPS} fixed slots"
+        ));
+        return;
+    }
+    let table_len = match group_count.checked_mul(COMPACT_TECH_SHARING_GROUPS_ROW_LEN) {
+        Some(rows) => COMPACT_TECH_SHARING_GROUPS_HEADER_LEN.saturating_add(rows),
+        None => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech_sharing_groups row table overflow"
+            ));
+            return;
+        }
+    };
+    if payload.len() < table_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech_sharing_groups payload is {} byte(s), expected at least {table_len}",
+            payload.len()
+        ));
+        return;
+    }
+    let blob = &payload[table_len..];
+    if blob.len() % 4 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech_sharing_groups member blob {} bytes not u32-aligned",
+            blob.len()
+        ));
+        return;
+    }
+    let member_total = blob.len() / 4;
+    let mut expected_offset = 0usize;
+    let mut total_members = 0usize;
+    for i in 0..group_count {
+        let base = COMPACT_TECH_SHARING_GROUPS_HEADER_LEN + i * COMPACT_TECH_SHARING_GROUPS_ROW_LEN;
+        let id_token = read_u32_le(payload, base);
+        let member_count = read_u32_le(payload, base + 4) as usize;
+        let member_blob_offset = read_u32_le(payload, base + 8) as usize;
+        if id_token == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech_sharing_groups row {i} has zero id_token"
+            ));
+        }
+        if member_count == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech_sharing_groups row {i} has zero member_count"
+            ));
+        }
+        if member_count > COMPACT_TECH_SHARING_GROUP_MAX_MEMBERS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech_sharing_groups row {i} member_count {member_count} out of range"
+            ));
+        }
+        if member_blob_offset != expected_offset {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech_sharing_groups row {i} member_blob_offset {member_blob_offset} != expected {expected_offset} (non-contiguous)"
+            ));
+        }
+        let end = member_blob_offset.saturating_add(member_count);
+        if end > member_total {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech_sharing_groups row {i} member window [{member_blob_offset},{end}) exceeds {member_total} members"
+            ));
+        } else {
+            for idx in member_blob_offset..end {
+                let tag = read_u32_le(blob, idx * 4);
+                if tag == 0 || tag > COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: tech_sharing_groups row {i} member tag_db_id {tag} out of range"
+                    ));
+                }
+            }
+        }
+        total_members += member_count;
+        expected_offset = end;
+    }
+    if expected_offset != member_total {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech_sharing_groups windows cover {expected_offset} of {member_total} members (orphans)"
+        ));
+    }
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(group_count as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE,
+        "tech_sharing_groups_groups",
+        group_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE,
+        "tech_sharing_groups_members",
+        total_members,
+    );
+}
+
+// Shared helper: an optional u32 field packed with a presence flag. When present
+// the value must be within [0, max]; when absent it must be zero-packed.
+fn validate_compact_optional_u32(
+    summary: &mut CompactSummary,
+    offset: usize,
+    row_index: usize,
+    domain: &str,
+    field: &str,
+    value: u32,
+    present: bool,
+    max: u32,
+) {
+    if present {
+        if value > max {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {domain} row {row_index} {field} {value} out of range"
+            ));
+        }
+    } else if value != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {domain} row {row_index} {field} present without flag"
+        ));
+    }
 }
 
 fn validate_market_trade_detail_presence_i64(
@@ -13557,12 +14688,32 @@ fn track_delta_baseline_for_summary(
 }
 
 fn compact_payload_status_flags(domain_id: u16, payload: &[u8]) -> Option<u32> {
-    // Payload-header status offset is domain-specific: the naval combat lane
-    // (49/50) carries status_flags at byte 12 of its payload header
-    // (schema u16, row_len u16, elapsed_wall_ms u64, status u32); the legacy
-    // shared compact header carries it at byte 16.
+    // Payload-header status offset is domain-specific. The legacy shared compact
+    // header carries the GLOBAL compact status_flags at byte 16, but several
+    // lanes use their own header layout:
+    //   * naval combat (49/50): schema u16, row_len u16, elapsed_wall_ms u64,
+    //     status u32 -> byte 12.
+    //   * construction_buildings_state_damage (48) "CBSD": magic u32, version
+    //     u16, header_len u16, domain_id u16, pad u16, status u32 -> byte 12.
+    // Reading at the wrong offset lands on lane data bytes (e.g. d48 offset 16
+    // is game_hour_raw) and fabricates phantom failure flags into
+    // effective_failure_status_flags_or for these expected-partial-tolerance
+    // domains, which then poison the gate's failure_status_flags_or.
+    //
+    // d45 (focus_research_decisions_depth) is a special case: its FRD2 data
+    // payload does NOT carry the global compact status word at all. Byte 8 is
+    // `depth_status_flags`, a lane-local badge field (FOCUS_PAUSE_BADGED etc.)
+    // whose bit values overlap global status bit positions but carry unrelated
+    // meaning. Feeding it into the global failure interpretation would fabricate
+    // failures, so return None and let the perf-record status (the real global
+    // status for d45) drive the tolerance path instead.
+    if domain_id == COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE {
+        return None;
+    }
     let offset = match domain_id {
-        COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE | COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE => 12,
+        COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE
+        | COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE
+        | COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE => 12,
         _ => 16,
     };
     (payload.len() >= offset + 4).then(|| read_u32_le(payload, offset))
@@ -16766,6 +17917,71 @@ mod tests {
             None
         );
         assert!(domain.problems.is_empty(), "{:?}", domain.problems);
+    }
+
+    #[test]
+    fn compact_payload_status_flags_reads_construction_lane_status_at_offset_12() {
+        // Regression: the CBSD lane header places the global compact status word
+        // at byte 12; offset 16 is game_hour_raw. Reading offset 16 fabricated
+        // phantom failure flags (CONTROL_INVALID/WORKER_PANIC/etc.) from the game
+        // hour, poisoning the tolerance gate. Craft a frame whose game_hour_raw
+        // has failure-looking bits and whose real status is clean.
+        let frame = domain48::LaneFrame {
+            game_hour_raw: 0x03A0_32E9, // failure-mask bits {0,3,6,7,12} once masked
+            status_flags: compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE
+                | COMPACT_STATUS_PARTIAL_DATA,
+            source_flags: domain48::SOURCE_FLAG_DLL_NATIVE,
+            observed_country_roots: 1,
+            observed_state_roots: 1,
+            observed_province_roots: 1,
+            construction_rows: Vec::new(),
+            building_rows: Vec::new(),
+            resource_rows: Vec::new(),
+        };
+        let payload = domain48::encode_lane_frame(&frame);
+        let status = compact_payload_status_flags(
+            COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+            &payload,
+        )
+        .expect("d48 payload has a status word");
+        assert_eq!(
+            status,
+            compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_PARTIAL_DATA,
+            "must read the real status at offset 12, not game_hour_raw at offset 16"
+        );
+        // The effective failure contribution must be clean (only the tolerated
+        // PARTIAL_DATA), never the phantom bits from the game hour.
+        assert_eq!(
+            compact_domain_effective_failure_flags(
+                COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+                status,
+            ),
+            0,
+            "clean CBSD status yields no failure after tolerated-PARTIAL is removed"
+        );
+    }
+
+    #[test]
+    fn compact_payload_status_flags_defers_frd_depth_to_perf_record() {
+        // Regression: d45's FRD2 data payload has no global status word; byte 8 is
+        // depth_status_flags (lane-local badges whose bit positions overlap global
+        // status bits). It must not be interpreted as global status, so the data
+        // path returns None and lets the perf-record status drive the gate.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(COMPACT_FRD_DEPTH_SCHEMA_MAGIC);
+        payload.extend_from_slice(&COMPACT_FRD_DEPTH_SCHEMA_VERSION.to_le_bytes());
+        payload.extend_from_slice(&(COMPACT_FRD_DEPTH_HEADER_LEN as u16).to_le_bytes());
+        // depth_status_flags with bits that would look like failures if misread.
+        payload.extend_from_slice(&0x0000_0007u32.to_le_bytes());
+        payload.resize(COMPACT_FRD_DEPTH_HEADER_LEN, 0);
+        assert_eq!(
+            compact_payload_status_flags(
+                COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+                &payload,
+            ),
+            None,
+            "d45 data payload carries no global status; defer to the perf record"
+        );
     }
 
     #[test]
@@ -24284,5 +25500,412 @@ mod tests {
         assert_eq!(cfg.static_artifacts[5].path, gfx);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- W1-W6 domains 63-69 summarizer decode tests --------------------
+    fn wrap_single_data_record(domain_id: u16, payload: &[u8]) -> Vec<u8> {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            domain_id,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+        raw
+    }
+
+    #[test]
+    fn country_core_scalars_decode_accepts_valid_payload() {
+        // 20-byte header + two 48-byte rows.
+        let mut p = Vec::new();
+        p.extend_from_slice(&123u64.to_le_bytes()); // elapsed_wall_ms
+        p.extend_from_slice(&2u32.to_le_bytes()); // row_count
+        p.extend_from_slice(&1u32.to_le_bytes()); // changed_rows
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+                                                  // Row 0: all four fields present.
+        p.extend_from_slice(&7u32.to_le_bytes()); // tag_db_id
+        p.extend_from_slice(
+            &(COMPACT_COUNTRY_CORE_FLAG_MANPOWER_POOL
+                | COMPACT_COUNTRY_CORE_FLAG_CONVOYS_DESTROYED
+                | COMPACT_COUNTRY_CORE_FLAG_DIVISIONS_LOST
+                | COMPACT_COUNTRY_CORE_FLAG_EXPERIENCE)
+                .to_le_bytes(),
+        );
+        p.extend_from_slice(&436u32.to_le_bytes()); // manpower_pool
+        p.extend_from_slice(&16u32.to_le_bytes()); // convoys_destroyed
+        p.extend_from_slice(&3u32.to_le_bytes()); // divisions_lost
+        for v in [40i32, 1, 0, 0, 0, 0, 2] {
+            p.extend_from_slice(&v.to_le_bytes());
+        }
+        // Row 1: no flags -> all optional fields must be zero.
+        p.extend_from_slice(&9u32.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..(COMPACT_COUNTRY_CORE_ROW_LEN - 8) / 4 {
+            p.extend_from_slice(&0u32.to_le_bytes());
+        }
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn country_core_scalars_decode_rejects_experience_without_flag() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&7u32.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes()); // no flags
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        // experience nonzero without the flag -> error.
+        for v in [5i32, 0, 0, 0, 0, 0, 0] {
+            p.extend_from_slice(&v.to_le_bytes());
+        }
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|e| e.contains("experience present without flag")));
+    }
+
+    #[test]
+    fn delayed_events_decode_accepts_valid_payload() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes()); // row_count
+        p.extend_from_slice(&1u32.to_le_bytes()); // changed_rows
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+        p.extend_from_slice(&12u32.to_le_bytes()); // owner_tag_db_id
+        p.extend_from_slice(&99u32.to_le_bytes()); // event_id
+        p.extend_from_slice(
+            &(COMPACT_DELAYED_EVENT_FLAG_DUE_REMAINING_HOURS
+                | COMPACT_DELAYED_EVENT_FLAG_ORIGINATOR)
+                .to_le_bytes(),
+        );
+        p.extend_from_slice(&5u32.to_le_bytes()); // originator
+        p.extend_from_slice(&240u32.to_le_bytes()); // due_remaining_hours
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_DELAYED_EVENTS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn special_project_programs_decode_accepts_valid_payload() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes()); // row_count
+        p.extend_from_slice(&1u32.to_le_bytes()); // changed_rows
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+        p.extend_from_slice(&2u32.to_le_bytes()); // dropped_ambiguous
+        p.extend_from_slice(&8u32.to_le_bytes()); // owner_tag_db_id
+        p.extend_from_slice(&50u32.to_le_bytes()); // program_id
+        p.extend_from_slice(&321u32.to_le_bytes()); // province
+        p.extend_from_slice(&1u32.to_le_bytes()); // unread_prototype_rewards
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn occupation_state_extras_decode_accepts_valid_payload() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes()); // row_count
+        p.extend_from_slice(&1u32.to_le_bytes()); // changed_rows
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+        p.extend_from_slice(&3u32.to_le_bytes()); // controller_tag
+        p.extend_from_slice(&4u32.to_le_bytes()); // occupied_tag
+        p.extend_from_slice(&155u32.to_le_bytes()); // state_id
+        p.extend_from_slice(
+            &(COMPACT_OCCUPATION_STATE_EXTRAS_FLAG_LAW
+                | COMPACT_OCCUPATION_STATE_EXTRAS_FLAG_GARRISON_SOURCE)
+                .to_le_bytes(),
+        );
+        p.extend_from_slice(&0xABCD_1234u32.to_le_bytes()); // law token
+        p.extend_from_slice(&6u32.to_le_bytes()); // garrison source
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn country_dynamic_modifiers_decode_accepts_valid_payload() {
+        // Two countries, ids "a" and "bb" + "c" -> 3 ids total.
+        let ids: [&str; 3] = ["a", "bb", "c"];
+        let mut blob = Vec::new();
+        for id in ids {
+            blob.extend_from_slice(&(id.len() as u16).to_le_bytes());
+            blob.extend_from_slice(id.as_bytes());
+        }
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&2u32.to_le_bytes()); // country_count
+        p.extend_from_slice(&3u32.to_le_bytes()); // total_id_count
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+                                                  // Row 0: tag 10, 2 ids @ offset 0.
+        p.extend_from_slice(&10u32.to_le_bytes());
+        p.extend_from_slice(&2u32.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        // Row 1: tag 11, 1 id @ offset 2.
+        p.extend_from_slice(&11u32.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes());
+        p.extend_from_slice(&2u32.to_le_bytes());
+        p.extend_from_slice(&blob);
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn country_dynamic_modifiers_decode_rejects_non_contiguous_window() {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&1u16.to_le_bytes());
+        blob.extend_from_slice(b"x");
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&10u32.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes());
+        p.extend_from_slice(&5u32.to_le_bytes()); // bogus offset (should be 0)
+        p.extend_from_slice(&blob);
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|e| e.contains("non-contiguous")));
+    }
+
+    #[test]
+    fn session_header_decode_accepts_valid_payload() {
+        let ideology = "fascism";
+        let cosmetic = "GER";
+        let version = "1.14.0";
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        let presence = COMPACT_SESSION_HEADER_FLAG_PLAYER
+            | COMPACT_SESSION_HEADER_FLAG_DLCS
+            | COMPACT_SESSION_HEADER_FLAG_START_DATE
+            | COMPACT_SESSION_HEADER_FLAG_SAVE_VERSION
+            | COMPACT_SESSION_HEADER_FLAG_SESSION
+            | COMPACT_SESSION_HEADER_FLAG_IDEOLOGY
+            | COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG
+            | COMPACT_SESSION_HEADER_FLAG_VERSION;
+        p.extend_from_slice(&presence.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+        p.extend_from_slice(&42u32.to_le_bytes()); // player_tag_db_id
+        p.extend_from_slice(&7u32.to_le_bytes()); // dlcs
+        p.extend_from_slice(&0x0100_0101u32.to_le_bytes()); // start_date_raw
+        p.extend_from_slice(&123u32.to_le_bytes()); // save_version
+        p.extend_from_slice(&5u32.to_le_bytes()); // session
+        for s in [ideology, cosmetic, version] {
+            p.extend_from_slice(&(s.len() as u16).to_le_bytes());
+            p.extend_from_slice(s.as_bytes());
+        }
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_SESSION_HEADER_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn session_header_decode_rejects_string_without_flag() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes()); // NO flags
+        p.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..5 {
+            p.extend_from_slice(&0u32.to_le_bytes());
+        }
+        // ideology bytes present without the flag -> error.
+        p.extend_from_slice(&3u16.to_le_bytes());
+        p.extend_from_slice(b"abc");
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_SESSION_HEADER_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|e| e.contains("ideology bytes without flag")));
+    }
+
+    #[test]
+    fn tech_sharing_groups_decode_accepts_valid_payload() {
+        // Two groups: {2 members @0}, {1 member @2}. Blob = [101,102,103].
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&2u32.to_le_bytes()); // group_count
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+        p.extend_from_slice(&11u32.to_le_bytes()); // id_token
+        p.extend_from_slice(&2u32.to_le_bytes()); // member_count
+        p.extend_from_slice(&0u32.to_le_bytes()); // member_blob_offset
+        p.extend_from_slice(&12u32.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes());
+        p.extend_from_slice(&2u32.to_le_bytes());
+        for tag in [101u32, 102, 103] {
+            p.extend_from_slice(&tag.to_le_bytes());
+        }
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    fn append_test_mtrf_trailer(payload: &mut Vec<u8>, rows: &[(u32, u32)]) {
+        // rows: (tag_db_id, flow_kind). Each MTRF row is 72 bytes: 4 u32 header
+        // fields (tag, flow_kind, resource_mask, reserved) + 7 i64 values.
+        payload.extend_from_slice(COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);
+        payload
+            .extend_from_slice(&COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN as u16).to_le_bytes(),
+        );
+        payload
+            .extend_from_slice(&(COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for (tag, flow_kind) in rows {
+            payload.extend_from_slice(&tag.to_le_bytes());
+            payload.extend_from_slice(&flow_kind.to_le_bytes());
+            payload
+                .extend_from_slice(&COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            for v in 0..7i64 {
+                payload.extend_from_slice(&(v * 1000).to_le_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn market_trade_decode_accepts_mtrf_without_mtd1() {
+        // Core rows + MTRF trailer, no MTD1 block (the two trailers are
+        // independent; MTRF must decode even when MTD1 is absent).
+        let mut payload = test_market_trade_data_payload(true);
+        append_test_mtrf_trailer(&mut payload, &[(10, 0), (11, 1)]);
+        let raw = wrap_single_data_record(43, &payload);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn market_trade_decode_accepts_mtd1_then_mtrf() {
+        let mut payload = test_market_trade_data_payload(true);
+        append_test_mtd1_row(
+            &mut payload,
+            1405,
+            COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID,
+        );
+        append_test_mtrf_trailer(&mut payload, &[(10, 0)]);
+        let raw = wrap_single_data_record(43, &payload);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn market_trade_mtd1_bad_header_shape_does_not_panic() {
+        // A crafted MTD1 header with row_len=0 and row_count=1 whose payload ends
+        // exactly at the header must be rejected as shape-invalid, NOT indexed
+        // out of bounds (regression for the row_len=0 panic).
+        let mut payload = test_market_trade_data_payload(true);
+        payload.extend_from_slice(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC);
+        payload.extend_from_slice(&COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN as u16).to_le_bytes(),
+        );
+        payload.extend_from_slice(&0u16.to_le_bytes()); // row_len = 0 (invalid)
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes()); // row_count = 1
+        for _ in 0..4 {
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        let raw = wrap_single_data_record(43, &payload);
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|e| e.contains("MTD1 header shape is invalid")));
+    }
+
+    // Offline re-decode of the captured acceptance fixture. The fixture is a
+    // real live-game compact stream containing baselines for all scheduled
+    // domains; after this fix it must decode with ZERO parse_errors for the
+    // 8 previously-failing records (d63-69 + d43 MTD1/MTRF). Skips gracefully
+    // when the fixture is absent (it is not committed as a test dependency).
+    #[test]
+    fn acceptance_fixture_stream_decodes_without_new_parse_errors() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../runs/v1_acceptance_20260706/smoke_paused/collector_stream.bin");
+        let raw = match fs::read(&fixture) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                eprintln!(
+                    "skipping: acceptance fixture not present at {}",
+                    fixture.display()
+                );
+                return;
+            }
+        };
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "fixture decoded with {} parse_errors: {:?}",
+            summary.parse_errors.len(),
+            summary.parse_errors
+        );
     }
 }
