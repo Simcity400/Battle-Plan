@@ -416,7 +416,7 @@ pub fn extract_rows_from_current_roots<M: Domain53Memory>(
 ) -> Result<ExtractedDomain53Frame, ExtractError> {
     let roots = resolve_domain53_frame_roots(mem)?;
     let discovery = discover_domain53_heap_hits_for_module(mem, roots.module_base)?;
-    extract_rows_from_resolved_roots_with_discovery(mem, roots, &discovery)
+    extract_rows_from_resolved_roots_with_discovery(mem, roots, &discovery, None)
 }
 
 pub fn extract_rows_from_current_roots_with_discovery<M: Domain53Memory>(
@@ -424,7 +424,22 @@ pub fn extract_rows_from_current_roots_with_discovery<M: Domain53Memory>(
     discovery: &Domain53Discovery,
 ) -> Result<ExtractedDomain53Frame, ExtractError> {
     let roots = resolve_domain53_frame_roots(mem)?;
-    extract_rows_from_resolved_roots_with_discovery(mem, roots, discovery)
+    extract_rows_from_resolved_roots_with_discovery(mem, roots, discovery, None)
+}
+
+/// P4b entry point: the war rows are re-read from a SMALL set of validated
+/// addresses (produced off-frame by [`domain53_validate_war_row_addrs`]) instead
+/// of the raw ~1.47M war-date hits. `discovery.war_hits` is ignored — the
+/// operative/operation/spy-net families still come from `discovery`; only the
+/// war family switches to the validated-address source. War-row VALUES (tags,
+/// casualties) are re-read live from those addresses every frame.
+pub fn extract_rows_from_current_roots_with_validated_war_addrs<M: Domain53Memory>(
+    mem: &M,
+    discovery: &Domain53Discovery,
+    war_row_addrs: &[u64],
+) -> Result<ExtractedDomain53Frame, ExtractError> {
+    let roots = resolve_domain53_frame_roots(mem)?;
+    extract_rows_from_resolved_roots_with_discovery(mem, roots, discovery, Some(war_row_addrs))
 }
 
 fn resolve_domain53_frame_roots<M: Domain53Memory>(
@@ -467,6 +482,12 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     mem: &M,
     roots: Domain53FrameRoots,
     discovery: &Domain53Discovery,
+    // P4b: when `Some`, the war family is re-read from this small validated
+    // address set (produced off-frame) instead of `discovery.war_hits` (the raw
+    // ~1.47M hits). `None` keeps the original inline path (used by direct
+    // callers and tests). The operative/operation/spy-net families always come
+    // from `discovery`.
+    war_row_addrs: Option<&[u64]>,
 ) -> Result<ExtractedDomain53Frame, ExtractError> {
     let module_base = roots.module_base;
     let game_state = roots.game_state;
@@ -480,10 +501,20 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     };
     let mut staleness = Domain53DiscoveryStaleness::default();
 
-    let war_rows = read_war_rows(mem, module_base, &countries, &discovery.war_hits, &mut acc)?;
-    staleness.war_total = discovery.war_hits.iter().map(Vec::len).sum();
-    staleness.war_stale_dropped = war_rows.1;
-    let war_rows = war_rows.0;
+    let (war_rows, war_total, war_stale_dropped) = match war_row_addrs {
+        Some(addrs) => {
+            let (rows, stale) =
+                read_war_rows_from_validated_addrs(mem, module_base, &countries, addrs, &mut acc)?;
+            (rows, addrs.len(), stale)
+        }
+        None => {
+            let (rows, stale) =
+                read_war_rows(mem, module_base, &countries, &discovery.war_hits, &mut acc)?;
+            (rows, discovery.war_hits.iter().map(Vec::len).sum(), stale)
+        }
+    };
+    staleness.war_total = war_total;
+    staleness.war_stale_dropped = war_stale_dropped;
     family_counts.war_scan_ranges = discovery.scan_range_count;
     source_proofs |= SOURCE_PROOF_WAR_ROOT_870EBF;
     let war_projection = war_projection_by_country(&war_rows);
@@ -2335,6 +2366,122 @@ fn domain53_war_date_vtables(module_base: u64) -> Result<[u64; 2], ExtractError>
     ])
 }
 
+/// P4b OFF-FRAME war-row address validation.
+///
+/// The war date-object vtables are extremely common heap objects — the
+/// game-date vtable alone measured 1,456,331 live hits on D04 1944 — but only a
+/// few dozen of those addresses are real war rows. `read_war_rows` validated ALL
+/// of them EVERY FRAME on the frame thread (a ~0.3-1.5 s spike per frame, plus
+/// it counted every non-war game-date object as a skipped row, which fails the
+/// domain closed at 1944 scale). This function does that ~1.47M-hit filter ONCE
+/// per sweep generation on a BACKGROUND thread, returning only the SMALL set of
+/// validated war-row ADDRESSES. The per-frame path
+/// (`read_war_rows_from_validated_addrs`) then re-reads the LIVE fields (tags,
+/// casualties) fresh from those few addresses — values are never frozen.
+///
+/// Dedup is by unordered tag-pair, first-seen wins (gregorian hits before
+/// game-date), byte-identical to `read_war_rows`' dedup so the emitted war-row
+/// set is unchanged.
+pub fn domain53_validate_war_row_addrs<M: Domain53Memory>(
+    mem: &M,
+    gregorian_hits: &[u64],
+    game_date_hits: &[u64],
+) -> Result<Vec<u64>, ExtractError> {
+    let roots = resolve_domain53_frame_roots(mem)?;
+    let module_base = roots.module_base;
+    let valid_tags = roots
+        .countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect::<BTreeSet<_>>();
+    let date_vtables = domain53_war_date_vtables(module_base)?;
+    let hit_sources = [
+        (date_vtables[0], gregorian_hits),
+        (date_vtables[1], game_date_hits),
+    ];
+    let mut addrs = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (date_vtable, hits) in hit_sources {
+        for &hit in hits {
+            match mem.read_u64(hit) {
+                Ok(vtable) if vtable == date_vtable => {}
+                Ok(_) | Err(_) => continue,
+            }
+            let Some(row_addr) = hit.checked_sub(profile::DOMAIN53_WAR_DATE_VTABLE as u64) else {
+                continue;
+            };
+            let Ok(row) = read_war_row(mem, row_addr, &valid_tags) else {
+                continue;
+            };
+            let key = if row.first_tag_db_id <= row.second_tag_db_id {
+                (row.first_tag_db_id, row.second_tag_db_id)
+            } else {
+                (row.second_tag_db_id, row.first_tag_db_id)
+            };
+            if seen.insert(key) {
+                addrs.push(row_addr);
+            }
+        }
+    }
+    Ok(addrs)
+}
+
+/// P4b PER-FRAME re-read of the validated war-row addresses produced off-frame
+/// by [`domain53_validate_war_row_addrs`]. Re-reads the LIVE tags + casualties
+/// from each address every frame (casualties change over time and must stay
+/// fresh — never frozen). A validated address whose war-date vtable is gone
+/// (freed/reused) is `stale_dropped`; one that still has the vtable but no
+/// longer reads as a valid war row is a skip. Dedup by tag-pair defends against
+/// a stale address aliasing a live war. This runs over only the ~dozens of
+/// validated addresses, so it is cheap on the frame path.
+fn read_war_rows_from_validated_addrs<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    countries: &[CountryRoot],
+    war_row_addrs: &[u64],
+    acc: &mut RowAccumulator,
+) -> Result<(Vec<WarRelationRow>, usize), ExtractError> {
+    let valid_tags = countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect::<BTreeSet<_>>();
+    let date_vtables = domain53_war_date_vtables(module_base)?;
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut stale_dropped = 0usize;
+    for &row_addr in war_row_addrs {
+        // Re-validate the date-object vtable at this address (ABA defense: a
+        // freed/reused slot no longer carries a war date vtable → stale).
+        let Some(vtable_addr) = row_addr.checked_add(profile::DOMAIN53_WAR_DATE_VTABLE as u64)
+        else {
+            stale_dropped = stale_dropped.saturating_add(1);
+            continue;
+        };
+        match mem.read_u64(vtable_addr) {
+            Ok(vtable) if date_vtables.contains(&vtable) => {}
+            Ok(_) | Err(_) => {
+                stale_dropped = stale_dropped.saturating_add(1);
+                continue;
+            }
+        }
+        match read_war_row(mem, row_addr, &valid_tags) {
+            Ok(row) => {
+                let key = if row.first_tag_db_id <= row.second_tag_db_id {
+                    (row.first_tag_db_id, row.second_tag_db_id)
+                } else {
+                    (row.second_tag_db_id, row.first_tag_db_id)
+                };
+                if seen.insert(key) {
+                    rows.push(row);
+                    acc.observe();
+                }
+            }
+            Err(_) => acc.skip(),
+        }
+    }
+    Ok((rows, stale_dropped))
+}
+
 fn read_war_row<M: Domain53Memory>(
     mem: &M,
     row_addr: u64,
@@ -3999,6 +4146,59 @@ mod tests {
         let uncached = extract_rows_from_current_roots(&mem).expect("uncached domain53 extract");
 
         assert_eq!(cached, uncached);
+    }
+
+    /// P4b: the off-frame validated-address war path yields the SAME war rows as
+    /// the raw inline path, and per-frame re-reads casualties LIVE (not frozen).
+    #[test]
+    fn validated_war_addrs_match_raw_and_reread_casualties_fresh() {
+        let mut mem = fake_domain53_memory(true, true);
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+
+        // Off-frame validation collapses the raw war-date hits to the one real
+        // war-row address (row_addr = hit - WAR_DATE_VTABLE).
+        let validated =
+            domain53_validate_war_row_addrs(&mem, &discovery.war_hits[0], &discovery.war_hits[1])
+                .expect("validate war addrs");
+        assert_eq!(validated.len(), 1);
+
+        // Same war rows as the raw path (byte-identical war family).
+        let raw = extract_rows_from_current_roots_with_discovery(&mem, &discovery).expect("raw");
+        let via_addrs =
+            extract_rows_from_current_roots_with_validated_war_addrs(&mem, &discovery, &validated)
+                .expect("validated");
+        assert_eq!(via_addrs.rows.wars, raw.rows.wars);
+        assert_eq!(via_addrs.rows.wars.len(), 1);
+        assert_eq!(via_addrs.rows.wars[0].first_casualties, 100);
+        assert_eq!(via_addrs.rows.wars[0].second_casualties, 200);
+        assert_eq!(via_addrs.skipped_rows, 0);
+
+        // CASUALTIES NOT FROZEN: mutate the live row AFTER validation, re-extract
+        // from the SAME validated addresses → the fresh values appear.
+        let war_row = validated[0];
+        mem.write_i32(
+            war_row + profile::DOMAIN53_WAR_FIRST_CASUALTIES as u64,
+            4242,
+        );
+        mem.write_i32(
+            war_row + profile::DOMAIN53_WAR_SECOND_CASUALTIES as u64,
+            9999,
+        );
+        let refreshed =
+            extract_rows_from_current_roots_with_validated_war_addrs(&mem, &discovery, &validated)
+                .expect("refreshed");
+        assert_eq!(refreshed.rows.wars.len(), 1);
+        assert_eq!(refreshed.rows.wars[0].first_casualties, 4242);
+        assert_eq!(refreshed.rows.wars[0].second_casualties, 9999);
+
+        // A validated address whose war-date vtable is gone (war ended / slot
+        // reused) is dropped by per-frame revalidation, never emitted as a bogus
+        // row (ABA-safe).
+        mem.write_u64(war_row + profile::DOMAIN53_WAR_DATE_VTABLE as u64, 0);
+        let ended =
+            extract_rows_from_current_roots_with_validated_war_addrs(&mem, &discovery, &validated)
+                .expect("war-ended extract");
+        assert!(ended.rows.wars.is_empty());
     }
 
     #[test]
