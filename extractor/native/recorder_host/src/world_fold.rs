@@ -747,9 +747,14 @@ pub struct WorldFold {
     /// existence; D56 only annotates validated task-force status under
     /// `order_of_battle.extra.naval_missions_status_live`.
     naval_missions_status: BTreeMap<u32, NavalMissionTaskForceFoldRow>,
-    /// D56 E10/R6 naval supremacy rows keyed by strategic region and
-    /// controller tag-db-id.
-    naval_supremacy: BTreeMap<(u32, u32), NavalSupremacyFoldRow>,
+    /// D56 E10/R6 naval supremacy rows. Stored as an ORDER-PRESERVING occurrence
+    /// list, not a map: the game's per-strategic-region naval-dominance array
+    /// legitimately holds multiple entries for the same (region, controller)
+    /// with distinct supremacy values (validated live at D04 1944 — region 29
+    /// dominance tags [2,22,39,22] — and in the acceptance fixture). Keying by
+    /// (region, controller) would collapse those occurrences last-write-wins and
+    /// silently drop real data, so every decoded row is retained in emit order.
+    naval_supremacy: Vec<NavalSupremacyFoldRow>,
     /// D57 validated partial session metadata sidecar for the current hour.
     session_multiplayer_metadata_this_hour: Option<Domain57FoldState>,
     /// W6 D68 session header (persistent last-value-wins). The last successfully
@@ -988,7 +993,7 @@ impl WorldFold {
             naval_combat_lifecycle_unknown_this_hour: false,
             naval_combat_members_unknown_this_hour: false,
             naval_missions_status: BTreeMap::new(),
-            naval_supremacy: BTreeMap::new(),
+            naval_supremacy: Vec::new(),
             session_multiplayer_metadata_this_hour: None,
             session_header: None,
             tech_sharing_groups: None,
@@ -3838,9 +3843,11 @@ impl WorldFold {
         if self.fold_domain_unknown(NAVAL_MISSIONS_STATUS_DOMAIN_ID) {
             out.insert("_r2_naval_supremacy".into(), Value::Null);
         } else if self.fold_domain_seen(NAVAL_MISSIONS_STATUS_DOMAIN_ID) {
+            // Stable sort by (region, controller); repeated keys retain their
+            // emit order so distinct occurrences stay deterministic.
             let mut rows = self
                 .naval_supremacy
-                .values()
+                .iter()
                 .map(|row| {
                     json!({
                         "region_id": row.region_id,
@@ -10388,7 +10395,6 @@ impl WorldFold {
         // may clear stale task-force status rows.
         if !delta {
             self.naval_missions_status.clear();
-            self.naval_supremacy.clear();
         }
 
         let naval56::DecodedNavalMissionStatusPayload {
@@ -10462,20 +10468,27 @@ impl WorldFold {
                 },
             );
         }
+        // The supremacy sidecar is an ORDER-PRESERVING occurrence list, not a
+        // keyed map, so an accidental delta frame could double-append it (a map
+        // would merely upsert). D56 supremacy is always a full snapshot, so
+        // full-replace it on every successful frame regardless of the delta flag
+        // — this stays correct even if a delta frame ever slips through, and the
+        // task-force map above keeps its own delta/clear semantics.
+        self.naval_supremacy.clear();
         for row in naval_supremacy_rows {
-            self.naval_supremacy.insert(
-                (row.region_id, row.controller_tag_db_id),
-                NavalSupremacyFoldRow {
-                    region_id: row.region_id,
-                    controller_tag_db_id: row.controller_tag_db_id,
-                    current_raw: row.current_raw,
-                    target_raw: row.target_raw,
-                    base_target_raw: row.base_target_raw,
-                    previous_raw: row.previous_raw,
-                    decline_from_raw: row.decline_from_raw,
-                    individual_ratio_raw: row.individual_ratio_raw,
-                },
-            );
+            // Occurrence list: retain every decoded row in emit order. The
+            // game's naval-dominance array can carry several distinct entries
+            // for the same (region, controller); collapsing them would lose data.
+            self.naval_supremacy.push(NavalSupremacyFoldRow {
+                region_id: row.region_id,
+                controller_tag_db_id: row.controller_tag_db_id,
+                current_raw: row.current_raw,
+                target_raw: row.target_raw,
+                base_target_raw: row.base_target_raw,
+                previous_raw: row.previous_raw,
+                decline_from_raw: row.decline_from_raw,
+                individual_ratio_raw: row.individual_ratio_raw,
+            });
         }
 
         if !delta {

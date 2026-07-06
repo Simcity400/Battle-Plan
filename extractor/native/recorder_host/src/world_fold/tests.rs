@@ -7044,6 +7044,20 @@ fn chunk2_folds_d56_naval_supremacy_under_naval_air() {
             decline_from_raw: 448_057_205,
             individual_ratio_raw: 97_816,
         },
+        // Second dominance entry for the SAME (region 16, controller 2/ENG)
+        // with distinct supremacy values. The game's naval-dominance array
+        // legitimately repeats a controller within one region; the fold must
+        // retain both occurrences rather than collapsing to the last write.
+        naval56::NavalSupremacyRow {
+            region_id: 16,
+            controller_tag_db_id: 2,
+            current_raw: 1_333_140,
+            target_raw: 66_657_000,
+            base_target_raw: 66_657_000,
+            previous_raw: 0,
+            decline_from_raw: 66_657_000,
+            individual_ratio_raw: 5_062,
+        },
     ];
     let snap = chunk1_one_snapshot(vec![
         (
@@ -7057,18 +7071,26 @@ fn chunk2_folds_d56_naval_supremacy_under_naval_air() {
     assert_eq!(sidecar["source"], json!("C"));
     assert_eq!(sidecar["confidence"], json!("validated_slice"));
     assert_eq!(sidecar["scale_raw"], json!(100_000));
-    assert_eq!(sidecar["row_count"], json!(2));
+    // All three occurrences survive — the repeated (16, ENG) pair is NOT collapsed.
+    assert_eq!(sidecar["row_count"], json!(3));
     let rows = sidecar["rows"].as_array().unwrap();
+    // Stable sort by (region, controller): the two region-16/ENG occurrences
+    // sort first, in emit order (original then the distinct second entry).
     assert_eq!(rows[0]["region_id"], json!(16));
     assert_eq!(rows[0]["controller"], json!("ENG"));
     assert_eq!(rows[0]["current_raw"], json!(67_962_800));
     assert_eq!(rows[0]["individual_ratio_raw"], json!(87_173));
     assert!((rows[0]["current"].as_f64().unwrap() - 679.628).abs() < 0.00001);
     assert!((rows[0]["individual_ratio"].as_f64().unwrap() - 0.87173).abs() < 0.00001);
-    assert_eq!(rows[1]["region_id"], json!(18));
-    assert_eq!(rows[1]["controller"], json!("USA"));
-    assert_eq!(rows[1]["target_raw"], json!(448_057_205));
-    assert_eq!(rows[1]["base_target_raw"], json!(76_245_200));
+    assert_eq!(rows[1]["region_id"], json!(16));
+    assert_eq!(rows[1]["controller"], json!("ENG"));
+    assert_eq!(rows[1]["current_raw"], json!(1_333_140));
+    assert_eq!(rows[1]["target_raw"], json!(66_657_000));
+    assert_eq!(rows[1]["individual_ratio_raw"], json!(5_062));
+    assert_eq!(rows[2]["region_id"], json!(18));
+    assert_eq!(rows[2]["controller"], json!("USA"));
+    assert_eq!(rows[2]["target_raw"], json!(448_057_205));
+    assert_eq!(rows[2]["base_target_raw"], json!(76_245_200));
 }
 
 #[test]

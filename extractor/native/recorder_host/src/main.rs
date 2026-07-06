@@ -25908,4 +25908,48 @@ mod tests {
             summary.parse_errors
         );
     }
+
+    // Offline re-decode of the LONG-paused acceptance fixture (D04 1944). Before
+    // the naval-supremacy dedup-key fix this stream failed host decode with 5
+    // "naval-supremacy trailer duplicates region/controller" errors — the game's
+    // per-strategic-region naval-dominance array legitimately carries multiple
+    // entries for the same (region, controller) with distinct supremacy values
+    // (validated live: region 29 dominance tags [2,22,39,22]). After the fix the
+    // occurrence list is accepted verbatim and the whole stream must decode with
+    // ZERO parse_errors. Skips gracefully when the fixture is absent.
+    #[test]
+    fn acceptance_long_paused_fixture_decodes_without_naval_supremacy_dup_errors() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../runs/v1_acceptance_20260706/smoke_long_paused/collector_stream.bin");
+        let raw = match fs::read(&fixture) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                eprintln!(
+                    "skipping: long-paused acceptance fixture not present at {}",
+                    fixture.display()
+                );
+                return;
+            }
+        };
+        let summary = summarize_compact_stream(&raw);
+        // Specifically no NSUP duplicate-region/controller rejections remain.
+        assert!(
+            !summary
+                .parse_errors
+                .iter()
+                .any(|e| e.contains("naval-supremacy trailer duplicates region/controller")),
+            "naval-supremacy duplicate errors still present: {:?}",
+            summary
+                .parse_errors
+                .iter()
+                .filter(|e| e.contains("naval-supremacy"))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            summary.parse_errors.is_empty(),
+            "long-paused fixture decoded with {} parse_errors: {:?}",
+            summary.parse_errors.len(),
+            summary.parse_errors
+        );
+    }
 }

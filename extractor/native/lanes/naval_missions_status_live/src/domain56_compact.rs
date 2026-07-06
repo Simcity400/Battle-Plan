@@ -399,7 +399,18 @@ fn decode_naval_supremacy_trailer(
         return (Vec::new(), payload.len());
     }
 
-    let mut seen = BTreeSet::new();
+    // NSUP is a faithful occurrence list of the game's per-strategic-region
+    // naval-dominance array (CStrategicRegion naval_dominance). That array
+    // legitimately holds MULTIPLE entries for the same (region, controller):
+    // validated live at D04 1944, region 29 carries dominance tags [2,22,39,22]
+    // (tag 22 twice, distinct value payloads), and 5 (region, controller) pairs
+    // in the acceptance fixture repeat with differing supremacy values. There is
+    // no per-entry discriminator field in the 32-byte row beyond the value
+    // payload, so (region, controller) is NOT a uniqueness key. Do not reject on
+    // it — that would drop real data. Preserve array order (the collector emits
+    // in a stable order) and validate each row's field bounds. A byte-identical
+    // full-row repeat can legitimately occur for zero/steady-state entries, so it
+    // is not treated as corruption either.
     let mut rows = Vec::with_capacity(row_count);
     let mut cursor = NAVAL_SUPREMACY_TRAILER_HEADER_LEN;
     for index in 0..row_count {
@@ -414,12 +425,6 @@ fn decode_naval_supremacy_trailer(
             individual_ratio_raw: read_u32(trailer, cursor + 28),
         };
         cursor += NAVAL_SUPREMACY_TRAILER_ROW_LEN;
-        if !seen.insert((row.region_id, row.controller_tag_db_id)) {
-            errors.push(format!(
-                "offset {offset}: naval-supremacy trailer duplicates region/controller ({}, {})",
-                row.region_id, row.controller_tag_db_id
-            ));
-        }
         if let Err(err) = validate_naval_supremacy_row(&row, index) {
             errors.push(format!("offset {offset}: {err}"));
         }
@@ -1242,11 +1247,20 @@ mod tests {
     }
 
     #[test]
-    fn naval_supremacy_trailer_rejects_duplicate_region_controller() {
+    fn naval_supremacy_trailer_accepts_repeated_region_controller_with_distinct_values() {
+        // The game's per-strategic-region naval-dominance array legitimately
+        // holds MULTIPLE entries for the same (region, controller) — validated
+        // live at D04 1944 (region 29 dominance tags [2,22,39,22]) and in the
+        // acceptance fixture (5 repeated pairs with differing supremacy values).
+        // Repeating (region, controller) while the six value fields differ must
+        // be accepted, and BOTH occurrences must survive the decode.
         let rows = sample_rows();
         let mut supremacy_rows = sample_supremacy_rows();
         supremacy_rows[1].region_id = supremacy_rows[0].region_id;
         supremacy_rows[1].controller_tag_db_id = supremacy_rows[0].controller_tag_db_id;
+        // The two rows share (region, controller) but differ in the value fields
+        // (sample_supremacy_rows already gives them distinct payloads).
+        assert_ne!(supremacy_rows[0], supremacy_rows[1]);
         let payload = encode_payload_with_naval_supremacy(
             &NavalMissionStatusHeader {
                 elapsed_wall_ms: 42,
@@ -1262,8 +1276,8 @@ mod tests {
             &supremacy_rows,
         );
 
-        let errors = decode_status_payload(0, &payload).unwrap_err();
-        assert!(errors.iter().any(|error| error.contains("duplicates")));
+        let decoded = decode_status_payload(0, &payload).expect("payload decodes");
+        assert_eq!(decoded.naval_supremacy_rows, supremacy_rows);
     }
 
     #[test]
