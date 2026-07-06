@@ -319,6 +319,51 @@ pub fn discover_war_rows<M: CapWarMemory>(mem: &M) -> Result<CapWarDiscovery, Ex
     })
 }
 
+/// P3 shared-sweep migration: the two absolute war date-object vtables the
+/// discovery scans for (`[gregorian, game_date]`). The collector registers both
+/// with the shared background `heap_sweep` service.
+pub fn capwar_war_date_vtables(module_base: u64) -> Result<[u64; 2], ExtractError> {
+    war_date_vtables(module_base)
+}
+
+/// P3 shared-sweep migration: build a [`CapWarDiscovery`] from raw scan hits
+/// produced by the shared sweep service (the UNION of the two war date-vtable
+/// needles from [`capwar_war_date_vtables`]), instead of running the full-heap
+/// scan inline on the frame thread. This is the exact post-scan validation loop
+/// from [`discover_war_rows`]: each hit is turned into a candidate row address
+/// and kept only if it fully validates as a war row against the live country
+/// set. Fails closed if the raw hit count is implausibly large (corrupt heap
+/// enumeration), matching the inline scan's ceiling.
+pub fn discover_war_rows_from_raw_hits<M: CapWarMemory>(
+    mem: &M,
+    raw_hits: &[u64],
+) -> Result<CapWarDiscovery, ExtractError> {
+    if raw_hits.len() > MAX_RAW_SCAN_HITS {
+        return Err(ExtractError::InvalidRoot("capwar_raw_scan_hits_exceeded"));
+    }
+    let roots = resolve_frame_roots(mem)?;
+    let module_base = roots.module_base;
+    let valid_tags: BTreeSet<u32> = roots
+        .countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect();
+    let date_vtables = war_date_vtables(module_base)?;
+    let mut war_row_addrs = BTreeSet::new();
+    for &hit in raw_hits {
+        let Some(row_addr) = hit.checked_sub(profile::DOMAIN53_WAR_DATE_VTABLE as u64) else {
+            continue;
+        };
+        if read_war_row(mem, row_addr, &date_vtables, &valid_tags).is_ok() {
+            war_row_addrs.insert(row_addr);
+        }
+    }
+    Ok(CapWarDiscovery {
+        war_row_addrs: war_row_addrs.into_iter().collect(),
+        scan_range_count: 0,
+    })
+}
+
 /// Ceiling on raw (pre-validation) scan hits; the CGameDate vtable is a very
 /// common heap object (~1.5M live hits measured on D04). Beyond this the scan
 /// is implausible and fails closed rather than ballooning memory.
@@ -883,6 +928,72 @@ mod tests {
         assert_eq!(frame.wars.len(), 1);
         assert_eq!(frame.wars[0].first_casualties, 1110);
         assert_eq!(frame.wars[0].second_casualties, 948);
+    }
+
+    // P3: `discover_war_rows_from_raw_hits` (fed by the shared sweep service)
+    // must produce the SAME validated war-row set as the inline `discover_war_rows`
+    // scan, given the raw hit addresses the scan would have found (the date-vtable
+    // qword sits at row_addr + DOMAIN53_WAR_DATE_VTABLE).
+    #[test]
+    fn discover_war_rows_from_raw_hits_matches_inline_scan() {
+        let (mut mem, ger_ptr, fra_ptr) = base_mock();
+        setup_capitulation(
+            &mem,
+            fra_ptr,
+            HEAP_BASE + 0x30_0000,
+            true,
+            real_date_raw(1940, 100, 2),
+            10_000_000,
+            8,
+        );
+        setup_capitulation(
+            &mem,
+            ger_ptr,
+            HEAP_BASE + 0x40_0000,
+            false,
+            crate::compact::CGAMEDATE_NULL_RAW,
+            0,
+            0,
+        );
+        let war_addr = HEAP_BASE + 0x50_0000;
+        setup_war_row(
+            &mem,
+            war_addr,
+            47,
+            3,
+            real_date_raw(1939, 244, 4),
+            1110,
+            948,
+        );
+        mem.ranges = vec![(war_addr, 0x100)];
+
+        // Inline scan (the pre-P3 path) for the reference set.
+        let inline = discover_war_rows(&mem).expect("inline discovery");
+        assert_eq!(inline.war_row_addrs, vec![war_addr]);
+
+        // The needles the collector registers with the shared sweep.
+        let needles = capwar_war_date_vtables(MODULE_BASE).expect("needles");
+        assert_eq!(
+            needles[0],
+            MODULE_BASE + profile::DOMAIN53_WAR_GREGORIAN_DATE_VTABLE_RVA as u64
+        );
+        assert_eq!(
+            needles[1],
+            MODULE_BASE + profile::DOMAIN53_WAR_GAME_DATE_VTABLE_RVA as u64
+        );
+
+        // The sweep would report a hit at the vtable qword inside the war row.
+        let raw_hits = vec![war_addr + profile::DOMAIN53_WAR_DATE_VTABLE as u64];
+        let from_hits =
+            discover_war_rows_from_raw_hits(&mem, &raw_hits).expect("from-hits discovery");
+        assert_eq!(from_hits.war_row_addrs, inline.war_row_addrs);
+
+        // A raw hit that does not resolve to a valid war row is dropped (fail
+        // closed), not blindly adopted.
+        let junk_hits = vec![(HEAP_BASE + 0x99_0000) + profile::DOMAIN53_WAR_DATE_VTABLE as u64];
+        let junk =
+            discover_war_rows_from_raw_hits(&mem, &junk_hits).expect("junk discovery ok-but-empty");
+        assert!(junk.war_row_addrs.is_empty());
     }
 
     #[test]

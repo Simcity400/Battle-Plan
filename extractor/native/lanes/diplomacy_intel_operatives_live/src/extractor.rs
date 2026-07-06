@@ -323,6 +323,59 @@ pub fn discover_domain53_heap_hits<M: Domain53Memory>(
     discover_domain53_heap_hits_for_module(mem, module_base)
 }
 
+/// P3 shared-sweep migration: the six absolute vtable needles the domain-53
+/// heap discovery matches, in the order
+/// `[operative, war_gregorian_date, war_game_date, operation_instance,
+/// strategic_operative, country_intel_network]`. The collector registers these
+/// with the shared background `heap_sweep` service and reassembles a
+/// [`Domain53Discovery`] from the published per-needle hit vectors via
+/// [`domain53_discovery_from_needle_hits`] — no inline heap scan on the frame
+/// thread. Build identity is still verified per frame during row extraction, so
+/// a wrong module base only yields empty/garbage hits that fail closed.
+pub fn domain53_scan_needles(module_base: u64) -> Result<[u64; 6], ExtractError> {
+    if module_base == 0 {
+        return Err(ExtractError::InvalidRoot("module_base_zero"));
+    }
+    let date_vtables = domain53_war_date_vtables(module_base)?;
+    Ok([
+        add_addr(module_base, profile::DOMAIN53_OPERATIVE_VTABLE_RVA)?,
+        date_vtables[0],
+        date_vtables[1],
+        add_addr(module_base, profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA)?,
+        add_addr(
+            module_base,
+            profile::DOMAIN53_STRATEGIC_OPERATIVE_VTABLE_RVA,
+        )?,
+        add_addr(
+            module_base,
+            profile::DOMAIN53_COUNTRY_INTEL_NETWORK_VTABLE_RVA,
+        )?,
+    ])
+}
+
+/// Reassemble a [`Domain53Discovery`] from hits produced by the shared sweep
+/// service for the needles returned by [`domain53_scan_needles`] (same order).
+/// Byte-for-byte equivalent to what `discover_domain53_heap_hits_for_module`
+/// would have produced from its own scan; every hit is re-validated per frame
+/// during extraction (ABA-safe).
+pub fn domain53_discovery_from_needle_hits(
+    operative_hits: Vec<u64>,
+    war_gregorian_hits: Vec<u64>,
+    war_game_date_hits: Vec<u64>,
+    operation_instance_hits: Vec<u64>,
+    strategic_operative_hits: Vec<u64>,
+    country_intel_network_hits: Vec<u64>,
+) -> Domain53Discovery {
+    Domain53Discovery {
+        operative_hits,
+        war_hits: [war_gregorian_hits, war_game_date_hits],
+        operation_instance_hits,
+        strategic_operative_hits,
+        country_intel_network_hits,
+        scan_range_count: 0,
+    }
+}
+
 fn discover_domain53_heap_hits_for_module<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
@@ -3051,6 +3104,65 @@ fn has(source_proofs: u64, required: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // P3: the shared-sweep needle order MUST line up with the field order
+    // `domain53_discovery_from_needle_hits` assigns, or discovery is silently
+    // corrupted. Lock both: `domain53_scan_needles[i]` is the absolute vtable
+    // for the i-th argument of `domain53_discovery_from_needle_hits`.
+    #[test]
+    fn domain53_scan_needles_order_matches_discovery_fields() {
+        let module_base = 0x1_4000_0000u64;
+        let needles = domain53_scan_needles(module_base).expect("needles");
+        assert_eq!(
+            needles[0],
+            add_addr(module_base, profile::DOMAIN53_OPERATIVE_VTABLE_RVA).unwrap()
+        );
+        let date_vtables = domain53_war_date_vtables(module_base).unwrap();
+        assert_eq!(needles[1], date_vtables[0]);
+        assert_eq!(needles[2], date_vtables[1]);
+        assert_eq!(
+            needles[3],
+            add_addr(module_base, profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA).unwrap()
+        );
+        assert_eq!(
+            needles[4],
+            add_addr(
+                module_base,
+                profile::DOMAIN53_STRATEGIC_OPERATIVE_VTABLE_RVA
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            needles[5],
+            add_addr(
+                module_base,
+                profile::DOMAIN53_COUNTRY_INTEL_NETWORK_VTABLE_RVA
+            )
+            .unwrap()
+        );
+
+        // The from-hits builder assigns each argument to the matching field, in
+        // the same positional order as the needle array.
+        let discovery = domain53_discovery_from_needle_hits(
+            vec![1],
+            vec![2],
+            vec![3],
+            vec![4],
+            vec![5],
+            vec![6],
+        );
+        assert_eq!(discovery.operative_hits, vec![1]);
+        assert_eq!(discovery.war_hits[0], vec![2]);
+        assert_eq!(discovery.war_hits[1], vec![3]);
+        assert_eq!(discovery.operation_instance_hits, vec![4]);
+        assert_eq!(discovery.strategic_operative_hits, vec![5]);
+        assert_eq!(discovery.country_intel_network_hits, vec![6]);
+    }
+
+    #[test]
+    fn domain53_scan_needles_rejects_zero_module_base() {
+        assert!(domain53_scan_needles(0).is_err());
+    }
 
     const FAKE_COUNTRY_ROWS: u32 = 45;
     const TEST_COUNTRY_COL_RVA: u64 = 0x3600_0000;
