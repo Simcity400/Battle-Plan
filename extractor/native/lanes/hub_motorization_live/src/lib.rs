@@ -31,6 +31,19 @@ pub const COUNTRY_COUNT_OFF: u64 = 0x31C;
 pub const COUNTRY_VTABLE_RVA: u64 = 0x27D0E90;
 pub const COUNTRY_TAG_DB_ID_OFF: u64 = 0x08;
 
+/// Anchored root: CSupplySystem lives at `u64[CGameState + 0x3D8]` and owns a
+/// `std::vector<CCountrySupplySystem*>` whose header is
+/// `{ data_ptr @ +0x108, count @ +0x110, cap @ +0x114 }`. Walking that vector
+/// replaces the old full-heap vtable sweep for CCSS discovery -- LIVE-VERIFIED
+/// (D04 1944) to yield the SAME set of row-producing objects and byte-identical
+/// rows as the sweep, while additionally rejecting orphan/stale CCSS objects the
+/// sweep would (harmlessly) surface. The vector reallocates on resize, so the
+/// header is re-read every frame and NEVER cached across frames.
+pub const CSUPPLY_SYSTEM_OFF: u64 = 0x3D8;
+pub const CSS_VECTOR_DATA_OFF: u64 = 0x108;
+pub const CSS_VECTOR_COUNT_OFF: u64 = 0x110;
+pub const CSS_VECTOR_CAP_OFF: u64 = 0x114;
+
 pub const CCSS_VTABLE0_RVA: u64 = 0x298BBF8;
 pub const CCSS_VTABLE1_RVA: u64 = 0x298BC48;
 pub const CCSS_COUNTRY_OFF: u64 = 0x78;
@@ -104,9 +117,22 @@ pub enum HubMotorizationError {
     ModuleBaseZero,
     GameStateUnavailable,
     CountryTableUnavailable,
+    /// CSupplySystem anchor at `CGameState + 0x3D8` was unreadable/out-of-heap.
+    SupplySystemUnavailable,
+    /// The `std::vector<CCSS*>` header was incoherent (bad data ptr, `count > cap`,
+    /// or oversized) -- fail closed rather than index a torn/freed array.
+    CcssVectorIncoherent,
+    /// The vector header changed between the pre-walk and post-walk reads (a
+    /// resize/realloc raced the walk); discard the frame.
+    CcssVectorRaced,
     CcssScanFailed,
-    CcssDuplicateCountry { tag_db_id: u32 },
-    CcssMalformed { object: u64, reason: &'static str },
+    CcssDuplicateCountry {
+        tag_db_id: u32,
+    },
+    CcssMalformed {
+        object: u64,
+        reason: &'static str,
+    },
 }
 
 pub trait Mem {
@@ -330,7 +356,7 @@ pub fn collect_rows<M: Mem>(
         .u32(cgs + COUNTRY_COUNT_OFF)
         .filter(|count| *count <= MAX_COUNTRY_COUNT)
         .ok_or(HubMotorizationError::CountryTableUnavailable)?;
-    let objects = scan_ccss_objects(mem, module_base, heap_lo, heap_hi)?;
+    let objects = anchored_ccss_objects(mem, module_base, heap_lo, heap_hi, cgs)?;
     let mut collection = HubMotorizationCollection {
         observed_objects: objects.len().min(u32::MAX as usize) as u32,
         ..HubMotorizationCollection::default()
@@ -570,43 +596,107 @@ fn derive_object_rows<M: Mem>(
     })
 }
 
-fn scan_ccss_objects<M: Mem>(
+/// One coherent read of the `std::vector<CCSS*>` header living inside CSupplySystem:
+/// `{ data_ptr @ +0x108, count @ +0x110, cap @ +0x114 }`. Reading all three fields
+/// from a single `read_bytes` snapshot avoids interleaving with a concurrent resize.
+fn read_ccss_vector_header<M: Mem>(
+    mem: &M,
+    supply_system: u64,
+    heap_lo: u64,
+    heap_hi: u64,
+) -> Option<(u64, u32, u32)> {
+    // Fields span [+0x108, +0x118): 8-byte data ptr then two u32 (count, cap).
+    let blob = mem.read_bytes(supply_system + CSS_VECTOR_DATA_OFF, 0x10)?;
+    if blob.len() != 0x10 {
+        return None;
+    }
+    let data_ptr = u64::from_le_bytes(blob[0..8].try_into().unwrap());
+    let count = u32::from_le_bytes(blob[8..12].try_into().unwrap());
+    let cap = u32::from_le_bytes(blob[12..16].try_into().unwrap());
+    // A zero-length vector legitimately carries a null/dangling data ptr; only a
+    // non-empty vector must point into the heap.
+    if count > 0 && !ok_ptr(data_ptr, heap_lo, heap_hi, 8) {
+        return None;
+    }
+    Some((data_ptr, count, cap))
+}
+
+/// Anchored replacement for the former full-heap vtable sweep.
+///
+/// Reaches the game-owned `std::vector<CCountrySupplySystem*>` via
+/// `CGameState + 0x3D8 -> CSupplySystem + 0x108`, re-reading the `{data,count,cap}`
+/// header from scratch on every call (the vector reallocates on resize, so the
+/// pointer is never cached across frames). Each entry is validated by the CCSS
+/// vtable pair plus the `+0x78` country back-pointer's COUNTRY vtable -- the same
+/// structural gate the sweep applied -- and collected into a `BTreeSet<u64>` so the
+/// returned order is ascending-by-address, byte-identical to what the old
+/// `scan_ccss_objects` produced. Fails closed on an incoherent header or if the
+/// header shifts between the pre-walk and post-walk reads (a resize raced the walk).
+fn anchored_ccss_objects<M: Mem>(
     mem: &M,
     module_base: u64,
     heap_lo: u64,
     heap_hi: u64,
+    cgs: u64,
 ) -> Result<Vec<u64>, HubMotorizationError> {
-    let needle = (module_base + CCSS_VTABLE0_RVA).to_le_bytes();
+    let supply_system = mem
+        .u64(cgs + CSUPPLY_SYSTEM_OFF)
+        .filter(|ptr| ok_ptr(*ptr, heap_lo, heap_hi, 8))
+        .ok_or(HubMotorizationError::SupplySystemUnavailable)?;
+
+    let (data_ptr, count, cap) = read_ccss_vector_header(mem, supply_system, heap_lo, heap_hi)
+        .ok_or(HubMotorizationError::CcssVectorIncoherent)?;
+    // Bound the walk: count must not exceed capacity, and both must be sane. The
+    // per-country CCSS vector never approaches MAX_COUNTRY_COUNT, so this doubles
+    // as a torn-read tripwire.
+    if count > cap || cap > MAX_COUNTRY_COUNT || count > MAX_COUNTRY_COUNT {
+        return Err(HubMotorizationError::CcssVectorIncoherent);
+    }
+
+    let vtable0 = module_base + CCSS_VTABLE0_RVA;
     let vtable1 = module_base + CCSS_VTABLE1_RVA;
+    let country_vtable = module_base + COUNTRY_VTABLE_RVA;
     let mut objects = BTreeSet::new();
-    const CHUNK: usize = 16 << 20;
-    const OVERLAP: usize = 16;
-    for (range_start, range_len) in mem.readable_ranges(heap_lo, heap_hi) {
-        let range_end = range_start.saturating_add(range_len as u64).min(heap_hi);
-        let mut pos = range_start.max(heap_lo);
-        while pos < range_end {
-            let want = ((range_end - pos) as usize).min(CHUNK);
-            let Some(blob) = mem.read_bytes(pos, want) else {
-                return Err(HubMotorizationError::CcssScanFailed);
+    if count > 0 {
+        let byte_len = (count as usize)
+            .checked_mul(8)
+            .ok_or(HubMotorizationError::CcssVectorIncoherent)?;
+        let ptrs = mem
+            .read_bytes(data_ptr, byte_len)
+            .filter(|blob| blob.len() == byte_len)
+            .ok_or(HubMotorizationError::CcssScanFailed)?;
+        for chunk in ptrs.chunks_exact(8) {
+            let ccss = u64::from_le_bytes(chunk.try_into().unwrap());
+            if !ok_ptr(ccss, heap_lo, heap_hi, 8) {
+                continue;
+            }
+            // Structural gate: CCSS vtable pair.
+            if mem.u64(ccss) != Some(vtable0) || mem.u64(ccss + 8) != Some(vtable1) {
+                continue;
+            }
+            // Country back-pointer must itself be a COUNTRY object.
+            let Some(country) = mem
+                .u64(ccss + CCSS_COUNTRY_OFF)
+                .filter(|ptr| ok_ptr(*ptr, heap_lo, heap_hi, 8))
+            else {
+                continue;
             };
-            let mut offset = (8usize.wrapping_sub(pos as usize % 8)) % 8;
-            while offset + 16 <= blob.len() {
-                if blob[offset..offset + 8] == needle[..] {
-                    let second =
-                        u64::from_le_bytes(blob[offset + 8..offset + 16].try_into().unwrap());
-                    if second == vtable1 {
-                        objects.insert(pos + offset as u64);
-                    }
-                }
-                offset += 8;
+            if mem.u64(country) != Some(country_vtable) {
+                continue;
             }
-            if blob.len() < want || pos.saturating_add(blob.len() as u64) >= range_end {
-                pos = pos.saturating_add((blob.len().max(0x1000)) as u64);
-            } else {
-                pos = pos.saturating_add(blob.len().saturating_sub(OVERLAP) as u64);
-            }
+            objects.insert(ccss);
         }
     }
+
+    // Re-read the header: if the vector resized mid-walk, the {data,count} we
+    // walked is stale -- discard the frame rather than emit a torn snapshot.
+    let (data_ptr_after, count_after, _cap_after) =
+        read_ccss_vector_header(mem, supply_system, heap_lo, heap_hi)
+            .ok_or(HubMotorizationError::CcssVectorRaced)?;
+    if data_ptr_after != data_ptr || count_after != count {
+        return Err(HubMotorizationError::CcssVectorRaced);
+    }
+
     Ok(objects.into_iter().collect())
 }
 
@@ -619,12 +709,19 @@ mod tests {
     const LO: u64 = 0x1000_0000;
     const HI: u64 = 0x7fff_ffff;
 
+    use std::cell::RefCell;
+
     #[derive(Default)]
     struct MockMem {
         u64s: HashMap<u64, u64>,
         u32s: HashMap<u64, u32>,
         bytes: Vec<(u64, Vec<u8>)>,
         ranges: Vec<(u64, usize)>,
+        /// (addr, second_read_bytes): on the SECOND `read_bytes` hitting `addr`,
+        /// return these bytes instead -- simulates a vector header mutating
+        /// (realloc) between the pre-walk and post-walk reads.
+        race_header: Option<(u64, Vec<u8>)>,
+        race_hits: RefCell<usize>,
     }
 
     impl MockMem {
@@ -635,7 +732,35 @@ mod tests {
             self.u32s.insert(addr, value);
         }
         fn sbytes(&mut self, addr: u64, bytes: Vec<u8>) {
+            // Overwrite any prior blob registered at the same base so re-wiring a
+            // fixture (e.g. a second set_ccss_vector) shadows the first, matching
+            // real "writing memory replaces it" semantics.
+            self.bytes.retain(|(base, _)| *base != addr);
             self.bytes.push((addr, bytes));
+        }
+        /// Install the CSupplySystem `std::vector<CCSS*>` anchored root: writes the
+        /// `{data,count,cap}` header at `supply_system+0x108` and the pointer array
+        /// at `data_ptr`, and wires `CGameState+0x3D8 -> supply_system`.
+        fn set_ccss_vector(
+            &mut self,
+            cgs: u64,
+            supply_system: u64,
+            data_ptr: u64,
+            ccss_ptrs: &[u64],
+            declared_count: u32,
+            cap: u32,
+        ) {
+            self.su64(cgs + CSUPPLY_SYSTEM_OFF, supply_system);
+            let mut header = vec![0u8; 0x10];
+            header[0..8].copy_from_slice(&data_ptr.to_le_bytes());
+            header[8..12].copy_from_slice(&declared_count.to_le_bytes());
+            header[12..16].copy_from_slice(&cap.to_le_bytes());
+            self.sbytes(supply_system + CSS_VECTOR_DATA_OFF, header);
+            let mut arr = vec![0u8; ccss_ptrs.len() * 8];
+            for (i, ptr) in ccss_ptrs.iter().enumerate() {
+                arr[i * 8..i * 8 + 8].copy_from_slice(&ptr.to_le_bytes());
+            }
+            self.sbytes(data_ptr, arr);
         }
     }
 
@@ -647,6 +772,15 @@ mod tests {
             self.u64s.get(&addr).copied()
         }
         fn read_bytes(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            if let Some((race_addr, second)) = &self.race_header {
+                if addr == *race_addr {
+                    let mut hits = self.race_hits.borrow_mut();
+                    *hits += 1;
+                    if *hits >= 2 && second.len() >= len {
+                        return Some(second[..len].to_vec());
+                    }
+                }
+            }
             for (base, bytes) in &self.bytes {
                 if addr >= *base {
                     let offset = (addr - *base) as usize;
@@ -701,6 +835,10 @@ mod tests {
         scan[8..16].copy_from_slice(&(BASE + CCSS_VTABLE1_RVA).to_le_bytes());
         mem.sbytes(ccss, scan);
         mem.ranges.push((ccss, 0x100));
+        // Anchored root: single-entry CSupplySystem vector pointing at `ccss`.
+        let supply_system = 0x2600_0000;
+        let ccss_array = 0x2700_0000;
+        mem.set_ccss_vector(cgs, supply_system, ccss_array, &[ccss], 1, 1);
         let mut nodes = vec![0u8; 3 * NODE_RECORD_STRIDE];
         put_record(&mut nodes, 0, 9288, 2, 0, 0);
         put_record(&mut nodes, 1, 13071, 5, motor_map, 2);
@@ -781,6 +919,153 @@ mod tests {
         assert_eq!(header.total_settings_nodes, 3);
         assert_eq!(header.total_map_entries, 3);
         assert_eq!(decoded, rows);
+    }
+
+    /// Wrapper that panics if `readable_ranges` is ever consulted -- proves the
+    /// anchored discovery path performs NO full-heap sweep (the old ~6s/frame op).
+    struct NoHeapScanMem(MockMem);
+    impl Mem for NoHeapScanMem {
+        fn u32(&self, addr: u64) -> Option<u32> {
+            self.0.u32(addr)
+        }
+        fn u64(&self, addr: u64) -> Option<u64> {
+            self.0.u64(addr)
+        }
+        fn read_bytes(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            self.0.read_bytes(addr, len)
+        }
+        fn readable_ranges(&self, _lo: u64, _hi: u64) -> Vec<(u64, usize)> {
+            panic!("hub_motorization_live must not full-heap scan: readable_ranges called");
+        }
+    }
+
+    #[test]
+    fn collect_rows_does_not_full_heap_scan() {
+        // The anchored root walk must produce the identical collection WITHOUT ever
+        // touching readable_ranges (the former per-frame heap sweep).
+        let anchored =
+            collect_rows(&NoHeapScanMem(good_image()), BASE, LO, HI).expect("anchored collection");
+        let baseline = collect_rows(&good_image(), BASE, LO, HI).expect("baseline");
+        assert_eq!(
+            anchored, baseline,
+            "no-heap-scan path yields identical rows"
+        );
+        assert_eq!(anchored.settings_objects, 1);
+        assert_eq!(anchored.rows.len(), 2);
+    }
+
+    #[test]
+    fn anchored_walk_validates_by_vtable_pair_and_country_backref() {
+        // Baseline: the single well-formed CCSS is discovered via the vector.
+        let cgs = 0x2000_0000u64;
+        let objects = anchored_ccss_objects(&good_image(), BASE, LO, HI, cgs).expect("walk");
+        assert_eq!(objects, vec![0x2300_0000]);
+
+        // Corrupt the second vtable slot -> entry rejected (vtable pair mismatch),
+        // even though it is present in the anchored vector.
+        let mut mem = good_image();
+        mem.su64(0x2300_0000 + 8, BASE + CCSS_VTABLE1_RVA + 0x8);
+        let objects = anchored_ccss_objects(&mem, BASE, LO, HI, cgs).expect("walk");
+        assert!(objects.is_empty(), "vtable-pair mismatch must reject entry");
+
+        // Break the country back-pointer's vtable -> rejected on country backref.
+        let mut mem = good_image();
+        mem.su64(0x2200_0000, BASE + COUNTRY_VTABLE_RVA + 0x10);
+        let objects = anchored_ccss_objects(&mem, BASE, LO, HI, cgs).expect("walk");
+        assert!(
+            objects.is_empty(),
+            "country backref mismatch must reject entry"
+        );
+
+        // A non-heap CCSS pointer in the array is skipped, not fatal.
+        let mut mem = good_image();
+        mem.set_ccss_vector(cgs, 0x2600_0000, 0x2700_0000, &[0x2300_0000, 0x1], 2, 2);
+        let objects = anchored_ccss_objects(&mem, BASE, LO, HI, cgs).expect("walk");
+        assert_eq!(
+            objects,
+            vec![0x2300_0000],
+            "garbage entry skipped, valid kept"
+        );
+    }
+
+    #[test]
+    fn anchored_walk_returns_objects_sorted_by_address() {
+        // Vector order (high addr first) must be re-sorted ascending so the row
+        // payload is byte-identical to the old address-sorted BTreeSet output.
+        let cgs = 0x2000_0000u64;
+        let mut mem = good_image();
+        let ccss_lo = 0x2300_0000u64; // already wired in good_image (valid, row-producing)
+                                      // Add a second valid, row-producing CCSS at a HIGHER address, listed FIRST.
+        let country_hi = 0x2a00_0000u64;
+        let ccss_hi = 0x2b00_0000u64;
+        let node_array_hi = 0x2c00_0000u64;
+        let motor_map_hi = 0x2d00_0000u64;
+        mem.su64(0x2100_0000 + 17 * 8, country_hi);
+        mem.su64(country_hi, BASE + COUNTRY_VTABLE_RVA);
+        mem.su32(country_hi + COUNTRY_TAG_DB_ID_OFF, 17);
+        mem.su64(ccss_hi, BASE + CCSS_VTABLE0_RVA);
+        mem.su64(ccss_hi + 8, BASE + CCSS_VTABLE1_RVA);
+        mem.su64(ccss_hi + CCSS_COUNTRY_OFF, country_hi);
+        mem.su64(ccss_hi + CCSS_NODE_ARRAY_OFF, node_array_hi);
+        mem.su32(ccss_hi + CCSS_NODE_COUNT_OFF, 1);
+        let mut nodes = vec![0u8; NODE_RECORD_STRIDE];
+        put_record(&mut nodes, 0, 100, 3, motor_map_hi, 4);
+        mem.sbytes(node_array_hi, nodes);
+        // Listed high-then-low in the vector.
+        mem.set_ccss_vector(cgs, 0x2600_0000, 0x2700_0000, &[ccss_hi, ccss_lo], 2, 2);
+
+        let objects = anchored_ccss_objects(&mem, BASE, LO, HI, cgs).expect("walk");
+        assert_eq!(objects, vec![ccss_lo, ccss_hi], "ascending-by-address");
+    }
+
+    #[test]
+    fn anchored_walk_rejects_incoherent_and_raced_vectors() {
+        let cgs = 0x2000_0000u64;
+
+        // count > cap is incoherent -> fail closed.
+        let mut mem = good_image();
+        mem.set_ccss_vector(cgs, 0x2600_0000, 0x2700_0000, &[0x2300_0000], 5, 1);
+        assert_eq!(
+            anchored_ccss_objects(&mem, BASE, LO, HI, cgs),
+            Err(HubMotorizationError::CcssVectorIncoherent)
+        );
+
+        // count exceeding the sane country bound is incoherent -> fail closed.
+        let mut mem = good_image();
+        mem.set_ccss_vector(
+            cgs,
+            0x2600_0000,
+            0x2700_0000,
+            &[0x2300_0000],
+            MAX_COUNTRY_COUNT + 1,
+            MAX_COUNTRY_COUNT + 1,
+        );
+        assert_eq!(
+            anchored_ccss_objects(&mem, BASE, LO, HI, cgs),
+            Err(HubMotorizationError::CcssVectorIncoherent)
+        );
+
+        // Header mutates between the pre-walk and post-walk read (realloc raced the
+        // walk): the post-walk data ptr differs -> discard the frame.
+        let mut mem = good_image();
+        mem.set_ccss_vector(cgs, 0x2600_0000, 0x2700_0000, &[0x2300_0000], 1, 1);
+        let mut moved = vec![0u8; 0x10];
+        moved[0..8].copy_from_slice(&0x2800_0000u64.to_le_bytes()); // different data ptr
+        moved[8..12].copy_from_slice(&1u32.to_le_bytes());
+        moved[12..16].copy_from_slice(&1u32.to_le_bytes());
+        mem.race_header = Some((0x2600_0000 + CSS_VECTOR_DATA_OFF, moved));
+        assert_eq!(
+            anchored_ccss_objects(&mem, BASE, LO, HI, cgs),
+            Err(HubMotorizationError::CcssVectorRaced)
+        );
+
+        // Missing CSupplySystem anchor -> SupplySystemUnavailable.
+        let mut mem = good_image();
+        mem.u64s.remove(&(cgs + CSUPPLY_SYSTEM_OFF));
+        assert_eq!(
+            anchored_ccss_objects(&mem, BASE, LO, HI, cgs),
+            Err(HubMotorizationError::SupplySystemUnavailable)
+        );
     }
 
     #[test]
