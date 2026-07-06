@@ -1073,6 +1073,47 @@ fn resolve_country_roots<M: Domain53Memory>(
     Ok(roots)
 }
 
+/// Read one relation-table slot pointer (`u64[relation_table + tag_db_id*8]`),
+/// byte-identically to the original per-slot `read_u64(entry_slot)` but sourced
+/// from the once-per-src-country batched `table_bytes` slice when it is present.
+///
+/// Return shape mirrors the original inline code exactly:
+///   * `Ok(Ok(ptr))`   -> the slot pointer value (heap/0/other handled by caller)
+///   * `Ok(Err(_))`    -> a torn/failed slot read (caller does `acc.skip()`),
+///                        identical to `read_u64` returning `Err`
+///   * `Err(_)`         -> the `entry_slot` address overflow (propagated `?`),
+///                        identical to the original `checked_add(...).ok_or(...)?`
+///
+/// Byte-identical argument: when `table_bytes` is `Some`, the whole array was
+/// read in ONE all-or-nothing single-region `read_bytes`, so the 8 bytes at
+/// `tag*8` are exactly the bytes `read_u64(relation_table + tag*8)` would have
+/// copied (same address, same LE decode); and if the batch was `None`, we call
+/// `mem.read_u64(entry_slot)` -- literally the original path.
+fn relation_slot_ptr<M: Domain53Memory>(
+    mem: &M,
+    table_bytes: Option<&[u8]>,
+    relation_table: u64,
+    target_tag_db_id: u32,
+) -> Result<Result<u64, ExtractError>, ExtractError> {
+    let entry_slot = relation_table
+        .checked_add(u64::from(target_tag_db_id) * 8)
+        .ok_or(ExtractError::InvalidRoot(
+            "domain53_relation_table_overflow",
+        ))?;
+    if let Some(bytes) = table_bytes {
+        let lo = (target_tag_db_id as usize) * 8;
+        // The batch length is `(max_target_tag+1)*8` and every target tag is
+        // `<= max_target_tag`, so `lo + 8 <= bytes.len()`. Guard defensively and
+        // fall back to a direct read on the (unreachable) short-slice case rather
+        // than panic-indexing.
+        if let Some(slot) = bytes.get(lo..lo + 8) {
+            let value = u64::from_le_bytes(slot.try_into().expect("relation slot u64"));
+            return Ok(Ok(value));
+        }
+    }
+    Ok(mem.read_u64(entry_slot))
+}
+
 fn read_relation_rows<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
@@ -1103,16 +1144,50 @@ fn read_relation_rows<M: Domain53Memory>(
                     continue;
                 }
             };
+        // P4c-2 read-count lever: the relation table is a contiguous
+        // `tag_db_id -> entry_ptr` u64 array indexed by target.tag_db_id*8. The
+        // old inner loop did one `read_u64(entry_slot)` PER (src,target) pair
+        // (~470*470 = ~220k syscalls/frame). Read the WHOLE array ONCE per src
+        // country (bounded by the max valid target tag) and index the pointers in
+        // memory. The batch span [0, (max_tag+1)*8) is exactly bounded by the
+        // highest slot any per-target `read_u64(relation_table + tag*8)` touches
+        // (it also covers the self-slot and gaps the loop skips, but never extends
+        // past that highest slot). `read_bytes` is all-or-nothing and single-
+        // region: on success the whole array is inside ONE readable region, so
+        // every USED slot subrange is readable and NO per-slot `read_u64` could
+        // have failed -- the slice value at `tag*8` is byte-identical to
+        // `read_u64(relation_table + tag*8)` (same address, same LE bytes). On ANY
+        // short/failed batch read we fall
+        // back to `relation_slot_ptr`, which reproduces the exact per-slot
+        // `read_u64` (including its `acc.skip()` on a torn slot). A failed batch
+        // read here counts NO skip on its own -- the per-slot fallback owns the
+        // skip accounting, byte-identical to the original.
+        let max_target_tag = countries
+            .iter()
+            .map(|country| country.tag_db_id)
+            .max()
+            .unwrap_or(0);
+        let table_bytes = u64::from(max_target_tag)
+            .checked_add(1)
+            .and_then(|slots| slots.checked_mul(8))
+            .and_then(|len| usize::try_from(len).ok())
+            .and_then(|len| mem.read_bytes(relation_table, len).ok());
         for target in countries {
             if src.tag_db_id == target.tag_db_id {
                 continue;
             }
-            let entry_slot = relation_table
-                .checked_add(u64::from(target.tag_db_id) * 8)
-                .ok_or(ExtractError::InvalidRoot(
-                    "domain53_relation_table_overflow",
-                ))?;
-            let relation_entry = match mem.read_u64(entry_slot) {
+            // Fetch the entry pointer from the batched slice when present (the
+            // common case), else per-slot -- both yield the SAME `Result` shape so
+            // the match arms below (heap => use, 0 => quiet continue, torn read =>
+            // skip) are byte-identical to the original per-slot `read_u64`. The
+            // `entry_slot` overflow guard is preserved inside `relation_slot_ptr`
+            // (propagated as the same `ExtractError`).
+            let relation_entry = match relation_slot_ptr(
+                mem,
+                table_bytes.as_deref(),
+                relation_table,
+                target.tag_db_id,
+            )? {
                 Ok(value) if is_heap_ptr(value) => value,
                 Ok(0) => continue,
                 _ => {
@@ -4946,5 +5021,77 @@ mod tests {
                 .copied(),
             Some(0)
         );
+    }
+
+    // P4c-2: prove the batched relation-table read (`relation_slot_ptr` sourcing
+    // from the whole-array `read_bytes` slice) is byte-identical to the original
+    // per-slot `read_u64(relation_table + tag*8)` for EVERY slot, and that the
+    // absent-batch path falls back to the exact per-slot read (torn slot => the
+    // same `Err`). This is the P4c-2 pass/fail criterion (byte-identical output)
+    // for Target 1.
+    #[test]
+    fn relation_slot_batch_matches_per_field_read() {
+        let module = 0x1_4000_0000u64;
+        let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
+        let relation_table = heap + 0x1_0000;
+
+        // A relation table whose slots carry a representative mix: 0 (empty),
+        // a heap pointer, a non-heap sentinel, and a large value -- the exact
+        // kinds the caller's match arms distinguish (heap / 0 / other).
+        let max_tag: u32 = 45; // matches FAKE_COUNTRY_ROWS scale
+        let slots = [
+            (1u32, 0u64),         // empty slot
+            (2, heap + 0x9_9000), // heap pointer
+            (3, 0xDEAD_BEEFu64),  // non-heap, non-zero
+            (7, heap + 0x1234),   // heap pointer
+            (max_tag, u64::MAX),  // max index, extreme value
+        ];
+
+        let mut mem = FakeMemory::new(module);
+        // Table chunk sized exactly like the reader batches: (max_tag+1)*8.
+        mem.add_chunk(relation_table, (max_tag as usize + 1) * 8);
+        for (tag, value) in slots {
+            mem.write_u64(relation_table + u64::from(tag) * 8, value);
+        }
+
+        // Batch the whole array once, exactly as read_relation_rows does.
+        let batch_len = (max_tag as usize + 1) * 8;
+        let table_bytes = mem.read_bytes(relation_table, batch_len).ok();
+        assert!(table_bytes.is_some(), "batch read of a committed table");
+
+        for (tag, expected) in slots {
+            // Per-field reference: the original inline `read_u64(entry_slot)`.
+            let entry_slot = relation_table + u64::from(tag) * 8;
+            let per_field = mem.read_u64(entry_slot);
+
+            // Batched path.
+            let batched =
+                relation_slot_ptr(&mem, table_bytes.as_deref(), relation_table, tag).unwrap();
+
+            assert_eq!(
+                batched, per_field,
+                "batched slot {tag} diverged from per-field read"
+            );
+            assert_eq!(batched, Ok(expected), "slot {tag} value");
+        }
+
+        // Absent-batch fallback: identical result, sourced from read_u64.
+        for (tag, _expected) in slots {
+            let entry_slot = relation_table + u64::from(tag) * 8;
+            let per_field = mem.read_u64(entry_slot);
+            let fallback = relation_slot_ptr(&mem, None, relation_table, tag).unwrap();
+            assert_eq!(fallback, per_field, "fallback slot {tag}");
+        }
+
+        // Torn slot with NO batch: the per-slot read fails, and the fallback must
+        // surface the SAME `Err` (caller turns this into `acc.skip()`), never a
+        // fabricated pointer.
+        let torn_table = heap + 0x5_0000; // no chunk registered -> unreadable
+        let torn = relation_slot_ptr(&mem, None, torn_table, 2).unwrap();
+        assert!(
+            torn.is_err(),
+            "unreadable slot must fail-closed (Err) in the fallback path"
+        );
+        assert!(mem.read_u64(torn_table + 16).is_err());
     }
 }
