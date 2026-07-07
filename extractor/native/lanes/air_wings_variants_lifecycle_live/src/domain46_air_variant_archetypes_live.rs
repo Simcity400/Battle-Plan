@@ -682,6 +682,145 @@ mod tests {
             .any(|error| error.contains("archetype string without flag")));
     }
 
+    // P0-1 contract: deleted (tombstone) rows carry no strings and no
+    // air-superiority-weight flag, so the decoder classifies them as
+    // UNRESOLVED. A record mixing classified + unresolved live rows with
+    // deleted rows must decode cleanly as long as the header partitions every
+    // wire row (classified + unresolved == row_count). The producer
+    // (collector) is responsible for counting deleted rows into
+    // `unresolved_rows`; this pins the consumer side of that contract.
+    #[test]
+    fn decodes_delta_with_deleted_rows() {
+        let rows = vec![
+            AirVariantArchetypeRow {
+                variant_id: 1371,
+                deleted: false,
+                equipment_token_raw: 20_335,
+                equipment_type_token_raw: 1,
+                interface_type_raw: 5,
+                air_superiority_weight_raw: Some(FIXED_SCALE_RAW as i32),
+                source_mask: SOURCE_LIVE_STATS,
+                archetype_token: Some("small_plane_cas_airframe_0".to_string()),
+                base_airframe_token: Some("small_plane_airframe".to_string()),
+                role_token: Some("cas".to_string()),
+            },
+            AirVariantArchetypeRow {
+                variant_id: 1375,
+                deleted: false,
+                equipment_token_raw: 20_213,
+                equipment_type_token_raw: 1,
+                interface_type_raw: 0,
+                air_superiority_weight_raw: None,
+                source_mask: SOURCE_LIVE_STATS,
+                archetype_token: None,
+                base_airframe_token: None,
+                role_token: None,
+            },
+            AirVariantArchetypeRow {
+                variant_id: 1400,
+                deleted: true,
+                equipment_token_raw: 0,
+                equipment_type_token_raw: 0,
+                interface_type_raw: 0,
+                air_superiority_weight_raw: None,
+                source_mask: 0,
+                archetype_token: None,
+                base_airframe_token: None,
+                role_token: None,
+            },
+            AirVariantArchetypeRow {
+                variant_id: 1401,
+                deleted: true,
+                equipment_token_raw: 0,
+                equipment_type_token_raw: 0,
+                interface_type_raw: 0,
+                air_superiority_weight_raw: None,
+                source_mask: 0,
+                archetype_token: None,
+                base_airframe_token: None,
+                role_token: None,
+            },
+        ];
+        let header = AirVariantArchetypeHeader {
+            elapsed_wall_ms: 100,
+            status_flags: STATUS_DELTA_DATA,
+            changed_rows: rows.len() as u32,
+            observed_variant_rows: 91,
+            classified_rows: 1,
+            // 1 unresolved live row + 2 deleted tombstones.
+            unresolved_rows: 3,
+            static_catalog_hash: 0,
+        };
+        let payload = encode_payload(&header, &rows);
+        let summary = decode_payload(32, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_variant_archetype_classified_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_variant_archetype_unresolved_rows")
+                .copied(),
+            Some(3)
+        );
+    }
+
+    // Guards against a regression to the old producer behaviour: if a producer
+    // omits deleted rows from `unresolved_rows`, the header no longer partitions
+    // `row_count` and the decoder MUST reject the record (fail closed).
+    #[test]
+    fn rejects_deleted_rows_missing_from_unresolved_count() {
+        let rows = vec![AirVariantArchetypeRow {
+            variant_id: 1400,
+            deleted: true,
+            equipment_token_raw: 0,
+            equipment_type_token_raw: 0,
+            interface_type_raw: 0,
+            air_superiority_weight_raw: None,
+            source_mask: 0,
+            archetype_token: None,
+            base_airframe_token: None,
+            role_token: None,
+        }];
+        let header = AirVariantArchetypeHeader {
+            elapsed_wall_ms: 100,
+            status_flags: STATUS_DELTA_DATA,
+            changed_rows: 1,
+            observed_variant_rows: 91,
+            classified_rows: 0,
+            // BUG shape: deleted row omitted from the count => 0 != 1 row.
+            unresolved_rows: 0,
+            static_catalog_hash: 0,
+        };
+        let payload = encode_payload(&header, &rows);
+        let summary = decode_payload(32, &payload);
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("classified+unresolved")),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("unresolved_rows 0 != decoded 1")),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
     #[test]
     fn rejects_bad_source_mask() {
         let rows = vec![AirVariantArchetypeRow {
