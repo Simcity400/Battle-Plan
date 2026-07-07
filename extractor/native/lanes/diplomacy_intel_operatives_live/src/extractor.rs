@@ -209,6 +209,15 @@ pub struct Domain53FamilyCounts {
     pub agency_roots: u32,
     pub operative_scan_ranges: u32,
     pub war_scan_ranges: u32,
+    /// Operation-instance observability (A+C fix): how the candidate hits split
+    /// this frame, so operation completeness is visible on a SUCCESSFUL frame and
+    /// a real operation-discovery regression can be seen without the family
+    /// nuking the whole domain. `candidates = emitted + stale_liveness +
+    /// filtered`.
+    pub operation_candidates: u32,
+    pub operation_emitted: u32,
+    pub operation_stale_liveness: u32,
+    pub operation_filtered: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,41 +288,61 @@ struct Domain53DiscoveryStaleness {
     operative_stale_dropped: usize,
     war_total: usize,
     war_stale_dropped: usize,
-    // Wave-5 running operations: SEPARATELY attributed staleness. Operations
-    // churn on a different cadence than operatives (running ops start/complete
-    // frequently on a live game, so their cached heap hits legitimately go
-    // stale between background refreshes). Folding this into `operative_*`
-    // would let operations churn trip the operative majority gate (and vice
-    // versa), fail-closing valid operatives for reasons unrelated to
-    // operatives. Kept distinct so each family degrades on its OWN majority.
+    // Wave-5 running operations: SEPARATELY attributed. Operations churn on a
+    // different cadence than operatives and — crucially — the operation family
+    // does NOT gate the whole d53 frame (A+C fix, see `frame_degraded`): only
+    // GENUINE liveness failure is counted here, and even a majority of it merely
+    // means fewer operation rows, never the loss of operatives/relations/etc.
+    // Kept distinct from `operative_*` so neither family's noise touches the
+    // other's accounting.
     operation_total: usize,
+    /// GENUINE operation liveness failures only (vtable mismatch / unreadable
+    /// handle). Does NOT include candidate-rejection filtering — see
+    /// [`OperationDropBreakdown`] and [`Self::operation_degraded`].
     operation_stale_dropped: usize,
+    /// Operation candidates rejected as not-a-unique-live-instance (bad
+    /// handle_type / id, duplicate). Diagnostic only; never gates.
+    operation_filtered: usize,
 }
 
 impl Domain53DiscoveryStaleness {
-    /// WHOLE-FRAME fail-closed gate. A stale-majority of the OPERATIVE or
-    /// OPERATION family degrades the entire d53 frame to `SOURCE_UNAVAILABLE`:
-    /// neither family has a first-class per-family "emit-anyway-unvalidated"
-    /// wire status, so the only honest fail-closed outcome for a systemically
-    /// stale operative/operation set is to withhold the whole frame.
+    /// WHOLE-FRAME fail-closed gate. A stale-majority of the OPERATIVE family
+    /// degrades the entire d53 frame to `SOURCE_UNAVAILABLE`: operatives have no
+    /// first-class per-family "emit-anyway-unvalidated" wire status, so the only
+    /// honest fail-closed outcome for a systemically stale operative set is to
+    /// withhold the whole frame. Because every family is reassembled from ONE
+    /// shared background sweep generation, a genuinely dead/ancient sweep makes
+    /// operatives stale too, so the operative gate is the reliable systemic-death
+    /// signal for the whole domain.
     ///
-    /// The WAR family is deliberately NOT in this gate. War has an explicit
-    /// per-family wire status (`STATUS_WAR_ROOT_UNVALIDATED` + the absence of
-    /// `SOURCE_PROOF_WAR_ROOT_870EBF`), so a stale-majority of the small
-    /// validated war-address set DOWNGRADES only the war family (empty war
-    /// rows, `CountryDiplomacyRow`s OMITTED so the fold publishes no false war
-    /// projection, war proof withheld) via [`Self::war_degraded`] while
-    /// operatives/operations still emit — see the `war_degraded` handling in the
-    /// extractor. A genuinely dead/ancient sweep makes ALL families stale
-    /// together (they share one background sweep generation), so the operative +
-    /// operation gates here still trip and the whole frame still fails closed.
+    /// OPERATIONS are deliberately NOT in this gate (A+C fix, 2026-07-07; see
+    /// runs/perf_rearch_20260706/D53_ROOT_CAUSE.md). Live speed-5 showed the
+    /// operation family's "stale majority" was dominated by discovery
+    /// FALSE-POSITIVES / de-duplication (bad handle_type, duplicate id), NOT
+    /// object death — genuine operation liveness failure was only ~21%. Operation
+    /// rows are already row-local fail-closed (each emitted row is individually
+    /// re-validated: vtable + handle_type + id + duplicate guard), exactly like
+    /// operative row-decode failures (which `skip`, never nuke). So a high
+    /// operation drop-rate must only mean fewer operation rows that frame — it
+    /// must NOT erase the unrelated d53 families (relations, agencies,
+    /// cryptology, factions, intel graphs, wars). Operation health is surfaced
+    /// via [`Self::operation_degraded`] as a diagnostic, not a frame nuke.
     ///
-    /// Operations feed this gate on their OWN separate counters — a stale
-    /// majority of operations degrades the frame, but operations and operatives
-    /// never cross-contaminate each other's majority test.
+    /// The WAR family is likewise NOT in this gate: it has an explicit per-family
+    /// wire status (`STATUS_WAR_ROOT_UNVALIDATED` + absent
+    /// `SOURCE_PROOF_WAR_ROOT_870EBF`) and DOWNGRADES via [`Self::war_degraded`].
     fn frame_degraded(&self) -> bool {
         stale_fraction_degraded(self.operative_total, self.operative_stale_dropped)
-            || stale_fraction_degraded(self.operation_total, self.operation_stale_dropped)
+    }
+
+    /// DIAGNOSTIC ONLY — never nukes the frame. True when GENUINE operation
+    /// liveness failures (vtable mismatch / unreadable handle, NOT filtering) are
+    /// a majority of the candidate set: a signal that the operation discovery has
+    /// genuinely decayed, surfaced so a real regression is visible without
+    /// suppressing the rest of d53. Uses the same fraction test as the operative
+    /// gate but does not feed [`Self::frame_degraded`].
+    fn operation_degraded(&self) -> bool {
+        stale_fraction_degraded(self.operation_total, self.operation_stale_dropped)
     }
 
     /// WAR-FAMILY-ONLY downgrade gate. A stale-majority of the small validated
@@ -652,12 +681,16 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     source_proofs |= SOURCE_PROOF_OPERATIVE_ROOT_870EBF;
 
     // Wave-5 running operations: consume the COperationInstance hits from the
-    // same background discovery pass (revalidate the cached vtable fresh; a
-    // stale hit is dropped). Staleness is attributed to the SEPARATE
-    // operation_* counters — NOT the operative counters — so operations churn
-    // degrades only the operations majority, never suppressing valid
-    // operatives (and vice versa).
-    let (operation_instances, operation_stale_dropped) = read_operations(
+    // same background discovery pass and re-validate each fresh. GENUINE liveness
+    // failure (vtable gone / unreadable handle) is attributed to
+    // operation_stale_dropped; candidate-rejection filtering (bad handle_type /
+    // id, duplicate) is attributed SEPARATELY to operation_filtered. Only the
+    // former is a staleness signal, and (A+C fix) it does NOT gate the frame —
+    // operation rows are row-local fail-closed, so a high drop-rate just means
+    // fewer operation rows, never the loss of the unrelated d53 families. The
+    // family counts stay attributed separately from operatives so neither
+    // family's churn masks the other.
+    let (operation_instances, operation_drops) = read_operations(
         mem,
         module_base,
         &countries,
@@ -665,7 +698,17 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     )?;
     acc.rows.operation_instances = operation_instances;
     staleness.operation_total = discovery.operation_instance_hits.len();
-    staleness.operation_stale_dropped = operation_stale_dropped;
+    staleness.operation_stale_dropped = operation_drops.stale_liveness;
+    staleness.operation_filtered = operation_drops.filtered;
+    family_counts.operation_candidates = discovery
+        .operation_instance_hits
+        .len()
+        .min(u32::MAX as usize) as u32;
+    family_counts.operation_emitted =
+        acc.rows.operation_instances.len().min(u32::MAX as usize) as u32;
+    family_counts.operation_stale_liveness =
+        operation_drops.stale_liveness.min(u32::MAX as usize) as u32;
+    family_counts.operation_filtered = operation_drops.filtered.min(u32::MAX as usize) as u32;
 
     if let Some(intel_network_graphs) = read_intel_network_graph_rows(
         mem,
@@ -2025,12 +2068,32 @@ fn read_cryptology_rows<M: Domain53Memory>(
 ///
 /// Returns (rows, stale_dropped). The caller folds stale_dropped into the
 /// shared d53 staleness gate so a stale-majority degrades the whole frame.
+/// How the operation-instance candidate hits split when re-read this frame.
+///
+/// The frame_degraded gate must reflect genuine object DEATH, not the discovery
+/// needle's routine noise. `read_operations` therefore separates:
+///   * `stale_liveness` — the cached address no longer holds the
+///     COperationInstance vtable, or its handle qword can't be read (freed /
+///     torn). This is the ONLY count that means "the cached set decayed."
+///   * `filtered` — the address holds the vtable but is not a unique valid live
+///     instance: wrong handle_type, out-of-range id, or a duplicate id already
+///     emitted. These are vtable-value false positives / de-duplication, are
+///     EXPECTED every frame, and previously (mis)counted as staleness — which is
+///     what tripped the whole-frame gate and nuked all of d53 (see
+///     runs/perf_rearch_20260706/D53_ROOT_CAUSE.md). Matches how `read_operatives`
+///     already treats liveness (vtable) vs per-row validation (skip).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OperationDropBreakdown {
+    pub stale_liveness: usize,
+    pub filtered: usize,
+}
+
 fn read_operations<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
     countries: &[CountryRoot],
     hits: &[u64],
-) -> Result<(Vec<OperationInstanceRow>, usize), ExtractError> {
+) -> Result<(Vec<OperationInstanceRow>, OperationDropBreakdown), ExtractError> {
     let instance_vtable = add_addr(module_base, profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA)?;
     let def_vtable = add_addr(module_base, profile::DOMAIN53_OPERATION_DEF_VTABLE_RVA)?;
     let country_vtable = add_addr(module_base, profile::DOMAIN53_COUNTRY_VTABLE_RVA)?;
@@ -2040,35 +2103,40 @@ fn read_operations<M: Domain53Memory>(
         .collect::<BTreeSet<_>>();
     let mut rows = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut stale_dropped = 0usize;
+    let mut drops = OperationDropBreakdown::default();
     for hit in hits {
         let hit = *hit;
-        // Revalidate the cached vtable fresh (stale-drop on any mismatch).
+        // Revalidate the cached vtable fresh. A vtable mismatch is genuine
+        // staleness (the object at this address is gone / reused).
         match mem.read_u64(hit) {
             Ok(vtable) if vtable == instance_vtable => {}
             Ok(_) | Err(_) => {
-                stale_dropped = stale_dropped.saturating_add(1);
+                drops.stale_liveness = drops.stale_liveness.saturating_add(1);
                 continue;
             }
         }
-        // Handle @+0x08: id = HI32, type = LO32 (MUST == 4713).
+        // Handle @+0x08: id = HI32, type = LO32 (MUST == 4713). A handle we
+        // cannot read on an address whose vtable just matched is a torn / mid-free
+        // object -> genuine liveness failure.
         let Ok(handle) = mem.read_u64(add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_HANDLE)?)
         else {
-            stale_dropped = stale_dropped.saturating_add(1);
+            drops.stale_liveness = drops.stale_liveness.saturating_add(1);
             continue;
         };
+        // Wrong type tag == the vtable value was found in memory that is not a
+        // real COperationInstance (needle false positive), NOT object death.
         let handle_type = (handle & 0xFFFF_FFFF) as u32;
         if handle_type != profile::DOMAIN53_OPERATION_INSTANCE_HANDLE_TYPE {
-            stale_dropped = stale_dropped.saturating_add(1);
+            drops.filtered = drops.filtered.saturating_add(1);
             continue;
         }
         let instance_id = (handle >> 32) as u32;
         if instance_id == 0 || instance_id > MAX_OPERATION_ID {
-            stale_dropped = stale_dropped.saturating_add(1);
+            drops.filtered = drops.filtered.saturating_add(1);
             continue;
         }
         if !seen.insert(instance_id) {
-            stale_dropped = stale_dropped.saturating_add(1);
+            drops.filtered = drops.filtered.saturating_add(1);
             continue;
         }
         // Def ptr @+0x48: vtable-check as COperation.
@@ -2094,7 +2162,7 @@ fn read_operations<M: Domain53Memory>(
         });
     }
     rows.sort_by_key(|row| row.instance_id);
-    Ok((rows, stale_dropped))
+    Ok((rows, drops))
 }
 
 /// Resolve a COperationInstance's associated-country pointer (@+0x50) to a
@@ -4455,12 +4523,16 @@ mod tests {
 
         let countries =
             resolve_country_roots(&mem, module, fake_heap_base()).expect("country roots");
-        let (rows, stale_dropped) =
+        let (rows, drops) =
             read_operations(&mem, module, &countries, &discovery.operation_instance_hits)
                 .expect("read_operations");
 
-        // C dropped (bad handle type); A and B kept, sorted by instance_id.
-        assert_eq!(stale_dropped, 1);
+        // C dropped (bad handle type) — that is candidate FILTERING (the vtable
+        // matched but it is not a valid instance), NOT liveness staleness. A+C
+        // fix: it must be counted as `filtered`, never `stale_liveness` (the
+        // latter is what nuked the whole frame). A and B kept, sorted by id.
+        assert_eq!(drops.stale_liveness, 0);
+        assert_eq!(drops.filtered, 1);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].instance_id, 128_904);
         assert!(!rows[0].def_ref_ok);
@@ -4471,14 +4543,16 @@ mod tests {
     }
 
     #[test]
-    fn operation_and_operative_staleness_do_not_cross_contaminate() {
-        // A stale-MAJORITY of operations must NOT degrade the frame via the
-        // operative gate, and vice versa. Each family degrades only on its OWN
-        // majority (Codex Q4 fix: operations churn on a different cadence than
-        // operatives and must not suppress valid operatives).
+    fn operations_never_nuke_the_frame_operatives_are_the_systemic_gate() {
+        // A+C fix (2026-07-07, D53_ROOT_CAUSE.md): a stale-MAJORITY of operations
+        // must NOT degrade the whole d53 frame. Only the OPERATIVE family gates
+        // the frame (it's the reliable shared-sweep-death signal); operations are
+        // row-local fail-closed and surface health via `operation_degraded()` as
+        // a DIAGNOSTIC, never a nuke.
 
-        // Operations stale-majority (5 of 8), operatives clean: frame-degraded
-        // (via the operations gate) but the operative counters stay untouched.
+        // Operations stale-majority (5 of 8), operatives clean: NOT
+        // frame-degraded (operations are out of the gate), but operation_degraded
+        // flags it for observability.
         let ops_majority = Domain53DiscoveryStaleness {
             operative_total: 8,
             operative_stale_dropped: 0,
@@ -4486,30 +4560,42 @@ mod tests {
             war_stale_dropped: 0,
             operation_total: 8,
             operation_stale_dropped: 5,
+            operation_filtered: 0,
         };
-        assert!(ops_majority.frame_degraded());
-        assert!(!stale_fraction_degraded(
-            ops_majority.operative_total,
-            ops_majority.operative_stale_dropped
-        ));
+        assert!(
+            !ops_majority.frame_degraded(),
+            "an operation stale majority must NOT nuke the whole frame"
+        );
+        assert!(
+            ops_majority.operation_degraded(),
+            "operation health must still be visible via the diagnostic gate"
+        );
 
-        // Operatives clean, operations clean below the threshold: NOT
-        // frame-degraded even though the combined stale-dropped total is nonzero
-        // — proving the gates are separate, not summed.
-        let both_minor = Domain53DiscoveryStaleness {
+        // Operation FILTERING (false positives / dedup) is not staleness at all:
+        // even an all-filtered operation set must neither frame-degrade NOR
+        // operation-degrade, and must not inflate the visible stale total.
+        let ops_all_filtered = Domain53DiscoveryStaleness {
             operative_total: 8,
-            operative_stale_dropped: 3,
+            operative_stale_dropped: 0,
             war_total: 0,
             war_stale_dropped: 0,
             operation_total: 8,
-            operation_stale_dropped: 3,
+            operation_stale_dropped: 0,
+            operation_filtered: 8,
         };
-        assert!(!both_minor.frame_degraded());
-        // ...yet both contribute to the VISIBLE stale total.
-        assert_eq!(both_minor.stale_dropped_total(), 6);
+        assert!(!ops_all_filtered.frame_degraded());
+        assert!(
+            !ops_all_filtered.operation_degraded(),
+            "candidate filtering is not staleness"
+        );
+        assert_eq!(
+            ops_all_filtered.stale_dropped_total(),
+            0,
+            "filtering must not count toward the visible stale total"
+        );
 
-        // Operative stale-majority alone still degrades (operations clean) —
-        // the operation counters do not mask an operative majority.
+        // Operative stale-majority alone still degrades the frame (operations
+        // clean) — operatives remain the systemic guard.
         let operatives_majority = Domain53DiscoveryStaleness {
             operative_total: 8,
             operative_stale_dropped: 5,
@@ -4517,12 +4603,9 @@ mod tests {
             war_stale_dropped: 0,
             operation_total: 8,
             operation_stale_dropped: 0,
+            operation_filtered: 0,
         };
         assert!(operatives_majority.frame_degraded());
-        assert!(!stale_fraction_degraded(
-            operatives_majority.operation_total,
-            operatives_majority.operation_stale_dropped
-        ));
     }
 
     #[test]
@@ -4538,6 +4621,7 @@ mod tests {
             war_stale_dropped: 8,
             operation_total: 8,
             operation_stale_dropped: 0,
+            operation_filtered: 0,
         };
         assert!(
             !war_only.frame_degraded(),
@@ -4557,16 +4641,20 @@ mod tests {
             war_stale_dropped: 0,
             operation_total: 8,
             operation_stale_dropped: 0,
+            operation_filtered: 0,
         };
         assert!(op_only.frame_degraded());
         assert!(!op_only.war_degraded());
     }
 
     #[test]
-    fn cached_operation_stale_majority_fails_closed_without_touching_operatives() {
-        // Integration: a stale-majority of live operation hits degrades the
-        // whole d53 frame, but this is driven purely by the operation gate —
-        // the operative rows are clean and would themselves pass.
+    fn cached_operation_stale_majority_still_emits_the_rest_of_d53() {
+        // A+C fix (D53_ROOT_CAUSE.md): a stale-MAJORITY of live operation hits
+        // must NOT nuke the whole d53 frame. The operatives, relations, agencies,
+        // etc. are unrelated and clean, so the frame EMITS — dropping only the
+        // dead operation rows and surfacing the split on `family_counts`. This is
+        // the exact behavior change that restores d53 warm on a live speed-5 game
+        // (operations went ~majority "stale" every frame, nuking everything).
         let mut mem = fake_domain53_memory(true, true);
         let country3 = fake_heap_base() + 0x5_0000;
         for index in 0..8 {
@@ -4575,14 +4663,23 @@ mod tests {
         let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
         assert_eq!(discovery.operation_instance_hits.len(), 8);
         assert_eq!(discovery.operative_hits.len(), 1);
-        // Stale 5 of 8 operation hits (a majority); leave the operative clean.
+        // GENUINELY stale 5 of 8 operation hits (zero the vtable -> liveness
+        // failure, a majority); leave the operative clean.
         for hit in discovery.operation_instance_hits.iter().take(5) {
             mem.write_u64(*hit, 0);
         }
 
-        let err = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
-            .expect_err("operation stale majority must fail closed");
-        assert_eq!(err, ExtractError::InvalidRoot(DOMAIN53_DISCOVERY_DEGRADED));
+        let extracted = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect("operation stale majority must NOT fail the whole frame");
+        // The rest of d53 still emits.
+        assert_eq!(extracted.rows.operatives.len(), 1);
+        // Only the 3 live operations survive; the 5 dead ones are dropped.
+        assert_eq!(extracted.rows.operation_instances.len(), 3);
+        // The split is visible for observability (candidates = emitted + stale).
+        assert_eq!(extracted.family_counts.operation_candidates, 8);
+        assert_eq!(extracted.family_counts.operation_emitted, 3);
+        assert_eq!(extracted.family_counts.operation_stale_liveness, 5);
+        assert_eq!(extracted.family_counts.operation_filtered, 0);
     }
 
     #[test]
