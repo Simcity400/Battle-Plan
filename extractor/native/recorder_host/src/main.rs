@@ -3187,6 +3187,9 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                 payload,
                 &mut summary,
             );
+            // MUST advance past this record before `continue` (the normal
+            // advance at the loop tail is skipped) or the decode loops forever.
+            offset = offset.saturating_add(record_len);
             continue;
         }
 
@@ -25919,6 +25922,45 @@ mod tests {
     // domains; after this fix it must decode with ZERO parse_errors for the
     // 8 previously-failing records (d63-69 + d43 MTD1/MTRF). Skips gracefully
     // when the fixture is absent (it is not committed as a test dependency).
+    #[test]
+    // Decode-only helper for live smokes: point it at a captured stream and it
+    // prints decodability + the read A/B probe without re-injecting the DLL.
+    //   RUN: BATTLE_PLAN_DECODE_STREAM=<path> cargo test --release -p recorder_host \
+    //        decode_stream_from_env -- --nocapture --ignored
+    #[test]
+    #[ignore = "decode helper; set BATTLE_PLAN_DECODE_STREAM=<path> and pass --ignored"]
+    fn decode_stream_from_env() {
+        let Ok(path) = std::env::var("BATTLE_PLAN_DECODE_STREAM").or_else(|_| std::env::var("HOI4_DECODE_STREAM")) else {
+            eprintln!("set BATTLE_PLAN_DECODE_STREAM=<collector_stream.bin>");
+            return;
+        };
+        let raw = fs::read(&path).expect("read stream");
+        let summary = summarize_compact_stream(&raw);
+        eprintln!(
+            "DECODE {}: {} bytes, records={} frame_end={} perf={} data={}",
+            path,
+            raw.len(),
+            summary.record_count,
+            summary.frame_end_record_count,
+            summary.domain_perf_record_count,
+            summary.domain_data_record_count,
+        );
+        eprintln!(
+            "parse_errors ({}): {:?}",
+            summary.parse_errors.len(),
+            summary.parse_errors
+        );
+        eprintln!("ordering_errors ({})", summary.ordering_errors.len());
+        eprintln!("domains_seen count={}", summary.domains_seen.len());
+        eprintln!("frame_times_us n={}", summary.frame_times_us.len());
+        let mut probe: Vec<_> = summary.read_ab_probe.iter().collect();
+        probe.sort();
+        eprintln!("READ_AB_PROBE ({} keys):", probe.len());
+        for (k, v) in probe {
+            eprintln!("  {k} = {v}");
+        }
+    }
+
     #[test]
     fn acceptance_fixture_stream_decodes_without_new_parse_errors() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
