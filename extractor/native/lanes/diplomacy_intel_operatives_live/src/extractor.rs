@@ -291,14 +291,39 @@ struct Domain53DiscoveryStaleness {
 }
 
 impl Domain53DiscoveryStaleness {
-    fn degraded(&self) -> bool {
+    /// WHOLE-FRAME fail-closed gate. A stale-majority of the OPERATIVE or
+    /// OPERATION family degrades the entire d53 frame to `SOURCE_UNAVAILABLE`:
+    /// neither family has a first-class per-family "emit-anyway-unvalidated"
+    /// wire status, so the only honest fail-closed outcome for a systemically
+    /// stale operative/operation set is to withhold the whole frame.
+    ///
+    /// The WAR family is deliberately NOT in this gate. War has an explicit
+    /// per-family wire status (`STATUS_WAR_ROOT_UNVALIDATED` + the absence of
+    /// `SOURCE_PROOF_WAR_ROOT_870EBF`), so a stale-majority of the small
+    /// validated war-address set DOWNGRADES only the war family (empty war
+    /// rows, `CountryDiplomacyRow`s OMITTED so the fold publishes no false war
+    /// projection, war proof withheld) via [`Self::war_degraded`] while
+    /// operatives/operations still emit — see the `war_degraded` handling in the
+    /// extractor. A genuinely dead/ancient sweep makes ALL families stale
+    /// together (they share one background sweep generation), so the operative +
+    /// operation gates here still trip and the whole frame still fails closed.
+    ///
+    /// Operations feed this gate on their OWN separate counters — a stale
+    /// majority of operations degrades the frame, but operations and operatives
+    /// never cross-contaminate each other's majority test.
+    fn frame_degraded(&self) -> bool {
         stale_fraction_degraded(self.operative_total, self.operative_stale_dropped)
-            || stale_fraction_degraded(self.war_total, self.war_stale_dropped)
-            // Operations feed the shared d53 fail-closed majority gate on their
-            // OWN separate counters — a stale-majority of operations degrades
-            // the whole d53 frame, but operations and operatives never
-            // cross-contaminate each other's majority test.
             || stale_fraction_degraded(self.operation_total, self.operation_stale_dropped)
+    }
+
+    /// WAR-FAMILY-ONLY downgrade gate. A stale-majority of the small validated
+    /// war-address set means the cached war set is systemically stale (e.g. the
+    /// sweep generation is old relative to speed-5 war churn). Rather than nuke
+    /// the whole frame, the extractor emits with the war family marked
+    /// unvalidated; the next completed sweep generation rebuilds + revalidates
+    /// the war set off-frame.
+    fn war_degraded(&self) -> bool {
+        stale_fraction_degraded(self.war_total, self.war_stale_dropped)
     }
 
     fn stale_dropped_total(&self) -> usize {
@@ -516,8 +541,37 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     staleness.war_total = war_total;
     staleness.war_stale_dropped = war_stale_dropped;
     family_counts.war_scan_ranges = discovery.scan_range_count;
-    source_proofs |= SOURCE_PROOF_WAR_ROOT_870EBF;
-    let war_projection = war_projection_by_country(&war_rows);
+
+    // War-family staleness is decided HERE — right after the cheap war-address
+    // re-read (dozens of addresses), BEFORE the expensive operative/operation
+    // extraction below. On a stale-MAJORITY of the small validated war set the
+    // war family is DOWNGRADED (not the whole frame): war rows are dropped and
+    // `SOURCE_PROOF_WAR_ROOT_870EBF` is withheld so the payload builder sets
+    // `STATUS_WAR_ROOT_UNVALIDATED`; the operative/operation families still
+    // emit. Every SURVIVING war row here was already revalidated live
+    // per-address (fail-closed row-by-row), so a MINORITY of churned wars keeps
+    // a fully-validated war family. This defends the speed-5 case where a few
+    // retired wars used to nuke the entire frame.
+    //
+    // IMPORTANT — no false war projection reaches the replay fold. The
+    // per-country `at_war_count`/`casualties` are projected from the war rows
+    // and live ON `CountryDiplomacyRow` alongside `faction_group`; the recorder
+    // fold publishes all three unconditionally whenever a country row is present
+    // (it does not consult `STATUS_WAR_ROOT_UNVALIDATED`). A downgraded frame
+    // therefore must NOT emit `CountryDiplomacyRow` at all — a zeroed row would
+    // be false "no wars" data, whereas an omitted row is honest "war state
+    // unknown this frame". The country's faction-group signal is preserved
+    // separately via the `country_faction_group` state event (which carries no
+    // war fields), so only the war projection is withheld. See the lane README
+    // war-root-unvalidated contract.
+    let war_degraded = staleness.war_degraded();
+    let (war_rows, war_projection) = if war_degraded {
+        (Vec::new(), BTreeMap::new())
+    } else {
+        source_proofs |= SOURCE_PROOF_WAR_ROOT_870EBF;
+        let projection = war_projection_by_country(&war_rows);
+        (war_rows, projection)
+    };
     let faction_gate = read_faction_groups(mem, &countries)?;
     if faction_gate.validated {
         source_proofs |= SOURCE_PROOF_FACTION_GROUP_870EBF;
@@ -529,16 +583,23 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
             else {
                 continue;
             };
-            let (at_war_count, casualties) = war_projection
-                .get(&country.tag_db_id)
-                .copied()
-                .unwrap_or((0, 0));
-            acc.rows.countries.push(CountryDiplomacyRow {
-                tag_db_id: country.tag_db_id,
-                faction_group,
-                at_war_count,
-                casualties,
-            });
+            // Country diplomacy row carries the war projection (at_war_count /
+            // casualties). On a downgraded war family it is OMITTED entirely so
+            // the fold never publishes a false zeroed projection; the
+            // faction-group state event below still carries the valid
+            // faction_group signal.
+            if !war_degraded {
+                let (at_war_count, casualties) = war_projection
+                    .get(&country.tag_db_id)
+                    .copied()
+                    .unwrap_or((0, 0));
+                acc.rows.countries.push(CountryDiplomacyRow {
+                    tag_db_id: country.tag_db_id,
+                    faction_group,
+                    at_war_count,
+                    casualties,
+                });
+            }
             acc.rows.state_events.push(state_event(
                 country.tag_db_id,
                 None,
@@ -643,7 +704,14 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
 
     acc.rows.wars = war_rows;
 
-    if staleness.degraded() {
+    // Whole-frame fail-closed gate: ONLY the operative/operation families can
+    // doom the frame (they have no per-family unvalidated wire status). The war
+    // family was already handled above via `war_degraded()` — a stale war
+    // majority downgrades just the war family (proof withheld ->
+    // STATUS_WAR_ROOT_UNVALIDATED), it never reaches here. A dead/ancient sweep
+    // makes operatives + operations stale too, so this still fails the whole
+    // frame closed to SOURCE_UNAVAILABLE.
+    if staleness.frame_degraded() {
         return Err(ExtractError::InvalidRoot(DOMAIN53_DISCOVERY_DEGRADED));
     }
 
@@ -4409,8 +4477,8 @@ mod tests {
         // majority (Codex Q4 fix: operations churn on a different cadence than
         // operatives and must not suppress valid operatives).
 
-        // Operations stale-majority (5 of 8), operatives clean: degraded (via
-        // the operations gate) but the operative counters stay untouched.
+        // Operations stale-majority (5 of 8), operatives clean: frame-degraded
+        // (via the operations gate) but the operative counters stay untouched.
         let ops_majority = Domain53DiscoveryStaleness {
             operative_total: 8,
             operative_stale_dropped: 0,
@@ -4419,15 +4487,15 @@ mod tests {
             operation_total: 8,
             operation_stale_dropped: 5,
         };
-        assert!(ops_majority.degraded());
+        assert!(ops_majority.frame_degraded());
         assert!(!stale_fraction_degraded(
             ops_majority.operative_total,
             ops_majority.operative_stale_dropped
         ));
 
-        // Operatives clean, operations clean below the threshold: NOT degraded
-        // even though the combined stale-dropped total is nonzero — proving the
-        // gates are separate, not summed.
+        // Operatives clean, operations clean below the threshold: NOT
+        // frame-degraded even though the combined stale-dropped total is nonzero
+        // — proving the gates are separate, not summed.
         let both_minor = Domain53DiscoveryStaleness {
             operative_total: 8,
             operative_stale_dropped: 3,
@@ -4436,7 +4504,7 @@ mod tests {
             operation_total: 8,
             operation_stale_dropped: 3,
         };
-        assert!(!both_minor.degraded());
+        assert!(!both_minor.frame_degraded());
         // ...yet both contribute to the VISIBLE stale total.
         assert_eq!(both_minor.stale_dropped_total(), 6);
 
@@ -4450,11 +4518,48 @@ mod tests {
             operation_total: 8,
             operation_stale_dropped: 0,
         };
-        assert!(operatives_majority.degraded());
+        assert!(operatives_majority.frame_degraded());
         assert!(!stale_fraction_degraded(
             operatives_majority.operation_total,
             operatives_majority.operation_stale_dropped
         ));
+    }
+
+    #[test]
+    fn war_staleness_never_contributes_to_the_whole_frame_gate() {
+        // P4d: the war family is deliberately OUT of the whole-frame gate. A
+        // war stale-MAJORITY with clean operatives/operations must NOT
+        // frame-degrade (it downgrades the war family instead); it MUST show up
+        // on the separate `war_degraded()` gate.
+        let war_only = Domain53DiscoveryStaleness {
+            operative_total: 8,
+            operative_stale_dropped: 0,
+            war_total: 8,
+            war_stale_dropped: 8,
+            operation_total: 8,
+            operation_stale_dropped: 0,
+        };
+        assert!(
+            !war_only.frame_degraded(),
+            "a war stale majority must never doom the whole frame"
+        );
+        assert!(
+            war_only.war_degraded(),
+            "a war stale majority must trip the war-only downgrade gate"
+        );
+
+        // Conversely, an operative majority trips the frame gate but NOT the
+        // war gate — the two are fully independent.
+        let op_only = Domain53DiscoveryStaleness {
+            operative_total: 8,
+            operative_stale_dropped: 5,
+            war_total: 8,
+            war_stale_dropped: 0,
+            operation_total: 8,
+            operation_stale_dropped: 0,
+        };
+        assert!(op_only.frame_degraded());
+        assert!(!op_only.war_degraded());
     }
 
     #[test]
@@ -4526,7 +4631,14 @@ mod tests {
     }
 
     #[test]
-    fn cached_war_stale_majority_fails_closed() {
+    fn cached_war_stale_majority_downgrades_war_family_but_still_emits() {
+        // P4d fix: a stale-MAJORITY of the war set no longer nukes the WHOLE
+        // d53 frame. War is downgraded — war rows dropped AND
+        // `CountryDiplomacyRow`s OMITTED (a zeroed war projection would be false
+        // "no wars" data in the replay fold, which publishes country war fields
+        // unconditionally) with `SOURCE_PROOF_WAR_ROOT_870EBF` withheld ->
+        // STATUS_WAR_ROOT_UNVALIDATED — while operatives still emit. A few
+        // churning wars at speed 5 must NOT throw away the operative data.
         let mut mem = fake_domain53_memory(true, true);
         for index in 0..8 {
             add_fake_war(&mut mem, index);
@@ -4545,9 +4657,221 @@ mod tests {
         }
         assert_eq!(corrupted, 5);
 
-        let err = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
-            .expect_err("stale war majority must fail closed");
+        let extracted = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+            .expect("war stale majority downgrades the war family, does not fail the frame");
 
+        // War family downgraded: no war rows, no war-root proof.
+        assert!(extracted.rows.wars.is_empty(), "war rows must be dropped");
+        assert_eq!(
+            extracted.source_proofs & SOURCE_PROOF_WAR_ROOT_870EBF,
+            0,
+            "war-root proof must be withheld on a stale war majority"
+        );
+        // NO country diplomacy rows are emitted — an omitted row is honest "war
+        // state unknown", a zeroed row would be false data in the fold.
+        assert!(
+            extracted.rows.countries.is_empty(),
+            "country diplomacy rows must be omitted when war is downgraded"
+        );
+        // ...but the faction-group signal survives via state events (no war
+        // fields), so faction data is not lost to war churn.
+        assert!(
+            extracted
+                .rows
+                .state_events
+                .iter()
+                .any(|e| e.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP),
+            "faction-group state events must still emit when war is downgraded"
+        );
+        // Operatives untouched — this is the whole point of the fix.
+        assert_eq!(extracted.rows.operatives.len(), 1);
+        assert_eq!(extracted.skipped_rows, 0);
+        // The stale war addresses are still counted in the visible stale total.
+        assert_eq!(extracted.stale_dropped_total, 5);
+
+        // The emitted payload validates and carries STATUS_WAR_ROOT_UNVALIDATED
+        // (NOT a whole-lane failure).
+        let report = build_domain53_payload(extracted.rows, extracted.source_proofs);
+        assert!(report.ok(), "{:?}", report.errors);
+        assert_ne!(
+            report.gate_summary.status_flags_or & STATUS_WAR_ROOT_UNVALIDATED,
+            0,
+            "downgraded war family must badge STATUS_WAR_ROOT_UNVALIDATED"
+        );
+    }
+
+    #[test]
+    fn validated_war_addrs_stale_majority_downgrades_war_only_operatives_survive() {
+        // The LIVE (P4b) path: war rows come from a SMALL validated-address set
+        // re-read every frame. At speed 5 several of those addresses go stale
+        // (retired/reused war). Before the P4d fix this tripped the whole-frame
+        // majority gate and emitted SOURCE_UNAVAILABLE every warm frame. Now it
+        // downgrades ONLY the war family.
+        let mut mem = fake_domain53_memory(true, true);
+        // Build a validated war-address set of 8 (row_addr = hit - vtable off).
+        let mut addrs = Vec::new();
+        for index in 0..8 {
+            let war = add_fake_war(&mut mem, index);
+            addrs.push(war);
+        }
+        // The operative discovery still comes from the on-frame cached hits.
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        // Stale 5 of 8 validated war addresses by clobbering their date vtable
+        // slot (freed/reused pool slot -> stale_dropped on re-read).
+        for war in addrs.iter().take(5) {
+            mem.write_u64(war + profile::DOMAIN53_WAR_DATE_VTABLE as u64, 0);
+        }
+
+        let extracted =
+            extract_rows_from_current_roots_with_validated_war_addrs(&mem, &discovery, &addrs)
+                .expect("validated-addr war stale majority must downgrade war, not fail the frame");
+
+        assert!(extracted.rows.wars.is_empty());
+        assert_eq!(extracted.source_proofs & SOURCE_PROOF_WAR_ROOT_870EBF, 0);
+        // Country diplomacy rows OMITTED (no false zeroed war projection in the
+        // fold); faction-group signal preserved via state events.
+        assert!(extracted.rows.countries.is_empty());
+        assert!(extracted
+            .rows
+            .state_events
+            .iter()
+            .any(|e| e.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP));
+        assert_eq!(extracted.rows.operatives.len(), 1);
+        assert_eq!(extracted.stale_dropped_total, 5);
+
+        let report = build_domain53_payload(extracted.rows, extracted.source_proofs);
+        assert!(report.ok(), "{:?}", report.errors);
+        assert_ne!(
+            report.gate_summary.status_flags_or & STATUS_WAR_ROOT_UNVALIDATED,
+            0
+        );
+    }
+
+    #[test]
+    fn validated_war_addrs_below_majority_keeps_war_family_validated() {
+        // Boundary / churn tolerance: a MINORITY of stale validated war
+        // addresses (3 of 8) keeps the war family fully validated — the
+        // surviving wars project into country rows and the war-root proof is
+        // set. Only a majority downgrades.
+        let mut mem = fake_domain53_memory(true, true);
+        let mut addrs = Vec::new();
+        for index in 0..8 {
+            addrs.push(add_fake_war(&mut mem, index));
+        }
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        // Stale exactly 3 of 8 (below the stale*2 > total majority threshold).
+        for war in addrs.iter().take(3) {
+            mem.write_u64(war + profile::DOMAIN53_WAR_DATE_VTABLE as u64, 0);
+        }
+
+        let extracted =
+            extract_rows_from_current_roots_with_validated_war_addrs(&mem, &discovery, &addrs)
+                .expect("minority-stale war set stays validated");
+
+        // 5 of 8 wars survived and the war-root proof is present.
+        assert_eq!(extracted.rows.wars.len(), 5);
+        assert_ne!(extracted.source_proofs & SOURCE_PROOF_WAR_ROOT_870EBF, 0);
+        assert_eq!(extracted.stale_dropped_total, 3);
+        // At least one country carries a nonzero at-war projection.
+        assert!(extracted
+            .rows
+            .countries
+            .iter()
+            .any(|country| country.at_war_count != 0));
+
+        let report = build_domain53_payload(extracted.rows, extracted.source_proofs);
+        assert!(report.ok(), "{:?}", report.errors);
+        assert_eq!(
+            report.gate_summary.status_flags_or & STATUS_WAR_ROOT_UNVALIDATED,
+            0
+        );
+    }
+
+    #[test]
+    fn war_boundary_exactly_at_majority_threshold_downgrades() {
+        // Threshold boundary for `stale_fraction_degraded` on the war family:
+        // total=8, stale*2 > total means stale >= 5 degrades; stale == 4 does
+        // NOT. Verify the exact tipping point on the validated-addr path.
+        let build = |stale_count: usize| {
+            let mut mem = fake_domain53_memory(true, true);
+            let mut addrs = Vec::new();
+            for index in 0..8 {
+                addrs.push(add_fake_war(&mut mem, index));
+            }
+            let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+            for war in addrs.iter().take(stale_count) {
+                mem.write_u64(war + profile::DOMAIN53_WAR_DATE_VTABLE as u64, 0);
+            }
+            extract_rows_from_current_roots_with_validated_war_addrs(&mem, &discovery, &addrs)
+                .expect("frame always extracts (war only downgrades)")
+        };
+
+        // stale == 4 of 8: NOT a majority -> war stays validated.
+        let at_four = build(4);
+        assert_ne!(at_four.source_proofs & SOURCE_PROOF_WAR_ROOT_870EBF, 0);
+        assert_eq!(at_four.rows.wars.len(), 4);
+
+        // stale == 5 of 8: majority -> war downgraded.
+        let at_five = build(5);
+        assert_eq!(at_five.source_proofs & SOURCE_PROOF_WAR_ROOT_870EBF, 0);
+        assert!(at_five.rows.wars.is_empty());
+    }
+
+    #[test]
+    fn war_below_absolute_floor_never_downgrades_even_if_fraction_high() {
+        // The `total >= 8` absolute floor: with a tiny validated war set the
+        // fraction test is disabled, so a small set that is entirely stale is
+        // NOT treated as systemic degradation (it drops row-by-row instead).
+        // 3 of 4 stale is a 75% fraction but total < 8 -> war stays validated.
+        let mut mem = fake_domain53_memory(true, true);
+        let mut addrs = Vec::new();
+        for index in 0..4 {
+            addrs.push(add_fake_war(&mut mem, index));
+        }
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        for war in addrs.iter().take(3) {
+            mem.write_u64(war + profile::DOMAIN53_WAR_DATE_VTABLE as u64, 0);
+        }
+
+        let extracted =
+            extract_rows_from_current_roots_with_validated_war_addrs(&mem, &discovery, &addrs)
+                .expect("below the absolute floor the war family is never downgraded");
+
+        // 1 war survived, war-root proof present (row-by-row fail-closed, not a
+        // systemic downgrade).
+        assert_eq!(extracted.rows.wars.len(), 1);
+        assert_ne!(extracted.source_proofs & SOURCE_PROOF_WAR_ROOT_870EBF, 0);
+        assert_eq!(extracted.stale_dropped_total, 3);
+    }
+
+    #[test]
+    fn operative_stale_majority_still_fails_whole_frame_when_war_downgrades() {
+        // Cross-family separation under the new regime: a stale-MAJORITY of the
+        // OPERATIVE family still fails the WHOLE frame closed (it has no
+        // per-family unvalidated status), EVEN when the war family would only
+        // downgrade. This models a dead/ancient sweep where operatives are
+        // systemically stale too — the lane must still emit SOURCE_UNAVAILABLE.
+        let mut mem = fake_domain53_memory(true, true);
+        for index in 0..7 {
+            add_fake_operative(&mut mem, index);
+        }
+        let mut addrs = Vec::new();
+        for index in 0..8 {
+            addrs.push(add_fake_war(&mut mem, index));
+        }
+        let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
+        assert_eq!(discovery.operative_hits.len(), 8);
+        // Stale 5 of 8 operatives (a majority) AND 5 of 8 validated wars.
+        for hit in discovery.operative_hits.iter().take(5) {
+            mem.write_u64(*hit, 0);
+        }
+        for war in addrs.iter().take(5) {
+            mem.write_u64(war + profile::DOMAIN53_WAR_DATE_VTABLE as u64, 0);
+        }
+
+        let err =
+            extract_rows_from_current_roots_with_validated_war_addrs(&mem, &discovery, &addrs)
+                .expect_err("operative stale majority must still fail the whole frame closed");
         assert_eq!(err, ExtractError::InvalidRoot(DOMAIN53_DISCOVERY_DEGRADED));
     }
 
