@@ -164,6 +164,27 @@ pub trait Domain53Memory {
     fn module_base(&self) -> u64;
     fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError>;
 
+    /// Allocation-free sibling of [`read_bytes`](Self::read_bytes): fill a
+    /// caller-owned `buf` from `[address, address + buf.len())`. The DEFAULT impl
+    /// delegates to `self.read_bytes(address, buf.len())` and copies the result
+    /// into `buf`, so every existing implementor (fixtures, test shims, replay
+    /// mocks) keeps its exact accept/reject behavior with no code change — the
+    /// default is byte-identical to the caller doing `read_bytes` itself.
+    ///
+    /// Collector-side impls MAY override this with an alloc-free primitive, but
+    /// ONLY when that primitive's accept/reject decision is provably identical to
+    /// their own `read_bytes` (same gate, same all-or-nothing copy).
+    ///
+    /// On `Err`, `buf`'s contents are unspecified. Callers that fail-close on the
+    /// error (e.g. `skip()`+`continue` without scanning `buf`) are safe to reuse
+    /// the buffer across calls; a caller that inspects `buf` after an `Err` MUST
+    /// zero it itself.
+    fn read_into(&self, address: u64, buf: &mut [u8]) -> Result<(), ExtractError> {
+        let bytes = self.read_bytes(address, buf.len())?;
+        buf.copy_from_slice(&bytes);
+        Ok(())
+    }
+
     fn readable_ranges(&self, _lo: u64, _hi: u64) -> Vec<(u64, usize)> {
         Vec::new()
     }
@@ -1236,9 +1257,76 @@ fn read_relation_rows<M: Domain53Memory>(
     acc: &mut RowAccumulator,
 ) -> Result<(), ExtractError> {
     let relation_vtables = relation_vtable_kinds(module_base)?;
-    let mut seen_opinions = BTreeSet::new();
+    // T2 (perf_rearch_20260706) deliverable (a): range-check fast path for the
+    // per-qword vtable lookup. The map keys are the ~14 relation-flag vtable
+    // addresses; hoist their min/max so the 6.7M-qword inner scan can reject the
+    // vast majority of qwords with two register compares before touching the
+    // BTreeMap. A qword strictly below `min` or strictly above `max` cannot be a
+    // key, so skipping it is provably match-identical to a plain `get` that would
+    // have returned `None`. `relation_vtable_kinds` always returns a non-empty
+    // map (13 fixed entries); the `?` above already propagated any construction
+    // error, so `first_key_value`/`last_key_value` are `Some`. Fall back to an
+    // always-in-range window (0..=u64::MAX) on the impossible empty case so the
+    // check degenerates to "always consult the map" (still correct).
+    let (vtable_min, vtable_max) = match (
+        relation_vtables.keys().next().copied(),
+        relation_vtables.keys().next_back().copied(),
+    ) {
+        (Some(lo), Some(hi)) => (lo, hi),
+        _ => (0u64, u64::MAX),
+    };
+    // T2 deliverable (c): `seen_opinions` REMOVED. `resolve_country_roots`
+    // dedups countries by `tag_db_id` (its `seen.insert(tag_db_id)` gate, only
+    // pushing a `CountryRoot` on first sight of a tag), so every element of
+    // `countries` has a UNIQUE `tag_db_id` and `countries` is immutable through
+    // this function. The `for src in countries { for target in countries }`
+    // double loop therefore visits each ordered `(src.tag_db_id,
+    // target.tag_db_id)` pair AT MOST ONCE — exactly one element carries each tag
+    // — so `seen_opinions.insert((src.tag, target.tag))` ALWAYS returned `true`
+    // and never deduplicated anything. Dropping it is behavior-identical. (`self`
+    // pairs are skipped by the `src.tag == target.tag` guard, unchanged.)
+    // T2 deliverable (d): precompute the closed opinion-string domain once per
+    // call. `opinion` is validated into `-MAX_OPINION_ABS..=MAX_OPINION_ABS`
+    // (±200 => 401 values) before use, so the `format!("opinion_{opinion}")`
+    // string state_event argument comes from a tiny fixed set. Build all 401
+    // strings once here and index them by `(opinion + MAX_OPINION_ABS) as usize`
+    // in the pair loop instead of allocating a fresh `String` per pair. The
+    // indexed string is byte-for-byte what `format!("opinion_{opinion}")`
+    // produced (same signed decimal formatting), so `stable_hash32` of it —
+    // the only thing `state_event` keeps — is identical.
+    let opinion_labels: Vec<String> = (-MAX_OPINION_ABS..=MAX_OPINION_ABS)
+        .map(|opinion| format!("opinion_{opinion}"))
+        .collect();
     let mut seen_flags = BTreeSet::new();
     let mut seen_subjects = BTreeSet::new();
+
+    // T2 deliverable (e): reserve the row vectors before the pair loop. Most
+    // (src,target) pairs carry a non-default opinion, so the opinion / matching
+    // state_event vectors grow to ~country_count^2 in the dense case; a modest
+    // up-front reserve avoids repeated reallocation without over-committing.
+    // Bounded so a large country table cannot request an absurd allocation.
+    let pair_estimate = countries.len().saturating_mul(countries.len()).min(1 << 16);
+    acc.rows.opinions.reserve(pair_estimate);
+    // Each emitted opinion also pushes one state_event; flag state_events are
+    // rare on top. Reserve the same modest headroom for the shared vector.
+    acc.rows.state_events.reserve(pair_estimate);
+
+    // T2 deliverable (e): hoist `max_target_tag` and the batched-table BYTE
+    // LENGTH out of the per-src loop. `countries` is immutable across the loop,
+    // so the highest target tag — and hence the `(max_tag+1)*8` span every
+    // per-src batch read wants — is identical for every `src`. Only the actual
+    // `read_bytes(relation_table, table_len)` stays inside the loop, because
+    // `relation_table` is per-src. Computing `table_len` once is byte-neutral:
+    // the same `Option<usize>` is fed to the same per-src read.
+    let max_target_tag = countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .max()
+        .unwrap_or(0);
+    let table_len: Option<usize> = u64::from(max_target_tag)
+        .checked_add(1)
+        .and_then(|slots| slots.checked_mul(8))
+        .and_then(|len| usize::try_from(len).ok());
 
     for src in countries {
         let manager_addr = add_addr(src.country_ptr, profile::DOMAIN53_RELATION_MANAGER)?;
@@ -1275,17 +1363,11 @@ fn read_relation_rows<M: Domain53Memory>(
         // back to `relation_slot_ptr`, which reproduces the exact per-slot
         // `read_u64` (including its `acc.skip()` on a torn slot). A failed batch
         // read here counts NO skip on its own -- the per-slot fallback owns the
-        // skip accounting, byte-identical to the original.
-        let max_target_tag = countries
-            .iter()
-            .map(|country| country.tag_db_id)
-            .max()
-            .unwrap_or(0);
-        let table_bytes = u64::from(max_target_tag)
-            .checked_add(1)
-            .and_then(|slots| slots.checked_mul(8))
-            .and_then(|len| usize::try_from(len).ok())
-            .and_then(|len| mem.read_bytes(relation_table, len).ok());
+        // skip accounting, byte-identical to the original. (`max_target_tag` and
+        // the `(max_tag+1)*8` byte length are hoisted above the src loop — see
+        // T2 deliverable (e); only the per-src `read_bytes` stays here because
+        // `relation_table` is per-src.)
+        let table_bytes = table_len.and_then(|len| mem.read_bytes(relation_table, len).ok());
         for target in countries {
             if src.tag_db_id == target.tag_db_id {
                 continue;
@@ -1314,22 +1396,31 @@ fn read_relation_rows<M: Domain53Memory>(
                 profile::DOMAIN53_RELATION_OPINION,
             )?) {
                 Ok(opinion) if (-MAX_OPINION_ABS..=MAX_OPINION_ABS).contains(&opinion) => {
-                    if seen_opinions.insert((src.tag_db_id, target.tag_db_id)) {
-                        acc.rows.opinions.push(OpinionRow {
-                            src_tag_db_id: src.tag_db_id,
-                            target_tag_db_id: target.tag_db_id,
-                            opinion,
-                        });
-                        acc.rows.state_events.push(state_event(
-                            src.tag_db_id,
-                            Some(target.tag_db_id),
-                            STATE_EVENT_SOURCE_RELATION_OPINION,
-                            "relation_opinion",
-                            &format!("opinion_{opinion}"),
-                            i64::from(opinion),
-                        ));
-                        acc.observe();
-                    }
+                    // T2 (c): the removed `seen_opinions` guard always fired
+                    // exactly once per (src,target) pair (unique tags => unique
+                    // pairs), so the push is now unconditional — identical rows.
+                    acc.rows.opinions.push(OpinionRow {
+                        src_tag_db_id: src.tag_db_id,
+                        target_tag_db_id: target.tag_db_id,
+                        opinion,
+                    });
+                    // T2 (d): index the precomputed label instead of
+                    // `format!("opinion_{opinion}")`. `opinion` is in
+                    // `-MAX_OPINION_ABS..=MAX_OPINION_ABS` (match guard), so
+                    // `(opinion + MAX_OPINION_ABS)` is in `0..=2*MAX_OPINION_ABS`,
+                    // a valid index into the 401-entry `opinion_labels`; the label
+                    // is byte-for-byte the old `format!` output, so `stable_hash32`
+                    // (the only value `state_event` retains) is identical.
+                    let opinion_label = &opinion_labels[(opinion + MAX_OPINION_ABS) as usize];
+                    acc.rows.state_events.push(state_event(
+                        src.tag_db_id,
+                        Some(target.tag_db_id),
+                        STATE_EVENT_SOURCE_RELATION_OPINION,
+                        "relation_opinion",
+                        opinion_label,
+                        i64::from(opinion),
+                    ));
+                    acc.observe();
                 }
                 Ok(_) | Err(_) => {
                     acc.skip();
@@ -1357,14 +1448,23 @@ fn read_relation_rows<M: Domain53Memory>(
                 &mut seen_flags,
             );
 
-            let scan_bytes = profile::DOMAIN53_RELATION_SCAN_BYTES;
-            let bytes = match mem.read_bytes(relation_entry, scan_bytes) {
-                Ok(bytes) => bytes,
-                Err(_) => {
-                    acc.skip();
-                    continue;
-                }
-            };
+            // T2 deliverable (b): alloc-free blob read. Replace the per-pair
+            // `read_bytes(relation_entry, 0x340)` (a fresh zeroed 832-byte Vec on
+            // EVERY pair) with a stack buffer filled via `read_into`. The trait's
+            // `read_into` has a `read_bytes`-delegating default (byte-identical for
+            // every fixture/shim) and an alloc-free collector override whose gate
+            // is provably identical to `read_bytes`. Failure path is unchanged:
+            // `acc.skip(); continue;` — and because failure SKIPS the scan
+            // entirely (the `continue` below), a reused/stack buffer is safe: no
+            // path scans `scan_buf` after a failed/partial `read_into`, so stale
+            // bytes from a prior iteration can never be misread. (Verified: the
+            // only reader of `scan_buf` is the `while` scan on the Ok path.)
+            let mut scan_buf = [0u8; profile::DOMAIN53_RELATION_SCAN_BYTES];
+            if mem.read_into(relation_entry, &mut scan_buf).is_err() {
+                acc.skip();
+                continue;
+            }
+            let bytes = &scan_buf[..];
             let mut offset = 0usize;
             while offset + 8 <= bytes.len() {
                 let qword = u64::from_le_bytes(
@@ -1372,6 +1472,16 @@ fn read_relation_rows<M: Domain53Memory>(
                         .try_into()
                         .expect("qword scan slice"),
                 );
+                // T2 deliverable (a): range-check fast path. A qword outside the
+                // hoisted [vtable_min, vtable_max] window cannot be a map key, so
+                // skipping the `get` is match-identical to a lookup returning
+                // `None`. This rejects almost every one of the ~6.7M qwords/frame
+                // in two register compares. `min`/`max` ARE valid keys, so the
+                // bounds are inclusive (`<` / `>`, not `<=` / `>=`).
+                if qword < vtable_min || qword > vtable_max {
+                    offset += 8;
+                    continue;
+                }
                 if let Some(flag_kind) = relation_vtables.get(&qword).copied() {
                     // PUPPET is handled by the +0x288 pointer hop above (its
                     // vtable is never inline); skip it here to avoid a spurious
@@ -5532,5 +5642,152 @@ mod tests {
             "unreadable slot must fail-closed (Err) in the fallback path"
         );
         assert!(mem.read_u64(torn_table + 16).is_err());
+    }
+
+    // T2 deliverable (a): the range-check fast path in the qword scan must
+    // produce the IDENTICAL ordered `(offset, kind)` match list as a plain
+    // per-qword map lookup. A range check can only skip qwords that are NOT map
+    // keys, so the two scans must agree on every blob.
+    //
+    // Reference scan = the OLD code path (map `get` on every qword). Fast scan =
+    // the NEW code path (skip qwords outside [min, max], else `get`). Both are
+    // reimplemented here as pure helpers over a byte blob so the equivalence is
+    // tested directly, independent of memory plumbing.
+    fn reference_qword_scan(bytes: &[u8], vtables: &BTreeMap<u64, u16>) -> Vec<(usize, u16)> {
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        while offset + 8 <= bytes.len() {
+            let qword = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            if let Some(kind) = vtables.get(&qword).copied() {
+                out.push((offset, kind));
+            }
+            offset += 8;
+        }
+        out
+    }
+
+    fn fast_qword_scan(bytes: &[u8], vtables: &BTreeMap<u64, u16>) -> Vec<(usize, u16)> {
+        let (min, max) = match (
+            vtables.keys().next().copied(),
+            vtables.keys().next_back().copied(),
+        ) {
+            (Some(lo), Some(hi)) => (lo, hi),
+            _ => (0u64, u64::MAX),
+        };
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        while offset + 8 <= bytes.len() {
+            let qword = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            if qword < min || qword > max {
+                offset += 8;
+                continue;
+            }
+            if let Some(kind) = vtables.get(&qword).copied() {
+                out.push((offset, kind));
+            }
+            offset += 8;
+        }
+        out
+    }
+
+    #[test]
+    fn qword_scan_range_check_matches_plain_lookup() {
+        // Real relation-flag vtable map for a representative module base (13
+        // entries, spread across a wide RVA range so min != max and the window
+        // is meaningful).
+        let module_base = 0x1_4000_0000u64;
+        let vtables = relation_vtable_kinds(module_base).expect("vtables");
+        assert!(vtables.len() >= 2, "need a non-degenerate min..max window");
+        let min = *vtables.keys().next().unwrap();
+        let max = *vtables.keys().next_back().unwrap();
+
+        // Build a synthetic blob containing, at qword-aligned offsets:
+        //   - every vtable value (each key), some duplicated at multiple offsets
+        //   - min-1, max+1 (just-outside boundary, must be skipped, non-members)
+        //   - min, max (boundary members, must match)
+        //   - 0 and u64::MAX (extreme junk)
+        //   - a spread of pseudo-random junk qwords (in- and out-of-window)
+        let mut qwords: Vec<u64> = Vec::new();
+        for (&k, _) in vtables.iter() {
+            qwords.push(k); // every vtable value
+        }
+        for (&k, _) in vtables.iter() {
+            qwords.push(k); // duplicated vtables at a second set of offsets
+        }
+        qwords.push(min.wrapping_sub(1)); // min-1 (non-member, in principle < min)
+        qwords.push(max.wrapping_add(1)); // max+1 (non-member, > max)
+        qwords.push(min); // min (member)
+        qwords.push(max); // max (member)
+        qwords.push(0);
+        qwords.push(u64::MAX);
+        // Deterministic junk (LCG), some in-window some out.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..200 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            qwords.push(seed);
+            // Also push a value forced INTO the window to exercise the in-range,
+            // not-a-key case (range check passes, map returns None).
+            let in_window = min.wrapping_add(seed % (max - min + 1));
+            qwords.push(in_window);
+        }
+
+        let mut blob = Vec::with_capacity(qwords.len() * 8);
+        for q in &qwords {
+            blob.extend_from_slice(&q.to_le_bytes());
+        }
+        // Add a trailing 3 bytes so the tail (< 8) is ignored identically by both.
+        blob.extend_from_slice(&[0xAB, 0xCD, 0xEF]);
+
+        let reference = reference_qword_scan(&blob, &vtables);
+        let fast = fast_qword_scan(&blob, &vtables);
+        assert_eq!(
+            reference, fast,
+            "range-check fast scan diverged from plain per-qword map lookup"
+        );
+
+        // Sanity: at least the deliberately-placed member values matched.
+        assert!(
+            !reference.is_empty(),
+            "expected the synthetic blob to contain vtable matches"
+        );
+    }
+
+    // T2 deliverable (d): the precomputed opinion-label cache indexed by
+    // `(opinion + MAX_OPINION_ABS)` must be byte-for-byte identical to the
+    // original `format!("opinion_{opinion}")` for every opinion in the validated
+    // domain — hashes included (the state_event only stores `stable_hash32`).
+    #[test]
+    fn opinion_labels_match_format_over_full_domain() {
+        let opinion_labels: Vec<String> = (-MAX_OPINION_ABS..=MAX_OPINION_ABS)
+            .map(|opinion| format!("opinion_{opinion}"))
+            .collect();
+        assert_eq!(opinion_labels.len(), (2 * MAX_OPINION_ABS + 1) as usize);
+
+        // Full domain byte-identity + hash-identity.
+        for opinion in -MAX_OPINION_ABS..=MAX_OPINION_ABS {
+            let idx = (opinion + MAX_OPINION_ABS) as usize;
+            let expected = format!("opinion_{opinion}");
+            assert_eq!(opinion_labels[idx], expected, "label bytes for {opinion}");
+            assert_eq!(
+                crate::compact::stable_hash32(&opinion_labels[idx]),
+                crate::compact::stable_hash32(&expected),
+                "label hash for {opinion}"
+            );
+        }
+
+        // Explicit boundary values called out by the spec.
+        for opinion in [-MAX_OPINION_ABS, -1, 0, 1, MAX_OPINION_ABS] {
+            let idx = (opinion + MAX_OPINION_ABS) as usize;
+            assert_eq!(opinion_labels[idx], format!("opinion_{opinion}"));
+        }
+        // Spot-check the exact spelling of the extremes.
+        assert_eq!(opinion_labels[0], "opinion_-200");
+        assert_eq!(opinion_labels[MAX_OPINION_ABS as usize], "opinion_0");
+        assert_eq!(
+            opinion_labels[(2 * MAX_OPINION_ABS) as usize],
+            "opinion_200"
+        );
     }
 }
