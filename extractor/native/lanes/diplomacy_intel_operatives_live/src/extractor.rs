@@ -21,6 +21,7 @@ use crate::compact::{
 };
 use compact_contract::build_profile as profile;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 pub const EXPECTED_HOI4_SHA256_870EBF: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
@@ -241,6 +242,39 @@ pub struct Domain53FamilyCounts {
     pub operation_filtered: u32,
 }
 
+/// W1 instrument (perf_rearch_20260706 T4): per-family wall time (elapsed
+/// micros) accumulated across the family call sites in
+/// [`extract_rows_from_resolved_roots_with_discovery`]. Observational ONLY —
+/// populated by wrapping each family call in `Instant::now()`/`.elapsed()`;
+/// it never influences rows, wire bytes, status flags, error variants, or
+/// control flow. The collector plumbs these into the d53 DOMAIN_PERF diagnostic
+/// trailer (`domain53_phase_*_us` units, the same telemetry channel as the
+/// existing `domain53_*` diag units — the manifest aggregates them by name into
+/// `data_units_total`) so a live capture can attribute d53 frame time per family.
+/// These units ride the DOMAIN_PERF (telemetry) record, never the folded d53
+/// DATA snapshot. On early-`Err` returns the frame (and this struct) never
+/// escapes, so partial phase times are simply not reported — intentional.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Domain53PhaseTimes {
+    pub wars_us: u64,
+    pub faction_gate_us: u64,
+    pub relations_us: u64,
+    pub faction_roster_us: u64,
+    pub incoming_actions_us: u64,
+    pub agencies_us: u64,
+    pub operatives_us: u64,
+    pub operations_us: u64,
+    pub intel_networks_us: u64,
+    pub cryptology_us: u64,
+}
+
+/// Elapsed micros as `u64`, saturating (a d53 frame is milliseconds, never
+/// ~584_000 years, so the clamp is a formality that keeps the timer branchless
+/// and panic-free). Used only by the W1 per-family timers; observational.
+fn duration_micros_u64_saturating(elapsed: std::time::Duration) -> u64 {
+    elapsed.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtractedDomain53Frame {
     pub rows: ExtractedDomain53Rows,
@@ -249,6 +283,9 @@ pub struct ExtractedDomain53Frame {
     pub skipped_rows: u32,
     pub stale_dropped_total: usize,
     pub family_counts: Domain53FamilyCounts,
+    /// W1 per-family wall timers (perf_rearch_20260706 T4). Observational only;
+    /// see [`Domain53PhaseTimes`].
+    pub phase_times: Domain53PhaseTimes,
 }
 
 pub const DOMAIN53_DISCOVERY_DEGRADED: &str = "domain53_discovery_degraded";
@@ -578,7 +615,15 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         ..Domain53FamilyCounts::default()
     };
     let mut staleness = Domain53DiscoveryStaleness::default();
+    // W1 instrument (perf_rearch_20260706 T4): per-family wall timers. Each family
+    // call site below is wrapped in Instant::now()/.elapsed(); the accumulator is
+    // attached to the returned frame (success path only) and surfaced through the
+    // collector's d53 DOMAIN_PERF diagnostic trailer (telemetry, never the folded
+    // DATA snapshot). Observational: it changes no row, no wire byte, no status
+    // flag, no error variant, and no control flow.
+    let mut phase_times = Domain53PhaseTimes::default();
 
+    let wars_started = Instant::now();
     let (war_rows, war_total, war_stale_dropped) = match war_row_addrs {
         Some(addrs) => {
             let (rows, stale) =
@@ -591,6 +636,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
             (rows, discovery.war_hits.iter().map(Vec::len).sum(), stale)
         }
     };
+    phase_times.wars_us = duration_micros_u64_saturating(wars_started.elapsed());
     staleness.war_total = war_total;
     staleness.war_stale_dropped = war_stale_dropped;
     family_counts.war_scan_ranges = discovery.scan_range_count;
@@ -625,6 +671,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         let projection = war_projection_by_country(&war_rows);
         (war_rows, projection)
     };
+    let faction_gate_started = Instant::now();
     let faction_gate = read_faction_groups(mem, &countries)?;
     if faction_gate.validated {
         source_proofs |= SOURCE_PROOF_FACTION_GROUP_870EBF;
@@ -664,8 +711,11 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
             acc.observe();
         }
     }
+    phase_times.faction_gate_us = duration_micros_u64_saturating(faction_gate_started.elapsed());
 
+    let relations_started = Instant::now();
     read_relation_rows(mem, module_base, current_game_hour, &countries, &mut acc)?;
+    phase_times.relations_us = duration_micros_u64_saturating(relations_started.elapsed());
     let relation_rows =
         acc.rows.opinions.len() + acc.rows.relation_flags.len() + acc.rows.subjects.len();
     if relation_rows == 0 {
@@ -679,19 +729,28 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     // CFactionSystem roster (id/type/name/members/leader). Non-fatal: a
     // structurally-invalid faction system leaves the roster empty (no proof),
     // never fails the whole frame.
+    let faction_roster_started = Instant::now();
     let faction_rows = read_faction_rows(mem, module_base, game_state, &countries)?;
+    phase_times.faction_roster_us =
+        duration_micros_u64_saturating(faction_roster_started.elapsed());
     if !faction_rows.is_empty() {
         acc.rows.factions = faction_rows;
         source_proofs |= SOURCE_PROOF_FACTION_SYSTEM_870EBF;
     }
 
+    let incoming_actions_started = Instant::now();
     read_incoming_action_queue_rows(mem, module_base, current_game_hour, &countries, &mut acc)?;
+    phase_times.incoming_actions_us =
+        duration_micros_u64_saturating(incoming_actions_started.elapsed());
     source_proofs |= SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF;
 
+    let agencies_started = Instant::now();
     let agency_roots = read_agency_rows(mem, module_base, &countries, &mut acc)?;
+    phase_times.agencies_us = duration_micros_u64_saturating(agencies_started.elapsed());
     family_counts.agency_roots = agency_roots.len().min(u32::MAX as usize) as u32;
     source_proofs |= SOURCE_PROOF_AGENCY_ROOT_870EBF;
 
+    let operatives_started = Instant::now();
     let operative_stale_dropped = read_operatives(
         mem,
         module_base,
@@ -699,6 +758,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         &discovery.operative_hits,
         &mut acc,
     )?;
+    phase_times.operatives_us = duration_micros_u64_saturating(operatives_started.elapsed());
     staleness.operative_total = discovery.operative_hits.len();
     staleness.operative_stale_dropped = operative_stale_dropped;
     family_counts.operative_scan_ranges = discovery.scan_range_count;
@@ -714,12 +774,14 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     // fewer operation rows, never the loss of the unrelated d53 families. The
     // family counts stay attributed separately from operatives so neither
     // family's churn masks the other.
+    let operations_started = Instant::now();
     let (operation_instances, operation_drops) = read_operations(
         mem,
         module_base,
         &countries,
         &discovery.operation_instance_hits,
     )?;
+    phase_times.operations_us = duration_micros_u64_saturating(operations_started.elapsed());
     acc.rows.operation_instances = operation_instances;
     staleness.operation_total = discovery.operation_instance_hits.len();
     staleness.operation_stale_dropped = operation_drops.stale_liveness;
@@ -734,13 +796,17 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         operation_drops.stale_liveness.min(u32::MAX as usize) as u32;
     family_counts.operation_filtered = operation_drops.filtered.min(u32::MAX as usize) as u32;
 
-    if let Some(intel_network_graphs) = read_intel_network_graph_rows(
+    let intel_networks_started = Instant::now();
+    let intel_network_graphs = read_intel_network_graph_rows(
         mem,
         module_base,
         &countries,
         &discovery.strategic_operative_hits,
         &discovery.country_intel_network_hits,
-    )? {
+    )?;
+    phase_times.intel_networks_us =
+        duration_micros_u64_saturating(intel_networks_started.elapsed());
+    if let Some(intel_network_graphs) = intel_network_graphs {
         acc.rows.intel_network_graphs = intel_network_graphs;
         source_proofs |= SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF;
     }
@@ -755,7 +821,9 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
             .min(u32::MAX as usize) as u32;
     }
 
+    let cryptology_started = Instant::now();
     read_cryptology_rows(mem, module_base, &agency_roots, &mut acc)?;
+    phase_times.cryptology_us = duration_micros_u64_saturating(cryptology_started.elapsed());
     if !agency_roots.is_empty() {
         source_proofs |= SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF;
     }
@@ -789,6 +857,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         skipped_rows: acc.skipped_rows,
         stale_dropped_total: staleness.stale_dropped_total(),
         family_counts,
+        phase_times,
     })
 }
 
@@ -4523,6 +4592,72 @@ mod tests {
         );
     }
 
+    /// W1 instrument (perf_rearch_20260706 T4): the per-family wall timers are
+    /// populated on a successful extraction and are internally consistent — every
+    /// per-family span is measured within (and therefore <=) an outer total the
+    /// test measures around the whole extraction call. Magnitudes are NOT asserted:
+    /// a tiny fixture on a fast machine can legitimately record 0 micros for any
+    /// family (the sub-microsecond resolution floor), so we assert PRESENCE +
+    /// CONSISTENCY, never a lower bound > 0. The fixture carries relations rows
+    /// (2 opinions + 2 relation flags + 1 subject), so the relations span is a
+    /// real measured span whose accounting must obey the same <= total bound.
+    #[test]
+    fn phase_timers_are_measured_and_internally_consistent() {
+        let mem = fake_domain53_memory(true, true);
+
+        // Outer total measured around the SAME call the timers wrap. Every
+        // per-family span is a strict subset of this interval, so the sum of all
+        // spans — and each individual span — must be <= this total.
+        let outer_started = Instant::now();
+        let extracted = extract_rows_from_current_roots(&mem).expect("domain53 fake read");
+        let outer_total_us = duration_micros_u64_saturating(outer_started.elapsed());
+
+        // Presence: the fixture exercises the relations family (it emits relation
+        // rows), so this extraction ran the timed relations span. On a fixture with
+        // relations rows the accounting is real (not a skipped/zeroed family).
+        assert!(
+            !extracted.rows.opinions.is_empty()
+                || !extracted.rows.relation_flags.is_empty()
+                || !extracted.rows.subjects.is_empty(),
+            "fixture must carry relations rows for this test to exercise the relations span"
+        );
+
+        let phase = extracted.phase_times;
+        let spans = [
+            phase.wars_us,
+            phase.faction_gate_us,
+            phase.relations_us,
+            phase.faction_roster_us,
+            phase.incoming_actions_us,
+            phase.agencies_us,
+            phase.operatives_us,
+            phase.operations_us,
+            phase.intel_networks_us,
+            phase.cryptology_us,
+        ];
+
+        // Each individual family span is a subset of the outer interval → <= total.
+        for (idx, &span) in spans.iter().enumerate() {
+            assert!(
+                span <= outer_total_us,
+                "phase[{idx}] = {span}us exceeds outer total {outer_total_us}us"
+            );
+        }
+
+        // The spans are disjoint sub-intervals of the outer interval, so their sum
+        // cannot exceed the outer total either (untimed gaps only make the sum
+        // smaller). This is the "sum of phases <= an outer total" consistency the
+        // T4 spec calls for. `saturating_add` mirrors the production accumulation.
+        let sum_us = spans
+            .iter()
+            .copied()
+            .fold(0u64, |acc, span| acc.saturating_add(span));
+        assert!(
+            sum_us <= outer_total_us,
+            "sum of phase spans {sum_us}us exceeds outer total {outer_total_us}us"
+        );
+    }
+
     /// Build a minimal single-faction CFactionSystem in fake memory. `members`
     /// is a list of (tag, is_valid_country) — an invalid member models a torn
     /// pointer / non-country object. Returns (mem, game_state, countries).
@@ -4632,9 +4767,18 @@ mod tests {
     fn discovery_extract_matches_uncached_fake_memory() {
         let mem = fake_domain53_memory(true, true);
         let discovery = discover_domain53_heap_hits(&mem).expect("domain53 discovery");
-        let cached = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
+        let mut cached = extract_rows_from_current_roots_with_discovery(&mem, &discovery)
             .expect("cached domain53 extract");
-        let uncached = extract_rows_from_current_roots(&mem).expect("uncached domain53 extract");
+        let mut uncached =
+            extract_rows_from_current_roots(&mem).expect("uncached domain53 extract");
+
+        // W1 instrument (perf_rearch_20260706 T4): `phase_times` is observational
+        // wall-clock noise — two runs of the same extraction legitimately record
+        // different micros — so it is NOT part of the data equivalence this test
+        // asserts. Neutralize it on both sides before the full-struct compare; the
+        // rows/proofs/counts equivalence (the real invariant) is unchanged.
+        cached.phase_times = Domain53PhaseTimes::default();
+        uncached.phase_times = Domain53PhaseTimes::default();
 
         assert_eq!(cached, uncached);
     }
