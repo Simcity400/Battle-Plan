@@ -6,6 +6,11 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[build-dependencies]
+# Compiles src/seh_read.c (the SEH-guarded crash-safe read shim) into the
+# cdylib. MSVC only; see build.rs.
+cc = "1"
+
 [dependencies]
 compact_contract = { path = "../compact_contract" }
 air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
