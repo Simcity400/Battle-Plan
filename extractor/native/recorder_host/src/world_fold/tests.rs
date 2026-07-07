@@ -968,6 +968,196 @@ fn chunk3_d53_failure_and_delta_are_not_successful_folds() {
         .any(|value| value == "diplomacy_intel_operatives_live"));
 }
 
+#[test]
+fn domain53_upsert_by_key_preserves_order_and_dedups() {
+    // The sparse-merge primitive: NEW keys append in insertion order (so on a
+    // freshly-cleared vec — a CLEAN frame — it is byte-identical to `push`), and
+    // an EXISTING key updates IN PLACE (so a re-emitted or value-changed row on a
+    // partial frame never accumulates a duplicate). This is the invariant the
+    // whole layer-2 sparse merge rests on.
+    let mut v: Vec<(u32, i32)> = Vec::new();
+    domain53_upsert_by_key(&mut v, (1, 10), |r| r.0);
+    domain53_upsert_by_key(&mut v, (2, 20), |r| r.0);
+    domain53_upsert_by_key(&mut v, (3, 30), |r| r.0);
+    assert_eq!(
+        v,
+        vec![(1, 10), (2, 20), (3, 30)],
+        "new keys append in order"
+    );
+    // Re-emit key 2 with a new value: replaced in place, no duplicate, order kept.
+    domain53_upsert_by_key(&mut v, (2, 99), |r| r.0);
+    assert_eq!(v, vec![(1, 10), (2, 99), (3, 30)]);
+    // A brand-new key still appends at the end.
+    domain53_upsert_by_key(&mut v, (4, 40), |r| r.0);
+    assert_eq!(v, vec![(1, 10), (2, 99), (3, 30), (4, 40)]);
+}
+
+#[test]
+fn chunk3_d53_partial_frame_is_tolerated_and_emits_rows() {
+    // Layer-2 core behavior: a d53 frame carrying the expected PARTIAL bit (some
+    // per-row skips) must NOT be nuked — it is TOLERATED, folds successfully, and
+    // emits its valid rows. (Before layer-2 any skip returned an empty payload and
+    // d53 was dark on every live frame.) Same rows as the clean fixture but with
+    // STATUS_PARTIAL_DATA set in the payload.
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    let report = diplomacy53::extractor::build_domain53_payload_with_status(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        diplomacy53::compact::STATUS_PARTIAL_DATA,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, report.payload),
+    ]);
+    // d53 folded successfully (tolerated), not marked unknown.
+    assert!(snapshot["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "diplomacy_intel_operatives_live"));
+    // ...and it EMITTED its rows (GER carries the d53 diplomacy extras).
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"][DOMAIN53_EXTRA_KEY]["opinion_rows"][0]["target"],
+        json!("POL")
+    );
+    // The tolerated PARTIAL is recorded as a problem for visibility.
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("partial_data")));
+}
+
+#[test]
+fn chunk3_d53_partial_frame_retains_rows_it_omits() {
+    // Sparse-merge retention: a CLEAN frame lands GER's opinion on POL, then a
+    // PARTIAL frame the same hour OMITS opinions (a torn skip). The omitted
+    // opinion must be RETAINED from the clean frame — never fabricated as a
+    // deletion.
+    let mut clean_rows = diplomacy53::extractor::proof_fixture_rows();
+    clean_rows.operation_anchors.clear();
+    clean_rows.intel_map.clear();
+    let clean = diplomacy53::extractor::build_domain53_payload(
+        clean_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(clean.ok(), "{:?}", clean.errors);
+
+    let mut partial_rows = diplomacy53::extractor::proof_fixture_rows();
+    partial_rows.operation_anchors.clear();
+    partial_rows.intel_map.clear();
+    partial_rows.opinions.clear(); // this frame skipped the opinion slot(s)
+    let partial = diplomacy53::extractor::build_domain53_payload_with_status(
+        partial_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        diplomacy53::compact::STATUS_PARTIAL_DATA,
+    );
+    assert!(partial.ok(), "{:?}", partial.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, clean.payload),
+        (53, partial.payload),
+    ]);
+    // Retained across the omission.
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"][DOMAIN53_EXTRA_KEY]["opinion_rows"][0]["target"],
+        json!("POL")
+    );
+}
+
+#[test]
+fn chunk3_d53_failure_after_success_same_hour_hides_all_rows() {
+    // Codex layer-2 fix: a FAILED d53 frame must set known=false so a prior
+    // success this hour is NOT published as stale. Partial-success then a
+    // SOURCE_UNAVAILABLE failure in the same hour -> d53 not projected at all.
+    let mut ok_rows = diplomacy53::extractor::proof_fixture_rows();
+    ok_rows.operation_anchors.clear();
+    ok_rows.intel_map.clear();
+    let ok = diplomacy53::extractor::build_domain53_payload_with_status(
+        ok_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        diplomacy53::compact::STATUS_PARTIAL_DATA,
+    );
+    assert!(ok.ok(), "{:?}", ok.errors);
+    let fail =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, ok.payload), // known=true, rows populated
+        (53, fail),       // failure -> known=false, retained rows NOT projected
+    ]);
+    // The KEY assertion: GER exists (from country identity) but carries NO d53
+    // extras — the retained rows from the earlier success are NOT published,
+    // because the latest frame failed and set known=false.
+    assert!(snapshot["countries"]["GER"]
+        .get("diplomacy")
+        .and_then(|d| d.get(DOMAIN53_EXTRA_KEY))
+        .is_none());
+    // ...and the failure is recorded as a problem. (The earlier partial frame did
+    // fold successfully, so d53 legitimately remains in the success `domains`
+    // list — the fix hides the DATA via known=false, it does not un-record the
+    // earlier success.)
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk3_d53_decode_failure_after_success_same_hour_hides_all_rows() {
+    // Codex layer-2 follow-up: a DECODE failure (malformed/truncated payload) is a
+    // d53 rejection like any other — it must set known=false so a same-hour
+    // success is not published as stale. The `?`-on-decode path used to return
+    // before known=false.
+    let mut ok_rows = diplomacy53::extractor::proof_fixture_rows();
+    ok_rows.operation_anchors.clear();
+    ok_rows.intel_map.clear();
+    let ok = diplomacy53::extractor::build_domain53_payload(
+        ok_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(ok.ok(), "{:?}", ok.errors);
+    // A truncated payload that cannot decode.
+    let malformed = vec![0x00u8, 0x01, 0x02];
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, ok.payload), // known=true, rows populated
+        (53, malformed),  // decode fails -> known=false, retained rows NOT projected
+    ]);
+    assert!(snapshot["countries"]["GER"]
+        .get("diplomacy")
+        .and_then(|d| d.get(DOMAIN53_EXTRA_KEY))
+        .is_none());
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("decode_failed")));
+}
+
 fn chunk3_division_payload(rows: &[(u32, u32, u32)]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&0u64.to_le_bytes());

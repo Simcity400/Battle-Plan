@@ -338,9 +338,12 @@ impl Domain53DiscoveryStaleness {
     /// DIAGNOSTIC ONLY — never nukes the frame. True when GENUINE operation
     /// liveness failures (vtable mismatch / unreadable handle, NOT filtering) are
     /// a majority of the candidate set: a signal that the operation discovery has
-    /// genuinely decayed, surfaced so a real regression is visible without
-    /// suppressing the rest of d53. Uses the same fraction test as the operative
-    /// gate but does not feed [`Self::frame_degraded`].
+    /// genuinely decayed. Operation health is surfaced in production via
+    /// `family_counts` (candidates/emitted/stale_liveness/filtered); this method
+    /// states the "majority genuine death" predicate for the contract tests and
+    /// is kept as the documented definition it references from
+    /// [`Self::frame_degraded`].
+    #[allow(dead_code)]
     fn operation_degraded(&self) -> bool {
         stale_fraction_degraded(self.operation_total, self.operation_stale_dropped)
     }
@@ -2955,9 +2958,24 @@ pub fn build_domain53_payload(
     rows: ExtractedDomain53Rows,
     source_proofs: u64,
 ) -> Domain53ExtractionReport {
+    build_domain53_payload_with_status(rows, source_proofs, 0)
+}
+
+/// Like [`build_domain53_payload`] but seeds the payload snapshot's
+/// `status_flags` with `extra_status_flags` (e.g. `STATUS_PARTIAL_DATA` for an
+/// expected-partial frame that carries valid rows plus known per-row omissions).
+/// The extra bits are ORed BEFORE encode so the host fold reads them from the
+/// decoded payload status (not just the record header). All validation /
+/// source-proof logic is unchanged; passing 0 is byte-identical to the 2-arg
+/// form.
+pub fn build_domain53_payload_with_status(
+    rows: ExtractedDomain53Rows,
+    source_proofs: u64,
+    extra_status_flags: u32,
+) -> Domain53ExtractionReport {
     let mut snapshot = DiplomacyIntelSnapshot {
         elapsed_wall_ms: rows.elapsed_wall_ms,
-        status_flags: 0,
+        status_flags: extra_status_flags,
         changed_rows: rows.changed_rows,
         countries: rows.countries,
         wars: rows.wars,

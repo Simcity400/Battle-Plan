@@ -151,6 +151,11 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
         reason: "naval_combat_members_live: transient live-mutation member-walk anomalies on an unpaused frame (torn CFEXGroup member arrays, unreadable CFEXMember handles/slots, duplicate ship ids from a stale group, missing CShip OOB joins) fail the whole frame closed with empty rows; the delta baseline is preserved and rows re-emit on the next clean frame",
     },
     CompactExpectedPartialTolerance {
+        domain_id: 53,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "diplomacy_intel_operatives_live: transient live-mutation per-row skips across families (torn operative/agency/relation/opinion/subject/cryptology/incoming-action slots), skip-counted; valid rows are emitted and the host sparse-merges omitted rows WITHIN THE HOUR (a clean frame full-replaces) so an omitted torn row is never fabricated as a deletion",
+    },
+    CompactExpectedPartialTolerance {
         domain_id: 54,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "army_battleplans_depth_live: documented fixture-blocked scopes (redraw/toggle lifecycle, activation/execution, stance) fail closed per-row",
@@ -1364,7 +1369,7 @@ mod tests {
             .iter()
             .map(|tolerance| tolerance.domain_id)
             .collect::<Vec<_>>();
-        assert_eq!(domains, vec![26, 27, 28, 41, 45, 48, 49, 50, 54, 65]);
+        assert_eq!(domains, vec![26, 27, 28, 41, 45, 48, 49, 50, 53, 54, 65]);
     }
 
     #[test]
@@ -1384,7 +1389,7 @@ mod tests {
         for domain_id in [29, 47, 56] {
             assert_eq!(expected_partial_tolerance(domain_id), None);
         }
-        for domain_id in [26, 27, 28, 41, 45, 48, 49, 50, 54, 65] {
+        for domain_id in [26, 27, 28, 41, 45, 48, 49, 50, 53, 54, 65] {
             assert_eq!(
                 expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
                 Some(COMPACT_STATUS_PARTIAL_DATA)

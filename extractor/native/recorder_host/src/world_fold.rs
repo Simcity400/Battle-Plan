@@ -365,6 +365,20 @@ fn compact_failure_flags_after_expected_partial_tolerance(
     )
 }
 
+/// Layer-2 sparse merge (d53): replace the existing element with the same key,
+/// else append. Preserves insertion order — existing keys update in place, new
+/// keys append — so on a freshly-CLEARED vec (a clean d53 frame) it is
+/// byte-identical to `push`. On a tolerated-PARTIAL frame the vec is NOT cleared,
+/// so an element the frame omits is retained instead of fabricated as a deletion.
+fn domain53_upsert_by_key<T, K: PartialEq>(vec: &mut Vec<T>, row: T, key: impl Fn(&T) -> K) {
+    let k = key(&row);
+    if let Some(slot) = vec.iter_mut().find(|existing| key(existing) == k) {
+        *slot = row;
+    } else {
+        vec.push(row);
+    }
+}
+
 const DOMAIN47_R2_KEY: &str = "_r2_characters_leaders_cabinet_live";
 /// Wave-4 ace lifecycle: per-country ace-roster sidecar (domain 46 `ACE1`
 /// trailer; full-replace each trailer-bearing hour).
@@ -9918,25 +9932,57 @@ impl WorldFold {
 
     // --- DOMAIN 53 diplomacy_intel_operatives_live (validated R2 slice) ---
     fn fold_diplomacy_intel_operatives(&mut self, payload: &[u8]) -> Result<(), String> {
-        let decoded = diplomacy53::compact::decode_snapshot_payload(0, payload)
-            .map_err(|errors| errors.join("; "))?;
+        // A decode failure is a d53 rejection like any other: it must set
+        // known=false so a stale success earlier this hour is NOT projected
+        // (Codex). Do NOT clear the accumulator — a later good frame this hour can
+        // still build on it.
+        let decoded = match diplomacy53::compact::decode_snapshot_payload(0, payload) {
+            Ok(decoded) => decoded,
+            Err(errors) => {
+                let err = errors.join("; ");
+                self.domain53_known_this_hour = false;
+                self.mark_fold_domain_unknown(
+                    DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+                    "decode_failed",
+                    format!(
+                        "diplomacy_intel_operatives_live decode failed: {err}; domain53 extras omitted"
+                    ),
+                );
+                return Err(err);
+            }
+        };
         let status_flags = decoded.status_flags;
-        self.domain53_known_this_hour = false;
-        self.domain53_country_overlays_this_hour.clear();
-        self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
+        // Layer-2 (D53_LAYER2_SPEC.md): a tolerated-PARTIAL d53 frame carries
+        // valid rows plus known per-row omissions. SPARSE-MERGE it into the hour
+        // (retain rows it omits) instead of clearing; a CLEAN frame is
+        // authoritative and full-replaces (byte-identical to the prior behavior).
+        // `is_partial` is only ever true here for the expected-partial-tolerated
+        // PARTIAL bit — a genuine failure bit is rejected by the gate below.
+        let is_partial = (status_flags & COMPACT_STATUS_PARTIAL_DATA) != 0;
 
-        if compact_status_is_failure(status_flags) {
+        // Gates run FIRST, without mutating the accumulator. EVERY rejection sets
+        // `domain53_known_this_hour = false` — projection gates purely on that
+        // flag, so a failed frame (even after an earlier success this hour) must
+        // NOT publish the retained rows (Codex). The overlays are deliberately
+        // RETAINED (not cleared) on failure so a later good frame this hour can
+        // still build on them; only a CLEAN success below clears+replaces.
+        let residual_failure_flags = compact_failure_flags_after_expected_partial_tolerance(
+            DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+            status_flags,
+        );
+        if residual_failure_flags != 0 {
+            self.domain53_known_this_hour = false;
             self.mark_fold_domain_unknown(
                 DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
                 "compact_status_failure",
                 format!(
-                    "diplomacy_intel_operatives_live failure status {:#x}; domain53 extras omitted",
-                    status_flags & COMPACT_STATUS_FAILURE_MASK
+                    "diplomacy_intel_operatives_live failure status {residual_failure_flags:#x}; domain53 extras omitted",
                 ),
             );
             return Err("compact_status_failure".to_string());
         }
         if status_flags & COMPACT_STATUS_DELTA_DATA != 0 {
+            self.domain53_known_this_hour = false;
             self.mark_fold_domain_unknown(
                 DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
                 "delta_unsupported",
@@ -9947,6 +9993,7 @@ impl WorldFold {
         if !decoded.wars.is_empty()
             && status_flags & diplomacy53::compact::STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
         {
+            self.domain53_known_this_hour = false;
             self.record_domain_problem(
                 DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
                 "war_lifecycle_badge_missing",
@@ -9957,6 +10004,7 @@ impl WorldFold {
             );
         }
         if !decoded.operation_anchors.is_empty() || !decoded.intel_map.is_empty() {
+            self.domain53_known_this_hour = false;
             self.record_domain_problem(
                 DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
                 "excluded_rows_present",
@@ -9967,6 +10015,28 @@ impl WorldFold {
             );
         }
 
+        // All gates passed. Now mutate the accumulator: a CLEAN frame is
+        // authoritative (clear + full-replace, byte-identical to the prior
+        // behavior); a tolerated-PARTIAL frame keeps the accumulator and merges.
+        // The clear happens HERE (not at the top) so a failed frame above never
+        // wipes a good accumulator before returning (Codex).
+        if !is_partial {
+            self.domain53_country_overlays_this_hour.clear();
+            self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
+        } else {
+            // Tolerated per-row skips: record the (non-fatal) partial-data problem
+            // for manifest visibility, mirroring the generic expected-partial
+            // tolerance path other domains use.
+            self.record_domain_problem(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID, "partial_data");
+        }
+
+        // Populate via keyed UPSERT. On a CLEAN frame the overlays were just
+        // cleared, so upsert == push (byte-identical to the prior behavior). On a
+        // tolerated-PARTIAL frame the overlays are NOT cleared, so each present
+        // row updates its keyed slot and any row the frame omits is RETAINED from
+        // earlier in the hour (never fabricated as a deletion). `country`/`agency`
+        // /`agency_capacity` are per-country Option leaves: set for the countries
+        // present this frame, retained for those absent.
         for row in decoded.countries {
             let tag_db_id = row.tag_db_id;
             self.domain53_country_overlays_this_hour
@@ -9975,18 +10045,22 @@ impl WorldFold {
                 .country = Some(row);
         }
         for row in decoded.opinions {
-            self.domain53_country_overlays_this_hour
+            let overlay = self
+                .domain53_country_overlays_this_hour
                 .entry(row.src_tag_db_id)
-                .or_default()
-                .opinions
-                .push(row);
+                .or_default();
+            domain53_upsert_by_key(&mut overlay.opinions, row, |r| {
+                (r.src_tag_db_id, r.target_tag_db_id)
+            });
         }
         for row in decoded.relation_flags {
-            self.domain53_country_overlays_this_hour
+            let overlay = self
+                .domain53_country_overlays_this_hour
                 .entry(row.src_tag_db_id)
-                .or_default()
-                .relation_flags
-                .push(row);
+                .or_default();
+            domain53_upsert_by_key(&mut overlay.relation_flags, row, |r| {
+                (r.src_tag_db_id, r.target_tag_db_id, r.flag_kind)
+            });
         }
         for row in decoded.agencies {
             let owner_tag_db_id = row.owner_tag_db_id;
@@ -10003,37 +10077,82 @@ impl WorldFold {
                 .agency_capacity = Some(row);
         }
         for row in decoded.operatives {
-            self.domain53_country_overlays_this_hour
+            let overlay = self
+                .domain53_country_overlays_this_hour
                 .entry(row.owner_tag_db_id)
-                .or_default()
-                .operatives
-                .push(row);
+                .or_default();
+            domain53_upsert_by_key(&mut overlay.operatives, row, |r| r.op_id);
         }
         for row in decoded.cryptology {
-            self.domain53_country_overlays_this_hour
+            let overlay = self
+                .domain53_country_overlays_this_hour
                 .entry(row.owner_tag_db_id)
-                .or_default()
-                .cryptology
-                .push(row);
+                .or_default();
+            domain53_upsert_by_key(&mut overlay.cryptology, row, |r| r.target_tag_db_id);
         }
         for row in decoded.state_events {
-            self.domain53_country_overlays_this_hour
+            let overlay = self
+                .domain53_country_overlays_this_hour
                 .entry(row.owner_tag_db_id)
-                .or_default()
-                .state_events
-                .push(row);
+                .or_default();
+            // State-event identity = which object + which signal (NOT the value),
+            // so a value change updates the same slot instead of accumulating.
+            domain53_upsert_by_key(&mut overlay.state_events, row, |r| {
+                (
+                    r.target_tag_db_id,
+                    r.event_kind,
+                    r.source_kind,
+                    r.object_hash,
+                )
+            });
         }
-        self.domain53_world_overlay_this_hour = Domain53WorldOverlay {
-            status_flags,
-            wars: decoded.wars,
-            subjects: decoded.subjects,
-            // Wave-5 running-operation instances (world-scoped: the +0x10 owner
-            // is rejected, so instances are not per-country keyed).
-            operation_instances: decoded.operation_instances,
-            incoming_actions: decoded.incoming_actions,
-            intel_network_graphs: decoded.intel_network_graphs,
-            factions: decoded.factions,
-        };
+        if is_partial {
+            // Sparse-merge the world-scoped families by their stable keys into the
+            // hour's accumulator (retain any this frame omits); update the status.
+            let world = &mut self.domain53_world_overlay_this_hour;
+            world.status_flags = status_flags;
+            for row in decoded.wars {
+                domain53_upsert_by_key(&mut world.wars, row, |r| {
+                    (r.first_tag_db_id, r.second_tag_db_id)
+                });
+            }
+            for row in decoded.subjects {
+                domain53_upsert_by_key(&mut world.subjects, row, |r| {
+                    (r.overlord_tag_db_id, r.subject_tag_db_id)
+                });
+            }
+            for row in decoded.operation_instances {
+                domain53_upsert_by_key(&mut world.operation_instances, row, |r| r.instance_id);
+            }
+            for row in decoded.incoming_actions {
+                domain53_upsert_by_key(&mut world.incoming_actions, row, |r| r.action_id);
+            }
+            for row in decoded.intel_network_graphs {
+                // Key is (strategic_operative_index, network_slot) — the compact
+                // validator's unique key. Target is NOT part of the key: a slot
+                // that RETARGETS must UPDATE in place, not append a stale duplicate
+                // alongside the old target (Codex).
+                domain53_upsert_by_key(&mut world.intel_network_graphs, row, |r| {
+                    (r.strategic_operative_index, r.network_slot)
+                });
+            }
+            for row in decoded.factions {
+                domain53_upsert_by_key(&mut world.factions, row, |r| r.faction_id);
+            }
+        } else {
+            // CLEAN frame: authoritative full-replace (byte-identical).
+            self.domain53_world_overlay_this_hour = Domain53WorldOverlay {
+                status_flags,
+                wars: decoded.wars,
+                subjects: decoded.subjects,
+                // Wave-5 running-operation instances (world-scoped: the +0x10
+                // owner is rejected, so instances are not per-country keyed).
+                operation_instances: decoded.operation_instances,
+                incoming_actions: decoded.incoming_actions,
+                intel_network_graphs: decoded.intel_network_graphs,
+                factions: decoded.factions,
+            };
+        }
         self.domain53_known_this_hour = true;
         self.mark_fold_domain_success(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);
         Ok(())
