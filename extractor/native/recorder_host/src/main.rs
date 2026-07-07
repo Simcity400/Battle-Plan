@@ -682,6 +682,11 @@ struct Config {
     session_id: String,
     stream_format: StreamFormat,
     extraction_perf_gate: bool,
+    /// Plan-v2 P2b lever A: bound the collector's per-frame reader fan-out to at
+    /// most this many concurrently-running domain workers (0 = unbounded = legacy).
+    /// Passed through the JSON control block to the injected DLL as
+    /// `reader_concurrency`, the same channel as `extraction_perf_gate`.
+    reader_concurrency: u32,
     /// Optional pre-built static artifacts to pack into the production container.
     /// Each entry names a well-known artifact and the on-disk path to its JSON
     /// payload. Absent = not requested; the container still packs and records the
@@ -905,6 +910,7 @@ fn run() -> Result<(), String> {
                     "projects_root_discovery_debt": "not_applicable_json_debug_stream",
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
+                    "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
                     "frame_count": summary.frame_count,
@@ -989,6 +995,7 @@ fn run() -> Result<(), String> {
                     "projects_root_discovery_debt": projects_root_discovery_debt,
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
+                    "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
                     "compact_stream": compact_stream_manifest,
@@ -1189,6 +1196,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut session_id = None;
     let mut stream_format = StreamFormat::Json;
     let mut extraction_perf_gate = false;
+    let mut reader_concurrency = 0u32;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
     let mut static_decisions_definitions: Option<PathBuf> = None;
@@ -1281,6 +1289,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 stream_format = parse_stream_format(args.get(i), "--stream-format")?;
             }
             "--extraction-perf-gate" => extraction_perf_gate = true,
+            "--reader-concurrency" => {
+                i += 1;
+                reader_concurrency = parse_u32(args.get(i), "--reader-concurrency")?;
+            }
             "--static-templates-equipment-catalog" => {
                 if static_templates_equipment_catalog.is_some() {
                     return Err(
@@ -1379,6 +1391,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         session_id: session_id.unwrap_or_else(|| format!("native_{}", pipe_token())),
         stream_format,
         extraction_perf_gate,
+        reader_concurrency,
         static_artifacts: {
             let mut requested = Vec::new();
             if let Some(path) = static_templates_equipment_catalog {
@@ -2842,6 +2855,7 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "compact_country_frame": cfg.compact_country_frame,
         "stream_format": cfg.stream_format.as_str(),
         "extraction_perf_gate": cfg.extraction_perf_gate,
+        "reader_concurrency": cfg.reader_concurrency,
         "scheduled_snapshot_step_hours": 1,
         "sidecar_log": false,
         "session_id": cfg.session_id,
@@ -21533,6 +21547,7 @@ mod tests {
             session_id: "pack test/session".to_string(),
             stream_format: StreamFormat::Compact,
             extraction_perf_gate: true,
+            reader_concurrency: 0,
             static_artifacts: Vec::new(),
         };
 
@@ -21648,6 +21663,31 @@ mod tests {
             cfg.advisor_token_filter.as_deref(),
             Some("POR_salazar=political_advisor|political|POR_salazar")
         );
+        // Omitting --reader-concurrency leaves the fan-out unbounded (legacy).
+        assert_eq!(cfg.reader_concurrency, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_accepts_reader_concurrency() {
+        let dir =
+            std::env::temp_dir().join(format!("battle-plan-recorder_host_rc_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dll = dir.join("collector.dll");
+        fs::write(&dll, b"").unwrap();
+        let cfg = parse_args(vec![
+            "--pid".to_string(),
+            "1234".to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("out").display().to_string(),
+            "--reader-concurrency".to_string(),
+            "6".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(cfg.reader_concurrency, 6);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -21827,6 +21867,7 @@ mod tests {
             session_id: "test-session".to_string(),
             stream_format: StreamFormat::Compact,
             extraction_perf_gate: true,
+            reader_concurrency: 0,
             static_artifacts: Vec::new(),
         }
     }
