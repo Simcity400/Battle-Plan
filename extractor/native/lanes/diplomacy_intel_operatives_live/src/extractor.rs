@@ -1224,6 +1224,23 @@ fn resolve_country_roots<M: Domain53Memory>(
 /// `tag*8` are exactly the bytes `read_u64(relation_table + tag*8)` would have
 /// copied (same address, same LE decode); and if the batch was `None`, we call
 /// `mem.read_u64(entry_slot)` -- literally the original path.
+/// T3 (perf_rearch_20260706): prefetch lookahead distance, in **iterations**,
+/// for the d53 relation pair loop (~64k pairs/frame). While processing target
+/// `i`, we prefetch the relation entry of target `i + PREFETCH_DIST_RELATION`.
+/// The value is PROVISIONAL: a live distance sweep {8, 16, 32, 64} — measured
+/// d53-alone and full-frame — is deferred to the next live session (see the
+/// "Deferred to a live session" section of `W0_EXECUTION_PLAN.md`). Prefetch is
+/// a hint only; this constant affects timing, never rows/bytes/errors.
+const PREFETCH_DIST_RELATION: usize = 16;
+
+/// T3 (perf_rearch_20260706): prefetch lookahead distance, in **iterations**,
+/// for the flat address-slice candidate loops (`read_operatives`,
+/// `read_operations`, `read_war_rows_from_validated_addrs`). While validating
+/// `hits[i]`, we prefetch the candidate address `hits[i + PREFETCH_DIST_CANDIDATES]`.
+/// PROVISIONAL — same deferred live {8, 16, 32, 64} sweep as above. Hint only;
+/// no effect on rows/bytes/errors.
+const PREFETCH_DIST_CANDIDATES: usize = 32;
+
 fn relation_slot_ptr<M: Domain53Memory>(
     mem: &M,
     table_bytes: Option<&[u8]>,
@@ -1368,7 +1385,56 @@ fn read_relation_rows<M: Domain53Memory>(
         // T2 deliverable (e); only the per-src `read_bytes` stays here because
         // `relation_table` is per-src.)
         let table_bytes = table_len.and_then(|len| mem.read_bytes(relation_table, len).ok());
-        for target in countries {
+        for (target_index, target) in countries.iter().enumerate() {
+            // T3 (perf_rearch_20260706): prefetch-ahead (MLP). While this
+            // iteration walks the ~832-byte entry of `target`, software-prefetch
+            // the entry of the country PREFETCH_DIST_RELATION positions ahead so
+            // its DRAM latency overlaps the current work. This adds NO guarded
+            // read: the future entry pointer is resolved ONLY by reading the
+            // already-materialized immutable `table_bytes` slice at the future
+            // country's `tag_db_id*8` slot — the same slice, same `tag*8..+8`
+            // window and `u64::from_le_bytes` decode that `relation_slot_ptr`'s
+            // slice path uses. When `table_bytes` is None (batch read failed) we
+            // skip prefetching entirely — we never issue a new `read_u64` to look
+            // ahead. `prefetch_read` re-checks `is_heap_ptr` on the exact address
+            // it hands the intrinsic, so no unfiltered/non-canonical address can
+            // reach `_mm_prefetch`. The lookahead is a pure hint: for most
+            // upcoming targets it warms exactly the lines the later
+            // `relation_slot_ptr`-resolved read will touch, but it does NOT
+            // attempt to match that read 1:1 — e.g. when the future country is
+            // `src` itself the loop will `continue` at the self-pair guard below
+            // and never read that entry; prefetching it is simply a harmless warm
+            // (it changes no read and no row). Removing this whole block leaves
+            // rows/wire-bytes/errors byte-identical.
+            if let Some(bytes) = table_bytes.as_deref() {
+                if let Some(future) = countries.get(target_index + PREFETCH_DIST_RELATION) {
+                    let lo = (future.tag_db_id as usize) * 8;
+                    if let Some(slot) = bytes.get(lo..lo + 8) {
+                        let future_entry =
+                            u64::from_le_bytes(slot.try_into().expect("relation slot u64"));
+                        // Two useful lines of the ~832 B (13-cache-line) entry:
+                        //   +DOMAIN53_RELATION_OPINION (0x300, the FIRST field this
+                        //   loop reads per pair — offset >= 64, so we prefetch
+                        //   entry+0x300 rather than entry+0, per the T3 spec) and
+                        //   +DOMAIN53_RELATION_SUBJECT_PTR (0x288). The hardware
+                        // stream prefetcher follows the rest of the blob once the
+                        // first touched line is resolved, so we deliberately do
+                        // NOT prefetch all 13 lines. `checked_add` guards u64 wrap;
+                        // `prefetch_read` applies the `is_heap_ptr` gate to the
+                        // final (base+offset) address.
+                        if let Some(opinion_line) =
+                            future_entry.checked_add(profile::DOMAIN53_RELATION_OPINION as u64)
+                        {
+                            prefetch_read(opinion_line);
+                        }
+                        if let Some(subject_line) =
+                            future_entry.checked_add(profile::DOMAIN53_RELATION_SUBJECT_PTR as u64)
+                        {
+                            prefetch_read(subject_line);
+                        }
+                    }
+                }
+            }
             if src.tag_db_id == target.tag_db_id {
                 continue;
             }
@@ -2217,8 +2283,17 @@ fn read_operations<M: Domain53Memory>(
     let mut rows = Vec::new();
     let mut seen = BTreeSet::new();
     let mut drops = OperationDropBreakdown::default();
-    for hit in hits {
+    for (hit_index, hit) in hits.iter().enumerate() {
         let hit = *hit;
+        // T3 (perf_rearch_20260706): prefetch-ahead (MLP). Same pattern as
+        // `read_operatives`: while validating `hits[i]` (`read_u64(hit)` at the
+        // object head), prefetch the candidate PREFETCH_DIST_CANDIDATES ahead so
+        // its DRAM latency overlaps. Raw u64 candidates; `prefetch_read` applies
+        // the `is_heap_ptr` gate before the non-faulting hint; no guarded read
+        // added; byte-identical.
+        if let Some(&future_hit) = hits.get(hit_index + PREFETCH_DIST_CANDIDATES) {
+            prefetch_read(future_hit);
+        }
         // Revalidate the cached vtable fresh. A vtable mismatch is genuine
         // staleness (the object at this address is gone / reused).
         match mem.read_u64(hit) {
@@ -2495,8 +2570,19 @@ fn read_operatives<M: Domain53Memory>(
     let operative_vtable = add_addr(module_base, profile::DOMAIN53_OPERATIVE_VTABLE_RVA)?;
     let mut seen = BTreeSet::new();
     let mut stale_dropped = 0usize;
-    for hit in hits {
+    for (hit_index, hit) in hits.iter().enumerate() {
         let hit = *hit;
+        // T3 (perf_rearch_20260706): prefetch-ahead (MLP). While validating this
+        // candidate (`read_u64(hit)` at the object head), prefetch the candidate
+        // PREFETCH_DIST_CANDIDATES positions ahead so its DRAM latency overlaps.
+        // `hits[i]` are raw u64 candidate addresses; `prefetch_read` applies the
+        // `is_heap_ptr` gate (the same heap-range predicate the loop's reads rely
+        // on) before the non-faulting hint. No guarded read is added — the
+        // address is only prefetched, never dereferenced here — so rows/errors
+        // are byte-identical.
+        if let Some(&future_hit) = hits.get(hit_index + PREFETCH_DIST_CANDIDATES) {
+            prefetch_read(future_hit);
+        }
         match mem.read_u64(hit) {
             Ok(vtable) if vtable == operative_vtable => {}
             Ok(_) | Err(_) => {
@@ -2773,7 +2859,19 @@ fn read_war_rows_from_validated_addrs<M: Domain53Memory>(
     let mut rows = Vec::new();
     let mut seen = BTreeSet::new();
     let mut stale_dropped = 0usize;
-    for &row_addr in war_row_addrs {
+    for (row_index, &row_addr) in war_row_addrs.iter().enumerate() {
+        // T3 (perf_rearch_20260706): prefetch-ahead (MLP). `war_row_addrs` is a
+        // flat slice of raw u64 war-row base addresses (same shape as the
+        // operative/operation candidate lists), so the same pattern applies:
+        // while validating this row, prefetch the row-base PREFETCH_DIST_CANDIDATES
+        // ahead. The row's fields span offsets 0x00..=0x6C (two cache lines from
+        // the base); prefetching the base line (which the first `read_u64` at
+        // +0x08 touches) lets the hardware streamer follow to the casualty/echo
+        // line. `prefetch_read` applies the `is_heap_ptr` gate before the
+        // non-faulting hint; no guarded read added; byte-identical.
+        if let Some(&future_addr) = war_row_addrs.get(row_index + PREFETCH_DIST_CANDIDATES) {
+            prefetch_read(future_addr);
+        }
         // Re-validate the date-object vtable at this address (ABA defense: a
         // freed/reused slot no longer carries a war date vtable → stale).
         let Some(vtable_addr) = row_addr.checked_add(profile::DOMAIN53_WAR_DATE_VTABLE as u64)
@@ -3038,6 +3136,60 @@ fn add_addr(base: u64, offset: usize) -> Result<u64, ExtractError> {
 
 fn is_heap_ptr(value: u64) -> bool {
     value >= profile::DOMAIN53_HEAP_LO as u64 && value < profile::DOMAIN53_HEAP_HI as u64
+}
+
+/// T3 (perf_rearch_20260706): software-prefetch hint, **perf-only, zero
+/// semantic effect**. For an `is_heap_ptr` `addr`, issues a `PREFETCHT0` (bring
+/// the containing 64-byte line toward L1) to overlap DRAM latency with useful
+/// work in the d53 scan loops; for any other `addr` it does nothing. It adds NO
+/// guarded memory read: nothing is dereferenced here, the loops' own reads are
+/// unchanged, and removing every call to this function leaves
+/// rows/wire-bytes/errors byte-identical.
+///
+/// The `is_heap_ptr` gate is enforced HERE, on the exact address handed to the
+/// intrinsic — not left to caller discipline. Callers may pass a base pointer
+/// plus a field offset (the relation site passes `base + 0x300` / `base +
+/// 0x288`); whatever the derived address, only one that itself satisfies
+/// `is_heap_ptr` ever reaches `_mm_prefetch`.
+///
+/// SAFETY / faulting: `_mm_prefetch` (`PREFETCHh`) is architecturally
+/// non-faulting for canonical addresses — it never raises `#PF` on
+/// unmapped/invalid-but-canonical addresses (it is a hint the CPU may ignore).
+/// The one 64-bit hazard is a *non-canonical* effective address, which can
+/// `#GP`. `is_heap_ptr`'s window `[DOMAIN53_HEAP_LO, DOMAIN53_HEAP_HI) =
+/// [0x100_0000_0000, 0x7FF0_0000_0000)` lies entirely in the canonical low
+/// half (well below the non-canonical boundary `0x0000_8000_0000_0000`), so any
+/// `addr` that passes the guard is canonical and cannot `#GP`. The pointer is
+/// passed to the hint only; it is never read or written. See
+/// `CODEX_D53_REDIAG_VERDICT.txt` C7.
+#[inline(always)]
+fn prefetch_read(addr: u64) {
+    // Filter the EXACT address handed to the intrinsic (contract: prefetch only
+    // `is_heap_ptr`-passing addresses). A base+offset derived address that lands
+    // outside the heap window is simply not prefetched — harmless, since this is
+    // a hint with no semantic effect.
+    if !is_heap_ptr(addr) {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        // SAFETY: the `is_heap_ptr(addr)` guard above guarantees `addr` is inside
+        // the heap window, which lies entirely in the canonical low half (see the
+        // doc comment), so `addr` is canonical and `_mm_prefetch` cannot `#GP`
+        // (and PREFETCHh never `#PF`s on canonical addresses). The address is
+        // used only as a prefetch hint and is never dereferenced, so no memory is
+        // read or written here.
+        unsafe {
+            _mm_prefetch::<{ _MM_HINT_T0 }>(addr as *const i8);
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // Prefetch is a perf-only hint with no portable equivalent; on other
+        // architectures this is an intentional no-op (the address is not used).
+        let _ = addr;
+    }
 }
 
 fn in_module(module_base: u64, value: u64) -> bool {
