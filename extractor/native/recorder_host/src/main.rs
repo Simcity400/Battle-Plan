@@ -69,6 +69,10 @@ const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
 const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF;
 const COMPACT_RECORD_TYPE_FRAME_END: u16 = compact_contract::COMPACT_RECORD_TYPE_FRAME_END;
 const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA;
+/// Reserved domain id carrying the plan-v2 read A/B probe (perf record with
+/// per-primitive read-counter diagnostic units). Must match the collector's
+/// RC_PROBE_DOMAIN_ID. Handled specially: never counted as a scheduled domain.
+const RC_PROBE_DOMAIN_ID: u16 = 250;
 const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 =
     compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2;
 const COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 =
@@ -785,6 +789,11 @@ struct CompactSummary {
     late_records_after_frame_end: u64,
     ordering_errors: Vec<String>,
     parse_errors: Vec<String>,
+    // Plan-v2 P2 read A/B probe: per-primitive read-counter aggregates carried
+    // by the reserved probe domain (RC_PROBE_DOMAIN_ID). Kept OUT of per_domain /
+    // domains_seen / domain_perf_record_count so the exact perf-count
+    // verification gate is unaffected; surfaced as compact_stream.read_ab_probe.
+    read_ab_probe: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Default)]
@@ -3164,6 +3173,22 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
         let payload_end = payload_start + payload_len;
         let payload = &raw[payload_start..payload_end];
+
+        // Plan-v2 P2 read A/B probe: a reserved perf record carrying per-primitive
+        // read counters. Route its diagnostic units to summary.read_ab_probe and
+        // skip ALL domain/record accounting (domains_seen, record_count,
+        // domain_perf_record_count, per_domain) so the exact perf-count
+        // verification gate and domain coverage are unaffected.
+        if record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF && domain_id == RC_PROBE_DOMAIN_ID {
+            decode_compact_domain_perf_diagnostic_units(
+                offset,
+                domain_id,
+                record_flags,
+                payload,
+                &mut summary,
+            );
+            continue;
+        }
 
         summary.record_count += 1;
         summary.total_payload_bytes = summary.total_payload_bytes.saturating_add(payload_len);
@@ -14909,6 +14934,7 @@ fn compact_stream_manifest_json(
         },
         "per_domain": compact_domain_summaries_json(summary),
         "frame_time_us": timing_summary_json(&summary.frame_times_us),
+        "read_ab_probe": serde_json::to_value(&summary.read_ab_probe).unwrap_or(Value::Null),
     })
 }
 
@@ -15022,6 +15048,13 @@ fn add_compact_domain_perf_diagnostic_unit(
     name: &str,
     value: u64,
 ) {
+    if domain_id == RC_PROBE_DOMAIN_ID {
+        // Plan-v2 read A/B probe units go to a dedicated aggregate, never
+        // per_domain (which the coverage/perf-count gates read).
+        let entry = summary.read_ab_probe.entry(name.to_string()).or_default();
+        *entry = entry.saturating_add(value);
+        return;
+    }
     if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
         let entry = domain.data_units_total.entry(name.to_string()).or_default();
         *entry = entry.saturating_add(value);

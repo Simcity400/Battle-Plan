@@ -28,34 +28,44 @@
  */
 
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <windows.h>
 
-/* Decide whether an exception raised inside the copy is one we own. */
-static int seh_read_fault_is_ours(EXCEPTION_POINTERS *ep,
-                                  const unsigned char *src, size_t len,
-                                  const unsigned char *dst) {
+/*
+ * Decide whether an exception raised INSIDE the memcpy is one we own: a memory
+ * fault whose faulting address lies within the source or destination span.
+ *
+ * The __try body below contains ONLY the memcpy — a leaf CRT intrinsic that
+ * makes no calls — and a conforming memcpy never faults outside [src, src+len)
+ * (vector tails/prefetch use overlapping in-bounds loads, not out-of-bounds
+ * reads that could raise an access violation). So an in-span memory fault is
+ * our decommit/guard race; anything else (a fault at an unrelated address, a
+ * stack overflow, an illegal instruction) is NOT ours and must propagate with
+ * EXCEPTION_CONTINUE_SEARCH rather than be silently swallowed.
+ *
+ * The interval tests use unsigned wraparound arithmetic ((fa - base) < len) so
+ * they are correct even if base + len would overflow uintptr_t.
+ */
+static int seh_read_fault_is_ours(EXCEPTION_POINTERS *ep, const unsigned char *src,
+                                  size_t len, const unsigned char *dst) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
-    if (code != EXCEPTION_ACCESS_VIOLATION &&
-        code != STATUS_GUARD_PAGE_VIOLATION &&
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != STATUS_GUARD_PAGE_VIOLATION &&
         code != EXCEPTION_IN_PAGE_ERROR) {
-        return 0; /* not a memory fault -> not ours */
+        return 0;
     }
-    /* ExceptionInformation[1] = the virtual address that was accessed, for
-     * AV / in-page / guard-page records (NumberParameters >= 2). If the fault
-     * address is inside the span we are copying, it is our decommit race;
-     * otherwise let it propagate. */
     if (ep->ExceptionRecord->NumberParameters >= 2) {
-        ULONG_PTR fa = (ULONG_PTR)ep->ExceptionRecord->ExceptionInformation[1];
-        ULONG_PTR s = (ULONG_PTR)src;
-        ULONG_PTR d = (ULONG_PTR)dst;
-        if ((fa >= s && fa < s + len) || (fa >= d && fa < d + len)) {
+        uintptr_t fa = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+        uintptr_t s = (uintptr_t)src;
+        uintptr_t d = (uintptr_t)dst;
+        /* fa in [x, x+len) iff (fa - x) < len, overflow-safe in unsigned. */
+        if ((fa - s) < (uintptr_t)len || (fa - d) < (uintptr_t)len) {
             return 1;
         }
         return 0;
     }
-    /* No fault address recorded: conservatively treat a memory fault as ours
-     * (the copy is the only memory op in the frame). */
+    /* No fault address recorded: the copy is the only memory op, so treat it as
+     * ours (fail closed) rather than crash. */
     return 1;
 }
 

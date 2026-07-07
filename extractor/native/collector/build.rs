@@ -12,7 +12,10 @@ fn main() {
     let target = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if target != "msvc" {
         // Non-MSVC (e.g. a cross/clippy pass on another env): skip the shim.
-        // The Rust FFI fallback in lib.rs handles absence at runtime.
+        // The collector only ships as an msvc cdylib injected into hoi4.exe, so
+        // the seh_guarded_copy extern in lib.rs is never actually linked/called
+        // off msvc; this branch just keeps a stray non-msvc `cargo check` from
+        // failing on the C compile.
         println!("cargo:warning=seh_read.c skipped (non-msvc target_env)");
         return;
     }
