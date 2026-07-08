@@ -3345,7 +3345,36 @@ fn valid_tag_db_id(value: u32) -> bool {
     value > 0 && value <= MAX_TAG_DB_ID
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// W1.2 instrument (perf_rearch_20260706): elapsed-micros breakdown of the
+/// four sub-phases INSIDE [`build_domain53_payload_with_status`], splitting the
+/// single collector `seg_payload_us` timer (W1.1 residual, ~39 ms/frame) so the
+/// analysis knows WHICH sub-phase to optimize:
+/// - `snapshot_us`: the `DiplomacyIntelSnapshot { .. }` construction (moving the
+///   row Vecs into the snapshot).
+/// - `validation_us`: the source-proof / `require_rows` validation block,
+///   including its repeated O(rows) `state_events.iter().any(..)` full scans and
+///   the status-flag adjustments.
+/// - `encode_us`: `encode_payload(&snapshot)` — serialize all rows to wire bytes.
+/// - `decode_gate_us`: `decode_payload(0, &payload)` — the post-encode
+///   decode-gate that re-parses the just-built ~380k-row payload to self-verify
+///   it.
+///
+/// These four spans run in the SAME order as before and their sum is slightly
+/// LESS than the collector `seg_payload_us` (the small remainder = the report
+/// struct assembly after decode + the collector-side rows move / bookkeeping
+/// outside this function). Observational only — the timing is not read by any
+/// non-perf caller and never touches the payload bytes, gate summary, status
+/// flags, or errors. It is neutralized in `PartialEq`/`Eq` (see the manual impl)
+/// so equality of two reports is unaffected by measurement jitter.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PayloadPhaseTimes {
+    pub snapshot_us: u64,
+    pub validation_us: u64,
+    pub encode_us: u64,
+    pub decode_gate_us: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct Domain53ExtractionReport {
     pub domain_id: u16,
     pub source_proofs: u64,
@@ -3353,7 +3382,27 @@ pub struct Domain53ExtractionReport {
     pub payload: Vec<u8>,
     pub gate_summary: Domain53GateSummary,
     pub errors: Vec<String>,
+    /// W1.2 observational sub-phase timing (see [`PayloadPhaseTimes`]). Excluded
+    /// from `PartialEq`/`Eq` so wall-clock jitter never changes report equality.
+    pub payload_phase_times: PayloadPhaseTimes,
 }
+
+// W1.2: `Domain53ExtractionReport` previously `#[derive(PartialEq, Eq)]`. The new
+// `payload_phase_times` field is observational wall-clock jitter, so equality must
+// IGNORE it (identical rows/proofs produce identical payload/gate/errors but not
+// identical timing). Hand-write the impls over the semantic fields only — this is
+// the T4/W1.1 "neutralize only the new observational field on both sides" pattern.
+impl PartialEq for Domain53ExtractionReport {
+    fn eq(&self, other: &Self) -> bool {
+        self.domain_id == other.domain_id
+            && self.source_proofs == other.source_proofs
+            && self.snapshot == other.snapshot
+            && self.payload == other.payload
+            && self.gate_summary == other.gate_summary
+            && self.errors == other.errors
+    }
+}
+impl Eq for Domain53ExtractionReport {}
 
 impl Domain53ExtractionReport {
     pub fn ok(&self) -> bool {
@@ -3380,6 +3429,11 @@ pub fn build_domain53_payload_with_status(
     source_proofs: u64,
     extra_status_flags: u32,
 ) -> Domain53ExtractionReport {
+    // W1.2 instrument: split the single collector `seg_payload_us` timer into
+    // four disjoint sub-phases (snapshot / validation / encode / decode-gate).
+    // Purely observational — the timed statements are unchanged and run in the
+    // same order; the returned payload/gate/errors are byte-identical.
+    let snapshot_started = Instant::now();
     let mut snapshot = DiplomacyIntelSnapshot {
         elapsed_wall_ms: rows.elapsed_wall_ms,
         status_flags: extra_status_flags,
@@ -3401,6 +3455,9 @@ pub fn build_domain53_payload_with_status(
         intel_network_graphs: rows.intel_network_graphs,
         factions: rows.factions,
     };
+    let snapshot_us = duration_micros_u64_saturating(snapshot_started.elapsed());
+
+    let validation_started = Instant::now();
     let mut errors = Vec::new();
 
     let unknown_source_bits = source_proofs & !KNOWN_SOURCE_PROOFS;
@@ -3630,8 +3687,16 @@ pub fn build_domain53_payload_with_status(
         &mut errors,
     );
 
+    let validation_us = duration_micros_u64_saturating(validation_started.elapsed());
+
+    let encode_started = Instant::now();
     let payload = encode_payload(&snapshot);
+    let encode_us = duration_micros_u64_saturating(encode_started.elapsed());
+
+    let decode_gate_started = Instant::now();
     let gate_summary = decode_payload(0, &payload);
+    let decode_gate_us = duration_micros_u64_saturating(decode_gate_started.elapsed());
+
     errors.extend(gate_summary.parse_errors.iter().cloned());
 
     Domain53ExtractionReport {
@@ -3641,6 +3706,12 @@ pub fn build_domain53_payload_with_status(
         payload,
         gate_summary,
         errors,
+        payload_phase_times: PayloadPhaseTimes {
+            snapshot_us,
+            validation_us,
+            encode_us,
+            decode_gate_us,
+        },
     }
 }
 
@@ -5684,6 +5755,50 @@ mod tests {
                 .copied(),
             Some(0)
         );
+    }
+
+    #[test]
+    fn payload_phase_times_populated_and_bounded_by_outer_build() {
+        // W1.2: the four sub-phase timers split the single collector
+        // `seg_payload_us`. Assert they are populated (the whole builder runs, so
+        // encode + decode-gate are always > 0 on a non-empty payload) and that
+        // their sum is <= the wall of the outer build call (the outer call also
+        // pays the report struct assembly, so sum + remainder == outer). This is
+        // the lane-level counterpart of the collector's seg-split accounting.
+        let outer_started = Instant::now();
+        let report = build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let outer_us = duration_micros_u64_saturating(outer_started.elapsed());
+
+        assert!(report.ok(), "{:?}", report.errors);
+
+        let pt = report.payload_phase_times;
+        // encode + decode-gate always do real work on a non-empty payload.
+        assert!(!report.payload.is_empty(), "fixture must produce a payload");
+        assert!(pt.encode_us > 0, "encode phase must be timed");
+        assert!(pt.decode_gate_us > 0, "decode-gate phase must be timed");
+
+        // The four sub-phases are disjoint spans inside the build; their sum can
+        // never exceed the wall of the whole build call (which also includes the
+        // report struct assembly). A tiny remainder is expected and acceptable.
+        let phase_sum = pt.snapshot_us + pt.validation_us + pt.encode_us + pt.decode_gate_us;
+        assert!(
+            phase_sum <= outer_us,
+            "sub-phase sum {phase_sum} exceeds outer build wall {outer_us}"
+        );
+    }
+
+    #[test]
+    fn payload_phase_times_are_ignored_in_report_equality() {
+        // W1.2: `payload_phase_times` is observational wall-clock jitter. Two
+        // builds of the SAME rows produce identical payload/gate/errors and MUST
+        // compare equal even though their timing very likely differs.
+        let a = build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let b = build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        assert_eq!(a, b, "identical inputs must produce equal reports");
+        // And the payload bytes / gate / errors are the semantic identity.
+        assert_eq!(a.payload, b.payload);
+        assert_eq!(a.gate_summary, b.gate_summary);
+        assert_eq!(a.errors, b.errors);
     }
 
     #[test]
