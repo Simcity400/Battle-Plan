@@ -1,26 +1,28 @@
 use crate::compact::{
-    decode_payload, encode_payload, AgencyCapacityClusterRow, AgencyRow, CountryDiplomacyRow,
-    CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, FactionRow, IncomingActionQueueRow,
-    IntelMapRow, IntelNetworkGraphRow, OperationAnchorRow, OperationInstanceRow, OperativeRow,
-    OpinionRow, RelationFlagRow, StateEventRow, SubjectRow, WarRelationRow, DOMAIN_ID_PROPOSED,
-    MAX_ACTION_DATE_HOURS, MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES,
-    MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW, MAX_INTEL_NETWORK_STATE_ID, MAX_OPERATION_ID,
-    MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL, MAX_OPINION_ABS,
-    MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE, REL_KIND_DOCKING_RIGHTS,
-    REL_KIND_EMBARGO, REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION, REL_KIND_GUARANTEE,
-    REL_KIND_IMPROVE_RELATIONS, REL_KIND_LICENCE_PRODUCTION, REL_KIND_MARKET_ACCESS_RIGHTS,
-    REL_KIND_MILITARY_ACCESS, REL_KIND_NAVAL_BLOCKADE, REL_KIND_NON_AGGRESSION_PACT,
-    REL_KIND_PUPPET, STATE_EVENT_KIND_OBSERVED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
-    STATE_EVENT_SOURCE_AGENCY_SCALAR, STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
-    STATE_EVENT_SOURCE_CRYPTOLOGY, STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
-    STATE_EVENT_SOURCE_RELATION_FLAG, STATE_EVENT_SOURCE_RELATION_OPINION,
-    STATE_EVENT_SOURCE_SUBJECT_AUTONOMY, STATUS_FACTION_GROUP_UNVALIDATED,
-    STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
-    STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED, STATUS_OPERATIONS_DETAIL_RESISTED,
-    STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED, STATUS_WAR_ROOT_UNVALIDATED,
+    decode_payload, encode_payload, summarize_snapshot, AgencyCapacityClusterRow, AgencyRow,
+    CountryDiplomacyRow, CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, FactionRow,
+    IncomingActionQueueRow, IntelMapRow, IntelNetworkGraphRow, OperationAnchorRow,
+    OperationInstanceRow, OperativeRow, OpinionRow, RelationFlagRow, StateEventRow, SubjectRow,
+    WarRelationRow, DOMAIN_ID_PROPOSED, MAX_ACTION_DATE_HOURS, MAX_AGENCY_CAPACITY_CLUSTER_VALUE,
+    MAX_CASUALTIES, MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW, MAX_INTEL_NETWORK_STATE_ID,
+    MAX_OPERATION_ID, MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL,
+    MAX_OPINION_ABS, MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE,
+    REL_KIND_DOCKING_RIGHTS, REL_KIND_EMBARGO, REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION,
+    REL_KIND_GUARANTEE, REL_KIND_IMPROVE_RELATIONS, REL_KIND_LICENCE_PRODUCTION,
+    REL_KIND_MARKET_ACCESS_RIGHTS, REL_KIND_MILITARY_ACCESS, REL_KIND_NAVAL_BLOCKADE,
+    REL_KIND_NON_AGGRESSION_PACT, REL_KIND_PUPPET, STATE_EVENT_KIND_OBSERVED,
+    STATE_EVENT_SOURCE_AGENCY_CAPACITY, STATE_EVENT_SOURCE_AGENCY_SCALAR,
+    STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP, STATE_EVENT_SOURCE_CRYPTOLOGY,
+    STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE, STATE_EVENT_SOURCE_RELATION_FLAG,
+    STATE_EVENT_SOURCE_RELATION_OPINION, STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
+    STATUS_FACTION_GROUP_UNVALIDATED, STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED,
+    STATUS_INTEL_MAP_RESISTED, STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED,
+    STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
+    STATUS_WAR_ROOT_UNVALIDATED,
 };
 use compact_contract::build_profile as profile;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub const EXPECTED_HOI4_SHA256_870EBF: &str =
@@ -3355,22 +3357,25 @@ fn valid_tag_db_id(value: u32) -> bool {
 ///   including its repeated O(rows) `state_events.iter().any(..)` full scans and
 ///   the status-flag adjustments.
 /// - `encode_us`: `encode_payload(&snapshot)` — serialize all rows to wire bytes.
-/// - `decode_gate_us`: `decode_payload(0, &payload)` — the post-encode
-///   decode-gate that re-parses the just-built ~380k-row payload to self-verify
-///   it.
+/// - `summary_us`: `summarize_snapshot(0, &snapshot)` — the W2 encode-side gate
+///   summary that REPLACES the per-frame re-decode on the production hot path.
+/// - `decode_gate_us`: `decode_payload(0, &payload)` — now runs ONLY on the 1/N
+///   SAMPLED cross-check frames (0 on off-sample frames). Was the per-frame
+///   re-parse of the ~380k-row payload before W2.
 ///
-/// These four spans run in the SAME order as before and their sum is slightly
-/// LESS than the collector `seg_payload_us` (the small remainder = the report
-/// struct assembly after decode + the collector-side rows move / bookkeeping
-/// outside this function). Observational only — the timing is not read by any
-/// non-perf caller and never touches the payload bytes, gate summary, status
-/// flags, or errors. It is neutralized in `PartialEq`/`Eq` (see the manual impl)
-/// so equality of two reports is unaffected by measurement jitter.
+/// These spans run in the SAME order as the timed statements and their sum is
+/// slightly LESS than the collector `seg_payload_us` (the small remainder = the
+/// report struct assembly + the collector-side rows move / bookkeeping outside
+/// this function). Observational only — the timing is not read by any non-perf
+/// caller and never touches the payload bytes, gate summary, status flags, or
+/// errors. It is neutralized in `PartialEq`/`Eq` (see the manual impl) so equality
+/// of two reports is unaffected by measurement jitter.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PayloadPhaseTimes {
     pub snapshot_us: u64,
     pub validation_us: u64,
     pub encode_us: u64,
+    pub summary_us: u64,
     pub decode_gate_us: u64,
 }
 
@@ -3410,6 +3415,50 @@ impl Domain53ExtractionReport {
     }
 }
 
+/// W2 sampled-verify cadence: the production path derives the
+/// [`Domain53GateSummary`] encode-side via [`summarize_snapshot`]; on 1 out of
+/// every `DECODE_VERIFY_SAMPLE_N` frames it ALSO runs the full `decode_payload`
+/// and asserts the two summaries are field-identical, failing closed on any
+/// mismatch (so an encoder regression / heap tear that desyncs the bytes from the
+/// snapshot is still caught, at 1/N the per-frame cost). N=32: at the ~73 ms
+/// post-W2 d53 frame this amortizes the 29.7 ms decode to ~0.9 ms/frame (~1.3%)
+/// while catching drift within ~32 frames.
+const DECODE_VERIFY_SAMPLE_N: u64 = 32;
+
+/// Monotonic frame counter for the sampled decode cross-check. Process-global and
+/// deterministic (increments once per production build call). Tests force
+/// sample-every-frame via the private `sample` param on
+/// [`build_domain53_payload_sampled`], so this counter is never consulted in the
+/// equality/fail-closed tests.
+static DOMAIN53_BUILD_FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// True on 1/`DECODE_VERIFY_SAMPLE_N` calls. `fetch_add` gives each production
+/// call a distinct index; index 0 (the first frame) samples so a totally-broken
+/// encoder is caught on frame 1.
+fn should_sample_decode_verify() -> bool {
+    let index = DOMAIN53_BUILD_FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+    index % DECODE_VERIFY_SAMPLE_N == 0
+}
+
+/// On a sampled frame, compare the encode-side summary to the authoritative
+/// decode. `None` when they agree (the expected case). `Some(error)` on ANY
+/// difference — the error is pushed into `errors`, making `report.ok()` false so
+/// the collector fails the frame closed to SOURCE_UNAVAILABLE, IDENTICAL to a
+/// decode parse-error before W2. Factored out so the fail-closed wiring is unit
+/// tested without needing to force a genuine encoder bug in the hot path.
+fn decode_verify_mismatch_error(
+    encode_summary: &Domain53GateSummary,
+    decode_summary: &Domain53GateSummary,
+) -> Option<String> {
+    if encode_summary == decode_summary {
+        None
+    } else {
+        Some(format!(
+            "domain{DOMAIN_ID_PROPOSED} encode-side gate summary disagrees with sampled decode (fail-closed): encode={encode_summary:?} decode={decode_summary:?}"
+        ))
+    }
+}
+
 pub fn build_domain53_payload(
     rows: ExtractedDomain53Rows,
     source_proofs: u64,
@@ -3429,10 +3478,29 @@ pub fn build_domain53_payload_with_status(
     source_proofs: u64,
     extra_status_flags: u32,
 ) -> Domain53ExtractionReport {
+    let sample_decode = should_sample_decode_verify();
+    build_domain53_payload_sampled(rows, source_proofs, extra_status_flags, sample_decode)
+}
+
+/// Inner builder with an EXPLICIT `sample_decode` flag (production computes it from
+/// [`should_sample_decode_verify`]; tests pass `true` to force the decode
+/// cross-check every call and exercise the fail-closed path deterministically).
+///
+/// W2: the production gate summary is produced ENCODE-SIDE by
+/// [`summarize_snapshot`] (no ~380k-row re-decode). When `sample_decode` is true
+/// the full `decode_payload` also runs and its summary is compared field-for-field
+/// to the encode-side one; a mismatch pushes an error so `report.ok()` is false —
+/// identical fail-closed semantics to a decode failure before W2.
+fn build_domain53_payload_sampled(
+    rows: ExtractedDomain53Rows,
+    source_proofs: u64,
+    extra_status_flags: u32,
+    sample_decode: bool,
+) -> Domain53ExtractionReport {
     // W1.2 instrument: split the single collector `seg_payload_us` timer into
-    // four disjoint sub-phases (snapshot / validation / encode / decode-gate).
-    // Purely observational — the timed statements are unchanged and run in the
-    // same order; the returned payload/gate/errors are byte-identical.
+    // disjoint sub-phases (snapshot / validation / encode / summary / decode-gate).
+    // Purely observational — the timed statements run in the same order; the
+    // returned payload/gate/errors do not depend on the timing.
     let snapshot_started = Instant::now();
     let mut snapshot = DiplomacyIntelSnapshot {
         elapsed_wall_ms: rows.elapsed_wall_ms,
@@ -3693,9 +3761,28 @@ pub fn build_domain53_payload_with_status(
     let payload = encode_payload(&snapshot);
     let encode_us = duration_micros_u64_saturating(encode_started.elapsed());
 
-    let decode_gate_started = Instant::now();
-    let gate_summary = decode_payload(0, &payload);
-    let decode_gate_us = duration_micros_u64_saturating(decode_gate_started.elapsed());
+    // W2 production path: derive the gate summary ENCODE-SIDE from the snapshot
+    // (offset 0 matches the pre-W2 `decode_payload(0, &payload)`), removing the
+    // per-frame re-parse of the ~380k-row payload.
+    let summary_started = Instant::now();
+    let gate_summary = summarize_snapshot(0, &snapshot);
+    let summary_us = duration_micros_u64_saturating(summary_started.elapsed());
+
+    // W2 sampled cross-check: on 1/N frames, run the full decode and assert the
+    // encode-side summary equals the decode-side one. On mismatch, FAIL CLOSED
+    // (push an error → `report.ok()` false → collector nukes to SOURCE_UNAVAILABLE)
+    // exactly as a decode failure did before W2, so an encoder regression / heap
+    // tear that desyncs bytes from the snapshot is still caught. `decode_gate_us`
+    // is 0 on off-sample frames.
+    let mut decode_gate_us = 0u64;
+    if sample_decode {
+        let decode_gate_started = Instant::now();
+        let decode_summary = decode_payload(0, &payload);
+        decode_gate_us = duration_micros_u64_saturating(decode_gate_started.elapsed());
+        if let Some(mismatch) = decode_verify_mismatch_error(&gate_summary, &decode_summary) {
+            errors.push(mismatch);
+        }
+    }
 
     errors.extend(gate_summary.parse_errors.iter().cloned());
 
@@ -3710,6 +3797,7 @@ pub fn build_domain53_payload_with_status(
             snapshot_us,
             validation_us,
             encode_us,
+            summary_us,
             decode_gate_us,
         },
     }
@@ -5759,31 +5847,148 @@ mod tests {
 
     #[test]
     fn payload_phase_times_populated_and_bounded_by_outer_build() {
-        // W1.2: the four sub-phase timers split the single collector
-        // `seg_payload_us`. Assert they are populated (the whole builder runs, so
-        // encode + decode-gate are always > 0 on a non-empty payload) and that
-        // their sum is <= the wall of the outer build call (the outer call also
-        // pays the report struct assembly, so sum + remainder == outer). This is
-        // the lane-level counterpart of the collector's seg-split accounting.
+        // W1.2/W2: the sub-phase timers split the single collector
+        // `seg_payload_us`. Post-W2 the production path always runs encode +
+        // summarize (the encode-side gate), while decode-gate now runs ONLY on the
+        // 1/N sampled cross-check — so this test forces sampling ON to exercise all
+        // spans, and asserts their sum is <= the wall of the outer build call (the
+        // outer call also pays the report struct assembly, so sum + remainder ==
+        // outer). Lane-level counterpart of the collector's seg-split accounting.
         let outer_started = Instant::now();
-        let report = build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let report = build_domain53_payload_sampled(
+            proof_fixture_rows(),
+            CURRENT_VALIDATED_SOURCE_PROOFS,
+            0,
+            true,
+        );
         let outer_us = duration_micros_u64_saturating(outer_started.elapsed());
 
         assert!(report.ok(), "{:?}", report.errors);
 
         let pt = report.payload_phase_times;
-        // encode + decode-gate always do real work on a non-empty payload.
+        // encode + summarize + (forced) decode-gate always do real work here.
         assert!(!report.payload.is_empty(), "fixture must produce a payload");
         assert!(pt.encode_us > 0, "encode phase must be timed");
-        assert!(pt.decode_gate_us > 0, "decode-gate phase must be timed");
+        assert!(pt.summary_us > 0, "encode-side summary phase must be timed");
+        assert!(
+            pt.decode_gate_us > 0,
+            "sampled decode-gate phase must be timed"
+        );
 
-        // The four sub-phases are disjoint spans inside the build; their sum can
-        // never exceed the wall of the whole build call (which also includes the
-        // report struct assembly). A tiny remainder is expected and acceptable.
-        let phase_sum = pt.snapshot_us + pt.validation_us + pt.encode_us + pt.decode_gate_us;
+        // The sub-phases are disjoint spans inside the build; their sum can never
+        // exceed the wall of the whole build call (which also includes the report
+        // struct assembly). A tiny remainder is expected and acceptable.
+        let phase_sum =
+            pt.snapshot_us + pt.validation_us + pt.encode_us + pt.summary_us + pt.decode_gate_us;
         assert!(
             phase_sum <= outer_us,
             "sub-phase sum {phase_sum} exceeds outer build wall {outer_us}"
+        );
+    }
+
+    #[test]
+    fn off_sample_frame_skips_decode_gate() {
+        // W2: on a NON-sampled frame the decode-gate does NOT run (decode_gate_us
+        // == 0) while the encode-side summary still produces the gate — and the
+        // report is byte-identical to a forced-sample build (the sampled decode is
+        // a pure cross-check, never a mutation of the output).
+        let off = build_domain53_payload_sampled(
+            proof_fixture_rows(),
+            CURRENT_VALIDATED_SOURCE_PROOFS,
+            0,
+            false,
+        );
+        let on = build_domain53_payload_sampled(
+            proof_fixture_rows(),
+            CURRENT_VALIDATED_SOURCE_PROOFS,
+            0,
+            true,
+        );
+        assert_eq!(off.payload_phase_times.decode_gate_us, 0);
+        // Sampling changes ONLY the timing, never payload/gate/errors.
+        assert_eq!(off, on);
+        assert_eq!(off.gate_summary, on.gate_summary);
+        assert_eq!(off.errors, on.errors);
+    }
+
+    #[test]
+    fn collector_emit_decision_matches_decode_derived_report() {
+        // The collector gates emit on report.ok(), gate_summary.status_flags_or
+        // (payload-failure + DELTA bits), and reports data_rows_total /
+        // data_changed_rows_total. Prove those exact inputs are IDENTICAL whether
+        // the gate summary is produced encode-side (production, W2) or by the old
+        // per-frame decode — over the clean fixture AND a fail-closed (bad) one.
+        for rows in [proof_fixture_rows(), {
+            let mut r = proof_fixture_rows();
+            r.opinions[0].opinion = MAX_OPINION_ABS + 1000; // force a parse error
+            r
+        }] {
+            // New path (encode-side summary) via the public builder.
+            let report = build_domain53_payload(rows.clone(), CURRENT_VALIDATED_SOURCE_PROOFS);
+            // Reference: the pre-W2 behaviour = decode_payload on the same bytes.
+            let decode_summary = decode_payload(0, &report.payload);
+
+            // The four collector-visible fields must match the decode-derived ones.
+            assert_eq!(
+                report.gate_summary.status_flags_or, decode_summary.status_flags_or,
+                "status_flags_or (emit gate) must match decode"
+            );
+            assert_eq!(
+                report.gate_summary.data_rows_total, decode_summary.data_rows_total,
+                "emitted_rows source must match decode"
+            );
+            assert_eq!(
+                report.gate_summary.data_changed_rows_total, decode_summary.data_changed_rows_total,
+                "changed_rows source must match decode"
+            );
+            // report.ok() is errors.is_empty(); the errors are the gate_summary
+            // parse_errors, which must equal the decode parse_errors.
+            assert_eq!(
+                report.gate_summary.parse_errors, decode_summary.parse_errors,
+                "parse_errors (which drive report.ok()) must match decode"
+            );
+            assert_eq!(
+                report.ok(),
+                decode_summary.parse_errors.is_empty(),
+                "report.ok() must equal the decode-derived ok decision"
+            );
+        }
+    }
+
+    #[test]
+    fn sampled_decode_mismatch_is_fail_closed() {
+        // W2 safety net: when the encode-side summary and the sampled decode
+        // DISAGREE (an encoder regression / heap tear), the build must fail closed.
+        // Prove the wiring: `decode_verify_mismatch_error` returns Some on any
+        // difference (which is pushed into `errors` → `report.ok()` false → the
+        // collector nukes to SOURCE_UNAVAILABLE), and None when they agree.
+        let a = build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS)
+            .gate_summary;
+        assert!(
+            decode_verify_mismatch_error(&a, &a).is_none(),
+            "identical summaries must NOT fail closed"
+        );
+
+        let mut b = a.clone();
+        b.data_rows_total += 1; // simulate a desync between bytes and snapshot
+        let err = decode_verify_mismatch_error(&a, &b)
+            .expect("differing summaries must produce a fail-closed error");
+        assert!(err.contains("disagrees with sampled decode"));
+        assert!(err.contains("fail-closed"));
+
+        // End-to-end: a report whose errors contain such a mismatch is NOT ok, so
+        // the collector's `!report.ok()` gate fires exactly as for a decode failure.
+        let mut report =
+            build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        assert!(
+            report.ok(),
+            "baseline fixture is clean: {:?}",
+            report.errors
+        );
+        report.errors.push(err);
+        assert!(
+            !report.ok(),
+            "a pushed mismatch error must make the report not-ok (fail closed)"
         );
     }
 

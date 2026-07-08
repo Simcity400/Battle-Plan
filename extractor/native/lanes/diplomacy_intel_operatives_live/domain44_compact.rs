@@ -632,6 +632,347 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
     payload
 }
 
+/// Encode `snapshot` and produce the [`Domain53GateSummary`] that
+/// `decode_payload(offset, &encode_payload(snapshot))` WOULD produce — WITHOUT
+/// re-parsing the (potentially ~380k-row) base payload.
+///
+/// W2 lever: `decode_payload` re-parsing the just-encoded payload cost 29.7
+/// ms/frame (29% of the d53 wall). `summarize_snapshot` replays the decoder's
+/// gate/validation logic reading SNAPSHOT FIELDS for the expensive base-row loop,
+/// and for the small append-only trailers RE-ENCODES only the trailer suffix and
+/// runs the real [`decode_domain53_trailers`] on it — so trailer units and
+/// parse-errors are byte-identical to `decode_payload` by construction (each
+/// trailer decoder slices trailer-relative, so no absolute-offset strings leak,
+/// and every byte-position-bearing trailer error is unreachable from
+/// encoder-produced bytes).
+///
+/// GOVERNING INVARIANT (proven by tests + a 1/N sampled production cross-check):
+/// `summarize_snapshot(offset, s) == decode_payload(offset, &encode_payload(&s))`
+/// for every snapshot `s`, field-for-field including `parse_errors` order/strings
+/// and the `data_units_total` map. Header/kind/truncation/count-mismatch checks in
+/// `decode_payload` are UNREACHABLE on a valid encode and so never emitted here.
+pub fn summarize_snapshot(offset: usize, snapshot: &DiplomacyIntelSnapshot) -> Domain53GateSummary {
+    let mut summary = Domain53GateSummary::default();
+
+    let row_count = snapshot.row_count() as usize;
+    let changed_rows = snapshot.changed_rows.unwrap_or(snapshot.row_count()) as usize;
+    let status_flags = snapshot.status_flags;
+
+    // Header echoes (decode_payload:1289/1643/1644). schema_version / fixed_scale
+    // are always the encoder constants, so those parse_errors never fire.
+    summary.status_flags_or |= status_flags;
+    // `changed_rows > row_count` (decode_payload:1300). `header_count_sum >
+    // row_count` (decode_payload:1305) is impossible: header per-kind counts sum to
+    // row_count minus state_events, always <= row_count.
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+
+    // Per-kind decoded counts (== snapshot vec lens on a valid encode) and the
+    // flag-derived tallies the status-vs-row block reads.
+    let mut country_war_projection_rows = 0usize;
+    let mut operation_detail_resisted_rows = 0usize;
+    let mut intel_map_resisted_rows = 0usize;
+    let mut operative_lifecycle_rows = 0usize;
+    let mut state_event_source_counts = StateEventSourceCounts::default();
+
+    // Per-kind duplicate/seen sets (decode_payload:1313..).
+    let mut seen_countries = BTreeSet::new();
+    let mut seen_wars = BTreeSet::new();
+    let mut seen_opinions = BTreeSet::new();
+    let mut seen_flags = BTreeSet::new();
+    let mut seen_subjects = BTreeSet::new();
+    let mut seen_agencies = BTreeSet::new();
+    let mut seen_agency_capacity_clusters = BTreeSet::new();
+    let mut seen_operatives = BTreeSet::new();
+    let mut seen_crypto = BTreeSet::new();
+    let mut seen_operations = BTreeSet::new();
+    let mut seen_intel_map = BTreeSet::new();
+    let mut seen_state_events = BTreeSet::new();
+
+    // Unknown status bits (decode_payload:1331, BEFORE the row loop).
+    if status_flags & !KNOWN_STATUS_FLAGS != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel status_flags has unknown bits 0x{:X}",
+            status_flags & !KNOWN_STATUS_FLAGS
+        ));
+    }
+
+    // Base row loop — SAME kind order the encoder emits, SAME global row_index the
+    // decoder assigns. Each block mirrors the corresponding `validate_*_row` push
+    // order exactly (reading snapshot fields instead of decoded bytes). The
+    // "kind/length/truncation" branches in decode_payload are impossible here.
+    let mut row_index = 0usize;
+    for row in &snapshot.countries {
+        if row.at_war_count > 0 || row.casualties != 0 {
+            country_war_projection_rows = country_war_projection_rows.saturating_add(1);
+        }
+        summarize_country_row(offset, row_index, row, &mut seen_countries, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.wars {
+        summarize_war_row(offset, row_index, row, &mut seen_wars, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.opinions {
+        summarize_opinion_row(offset, row_index, row, &mut seen_opinions, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.relation_flags {
+        summarize_relation_flag_row(offset, row_index, row, &mut seen_flags, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.subjects {
+        summarize_subject_row(offset, row_index, row, &mut seen_subjects, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.agencies {
+        summarize_agency_row(offset, row_index, row, &mut seen_agencies, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.agency_capacity_clusters {
+        summarize_agency_capacity_cluster_row(
+            offset,
+            row_index,
+            row,
+            &mut seen_agency_capacity_clusters,
+            &mut summary,
+        );
+        row_index += 1;
+    }
+    for row in &snapshot.operatives {
+        if row.lifecycle_flag.is_some() {
+            operative_lifecycle_rows = operative_lifecycle_rows.saturating_add(1);
+        }
+        summarize_operative_row(offset, row_index, row, &mut seen_operatives, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.cryptology {
+        summarize_crypto_row(offset, row_index, row, &mut seen_crypto, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.operation_anchors {
+        if row.detail_resisted {
+            operation_detail_resisted_rows = operation_detail_resisted_rows.saturating_add(1);
+        }
+        summarize_operation_row(offset, row_index, row, &mut seen_operations, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.intel_map {
+        if row.resisted {
+            intel_map_resisted_rows = intel_map_resisted_rows.saturating_add(1);
+        }
+        summarize_intel_map_row(offset, row_index, row, &mut seen_intel_map, &mut summary);
+        row_index += 1;
+    }
+    for row in &snapshot.state_events {
+        state_event_source_counts.add(row.source_kind);
+        summarize_state_event_row(offset, row_index, row, &mut seen_state_events, &mut summary);
+        row_index += 1;
+    }
+
+    // Trailers — re-encode ONLY the trailer suffix (emit order) and run the REAL
+    // decoder trailer state machine so `consumed==0` early-abort, row_count caps,
+    // INGR/FACS count gates, unique-recipient counting, and every trailer error
+    // string are byte-identical by construction. Codex-confirmed: no trailer error
+    // reachable from encoder-produced bytes embeds an absolute payload offset.
+    let mut trailer_bytes = Vec::new();
+    append_operation_instance_trailer(&mut trailer_bytes, &snapshot.operation_instances);
+    append_incoming_action_queue_trailer(&mut trailer_bytes, &snapshot.incoming_actions);
+    append_intel_network_graph_trailer(&mut trailer_bytes, &snapshot.intel_network_graphs);
+    append_faction_trailer(&mut trailer_bytes, &snapshot.factions);
+
+    let mut operation_instance_rows = 0usize;
+    let mut operation_instance_country_rows = 0usize;
+    let mut operation_instance_def_ref_ok_rows = 0usize;
+    let mut incoming_action_queue_rows = 0usize;
+    let mut incoming_action_queue_recipients = BTreeSet::new();
+    let mut intel_network_graph_rows = 0usize;
+    let mut intel_network_graph_state_rows = 0usize;
+    let mut faction_rows = 0usize;
+    let mut faction_member_rows = 0usize;
+    if !trailer_bytes.is_empty() {
+        let trailer_rows =
+            decode_domain53_trailers(offset, &trailer_bytes, 0, &mut summary.parse_errors);
+        operation_instance_rows = trailer_rows.operation_instances.len();
+        operation_instance_country_rows = trailer_rows
+            .operation_instances
+            .iter()
+            .filter(|row| row.associated_country_tag_db_id.is_some())
+            .count();
+        operation_instance_def_ref_ok_rows = trailer_rows
+            .operation_instances
+            .iter()
+            .filter(|row| row.def_ref_ok)
+            .count();
+        incoming_action_queue_rows = trailer_rows.incoming_actions.len();
+        incoming_action_queue_recipients.extend(
+            trailer_rows
+                .incoming_actions
+                .iter()
+                .map(|row| row.recipient_tag_db_id),
+        );
+        intel_network_graph_rows = trailer_rows.intel_network_graphs.len();
+        intel_network_graph_state_rows = trailer_rows
+            .intel_network_graphs
+            .iter()
+            .map(|row| row.state_ids.len())
+            .sum();
+        faction_rows = trailer_rows.factions.len();
+        faction_member_rows = trailer_rows
+            .factions
+            .iter()
+            .map(|row| row.member_tag_db_ids.len())
+            .sum();
+    }
+    add_unit(
+        &mut summary,
+        "operation_instance_rows",
+        operation_instance_rows,
+    );
+    add_unit(
+        &mut summary,
+        "operation_instance_country_rows",
+        operation_instance_country_rows,
+    );
+    add_unit(
+        &mut summary,
+        "operation_instance_def_ref_ok_rows",
+        operation_instance_def_ref_ok_rows,
+    );
+    add_unit(
+        &mut summary,
+        "incoming_action_queue_rows",
+        incoming_action_queue_rows,
+    );
+    add_unit(
+        &mut summary,
+        "incoming_action_queue_recipient_rows",
+        incoming_action_queue_recipients.len(),
+    );
+    add_unit(
+        &mut summary,
+        "intel_network_graph_rows",
+        intel_network_graph_rows,
+    );
+    add_unit(
+        &mut summary,
+        "intel_network_graph_state_rows",
+        intel_network_graph_state_rows,
+    );
+    add_unit(&mut summary, "faction_rows", faction_rows);
+    add_unit(&mut summary, "faction_member_rows", faction_member_rows);
+
+    // `decoded_counts != expected_counts` (decode_payload:1596) is impossible on a
+    // valid encode (decoded counts == header counts == snapshot vec lens).
+
+    // Status-vs-row consistency block (decode_payload:1602..) — SAME order, SAME
+    // strings. Base counts come from snapshot vec lens; the graph count comes from
+    // the DECODED trailer rows above.
+    let war_count = snapshot.wars.len();
+    let country_count = snapshot.countries.len();
+    if status_flags & STATUS_WAR_ROOT_UNVALIDATED != 0
+        && (war_count != 0 || country_war_projection_rows != 0)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel badges war root unvalidated but emits {} war relation row(s) and {} country war projection row(s)",
+            war_count, country_war_projection_rows
+        ));
+    }
+    if status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
+        && (war_count != 0 || country_war_projection_rows != 0)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel emits {} war relation row(s) and {} country war projection row(s) without STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED; schema v{SCHEMA_VERSION} has no war name/grouping/start-date fields",
+            war_count, country_war_projection_rows
+        ));
+    }
+    if operation_detail_resisted_rows != 0 && status_flags & STATUS_OPERATIONS_DETAIL_RESISTED == 0
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel has {operation_detail_resisted_rows} resisted operation row(s) without STATUS_OPERATIONS_DETAIL_RESISTED"
+        ));
+    }
+    if intel_map_resisted_rows != 0 && status_flags & STATUS_INTEL_MAP_RESISTED == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel has {intel_map_resisted_rows} resisted intel-map row(s) without STATUS_INTEL_MAP_RESISTED"
+        ));
+    }
+    if status_flags & STATUS_FACTION_GROUP_UNVALIDATED != 0
+        && (country_count != 0 || state_event_source_counts.country_faction_group != 0)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel badges faction group unvalidated but emits {} country diplomacy row(s) and {} faction state event row(s)",
+            country_count, state_event_source_counts.country_faction_group
+        ));
+    }
+    if status_flags & STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED != 0 && intel_network_graph_rows != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel badges intel-network graph unvalidated but emits {intel_network_graph_rows} graph row(s)"
+        ));
+    }
+
+    // Base counts / units (decode_payload:1643..).
+    summary.data_rows_total = row_count as u64;
+    summary.data_changed_rows_total = changed_rows as u64;
+    add_unit(&mut summary, "diplomacy_intel_rows", row_count);
+    add_unit(
+        &mut summary,
+        "diplomacy_country_rows",
+        snapshot.countries.len(),
+    );
+    add_unit(&mut summary, "war_relation_rows", snapshot.wars.len());
+    add_unit(&mut summary, "opinion_rows", snapshot.opinions.len());
+    add_unit(
+        &mut summary,
+        "relation_flag_rows",
+        snapshot.relation_flags.len(),
+    );
+    add_unit(&mut summary, "subject_rows", snapshot.subjects.len());
+    add_unit(&mut summary, "intel_agency_rows", snapshot.agencies.len());
+    add_unit(
+        &mut summary,
+        "agency_capacity_cluster_rows",
+        snapshot.agency_capacity_clusters.len(),
+    );
+    add_unit(&mut summary, "operative_rows", snapshot.operatives.len());
+    add_unit(
+        &mut summary,
+        "operative_lifecycle_rows",
+        operative_lifecycle_rows,
+    );
+    add_unit(&mut summary, "cryptology_rows", snapshot.cryptology.len());
+    add_unit(
+        &mut summary,
+        "operation_anchor_rows",
+        snapshot.operation_anchors.len(),
+    );
+    add_unit(&mut summary, "intel_map_rows", snapshot.intel_map.len());
+    add_unit(
+        &mut summary,
+        "compact_state_event_rows",
+        snapshot.state_events.len(),
+    );
+    add_state_event_source_units(&mut summary, state_event_source_counts);
+    summary
+}
+
+/// `(encode_payload(s), summarize_snapshot(offset, s))`. The bytes are identical
+/// to `encode_payload`; the summary is identical to
+/// `decode_payload(offset, &encode_payload(s))` (proven by the INV tests + the
+/// sampled production cross-check).
+pub fn encode_payload_with_summary(
+    offset: usize,
+    snapshot: &DiplomacyIntelSnapshot,
+) -> (Vec<u8>, Domain53GateSummary) {
+    (
+        encode_payload(snapshot),
+        summarize_snapshot(offset, snapshot),
+    )
+}
+
 /// Append the `FACS` faction-roster trailer after the self-delimiting base
 /// payload. Trailer layout (header_len = 12):
 ///   magic "FACS" (4) | version u16 | header_len u16 (=12) | row_count u32
@@ -2654,6 +2995,669 @@ fn validate_state_event_row(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot-field twins of the byte `validate_*_row` functions (W2). Each mirrors
+// its byte twin's parse_error push order EXACTLY, reading struct fields and
+// re-deriving the encoder-set flags from those fields (same logic as
+// `encode_payload`). Checks the encoder cannot violate by construction (e.g.
+// "field without flag" when the encoder sets the flag iff the field is nonzero,
+// reserved fields the encoder writes 0) are kept identical in shape so the two
+// sides stay in lock-step; they simply never fire on a valid encode. The
+// governing invariant `summarize_snapshot(o,s) == decode_payload(o,
+// &encode_payload(&s))` is proven by the round-trip tests + a sampled production
+// cross-check, so any drift here is caught.
+// ---------------------------------------------------------------------------
+
+fn summarize_country_row(
+    offset: usize,
+    row_index: usize,
+    row: &CountryDiplomacyRow,
+    seen: &mut BTreeSet<u32>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder flags (encode_payload:458..): FACTION_GROUP always; AT_WAR iff
+    // at_war_count>0; CASUALTIES iff casualties!=0. So the unknown-flags and
+    // "without flag" checks never fire, but we keep them for lock-step.
+    let mut flags = COUNTRY_FLAG_FACTION_GROUP;
+    if row.at_war_count > 0 {
+        flags |= COUNTRY_FLAG_AT_WAR;
+    }
+    if row.casualties != 0 {
+        flags |= COUNTRY_FLAG_CASUALTIES;
+    }
+    let tag_db_id = row.tag_db_id;
+    if !valid_tag(tag_db_id) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country diplomacy row {row_index} has invalid tag_db_id {tag_db_id}"
+        ));
+    } else if !seen.insert(tag_db_id) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country diplomacy row {row_index} duplicates tag_db_id {tag_db_id}"
+        ));
+    }
+    if flags & !(COUNTRY_FLAG_AT_WAR | COUNTRY_FLAG_CASUALTIES | COUNTRY_FLAG_FACTION_GROUP) != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country diplomacy row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if flags & COUNTRY_FLAG_AT_WAR == 0 && row.at_war_count != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country diplomacy row {row_index} has at_war_count without flag"
+        ));
+    }
+    if flags & COUNTRY_FLAG_CASUALTIES == 0 && row.casualties != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country diplomacy row {row_index} has casualties without flag"
+        ));
+    }
+    if row.casualties < 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country diplomacy row {row_index} has negative casualties"
+        ));
+    }
+}
+
+fn summarize_war_row(
+    offset: usize,
+    row_index: usize,
+    row: &WarRelationRow,
+    seen: &mut BTreeSet<(u32, u32)>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder writes flags=0 and reserved=0 (encode_payload:474/479).
+    let flags = 0u16;
+    let first = row.first_tag_db_id;
+    let second = row.second_tag_db_id;
+    if flags != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: war relation row {row_index} has unknown flags {flags}"
+        ));
+    }
+    validate_pair(offset, "war relation", row_index, first, second, summary);
+    let key = if first <= second {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    if valid_tag(first) && valid_tag(second) && !seen.insert(key) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: war relation row {row_index} duplicates pair {first}/{second}"
+        ));
+    }
+    for (label, value) in [
+        ("first_casualties", row.first_casualties),
+        ("second_casualties", row.second_casualties),
+    ] {
+        if !(0..=MAX_CASUALTIES).contains(&value) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: war relation row {row_index} has invalid {label} {value}"
+            ));
+        }
+    }
+    // reserved is always 0 from the encoder → the nonzero-reserved check never fires.
+}
+
+fn summarize_opinion_row(
+    offset: usize,
+    row_index: usize,
+    row: &OpinionRow,
+    seen: &mut BTreeSet<(u32, u32)>,
+    summary: &mut Domain53GateSummary,
+) {
+    let flags = 0u16; // encode_payload:483
+    let src = row.src_tag_db_id;
+    let target = row.target_tag_db_id;
+    if flags != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: opinion row {row_index} has unknown flags {flags}"
+        ));
+    }
+    validate_pair(offset, "opinion", row_index, src, target, summary);
+    if valid_tag(src) && valid_tag(target) && !seen.insert((src, target)) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: opinion row {row_index} duplicates ordered pair {src}/{target}"
+        ));
+    }
+    if !(-MAX_OPINION_ABS..=MAX_OPINION_ABS).contains(&row.opinion) {
+        let opinion = row.opinion;
+        summary.parse_errors.push(format!(
+            "offset {offset}: opinion row {row_index} has out-of-range opinion {opinion}"
+        ));
+    }
+}
+
+fn summarize_relation_flag_row(
+    offset: usize,
+    row_index: usize,
+    row: &RelationFlagRow,
+    seen: &mut BTreeSet<(u32, u32, u16)>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder flags (encode_payload:489): DIRECTED iff row.directed, else 0.
+    let flags = if row.directed { REL_FLAG_DIRECTED } else { 0 };
+    let flag_kind = row.flag_kind;
+    let src = row.src_tag_db_id;
+    let target = row.target_tag_db_id;
+    validate_pair(offset, "relation flag", row_index, src, target, summary);
+    if !known_relation_kind(flag_kind) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: relation flag row {row_index} has unknown flag_kind {flag_kind}"
+        ));
+    }
+    if flags & !REL_FLAG_DIRECTED != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: relation flag row {row_index} has unknown flags {flags}"
+        ));
+    }
+    let key = if flags & REL_FLAG_DIRECTED != 0 || src <= target {
+        (src, target, flag_kind)
+    } else {
+        (target, src, flag_kind)
+    };
+    if valid_tag(src) && valid_tag(target) && !seen.insert(key) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: relation flag row {row_index} duplicates relation flag"
+        ));
+    }
+}
+
+fn summarize_subject_row(
+    offset: usize,
+    row_index: usize,
+    row: &SubjectRow,
+    seen: &mut BTreeSet<(u32, u32)>,
+    summary: &mut Domain53GateSummary,
+) {
+    let flags = 0u16; // encode_payload has no subject flags field (KIND + reserved 0)
+    let overlord = row.overlord_tag_db_id;
+    let subject = row.subject_tag_db_id;
+    if flags != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: subject row {row_index} has unknown flags {flags}"
+        ));
+    }
+    validate_pair(offset, "subject", row_index, overlord, subject, summary);
+    if valid_tag(overlord) && valid_tag(subject) && !seen.insert((overlord, subject)) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: subject row {row_index} duplicates subject pair"
+        ));
+    }
+    if row.autonomy_state_hash == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: subject row {row_index} has zero autonomy_state_hash"
+        ));
+    }
+    if !(0..=1_000_000).contains(&row.autonomy_ratio_raw) {
+        let autonomy_ratio_raw = row.autonomy_ratio_raw;
+        summary.parse_errors.push(format!(
+            "offset {offset}: subject row {row_index} has invalid autonomy_ratio_raw {autonomy_ratio_raw}"
+        ));
+    }
+    if row.start_date_raw <= 0 {
+        let start_date_raw = row.start_date_raw;
+        summary.parse_errors.push(format!(
+            "offset {offset}: subject row {row_index} has non-positive start_date_raw {start_date_raw}"
+        ));
+    }
+}
+
+fn summarize_agency_row(
+    offset: usize,
+    row_index: usize,
+    row: &AgencyRow,
+    seen: &mut BTreeSet<u32>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder flags (encode_payload:508..): NAME_HASH iff name_hash!=0; ICON_HASH
+    // iff icon_hash!=0.
+    let mut flags = 0u16;
+    if row.name_hash != 0 {
+        flags |= AGENCY_FLAG_NAME_HASH;
+    }
+    if row.icon_hash != 0 {
+        flags |= AGENCY_FLAG_ICON_HASH;
+    }
+    let owner = row.owner_tag_db_id;
+    if !valid_tag(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency row {row_index} has invalid owner {owner}"
+        ));
+    } else if !seen.insert(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency row {row_index} duplicates owner {owner}"
+        ));
+    }
+    if flags & !(AGENCY_FLAG_NAME_HASH | AGENCY_FLAG_ICON_HASH) != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if flags & AGENCY_FLAG_NAME_HASH == 0 && row.name_hash != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency row {row_index} has name_hash without flag"
+        ));
+    }
+    if flags & AGENCY_FLAG_ICON_HASH == 0 && row.icon_hash != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency row {row_index} has icon_hash without flag"
+        ));
+    }
+    for (label, value) in [
+        ("max_operatives", row.max_operatives),
+        ("usable_slots", row.usable_slots),
+        ("operative_count", row.operative_count),
+    ] {
+        if value > MAX_OPERATIVES_PER_AGENCY {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency row {row_index} has invalid {label} {value}"
+            ));
+        }
+    }
+    if row.cryptology_target_count > 256 {
+        let cryptology_target_count = row.cryptology_target_count;
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency row {row_index} has invalid cryptology_target_count {cryptology_target_count}"
+        ));
+    }
+    for (label, value) in [
+        ("defense_raw", row.defense_raw),
+        ("upgrade_progress_raw", row.upgrade_progress_raw),
+    ] {
+        if !(0..=MAX_FIXED_RAW).contains(&value) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency row {row_index} has invalid {label} {value}"
+            ));
+        }
+    }
+}
+
+fn summarize_agency_capacity_cluster_row(
+    offset: usize,
+    row_index: usize,
+    row: &AgencyCapacityClusterRow,
+    seen: &mut BTreeSet<u32>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder always writes AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4 (encode_payload:529).
+    let flags = AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4;
+    let owner = row.owner_tag_db_id;
+    if !valid_tag(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} has invalid owner {owner}"
+        ));
+    } else if !seen.insert(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} duplicates owner {owner}"
+        ));
+    }
+    if flags & !AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if flags & AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4 == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} lacks raw E4/F0/F4 flag"
+        ));
+    }
+    for (label, value) in [
+        ("value_0xe4", row.value_0xe4),
+        ("value_0xf0", row.value_0xf0),
+        ("value_0xf4", row.value_0xf4),
+    ] {
+        if value > MAX_AGENCY_CAPACITY_CLUSTER_VALUE {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency capacity cluster row {row_index} has invalid {label} {value}"
+            ));
+        }
+    }
+    if row.value_0xe4 != row.value_0xf4 {
+        let value_0xe4 = row.value_0xe4;
+        let value_0xf4 = row.value_0xf4;
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} has value_0xe4 {value_0xe4} != value_0xf4 {value_0xf4}"
+        ));
+    }
+    if row.proof_hash == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} has zero proof_hash"
+        ));
+    }
+}
+
+fn summarize_operative_row(
+    offset: usize,
+    row_index: usize,
+    row: &OperativeRow,
+    seen: &mut BTreeSet<u32>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder flags (encode_payload:537..): DETECTED/CAPTURED from bools;
+    // SKILL/EXPERIENCE/LIFECYCLE presence from Option::is_some; NAME_HASH iff
+    // name_hash!=0. Encoded scalar values are the Option's unwrap_or(0), matching
+    // decode's flag-gated read; validation reads the encoded scalar.
+    let mut flags = 0u16;
+    if row.detected {
+        flags |= OPERATIVE_FLAG_DETECTED;
+    }
+    if row.captured {
+        flags |= OPERATIVE_FLAG_CAPTURED;
+    }
+    if row.skill.is_some() {
+        flags |= OPERATIVE_FLAG_SKILL_PRESENT;
+    }
+    if row.experience_raw.is_some() {
+        flags |= OPERATIVE_FLAG_EXPERIENCE_PRESENT;
+    }
+    if row.name_hash != 0 {
+        flags |= OPERATIVE_FLAG_NAME_HASH;
+    }
+    if row.lifecycle_flag.is_some() {
+        flags |= OPERATIVE_FLAG_LIFECYCLE_PRESENT;
+    }
+    let owner = row.owner_tag_db_id;
+    let op_id = row.op_id;
+    let skill = row.skill.unwrap_or(0);
+    let experience_raw = row.experience_raw.unwrap_or(0);
+    let name_hash = row.name_hash;
+    let state_hash = row.state_hash;
+    let lifecycle_flag = row.lifecycle_flag.unwrap_or(0);
+    if !valid_tag(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has invalid owner {owner}"
+        ));
+    }
+    if op_id == 0 || op_id > MAX_OPERATIVE_ID {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has invalid op_id {op_id}"
+        ));
+    } else if !seen.insert(op_id) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} duplicates op_id {op_id}"
+        ));
+    }
+    if flags
+        & !(OPERATIVE_FLAG_DETECTED
+            | OPERATIVE_FLAG_SKILL_PRESENT
+            | OPERATIVE_FLAG_EXPERIENCE_PRESENT
+            | OPERATIVE_FLAG_NAME_HASH
+            | OPERATIVE_FLAG_CAPTURED
+            | OPERATIVE_FLAG_LIFECYCLE_PRESENT)
+        != 0
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if flags & OPERATIVE_FLAG_SKILL_PRESENT == 0 && skill != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has skill without present flag"
+        ));
+    }
+    if flags & OPERATIVE_FLAG_SKILL_PRESENT != 0 && skill > MAX_OPERATIVE_SKILL {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has invalid skill {skill}"
+        ));
+    }
+    if flags & OPERATIVE_FLAG_EXPERIENCE_PRESENT == 0 && experience_raw != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has experience without present flag"
+        ));
+    }
+    if flags & OPERATIVE_FLAG_EXPERIENCE_PRESENT != 0 && !(0..MAX_XP_RAW).contains(&experience_raw)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has invalid experience_raw {experience_raw}"
+        ));
+    }
+    if flags & OPERATIVE_FLAG_NAME_HASH == 0 && name_hash != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has name_hash without flag"
+        ));
+    }
+    if flags & OPERATIVE_FLAG_LIFECYCLE_PRESENT == 0 && lifecycle_flag != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operative row {row_index} has lifecycle_flag without present flag"
+        ));
+    }
+    if flags & OPERATIVE_FLAG_LIFECYCLE_PRESENT != 0 {
+        if !(1..=MAX_OPERATIVE_LIFECYCLE_FLAG).contains(&lifecycle_flag) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative row {row_index} has invalid lifecycle_flag {lifecycle_flag}"
+            ));
+        }
+        if state_hash == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative row {row_index} has lifecycle flag without state_hash"
+            ));
+        }
+    }
+}
+
+fn summarize_crypto_row(
+    offset: usize,
+    row_index: usize,
+    row: &CryptologyRow,
+    seen: &mut BTreeSet<(u32, u32)>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder flags (encode_payload:567): DECRYPTING iff row.decrypting; reserved 0.
+    let flags = if row.decrypting {
+        CRYPTO_FLAG_DECRYPTING
+    } else {
+        0
+    };
+    let owner = row.owner_tag_db_id;
+    let target = row.target_tag_db_id;
+    validate_pair(offset, "cryptology", row_index, owner, target, summary);
+    if flags & !CRYPTO_FLAG_DECRYPTING != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: cryptology row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if valid_tag(owner) && valid_tag(target) && !seen.insert((owner, target)) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: cryptology row {row_index} duplicates owner/target"
+        ));
+    }
+    if !(1..MAX_CRYPTO_AMOUNT_RAW).contains(&row.amount_raw) {
+        let amount_raw = row.amount_raw;
+        summary.parse_errors.push(format!(
+            "offset {offset}: cryptology row {row_index} has invalid amount_raw {amount_raw}"
+        ));
+    }
+    // reserved fields are always 0 from the encoder → the nonzero check never fires.
+}
+
+fn summarize_operation_row(
+    offset: usize,
+    row_index: usize,
+    row: &OperationAnchorRow,
+    seen: &mut BTreeSet<u32>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder flags (encode_payload:581..): RUNNING always; DETAIL_RESISTED iff
+    // detail_resisted; TARGET_PRESENT iff target is Some. Encoded target is
+    // unwrap_or(0).
+    let mut flags = OPERATION_FLAG_RUNNING;
+    if row.detail_resisted {
+        flags |= OPERATION_FLAG_DETAIL_RESISTED;
+    }
+    if row.target_tag_db_id.is_some() {
+        flags |= OPERATION_FLAG_TARGET_PRESENT;
+    }
+    let owner = row.owner_tag_db_id;
+    let operation_id = row.operation_id;
+    let target = row.target_tag_db_id.unwrap_or(0);
+    if !valid_tag(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operation anchor row {row_index} has invalid owner {owner}"
+        ));
+    }
+    if operation_id == 0 || operation_id > MAX_OPERATION_ID {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operation anchor row {row_index} has invalid operation_id {operation_id}"
+        ));
+    } else if !seen.insert(operation_id) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operation anchor row {row_index} duplicates operation_id {operation_id}"
+        ));
+    }
+    if flags
+        & !(OPERATION_FLAG_RUNNING | OPERATION_FLAG_DETAIL_RESISTED | OPERATION_FLAG_TARGET_PRESENT)
+        != 0
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operation anchor row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if flags & OPERATION_FLAG_DETAIL_RESISTED == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operation anchor row {row_index} lacks detail-resisted/source proof flag"
+        ));
+    }
+    if flags & OPERATION_FLAG_TARGET_PRESENT != 0 {
+        if !valid_tag(target) || target == owner {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operation anchor row {row_index} has invalid target {target}"
+            ));
+        }
+    } else if target != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operation anchor row {row_index} has target without flag"
+        ));
+    }
+    if row.slot_count > MAX_OPERATION_SLOTS || row.phase_count > MAX_OPERATION_PHASES {
+        summary.parse_errors.push(format!(
+            "offset {offset}: operation anchor row {row_index} has invalid slot/phase counts"
+        ));
+    }
+    // reserved is always 0 from the encoder → the nonzero check never fires.
+}
+
+fn summarize_intel_map_row(
+    offset: usize,
+    row_index: usize,
+    row: &IntelMapRow,
+    seen: &mut BTreeSet<(u32, u32)>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder flags (encode_payload:598): RESISTED iff row.resisted; reserved 0.
+    let flags = if row.resisted {
+        INTEL_MAP_FLAG_RESISTED
+    } else {
+        0
+    };
+    let owner = row.owner_tag_db_id;
+    let target = row.target_tag_db_id;
+    validate_pair(offset, "intel map", row_index, owner, target, summary);
+    if flags & !INTEL_MAP_FLAG_RESISTED != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: intel map row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if valid_tag(owner) && valid_tag(target) && !seen.insert((owner, target)) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: intel map row {row_index} duplicates owner/target"
+        ));
+    }
+    for (label, value) in [
+        ("civilian_raw", row.civilian_raw),
+        ("army_raw", row.army_raw),
+        ("navy_raw", row.navy_raw),
+        ("air_raw", row.air_raw),
+    ] {
+        if !(0..=MAX_INTEL_PERCENT_RAW).contains(&value) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: intel map row {row_index} has invalid {label} {value}"
+            ));
+        }
+    }
+    if flags & INTEL_MAP_FLAG_RESISTED != 0
+        && (row.civilian_raw != 0 || row.army_raw != 0 || row.navy_raw != 0 || row.air_raw != 0)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: intel map row {row_index} has resisted flag with emitted values"
+        ));
+    }
+    // reserved is always 0 from the encoder → the nonzero check never fires.
+}
+
+fn summarize_state_event_row(
+    offset: usize,
+    row_index: usize,
+    row: &StateEventRow,
+    seen: &mut BTreeSet<(u16, u16, u32, u32, u32)>,
+    summary: &mut Domain53GateSummary,
+) {
+    // Encoder flags (encode_payload:614): TARGET_PRESENT iff target is Some;
+    // encoded target is unwrap_or(0).
+    let flags = if row.target_tag_db_id.is_some() {
+        STATE_EVENT_FLAG_TARGET_PRESENT
+    } else {
+        0
+    };
+    let owner = row.owner_tag_db_id;
+    let target = row.target_tag_db_id.unwrap_or(0);
+    let event_kind = row.event_kind;
+    let source_kind = row.source_kind;
+    let object_hash = row.object_hash;
+    let value_hash = row.value_hash;
+    let value_raw = row.value_raw;
+    if !valid_tag(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has invalid owner {owner}"
+        ));
+    }
+    if flags & !STATE_EVENT_FLAG_TARGET_PRESENT != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if flags & STATE_EVENT_FLAG_TARGET_PRESENT != 0 {
+        if !valid_tag(target) || target == owner {
+            summary.parse_errors.push(format!(
+                "offset {offset}: compact state event row {row_index} has invalid target {target}"
+            ));
+        }
+    } else if target != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has target without flag"
+        ));
+    }
+    if !known_state_event_kind(event_kind) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has unknown event_kind {event_kind}"
+        ));
+    }
+    if !known_state_event_source(source_kind) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has unknown source_kind {source_kind}"
+        ));
+    }
+    if object_hash == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has zero object_hash"
+        ));
+    }
+    if value_hash == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has zero value_hash"
+        ));
+    }
+    if !(-MAX_STATE_EVENT_VALUE_RAW..=MAX_STATE_EVENT_VALUE_RAW).contains(&value_raw) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has invalid value_raw {value_raw}"
+        ));
+    }
+    let key = (event_kind, source_kind, owner, target, object_hash);
+    if object_hash != 0 && !seen.insert(key) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} duplicates state event key"
+        ));
+    }
+}
+
 fn validate_pair(
     offset: usize,
     label: &str,
@@ -3695,5 +4699,256 @@ mod tests {
             intel_network_graphs: Vec::new(),
             factions: Vec::new(),
         }
+    }
+
+    /// A snapshot with ALL FOUR trailers populated (OPIN, DIAQ, INGR, FACS), on
+    /// top of the dense base fixture. Exercises the hybrid trailer path in
+    /// `summarize_snapshot` (re-encode trailers + real decoder).
+    fn fixture_snapshot_with_trailers() -> DiplomacyIntelSnapshot {
+        let mut snapshot = fixture_snapshot();
+        // Clear STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED so INGR rows are allowed,
+        // and STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED (informational only).
+        snapshot.status_flags &= !STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
+        snapshot.operation_instances = vec![
+            OperationInstanceRow {
+                instance_id: 5001,
+                def_ref_ok: true,
+                associated_country_tag_db_id: Some(3),
+            },
+            OperationInstanceRow {
+                instance_id: 5002,
+                def_ref_ok: false,
+                associated_country_tag_db_id: None,
+            },
+        ];
+        snapshot.incoming_actions = vec![
+            IncomingActionQueueRow {
+                recipient_tag_db_id: 1,
+                actor_tag_db_id: 3,
+                action_id: 900,
+                action_type: 2,
+                date_hours: 60_795_400,
+                last_command_date_hours: 60_795_300,
+            },
+            IncomingActionQueueRow {
+                recipient_tag_db_id: 1,
+                actor_tag_db_id: 22,
+                action_id: 901,
+                action_type: 4,
+                date_hours: 60_795_420,
+                last_command_date_hours: 60_795_310,
+            },
+        ];
+        snapshot.intel_network_graphs = vec![IntelNetworkGraphRow {
+            strategic_operative_index: 7,
+            network_slot: 0,
+            target_tag_db_id: 3,
+            state_ids: vec![11, 42, 108],
+        }];
+        snapshot.factions = vec![FactionRow {
+            faction_id: 1,
+            faction_type: 2,
+            name_hash: stable_hash32("allies"),
+            leader_tag_db_id: 1,
+            member_tag_db_ids: vec![1, 3, 22],
+        }];
+        snapshot
+    }
+
+    /// GOVERNING INVARIANT: the encode-side `summarize_snapshot` must be
+    /// FIELD-IDENTICAL to `decode_payload(0, &encode_payload(&s))` — status,
+    /// counts, the full `data_units_total` map, AND the `parse_errors` vec
+    /// (order + exact strings). Proven over clean AND intentionally-bad SNAPSHOTS.
+    fn assert_inv(snapshot: &DiplomacyIntelSnapshot) {
+        let payload = encode_payload(snapshot);
+        let decode_summary = decode_payload(0, &payload);
+        let encode_summary = summarize_snapshot(0, snapshot);
+        assert_eq!(
+            encode_summary, decode_summary,
+            "summarize_snapshot must equal decode_payload; decode.parse_errors={:?}",
+            decode_summary.parse_errors
+        );
+        // Wire bytes must be identical to the pre-change encoder (encode untouched).
+        assert_eq!(
+            encode_payload(snapshot),
+            payload,
+            "encode_payload must be deterministic / unchanged"
+        );
+    }
+
+    #[test]
+    fn inv_clean_dense_fixture() {
+        assert_inv(&fixture_snapshot());
+    }
+
+    #[test]
+    fn inv_clean_trailer_fixture() {
+        assert_inv(&fixture_snapshot_with_trailers());
+    }
+
+    #[test]
+    fn inv_empty_snapshot() {
+        assert_inv(&DiplomacyIntelSnapshot::default());
+    }
+
+    #[test]
+    fn inv_bad_changed_rows_gt_row_count() {
+        let mut s = fixture_snapshot();
+        s.changed_rows = Some(s.row_count() + 5);
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_unknown_status_bit() {
+        let mut s = fixture_snapshot();
+        s.status_flags |= 1 << 31;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_negative_casualties() {
+        let mut s = fixture_snapshot();
+        s.countries[0].casualties = -1;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_out_of_range_opinion() {
+        let mut s = fixture_snapshot();
+        s.opinions[0].opinion = MAX_OPINION_ABS + 1;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_duplicate_country_tag() {
+        let mut s = fixture_snapshot();
+        let dup = s.countries[0].clone();
+        s.countries.push(dup);
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_invalid_country_tag() {
+        let mut s = fixture_snapshot();
+        s.countries[0].tag_db_id = 0;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_zero_object_hash_state_event() {
+        let mut s = fixture_snapshot();
+        s.state_events[0].object_hash = 0;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_unknown_state_event_source() {
+        let mut s = fixture_snapshot();
+        s.state_events[0].source_kind = 999;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_subject_start_date_non_positive() {
+        let mut s = fixture_snapshot();
+        s.subjects[0].start_date_raw = 0;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_operative_out_of_range_skill() {
+        let mut s = fixture_snapshot();
+        s.operatives[0].skill = Some(MAX_OPERATIVE_SKILL + 1);
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_agency_capacity_e4_f4_mismatch() {
+        let mut s = fixture_snapshot();
+        s.agency_capacity_clusters[0].value_0xf4 = s.agency_capacity_clusters[0].value_0xe4 + 1;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_multiple_errors_ordering() {
+        // Several violations across kinds at once — the STRONGEST ordering check:
+        // summarize must emit the same parse_errors in the same order as decode.
+        let mut s = fixture_snapshot();
+        s.status_flags |= 1 << 31; // unknown status bit (early)
+        s.changed_rows = Some(s.row_count() + 1); // changed_rows>row_count (earliest)
+        s.countries[0].casualties = -5; // negative casualties (country row)
+        s.opinions[0].opinion = -(MAX_OPINION_ABS + 10); // opinion range (opinion row)
+        s.subjects[0].autonomy_state_hash = 0; // zero hash (subject row)
+        s.state_events[2].value_hash = 0; // zero value_hash (state-event row)
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_trailer_faction_members_not_increasing() {
+        let mut s = fixture_snapshot_with_trailers();
+        s.factions[0].member_tag_db_ids = vec![3, 1, 22]; // not strictly increasing
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_trailer_intel_network_invalid_target() {
+        let mut s = fixture_snapshot_with_trailers();
+        s.intel_network_graphs[0].target_tag_db_id = 0; // invalid target
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_trailer_operation_instance_zero_id() {
+        let mut s = fixture_snapshot_with_trailers();
+        s.operation_instances[0].instance_id = 0;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_trailer_incoming_action_dup_id() {
+        let mut s = fixture_snapshot_with_trailers();
+        s.incoming_actions[1].action_id = s.incoming_actions[0].action_id;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn inv_bad_war_root_unvalidated_with_war_rows() {
+        // Status-vs-row consistency block: badge war-root-unvalidated while war
+        // rows are present -> decode pushes a consistency error; summarize must too.
+        let mut s = fixture_snapshot();
+        s.status_flags |= STATUS_WAR_ROOT_UNVALIDATED;
+        assert_inv(&s);
+    }
+
+    #[test]
+    fn sampled_net_detects_byte_corruption() {
+        // Class-2 (post-encode byte corruption) is OUT of summarize_snapshot's
+        // scope by design — it works from the snapshot, not the bytes. This is
+        // exactly what the 1/N sampled decode guards: corrupt the encoded bytes and
+        // confirm decode_payload(corrupted) DIFFERS from summarize_snapshot(clean),
+        // so the sampled cross-check would fire (fail closed). Mirror the existing
+        // byte-mutation test: overwrite a state-event source_kind with 999.
+        let snapshot = fixture_snapshot();
+        let clean_summary = summarize_snapshot(0, &snapshot);
+        let mut corrupted = encode_payload(&snapshot);
+        let state_event_offset = HEADER_LEN
+            + ROW_COUNTRY_LEN
+            + ROW_WAR_LEN
+            + ROW_OPINION_LEN
+            + ROW_RELATION_FLAG_LEN
+            + ROW_SUBJECT_LEN
+            + ROW_AGENCY_LEN
+            + ROW_AGENCY_CAPACITY_CLUSTER_LEN
+            + ROW_OPERATIVE_LEN
+            + ROW_CRYPTOLOGY_LEN
+            + ROW_OPERATION_ANCHOR_LEN
+            + ROW_INTEL_MAP_LEN;
+        corrupted[state_event_offset + 14..state_event_offset + 16]
+            .copy_from_slice(&999u16.to_le_bytes());
+        let decode_summary = decode_payload(0, &corrupted);
+        assert_ne!(
+            clean_summary, decode_summary,
+            "sampled decode must detect post-encode byte corruption"
+        );
     }
 }
