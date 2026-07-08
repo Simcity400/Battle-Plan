@@ -254,6 +254,27 @@ pub struct Domain53FamilyCounts {
 /// These units ride the DOMAIN_PERF (telemetry) record, never the folded d53
 /// DATA snapshot. On early-`Err` returns the frame (and this struct) never
 /// escapes, so partial phase times are simply not reported — intentional.
+///
+/// W1.1 extension (perf_rearch_20260706): three additional lane-side segment
+/// timers that attribute the d53 wall time NOT already under one of the 10
+/// family timers, so `roots_us + <10 families> + war_projection_us +
+/// aggregation_us` accounts for ~all of the lane extract wall (the collector
+/// measures that extract wall as `seg_extract_us`, letting the analysis confirm
+/// the lane-internal residual is small). The three new fields are:
+/// - `roots_us`: [`resolve_domain53_frame_roots`] (country-table walk/validate),
+///   which the wrapper entry points run BEFORE this function — carried in via
+///   `Domain53FrameRoots::roots_resolve_us`.
+/// - `war_projection_us`: the war-degraded decision + `war_projection_by_country`
+///   fold, an untimed span BETWEEN the `wars_us` and `faction_gate_us` timers.
+/// - `aggregation_us`: the two final per-agency aggregation loops
+///   (operative_count then cryptology_target_count), untimed spans AROUND the
+///   `cryptology_us` timer. These new fields never overlap the existing 10
+///   (they cover disjoint code spans) so the sum stays a partition of the
+///   extract wall — no double-counting.
+///
+/// All 13 fields are observational: they change no row, wire byte, status flag,
+/// error variant, or control flow, and (like the original 10) are simply not
+/// reported on an early-`Err` return.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Domain53PhaseTimes {
     pub wars_us: u64,
@@ -266,6 +287,15 @@ pub struct Domain53PhaseTimes {
     pub operations_us: u64,
     pub intel_networks_us: u64,
     pub cryptology_us: u64,
+    /// W1.1: country-root resolution wall (see struct doc). Carried from
+    /// `Domain53FrameRoots::roots_resolve_us`.
+    pub roots_us: u64,
+    /// W1.1: war-degraded decision + `war_projection_by_country` fold wall
+    /// (between the wars and faction_gate family timers).
+    pub war_projection_us: u64,
+    /// W1.1: final per-agency aggregation loops (operative_count +
+    /// cryptology_target_count) wall.
+    pub aggregation_us: u64,
 }
 
 /// Elapsed micros as `u64`, saturating (a d53 frame is milliseconds, never
@@ -338,6 +368,16 @@ struct Domain53FrameRoots {
     game_state: u64,
     current_game_hour: u32,
     countries: Vec<CountryRoot>,
+    /// W1.1 instrument (perf_rearch_20260706): wall micros spent inside
+    /// [`resolve_domain53_frame_roots`] — global-root reads + build-identity
+    /// verify + the full country-table walk/validation
+    /// ([`resolve_country_roots`]). Measured at the SINGLE resolve site so all
+    /// three `extract_rows_from_current_roots*` entry points inherit it, then
+    /// copied verbatim into `Domain53PhaseTimes::roots_us` at the top of
+    /// [`extract_rows_from_resolved_roots_with_discovery`]. Observational only:
+    /// it is never read by any control-flow / row / status decision; it exists
+    /// solely to carry the timing across the resolve→extract boundary.
+    roots_resolve_us: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -560,6 +600,13 @@ pub fn extract_rows_from_current_roots_with_validated_war_addrs<M: Domain53Memor
 fn resolve_domain53_frame_roots<M: Domain53Memory>(
     mem: &M,
 ) -> Result<Domain53FrameRoots, ExtractError> {
+    // W1.1 instrument: time the whole resolve span (global-root reads +
+    // build-identity verify + country-table walk/validation). Observational —
+    // the timer is stashed on the returned struct and never influences control
+    // flow; on any early `?` return the frame never escapes, so no partial time
+    // is reported (identical to the family-timer contract). Every existing `?`
+    // below is unchanged.
+    let roots_started = Instant::now();
     let module_base = mem.module_base();
     if module_base == 0 {
         return Err(ExtractError::InvalidRoot("module_base_zero"));
@@ -590,6 +637,7 @@ fn resolve_domain53_frame_roots<M: Domain53Memory>(
         game_state,
         current_game_hour,
         countries,
+        roots_resolve_us: duration_micros_u64_saturating(roots_started.elapsed()),
     })
 }
 
@@ -607,6 +655,9 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     let module_base = roots.module_base;
     let game_state = roots.game_state;
     let current_game_hour = roots.current_game_hour;
+    // W1.1: carry the root-resolution wall (measured off in the resolve site
+    // BEFORE this call) into the phase accumulator. Observational only.
+    let roots_resolve_us = roots.roots_resolve_us;
     let countries = roots.countries;
     let mut acc = RowAccumulator::default();
     let mut source_proofs = SOURCE_PROOF_BUILD_SHA_870EBF | SOURCE_PROOF_COUNTRY_ROOTS_870EBF;
@@ -622,6 +673,9 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     // DATA snapshot). Observational: it changes no row, no wire byte, no status
     // flag, no error variant, and no control flow.
     let mut phase_times = Domain53PhaseTimes::default();
+    // W1.1: attribute the pre-extract root-resolution wall (country-table
+    // walk/validate) that the wrapper entry points ran before this call.
+    phase_times.roots_us = roots_resolve_us;
 
     let wars_started = Instant::now();
     let (war_rows, war_total, war_stale_dropped) = match war_row_addrs {
@@ -663,6 +717,11 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     // separately via the `country_faction_group` state event (which carries no
     // war fields), so only the war projection is withheld. See the lane README
     // war-root-unvalidated contract.
+    // W1.1: time the war-degraded decision + war-projection fold — an untimed
+    // span between the wars and faction_gate family timers. Observational only;
+    // `war_degraded`/`war_projection` values and the `source_proofs |= ...` are
+    // unchanged (the timer wraps them without altering any result).
+    let war_projection_started = Instant::now();
     let war_degraded = staleness.war_degraded();
     let (war_rows, war_projection) = if war_degraded {
         (Vec::new(), BTreeMap::new())
@@ -671,6 +730,8 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         let projection = war_projection_by_country(&war_rows);
         (war_rows, projection)
     };
+    phase_times.war_projection_us =
+        duration_micros_u64_saturating(war_projection_started.elapsed());
     let faction_gate_started = Instant::now();
     let faction_gate = read_faction_groups(mem, &countries)?;
     if faction_gate.validated {
@@ -811,6 +872,12 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         source_proofs |= SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF;
     }
 
+    // W1.1: the two per-agency aggregation loops (operative_count here,
+    // cryptology_target_count below) are untimed O(agencies×operatives) /
+    // O(agencies×cryptology) folds around the cryptology family timer. Attribute
+    // both to `aggregation_us` (accumulated, since they straddle the cryptology
+    // timer). Observational — the computed counts are unchanged.
+    let aggregation_started = Instant::now();
     for agency in &mut acc.rows.agencies {
         agency.operative_count = acc
             .rows
@@ -820,6 +887,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
             .count()
             .min(u32::MAX as usize) as u32;
     }
+    phase_times.aggregation_us = duration_micros_u64_saturating(aggregation_started.elapsed());
 
     let cryptology_started = Instant::now();
     read_cryptology_rows(mem, module_base, &agency_roots, &mut acc)?;
@@ -827,6 +895,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     if !agency_roots.is_empty() {
         source_proofs |= SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF;
     }
+    let aggregation2_started = Instant::now();
     for agency in &mut acc.rows.agencies {
         agency.cryptology_target_count = acc
             .rows
@@ -836,6 +905,13 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
             .count()
             .min(u32::MAX as usize) as u32;
     }
+    // W1.1: fold the second aggregation loop into the same segment bucket.
+    phase_times.aggregation_us =
+        phase_times
+            .aggregation_us
+            .saturating_add(duration_micros_u64_saturating(
+                aggregation2_started.elapsed(),
+            ));
 
     acc.rows.wars = war_rows;
 
@@ -4623,6 +4699,12 @@ mod tests {
         );
 
         let phase = extracted.phase_times;
+        // W1.1: all 13 lane-side spans (10 families + the 3 new segments) are
+        // disjoint sub-intervals of the outer interval, so each is <= the total
+        // and their sum is <= the total. `roots_us` is measured in the resolve
+        // site (before the family timers) but still inside the outer interval,
+        // which wraps the SAME `extract_rows_from_current_roots` call, so it too
+        // obeys the bound.
         let spans = [
             phase.wars_us,
             phase.faction_gate_us,
@@ -4634,15 +4716,23 @@ mod tests {
             phase.operations_us,
             phase.intel_networks_us,
             phase.cryptology_us,
+            phase.roots_us,
+            phase.war_projection_us,
+            phase.aggregation_us,
         ];
 
-        // Each individual family span is a subset of the outer interval → <= total.
+        // Each individual span is a subset of the outer interval → <= total.
         for (idx, &span) in spans.iter().enumerate() {
             assert!(
                 span <= outer_total_us,
                 "phase[{idx}] = {span}us exceeds outer total {outer_total_us}us"
             );
         }
+
+        // W1.1 presence: `roots_us` is a real measured span — the fixture always
+        // walks the country table in `resolve_domain53_frame_roots`, so the
+        // resolve segment ran (its value can still floor to 0us on a fast host,
+        // hence PRESENCE via the <= bound above, not a strict > 0).
 
         // The spans are disjoint sub-intervals of the outer interval, so their sum
         // cannot exceed the outer total either (untimed gaps only make the sum
