@@ -345,52 +345,39 @@ struct CountryRoot {
     country_ptr: u64,
 }
 
-/// W3-a0 instrument (perf_rearch_20260706): observational histogram of the
-/// byte-offsets within each per-pair relation blob at which a relation-flag
-/// vtable matched, keyed by `flag_kind`. Accumulated across the whole frame's
-/// relation scan. The blob is `DOMAIN53_RELATION_SCAN_BYTES` (0x340 = 832 bytes
-/// = 104 qwords), so a match `offset` (0, 8, .. < 832) maps to a bit index
-/// `offset / 8` in `0..=103`: bits `0..=63` live in `lo`, bits `64..=103` in the
-/// low 40 bits of `hi` (bit index `n >= 64` -> `hi` bit `n - 64`). This measures
-/// whether each flag type lives at a small FIXED set of offsets (offset-RE is
-/// data-safe) or is scattered (a data-loss trap) — BEFORE any read is changed.
+/// d53 relation-flag CONTAINER diagnostic (perf_rearch_20260706, RELATION_CONTAINER_RE).
+/// Per-`flag_kind` COUNT of relation sub-objects found in each pair's
+/// `pdx::vector<CRelation*>` (`rel+0xD0`/count `rel+0xDC`), accumulated across the
+/// whole frame's relation walk. Records EVERY known-kind container entry — including
+/// the kinds d53 does NOT emit here (PUPPET → +0x288; MARKET_ACCESS_RIGHTS → d43;
+/// AIR_BASE_ACCESS → d30) — so the live per-kind totals can be cross-checked against
+/// the melt oracle (e.g. NAP 615, docking_rights 165, military_access 43 on D04 1944).
 ///
-/// Purely observational: it is OR-ed in at the match site ALONGSIDE the existing
-/// match handling (PUPPET skip, `seen_flags` dedup, row push), which is entirely
-/// untouched; it records EVERY vtable match (incl. PUPPET and dedup-suppressed
-/// ones) because the offset-RE question is where each vtable APPEARS in the blob,
-/// independent of downstream dedup. It changes no row, wire byte, guarded read,
-/// status flag, error variant, or control flow. Surfaced through the collector's
-/// d53 DOMAIN_PERF diagnostic trailer (`domain53_relflag_*`), never the folded
-/// DATA snapshot. Deterministic given the scanned blobs, so it does not perturb
-/// the derived `PartialEq` of `ExtractedDomain53Frame` (equal frames scan equal
-/// blobs and therefore produce equal histograms).
+/// HISTORY: this struct previously held the inline-scan match-OFFSET bitmask (the
+/// W3-a0 instrument that proved the inline scan matched 0). The inline scan is now
+/// removed; the field `per_kind[K].0` is repurposed from an offset bitmask to a plain
+/// COUNT, and `.1` is left 0. Surfaced UNCHANGED through the collector's DOMAIN_PERF
+/// trailer as `domain53_relflag_k{K}_offlo` (= per-kind count) and
+/// `domain53_relflag_total_matches` (= total known-kind container entries). No collector
+/// change. Purely diagnostic: it never changes a row, wire byte, guarded read, status,
+/// error, or control flow, and is deterministic given the walked containers (so it does
+/// not perturb the derived `PartialEq` of the frame).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RelationFlagOffsetHistogram {
-    /// Per-`flag_kind` matched-offset bitmask `(lo, hi)` (see struct doc for the
-    /// bit layout). A kind absent from the map had zero matches this frame.
+    /// Per-`flag_kind` container-entry COUNT in `.0` (`.1` unused, left 0). A kind
+    /// absent from the map had zero container entries this frame.
     pub per_kind: BTreeMap<u16, (u64, u64)>,
-    /// Plain count of relation-flag vtable matches this frame (a volume
-    /// sanity-check for the analysis; == sum of set bits across `per_kind`).
+    /// Total known-kind relation sub-objects walked this frame (== sum of `per_kind[*].0`).
     pub total_matches: u64,
 }
 
 impl RelationFlagOffsetHistogram {
-    /// Record one relation-flag vtable match at byte `offset` within the blob for
-    /// `flag_kind`. Sets bit `offset / 8` in the kind's `(lo, hi)` mask and bumps
-    /// `total_matches`. `offset / 8 < 104` (the caller's scan bound guarantees
-    /// `offset + 8 <= 832`, so `offset <= 824` and `offset / 8 <= 103`), so the
-    /// `lo`/`hi` split never overflows; the saturating add on the count is a
-    /// formality (matches are rare — a handful per pair). Observational only.
-    fn record(&mut self, flag_kind: u16, offset: usize) {
-        let bit = offset / 8;
+    /// Count one relation-flag container sub-object of `flag_kind`. Bumps the kind's
+    /// `.0` count and `total_matches` (saturating; container entries are few per pair).
+    /// Diagnostic only.
+    fn record_kind_count(&mut self, flag_kind: u16) {
         let entry = self.per_kind.entry(flag_kind).or_default();
-        if bit < 64 {
-            entry.0 |= 1u64 << bit;
-        } else {
-            // bit is in 64..=103; (bit - 64) is in 0..=39 — always a valid shift.
-            entry.1 |= 1u64 << (bit - 64);
-        }
+        entry.0 = entry.0.saturating_add(1);
         self.total_matches = self.total_matches.saturating_add(1);
     }
 }
@@ -1544,25 +1531,9 @@ fn read_relation_rows<M: Domain53Memory>(
     countries: &[CountryRoot],
     acc: &mut RowAccumulator,
 ) -> Result<(), ExtractError> {
+    // The relation-flag vtables (13 kinds) used to classify each sub-object found in
+    // the per-pair `pdx::vector<CRelation*>` container (see `read_relation_container`).
     let relation_vtables = relation_vtable_kinds(module_base)?;
-    // T2 (perf_rearch_20260706) deliverable (a): range-check fast path for the
-    // per-qword vtable lookup. The map keys are the ~14 relation-flag vtable
-    // addresses; hoist their min/max so the 6.7M-qword inner scan can reject the
-    // vast majority of qwords with two register compares before touching the
-    // BTreeMap. A qword strictly below `min` or strictly above `max` cannot be a
-    // key, so skipping it is provably match-identical to a plain `get` that would
-    // have returned `None`. `relation_vtable_kinds` always returns a non-empty
-    // map (13 fixed entries); the `?` above already propagated any construction
-    // error, so `first_key_value`/`last_key_value` are `Some`. Fall back to an
-    // always-in-range window (0..=u64::MAX) on the impossible empty case so the
-    // check degenerates to "always consult the map" (still correct).
-    let (vtable_min, vtable_max) = match (
-        relation_vtables.keys().next().copied(),
-        relation_vtables.keys().next_back().copied(),
-    ) {
-        (Some(lo), Some(hi)) => (lo, hi),
-        _ => (0u64, u64::MAX),
-    };
     // T2 deliverable (c): `seen_opinions` REMOVED. `resolve_country_roots`
     // dedups countries by `tag_db_id` (its `seen.insert(tag_db_id)` gate, only
     // pushing a `CountryRoot` on first sight of a tag), so every element of
@@ -1805,78 +1776,26 @@ fn read_relation_rows<M: Domain53Memory>(
                 &mut seen_flags,
             );
 
-            // T2 deliverable (b): alloc-free blob read. Replace the per-pair
-            // `read_bytes(relation_entry, 0x340)` (a fresh zeroed 832-byte Vec on
-            // EVERY pair) with a stack buffer filled via `read_into`. The trait's
-            // `read_into` has a `read_bytes`-delegating default (byte-identical for
-            // every fixture/shim) and an alloc-free collector override whose gate
-            // is provably identical to `read_bytes`. Failure path is unchanged:
-            // `acc.skip(); continue;` — and because failure SKIPS the scan
-            // entirely (the `continue` below), a reused/stack buffer is safe: no
-            // path scans `scan_buf` after a failed/partial `read_into`, so stale
-            // bytes from a prior iteration can never be misread. (Verified: the
-            // only reader of `scan_buf` is the `while` scan on the Ok path.)
-            let mut scan_buf = [0u8; profile::DOMAIN53_RELATION_SCAN_BYTES];
-            if mem.read_into(relation_entry, &mut scan_buf).is_err() {
-                acc.skip();
-                continue;
-            }
-            let bytes = &scan_buf[..];
-            let mut offset = 0usize;
-            while offset + 8 <= bytes.len() {
-                let qword = u64::from_le_bytes(
-                    bytes[offset..offset + 8]
-                        .try_into()
-                        .expect("qword scan slice"),
-                );
-                // T2 deliverable (a): range-check fast path. A qword outside the
-                // hoisted [vtable_min, vtable_max] window cannot be a map key, so
-                // skipping the `get` is match-identical to a lookup returning
-                // `None`. This rejects almost every one of the ~6.7M qwords/frame
-                // in two register compares. `min`/`max` ARE valid keys, so the
-                // bounds are inclusive (`<` / `>`, not `<=` / `>=`).
-                if qword < vtable_min || qword > vtable_max {
-                    offset += 8;
-                    continue;
-                }
-                if let Some(flag_kind) = relation_vtables.get(&qword).copied() {
-                    // W3-a0 observational instrument (perf_rearch_20260706): OR
-                    // this match's byte-offset into the per-flag_kind histogram
-                    // BEFORE the (unchanged) match handling. `offset` here is the
-                    // byte offset (0, 8, .. < DOMAIN53_RELATION_SCAN_BYTES) where
-                    // the flag vtable was found; `offset / 8` is the bit index.
-                    // Records EVERY vtable match (incl. PUPPET and dedup-suppressed
-                    // ones) — the offset-RE question is where each vtable appears,
-                    // independent of downstream dedup. Diagnostic only: it changes
-                    // no row, read, status, or control flow (see the row handling
-                    // below, which is byte-identical to before).
-                    acc.relflag_offsets.record(flag_kind, offset);
-                    // PUPPET is handled by the +0x288 pointer hop above (its
-                    // vtable is never inline); skip it here to avoid a spurious
-                    // inline match and duplicate flag row.
-                    if flag_kind != REL_KIND_PUPPET {
-                        let key = (src.tag_db_id, target.tag_db_id, flag_kind);
-                        if seen_flags.insert(key) {
-                            acc.rows.relation_flags.push(RelationFlagRow {
-                                src_tag_db_id: src.tag_db_id,
-                                target_tag_db_id: target.tag_db_id,
-                                flag_kind,
-                                directed: true,
-                            });
-                            acc.rows.state_events.push(state_event(
-                                src.tag_db_id,
-                                Some(target.tag_db_id),
-                                STATE_EVENT_SOURCE_RELATION_FLAG,
-                                &format!("relation_flag_kind_{flag_kind}"),
-                                "directed_true",
-                                i64::from(flag_kind),
-                            ));
-                            acc.observe();
-                        }
-                    }
-                }
-                offset += 8;
-            }
+            // Relation-flag sub-objects (non_aggression_pact, military_access,
+            // docking_rights, guarantee, embargo, ...) are NOT inline in the `rel`
+            // object: each is a heap `CRelation` object held in a `pdx::vector<CRelation*>`
+            // whose header lives on `rel` (begin +0xD0, count +0xDC). The former inline
+            // `[rel, rel+0x340)` vtable scan therefore matched ZERO of them (proven live:
+            // relflag_total_matches=0 in both peace and war), silently dropping every
+            // NAP/mil-access/docking/guarantee/embargo. Walk the container instead — this
+            // CLOSES that data gap AND retires the ~53 MB/frame + ~6.7M-qword/frame dead
+            // scan. See runs/perf_rearch_20260706/RELATION_CONTAINER_RE.md (RE, Codex-
+            // endorsed) + RELATION_FLAG_GAP_LEDGER.md (no-duplication ledger).
+            read_relation_container(
+                mem,
+                relation_entry,
+                &relation_vtables,
+                src.tag_db_id,
+                target.tag_db_id,
+                current_game_hour,
+                acc,
+                &mut seen_flags,
+            );
         }
     }
     Ok(())
@@ -2061,6 +1980,249 @@ fn read_subject_relation<M: Domain53Memory>(
         // majority gate). Only true read/validation failures count as skips.
         Err(ExtractError::InvalidRoot("domain53_subject_direction_skip")) => {}
         Err(_) => acc.skip(),
+    }
+}
+
+/// d53 owns these relation-flag kinds (the previously-dropped gap). EXCLUDED because
+/// captured elsewhere: `REL_KIND_PUPPET` (d53, via the `+0x288` subject pointer hop),
+/// `REL_KIND_MARKET_ACCESS_RIGHTS` (domain 43), `REL_KIND_AIR_BASE_ACCESS` (domain 30).
+/// See runs/perf_rearch_20260706/RELATION_FLAG_GAP_LEDGER.md.
+fn relation_kind_emitted_by_d53(kind: u16) -> bool {
+    !matches!(
+        kind,
+        REL_KIND_PUPPET | REL_KIND_MARKET_ACCESS_RIGHTS | REL_KIND_AIR_BASE_ACCESS
+    )
+}
+
+/// Walk the per-pair relation sub-object container — a `pdx::vector<CRelation*>` whose
+/// header lives on the `rel` object (`begin +0xD0`, `cap +0xD8`, `count +0xDC`) — and emit
+/// a [`RelationFlagRow`] plus start/end `state_events` for each active d53-owned
+/// relation-flag kind (non_aggression_pact, military_access, docking_rights, naval_blockade,
+/// equipment_purchase_contract_relation, guarantee, improve_relations, attache,
+/// licence_production, embargo). Kinds owned by other domains (puppet/+0x288, market/d43,
+/// air-base/d30) are COUNTED in the diagnostic but NOT emitted here.
+///
+/// Fail-closed like [`read_subject_relation`]: a torn read of a header field or of a
+/// matched sub-object's fields counts a skip (so the majority gate can react); an
+/// empty container (`count == 0`), a null element, or a non-relation (unknown-vtable)
+/// sibling returns quietly WITHOUT a skip — the ~64k pairs with no sub-relations must not
+/// perturb the gate. Never fabricates: a sub-object must carry a known relation vtable, a
+/// valid tag pair, AND that pair must be exactly THIS bucket's `(src, target)` (in either
+/// order) — a container entry for another pair is a real inconsistency and is skipped.
+///
+/// The pointer array is read as ONE bounded span, so a torn array costs a single structural
+/// skip (not one per element). Dedup is by the sub-object's OWN `(first, second, kind)` via
+/// the frame-global `seen_flags`: the same relation object is pushed into BOTH direction
+/// buckets (`rel(A->B)` and `rel(B->A)`), so keying on its stored `first`/`second` emits it
+/// exactly once regardless of which bucket the walk reaches first. Dedup is applied LAST so
+/// a torn/invalid entry never poisons the key for a valid mirror.
+/// See runs/perf_rearch_20260706/RELATION_CONTAINER_RE.md.
+#[allow(clippy::too_many_arguments)]
+fn read_relation_container<M: Domain53Memory>(
+    mem: &M,
+    relation_entry: u64,
+    relation_vtables: &BTreeMap<u64, u16>,
+    src_tag_db_id: u32,
+    target_tag_db_id: u32,
+    current_game_hour: u32,
+    acc: &mut RowAccumulator,
+    seen_flags: &mut BTreeSet<(u32, u32, u16)>,
+) {
+    // Vector header {begin @+0xD0, cap @+0xD8, count @+0xDC}. Read COUNT first so the
+    // empty vs corrupt distinction is exact. A torn read of a header field on this heap
+    // object (whose opinion @+0x300 already read cleanly) is a real failure -> skip.
+    let count = match add_addr(relation_entry, profile::DOMAIN53_RELATION_SUBREL_COUNT)
+        .and_then(|addr| mem.read_i32(addr))
+    {
+        Ok(value) => value,
+        Err(_) => {
+            acc.skip();
+            return;
+        }
+    };
+    // Empty vector: the COMMON case for the vast majority of pairs. Quiet, NO skip.
+    if count == 0 {
+        return;
+    }
+    // A negative or absurd count is a garbage/torn header, not an empty vector -> skip.
+    // (`count == 0` already returned above, so valid live counts are `1..=MAX`.)
+    if !(1..=profile::DOMAIN53_RELATION_SUBREL_MAX_COUNT).contains(&count) {
+        acc.skip();
+        return;
+    }
+    // With `count > 0`, `begin` MUST point at a heap array. A null / non-heap begin here
+    // is an inconsistent (torn) header -> skip (NOT the quiet empty case).
+    let begin = match add_addr(relation_entry, profile::DOMAIN53_RELATION_SUBREL_BEGIN)
+        .and_then(|addr| mem.read_u64(addr))
+    {
+        Ok(value) => value,
+        Err(_) => {
+            acc.skip();
+            return;
+        }
+    };
+    if !is_heap_ptr(begin) {
+        acc.skip();
+        return;
+    }
+    // Capacity sanity: a live pdx::vector has `count <= cap` and a bounded cap.
+    let cap = match add_addr(relation_entry, profile::DOMAIN53_RELATION_SUBREL_CAP)
+        .and_then(|addr| mem.read_i32(addr))
+    {
+        Ok(value) => value,
+        Err(_) => {
+            acc.skip();
+            return;
+        }
+    };
+    if cap < count || cap > profile::DOMAIN53_RELATION_SUBREL_MAX_COUNT {
+        acc.skip();
+        return;
+    }
+    // Read the whole `CRelation*` array in ONE bounded span. A torn/short array then costs
+    // exactly one structural skip instead of up to `count` per-slot skips (a skip flood
+    // from a single bad header could otherwise trip the majority gate = false frame loss).
+    // `is_heap_ptr(begin)` bounds `begin < 0x7FF0_0000_0000` and `array_len <= 2048`, so
+    // `begin + array_len` cannot overflow; a short/unreadable span fails the read.
+    let array_len = (count as usize) * 8;
+    let array = match mem.read_bytes(begin, array_len) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            acc.skip();
+            return;
+        }
+    };
+    for chunk in array.chunks_exact(8) {
+        let sub = u64::from_le_bytes(chunk.try_into().expect("8-byte pointer slot"));
+        // A null / non-heap element is benign padding; skip quietly.
+        if !is_heap_ptr(sub) {
+            continue;
+        }
+        // Identify the kind by the vtable at `sub+0`. An unknown vtable is a
+        // heterogeneous-container sibling (CWarRelation / CLendLeaseRelation / ...) or a
+        // torn object -> skip quietly (not an error, not a d53 kind).
+        let vptr = match mem.read_u64(sub) {
+            Ok(value) => value,
+            Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        let kind = match relation_vtables.get(&vptr).copied() {
+            Some(value) => value,
+            None => continue,
+        };
+        // Diagnostic: count EVERY known-kind container entry (incl. the non-d53 kinds) so
+        // the live per-kind totals cross-check against the melt oracle.
+        acc.relflag_offsets.record_kind_count(kind);
+        // Skip kinds captured elsewhere (puppet via +0x288, market -> d43, air-base -> d30).
+        if !relation_kind_emitted_by_d53(kind) {
+            continue;
+        }
+        let first = match add_addr(sub, profile::DOMAIN53_REL_BASE_FIRST)
+            .and_then(|addr| mem.read_u32(addr))
+        {
+            Ok(value) => value,
+            Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        let second = match add_addr(sub, profile::DOMAIN53_REL_BASE_SECOND)
+            .and_then(|addr| mem.read_u32(addr))
+        {
+            Ok(value) => value,
+            Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        // Matched vtable but garbage tags = a real inconsistency (never fabricate).
+        if !valid_tag_db_id(first) || !valid_tag_db_id(second) || first == second {
+            acc.skip();
+            continue;
+        }
+        // Bucket-pair consistency: this container belongs to the (src, target) pair, so a
+        // sub-object's stored `(first, second)` MUST be that pair (in either order). An
+        // entry for a different pair means a torn `begin` reached another pair's object (or
+        // a genuine engine inconsistency) — skip, never emit a fabricated wrong-pair row.
+        let matches_bucket = (first == src_tag_db_id && second == target_tag_db_id)
+            || (first == target_tag_db_id && second == src_tag_db_id);
+        if !matches_bucket {
+            acc.skip();
+            continue;
+        }
+        // start_date (engine-hour, RAW). `Init` always writes a real start; the base-ctor
+        // sentinel here means uninitialized/torn. Gate strictly positive and no later than
+        // the current game hour (small live-read-drift margin), like the subject reader.
+        let start_raw = match add_addr(sub, profile::DOMAIN53_REL_BASE_START_DATE)
+            .and_then(|addr| mem.read_i32(addr))
+        {
+            Ok(value) => value,
+            Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        let clock_ceiling = i64::from(current_game_hour) + 24;
+        if start_raw == profile::DOMAIN53_REL_DATE_SENTINEL
+            || start_raw <= 0
+            || i64::from(start_raw) > clock_ceiling
+        {
+            acc.skip();
+            continue;
+        }
+        // end_date: the sentinel (or any non-positive/torn value) means "no end_date"
+        // (None) — the relation's existence + start are still valid, so we keep the row but
+        // emit no end event rather than fabricate a garbage end. A real positive end may be
+        // in the FUTURE (the relation's expiry), so it is NOT clock-ceiling gated.
+        let end_raw = match add_addr(sub, profile::DOMAIN53_REL_BASE_END_DATE)
+            .and_then(|addr| mem.read_i32(addr))
+        {
+            Ok(value) if value != profile::DOMAIN53_REL_DATE_SENTINEL && value > 0 => Some(value),
+            Ok(_) => None,
+            Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        // Dedup LAST (after all reads/validation).
+        if !seen_flags.insert((first, second, kind)) {
+            continue;
+        }
+        acc.rows.relation_flags.push(RelationFlagRow {
+            src_tag_db_id: first,
+            target_tag_db_id: second,
+            flag_kind: kind,
+            directed: true,
+        });
+        acc.rows.state_events.push(state_event(
+            first,
+            Some(second),
+            STATE_EVENT_SOURCE_RELATION_FLAG,
+            &format!("relation_flag_kind_{kind}"),
+            "directed_true",
+            i64::from(kind),
+        ));
+        acc.rows.state_events.push(state_event(
+            first,
+            Some(second),
+            STATE_EVENT_SOURCE_RELATION_FLAG,
+            &format!("relation_flag_start_{kind}"),
+            "start_date_raw",
+            i64::from(start_raw),
+        ));
+        if let Some(end) = end_raw {
+            acc.rows.state_events.push(state_event(
+                first,
+                Some(second),
+                STATE_EVENT_SOURCE_RELATION_FLAG,
+                &format!("relation_flag_end_{kind}"),
+                "end_date_raw",
+                i64::from(end),
+            ));
+        }
+        acc.observe();
     }
 }
 
@@ -4683,9 +4845,36 @@ mod tests {
                 "aut_puppet",
             );
 
+            // rel13 (country1 -> country3): a GUARANTEE relation carried in the pair's
+            // sub-relation container (`pdx::vector<CRelation*>` at rel13+0xD0), NOT inline
+            // (the inline vtable scan is gone). Exercises `read_relation_container`
+            // end-to-end: begin=guarantee_arr, count=1, one CGuaranteeRelation object.
+            let guarantee_arr = heap + 0x1F_0000;
+            let guarantee_obj = heap + 0x1F_8000;
+            mem.add_chunk(guarantee_arr, 0x40);
+            mem.add_chunk(guarantee_obj, 0x40);
             mem.write_u64(
-                rel13,
+                rel13 + profile::DOMAIN53_RELATION_SUBREL_BEGIN as u64,
+                guarantee_arr,
+            );
+            mem.write_i32(rel13 + profile::DOMAIN53_RELATION_SUBREL_CAP as u64, 1);
+            mem.write_i32(rel13 + profile::DOMAIN53_RELATION_SUBREL_COUNT as u64, 1);
+            mem.write_u64(guarantee_arr, guarantee_obj);
+            mem.write_u64(
+                guarantee_obj,
                 module + profile::DOMAIN53_REL_GUARANTEE_VTABLE_RVA as u64,
+            );
+            mem.write_u32(guarantee_obj + profile::DOMAIN53_REL_BASE_FIRST as u64, 1);
+            mem.write_u32(guarantee_obj + profile::DOMAIN53_REL_BASE_SECOND as u64, 3);
+            // start_date raw = a valid hour before the fixture clock (60_830_441);
+            // end_date = sentinel (guarantees carry no end_date in the save).
+            mem.write_i32(
+                guarantee_obj + profile::DOMAIN53_REL_BASE_START_DATE as u64,
+                60_000_000,
+            );
+            mem.write_i32(
+                guarantee_obj + profile::DOMAIN53_REL_BASE_END_DATE as u64,
+                profile::DOMAIN53_REL_DATE_SENTINEL,
             );
             mem.write_i32(rel13 + profile::DOMAIN53_RELATION_OPINION as u64, -35);
         }
@@ -4971,12 +5160,23 @@ mod tests {
         assert_eq!(extracted.skipped_rows, 0);
         assert_eq!(extracted.rows.countries.len(), FAKE_COUNTRY_ROWS as usize);
         assert_eq!(extracted.rows.opinions.len(), 2);
-        // Guarantee flag (1->3) + synthesized puppet flag (1->2 from the +0x288
-        // subject hop) = 2 relation flags.
+        // Guarantee flag (1->3, from the rel13 +0xD0 sub-relation container) +
+        // synthesized puppet flag (1->2 from the +0x288 subject hop) = 2 relation flags.
         assert_eq!(extracted.rows.relation_flags.len(), 2);
         assert!(extracted.rows.relation_flags.iter().any(|row| {
             row.src_tag_db_id == 1 && row.target_tag_db_id == 2 && row.flag_kind == REL_KIND_PUPPET
         }));
+        // The container-derived guarantee: correct kind + direction (first=1, second=3).
+        assert!(extracted.rows.relation_flags.iter().any(|row| {
+            row.src_tag_db_id == 1
+                && row.target_tag_db_id == 3
+                && row.flag_kind == REL_KIND_GUARANTEE
+                && row.directed
+        }));
+        // Its start_date raw rides a relation-flag state_event.
+        assert!(extracted.rows.state_events.iter().any(|e| e.source_kind
+            == STATE_EVENT_SOURCE_RELATION_FLAG
+            && e.value_raw == 60_000_000));
         assert_eq!(extracted.rows.subjects.len(), 1);
         // The +0x288 pointer hop carries the validated fields incl. start_date.
         assert_eq!(extracted.rows.subjects[0].overlord_tag_db_id, 1);
@@ -6583,246 +6783,261 @@ mod tests {
         assert!(mem.read_u64(torn_table + 16).is_err());
     }
 
-    // T2 deliverable (a): the range-check fast path in the qword scan must
-    // produce the IDENTICAL ordered `(offset, kind)` match list as a plain
-    // per-qword map lookup. A range check can only skip qwords that are NOT map
-    // keys, so the two scans must agree on every blob.
-    //
-    // Reference scan = the OLD code path (map `get` on every qword). Fast scan =
-    // the NEW code path (skip qwords outside [min, max], else `get`). Both are
-    // reimplemented here as pure helpers over a byte blob so the equivalence is
-    // tested directly, independent of memory plumbing.
-    fn reference_qword_scan(bytes: &[u8], vtables: &BTreeMap<u64, u16>) -> Vec<(usize, u16)> {
-        let mut out = Vec::new();
-        let mut offset = 0usize;
-        while offset + 8 <= bytes.len() {
-            let qword = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-            if let Some(kind) = vtables.get(&qword).copied() {
-                out.push((offset, kind));
-            }
-            offset += 8;
-        }
-        out
-    }
+    // (The inline-scan qword range-check helpers + their equivalence test were removed
+    // with the inline scan itself: relation-flag sub-objects live in the `rel+0xD0`
+    // container, not inline, so there is no per-qword blob scan to fast-path any more.
+    // See `read_relation_container` and its tests below.)
 
-    fn fast_qword_scan(bytes: &[u8], vtables: &BTreeMap<u64, u16>) -> Vec<(usize, u16)> {
-        let (min, max) = match (
-            vtables.keys().next().copied(),
-            vtables.keys().next_back().copied(),
-        ) {
-            (Some(lo), Some(hi)) => (lo, hi),
-            _ => (0u64, u64::MAX),
-        };
-        let mut out = Vec::new();
-        let mut offset = 0usize;
-        while offset + 8 <= bytes.len() {
-            let qword = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-            if qword < min || qword > max {
-                offset += 8;
-                continue;
-            }
-            if let Some(kind) = vtables.get(&qword).copied() {
-                out.push((offset, kind));
-            }
-            offset += 8;
-        }
-        out
-    }
-
+    /// The repurposed relation-flag diagnostic counts container sub-objects PER KIND:
+    /// `per_kind[K].0` is a plain COUNT (`.1` stays 0) and `total_matches` is the sum.
+    /// A default histogram is empty. (Post inline-scan removal — see the struct doc.)
     #[test]
-    fn qword_scan_range_check_matches_plain_lookup() {
-        // Real relation-flag vtable map for a representative module base (13
-        // entries, spread across a wide RVA range so min != max and the window
-        // is meaningful).
-        let module_base = 0x1_4000_0000u64;
-        let vtables = relation_vtable_kinds(module_base).expect("vtables");
-        assert!(vtables.len() >= 2, "need a non-degenerate min..max window");
-        let min = *vtables.keys().next().unwrap();
-        let max = *vtables.keys().next_back().unwrap();
-
-        // Build a synthetic blob containing, at qword-aligned offsets:
-        //   - every vtable value (each key), some duplicated at multiple offsets
-        //   - min-1, max+1 (just-outside boundary, must be skipped, non-members)
-        //   - min, max (boundary members, must match)
-        //   - 0 and u64::MAX (extreme junk)
-        //   - a spread of pseudo-random junk qwords (in- and out-of-window)
-        let mut qwords: Vec<u64> = Vec::new();
-        for (&k, _) in vtables.iter() {
-            qwords.push(k); // every vtable value
-        }
-        for (&k, _) in vtables.iter() {
-            qwords.push(k); // duplicated vtables at a second set of offsets
-        }
-        qwords.push(min.wrapping_sub(1)); // min-1 (non-member, in principle < min)
-        qwords.push(max.wrapping_add(1)); // max+1 (non-member, > max)
-        qwords.push(min); // min (member)
-        qwords.push(max); // max (member)
-        qwords.push(0);
-        qwords.push(u64::MAX);
-        // Deterministic junk (LCG), some in-window some out.
-        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
-        for _ in 0..200 {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            qwords.push(seed);
-            // Also push a value forced INTO the window to exercise the in-range,
-            // not-a-key case (range check passes, map returns None).
-            let in_window = min.wrapping_add(seed % (max - min + 1));
-            qwords.push(in_window);
-        }
-
-        let mut blob = Vec::with_capacity(qwords.len() * 8);
-        for q in &qwords {
-            blob.extend_from_slice(&q.to_le_bytes());
-        }
-        // Add a trailing 3 bytes so the tail (< 8) is ignored identically by both.
-        blob.extend_from_slice(&[0xAB, 0xCD, 0xEF]);
-
-        let reference = reference_qword_scan(&blob, &vtables);
-        let fast = fast_qword_scan(&blob, &vtables);
-        assert_eq!(
-            reference, fast,
-            "range-check fast scan diverged from plain per-qword map lookup"
-        );
-
-        // Sanity: at least the deliberately-placed member values matched.
-        assert!(
-            !reference.is_empty(),
-            "expected the synthetic blob to contain vtable matches"
-        );
-    }
-
-    /// W3-a0 instrument (perf_rearch_20260706): drive the relation-flag
-    /// match-offset histogram exactly as the live scan does — a
-    /// `while offset + 8 <= bytes.len()` walk over a crafted 832-byte blob with
-    /// KNOWN flag vtables placed at KNOWN qword offsets, calling
-    /// `RelationFlagOffsetHistogram::record(flag_kind, offset)` on every match
-    /// (the same call the match site makes). Assert the emitted `(lo, hi)`
-    /// bitmasks have EXACTLY the expected bits set (`offset / 8`) for the right
-    /// `flag_kind`s, that PUPPET is recorded like any other match (the histogram
-    /// records ALL matches, independent of the downstream PUPPET/dedup handling),
-    /// and that `total_matches` counts every match. Also assert the empty-blob
-    /// case emits nothing (`total_matches == 0`, no per-kind entries).
-    #[test]
-    fn relflag_offset_histogram_records_exact_bits() {
-        let module_base = 0x1_4000_0000u64;
-        let vtables = relation_vtable_kinds(module_base).expect("vtables");
-        // Map flag_kind -> its vtable value, so we can plant a specific kind at a
-        // specific offset.
-        let vtable_for: BTreeMap<u16, u64> = vtables.iter().map(|(&addr, &k)| (k, addr)).collect();
-
-        // The live blob is DOMAIN53_RELATION_SCAN_BYTES = 832 bytes = 104 qwords.
-        // Plant matches at hand-picked qword slots that exercise:
-        //   - slot 0                    -> bit 0   (lo)
-        //   - slot 63                   -> bit 63  (lo, the lo/hi boundary)
-        //   - slot 64                   -> bit 64  (hi bit 0, the first hi bit)
-        //   - slot 103                  -> bit 103 (hi bit 39, the LAST valid slot)
-        //   - a kind appearing at TWO slots (7 and 70) -> lo bit 7 + hi bit 6
-        //   - PUPPET at slot 40         -> recorded despite the match-site skip
-        // Expected (flag_kind, slot) plants:
-        let plants: &[(u16, usize)] = &[
-            (REL_KIND_NON_AGGRESSION_PACT, 0),
-            (REL_KIND_EMBARGO, 63),
-            (REL_KIND_MILITARY_ACCESS, 64),
-            (REL_KIND_GUARANTEE, 103),
-            (REL_KIND_ATTACHE, 7),
-            (REL_KIND_ATTACHE, 70),
-            (REL_KIND_PUPPET, 40),
-        ];
-
-        let mut blob = vec![0u8; profile::DOMAIN53_RELATION_SCAN_BYTES];
-        assert_eq!(blob.len() / 8, 104, "blob is 104 qwords");
-        for &(kind, slot) in plants {
-            let vtable = *vtable_for.get(&kind).expect("planted kind has a vtable");
-            let byte = slot * 8;
-            blob[byte..byte + 8].copy_from_slice(&vtable.to_le_bytes());
-        }
-
-        // Scan exactly like the live match site (visit every offset, `get`, and
-        // `record` on a hit) — no dedup/PUPPET-skip, since the histogram records
-        // every match.
+    fn relflag_histogram_counts_per_kind() {
         let mut hist = RelationFlagOffsetHistogram::default();
-        let mut offset = 0usize;
-        while offset + 8 <= blob.len() {
-            let qword = u64::from_le_bytes(blob[offset..offset + 8].try_into().unwrap());
-            if let Some(flag_kind) = vtables.get(&qword).copied() {
-                hist.record(flag_kind, offset);
-            }
-            offset += 8;
-        }
-
-        // total_matches == number of plants (each is one match, zero-qwords never
-        // match a vtable).
-        assert_eq!(hist.total_matches, plants.len() as u64);
-
-        // Compute the expected (lo, hi) mask per kind from the plants and compare
-        // to what `record` accumulated.
-        let mut expected: BTreeMap<u16, (u64, u64)> = BTreeMap::new();
-        for &(kind, slot) in plants {
-            let entry = expected.entry(kind).or_default();
-            if slot < 64 {
-                entry.0 |= 1u64 << slot;
-            } else {
-                entry.1 |= 1u64 << (slot - 64);
-            }
-        }
-        assert_eq!(hist.per_kind, expected, "per-kind offset bitmasks");
-
-        // Spot-check the boundary bits explicitly.
-        assert_eq!(
-            hist.per_kind[&REL_KIND_NON_AGGRESSION_PACT],
-            (1u64 << 0, 0),
-            "slot 0 -> lo bit 0"
-        );
-        assert_eq!(
-            hist.per_kind[&REL_KIND_EMBARGO],
-            (1u64 << 63, 0),
-            "slot 63 -> lo bit 63"
-        );
-        assert_eq!(
-            hist.per_kind[&REL_KIND_MILITARY_ACCESS],
-            (0, 1u64 << 0),
-            "slot 64 -> hi bit 0"
-        );
-        assert_eq!(
-            hist.per_kind[&REL_KIND_GUARANTEE],
-            (0, 1u64 << 39),
-            "slot 103 -> hi bit 39 (last valid slot)"
-        );
-        assert_eq!(
-            hist.per_kind[&REL_KIND_ATTACHE],
-            (1u64 << 7, 1u64 << 6),
-            "slots 7 & 70 -> lo bit 7 + hi bit 6"
-        );
-        // PUPPET is recorded like any other match (the match-site PUPPET skip does
-        // not touch the histogram): slot 40 -> lo bit 40.
-        assert_eq!(
-            hist.per_kind[&REL_KIND_PUPPET],
-            (1u64 << 40, 0),
-            "slot 40 (PUPPET) -> lo bit 40, recorded despite the match-site skip"
-        );
-    }
-
-    /// W3-a0: an all-zero (no flag vtable) blob records NOTHING — `total_matches`
-    /// stays 0 and no per-kind entry is created (so the collector emits no
-    /// per-kind units for it).
-    #[test]
-    fn relflag_offset_histogram_empty_on_no_matches() {
-        let module_base = 0x1_4000_0000u64;
-        let vtables = relation_vtable_kinds(module_base).expect("vtables");
-        let blob = vec![0u8; profile::DOMAIN53_RELATION_SCAN_BYTES];
-        let mut hist = RelationFlagOffsetHistogram::default();
-        let mut offset = 0usize;
-        while offset + 8 <= blob.len() {
-            let qword = u64::from_le_bytes(blob[offset..offset + 8].try_into().unwrap());
-            if let Some(flag_kind) = vtables.get(&qword).copied() {
-                hist.record(flag_kind, offset);
-            }
-            offset += 8;
-        }
         assert_eq!(hist.total_matches, 0);
         assert!(hist.per_kind.is_empty());
+        hist.record_kind_count(REL_KIND_NON_AGGRESSION_PACT);
+        hist.record_kind_count(REL_KIND_NON_AGGRESSION_PACT);
+        hist.record_kind_count(REL_KIND_NON_AGGRESSION_PACT);
+        hist.record_kind_count(REL_KIND_EMBARGO);
+        hist.record_kind_count(REL_KIND_PUPPET);
+        hist.record_kind_count(REL_KIND_PUPPET);
+        assert_eq!(hist.per_kind[&REL_KIND_NON_AGGRESSION_PACT], (3, 0));
+        assert_eq!(hist.per_kind[&REL_KIND_EMBARGO], (1, 0));
+        assert_eq!(hist.per_kind[&REL_KIND_PUPPET], (2, 0));
+        assert_eq!(hist.total_matches, 6);
+    }
+
+    /// Build a `rel` object for the pair (1, 2) with a `pdx::vector<CRelation*>` (`+0xD0`
+    /// begin / `+0xDC` count) holding a mix of sub-objects, and assert
+    /// `read_relation_container`:
+    ///   - emits owned kinds once (NAP 1->2 with a real end_date; military_access stored
+    ///     REVERSE as 2->1 with the sentinel end -> emitted 2->1, no end event),
+    ///   - COUNTS but does NOT emit a non-d53 kind (air_base_access -> domain 30),
+    ///   - skips an unknown-vtable sibling and a null element QUIETLY (no counted skip),
+    ///   - dedups a duplicate NAP entry (same object appears in both direction buckets).
+    #[test]
+    fn read_relation_container_emits_owned_kinds_and_dedups() {
+        let module = 0x1_4000_0000u64;
+        let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
+        let vtables = relation_vtable_kinds(module).expect("vtables");
+        let rel = heap + 0x1000;
+        let arr = heap + 0x2000;
+        let nap = heap + 0x3000;
+        let milacc = heap + 0x3100;
+        let airbase = heap + 0x3200;
+        let unknown = heap + 0x3300;
+
+        let mut mem = FakeMemory::new(module);
+        for (addr, len) in [
+            (rel, 0x100usize),
+            (arr, 0x40),
+            (nap, 0x40),
+            (milacc, 0x40),
+            (airbase, 0x40),
+            (unknown, 0x40),
+        ] {
+            mem.add_chunk(addr, len);
+        }
+        // Vector header: begin=arr, cap=8, count=6.
+        mem.write_u64(rel + profile::DOMAIN53_RELATION_SUBREL_BEGIN as u64, arr);
+        mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_CAP as u64, 8);
+        mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_COUNT as u64, 6);
+        // Elements: [nap, milacc, airbase, unknown, null, nap(dup)]. All belong to pair (1,2).
+        mem.write_u64(arr, nap);
+        mem.write_u64(arr + 8, milacc);
+        mem.write_u64(arr + 16, airbase);
+        mem.write_u64(arr + 24, unknown);
+        mem.write_u64(arr + 32, 0);
+        mem.write_u64(arr + 40, nap);
+        // NAP (1->2), start 100, real end 200.
+        mem.write_u64(
+            nap,
+            module + profile::DOMAIN53_REL_NON_AGGRESSION_PACT_VTABLE_RVA as u64,
+        );
+        mem.write_u32(nap + profile::DOMAIN53_REL_BASE_FIRST as u64, 1);
+        mem.write_u32(nap + profile::DOMAIN53_REL_BASE_SECOND as u64, 2);
+        mem.write_i32(nap + profile::DOMAIN53_REL_BASE_START_DATE as u64, 100);
+        mem.write_i32(nap + profile::DOMAIN53_REL_BASE_END_DATE as u64, 200);
+        // MILITARY_ACCESS stored REVERSE (2->1) — same bucket {1,2}, so it is valid and
+        // emitted with its own direction (2->1). start 50, end = sentinel (no end).
+        mem.write_u64(
+            milacc,
+            module + profile::DOMAIN53_REL_MILITARY_ACCESS_VTABLE_RVA as u64,
+        );
+        mem.write_u32(milacc + profile::DOMAIN53_REL_BASE_FIRST as u64, 2);
+        mem.write_u32(milacc + profile::DOMAIN53_REL_BASE_SECOND as u64, 1);
+        mem.write_i32(milacc + profile::DOMAIN53_REL_BASE_START_DATE as u64, 50);
+        mem.write_i32(
+            milacc + profile::DOMAIN53_REL_BASE_END_DATE as u64,
+            profile::DOMAIN53_REL_DATE_SENTINEL,
+        );
+        // AIR_BASE_ACCESS (1->2): counted in the diagnostic, NOT emitted (domain 30 owns it).
+        mem.write_u64(
+            airbase,
+            module + profile::DOMAIN53_REL_AIR_BASE_ACCESS_VTABLE_RVA as u64,
+        );
+        mem.write_u32(airbase + profile::DOMAIN53_REL_BASE_FIRST as u64, 1);
+        mem.write_u32(airbase + profile::DOMAIN53_REL_BASE_SECOND as u64, 2);
+        mem.write_i32(airbase + profile::DOMAIN53_REL_BASE_START_DATE as u64, 60);
+        mem.write_i32(
+            airbase + profile::DOMAIN53_REL_BASE_END_DATE as u64,
+            profile::DOMAIN53_REL_DATE_SENTINEL,
+        );
+        // Unknown vtable (not in the relation map) -> skipped quietly, not counted.
+        mem.write_u64(unknown, module + 0x0099_9999);
+
+        let mut acc = RowAccumulator::default();
+        let mut seen_flags = BTreeSet::new();
+        read_relation_container(&mem, rel, &vtables, 1, 2, 1000, &mut acc, &mut seen_flags);
+
+        // Rows: NAP(1,2), MILITARY_ACCESS(2,1) in element order. air_base absent.
+        assert_eq!(
+            acc.rows.relation_flags,
+            vec![
+                RelationFlagRow {
+                    src_tag_db_id: 1,
+                    target_tag_db_id: 2,
+                    flag_kind: REL_KIND_NON_AGGRESSION_PACT,
+                    directed: true,
+                },
+                RelationFlagRow {
+                    src_tag_db_id: 2,
+                    target_tag_db_id: 1,
+                    flag_kind: REL_KIND_MILITARY_ACCESS,
+                    directed: true,
+                },
+            ],
+        );
+        // Diagnostic counts EVERY known-kind entry BEFORE the emit filter + dedup: NAP
+        // twice (incl. the duplicate), military_access once, air_base_access once.
+        assert_eq!(
+            acc.relflag_offsets.per_kind[&REL_KIND_NON_AGGRESSION_PACT],
+            (2, 0)
+        );
+        assert_eq!(
+            acc.relflag_offsets.per_kind[&REL_KIND_MILITARY_ACCESS],
+            (1, 0)
+        );
+        assert_eq!(
+            acc.relflag_offsets.per_kind[&REL_KIND_AIR_BASE_ACCESS],
+            (1, 0)
+        );
+        assert_eq!(acc.relflag_offsets.total_matches, 4);
+        // No torn reads -> no counted skips (null + unknown are QUIET skips).
+        assert_eq!(acc.skipped_rows, 0);
+        assert!(seen_flags.contains(&(1, 2, REL_KIND_NON_AGGRESSION_PACT)));
+        assert!(seen_flags.contains(&(2, 1, REL_KIND_MILITARY_ACCESS)));
+        // Flag state_events: NAP -> kind+start+end (3), military_access -> kind+start (2).
+        let flag_events = acc
+            .rows
+            .state_events
+            .iter()
+            .filter(|e| e.source_kind == STATE_EVENT_SOURCE_RELATION_FLAG)
+            .count();
+        assert_eq!(flag_events, 5);
+        // The NAP end_date event carries raw 200; the sentinel end is never emitted.
+        assert!(acc.rows.state_events.iter().any(|e| e.value_raw == 200));
+        assert!(!acc
+            .rows
+            .state_events
+            .iter()
+            .any(|e| e.value_raw == i64::from(profile::DOMAIN53_REL_DATE_SENTINEL)));
+    }
+
+    /// Fail-closed: an empty container and a null begin yield nothing WITHOUT a counted
+    /// skip; a garbage count header and a torn element pointer each count exactly one
+    /// skip and fabricate no row.
+    #[test]
+    fn read_relation_container_fail_closed() {
+        let module = 0x1_4000_0000u64;
+        let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
+        let vtables = relation_vtable_kinds(module).expect("vtables");
+        let rel = heap + 0x1000;
+        let arr = heap + 0x2000;
+
+        // (a) Empty container (begin heap, count 0): nothing, no skip.
+        {
+            let mut mem = FakeMemory::new(module);
+            mem.add_chunk(rel, 0x100);
+            mem.add_chunk(arr, 0x40);
+            mem.write_u64(rel + profile::DOMAIN53_RELATION_SUBREL_BEGIN as u64, arr);
+            mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_CAP as u64, 4);
+            mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_COUNT as u64, 0);
+            let mut acc = RowAccumulator::default();
+            let mut seen = BTreeSet::new();
+            read_relation_container(&mem, rel, &vtables, 1, 2, 1000, &mut acc, &mut seen);
+            assert!(acc.rows.relation_flags.is_empty());
+            assert_eq!(acc.skipped_rows, 0);
+        }
+        // (b) Null begin: no sub-relations, no skip (the common case).
+        {
+            let mut mem = FakeMemory::new(module);
+            mem.add_chunk(rel, 0x100);
+            mem.write_u64(rel + profile::DOMAIN53_RELATION_SUBREL_BEGIN as u64, 0);
+            let mut acc = RowAccumulator::default();
+            let mut seen = BTreeSet::new();
+            read_relation_container(&mem, rel, &vtables, 1, 2, 1000, &mut acc, &mut seen);
+            assert!(acc.rows.relation_flags.is_empty());
+            assert_eq!(acc.skipped_rows, 0);
+        }
+        // (c) Garbage count (> capacity): one counted skip, no row.
+        {
+            let mut mem = FakeMemory::new(module);
+            mem.add_chunk(rel, 0x100);
+            mem.add_chunk(arr, 0x40);
+            mem.write_u64(rel + profile::DOMAIN53_RELATION_SUBREL_BEGIN as u64, arr);
+            mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_CAP as u64, 2);
+            mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_COUNT as u64, 9999);
+            let mut acc = RowAccumulator::default();
+            let mut seen = BTreeSet::new();
+            read_relation_container(&mem, rel, &vtables, 1, 2, 1000, &mut acc, &mut seen);
+            assert!(acc.rows.relation_flags.is_empty());
+            assert_eq!(acc.skipped_rows, 1);
+        }
+        // (d) Torn element: the slot holds a heap-range pointer into an UNREGISTERED
+        // chunk, so the vptr read fails -> one counted skip, no row.
+        {
+            let mut mem = FakeMemory::new(module);
+            mem.add_chunk(rel, 0x100);
+            mem.add_chunk(arr, 0x40);
+            mem.write_u64(rel + profile::DOMAIN53_RELATION_SUBREL_BEGIN as u64, arr);
+            mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_CAP as u64, 4);
+            mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_COUNT as u64, 1);
+            mem.write_u64(arr, heap + 0x9_0000);
+            let mut acc = RowAccumulator::default();
+            let mut seen = BTreeSet::new();
+            read_relation_container(&mem, rel, &vtables, 1, 2, 1000, &mut acc, &mut seen);
+            assert!(acc.rows.relation_flags.is_empty());
+            assert_eq!(acc.skipped_rows, 1);
+        }
+        // (e) Wrong-pair entry: a valid NAP object for pair (3,4) sitting in the (1,2)
+        // bucket is REJECTED (counted skip), never emitted as a fabricated wrong-pair row.
+        {
+            let obj = heap + 0x4000;
+            let mut mem = FakeMemory::new(module);
+            mem.add_chunk(rel, 0x100);
+            mem.add_chunk(arr, 0x40);
+            mem.add_chunk(obj, 0x40);
+            mem.write_u64(rel + profile::DOMAIN53_RELATION_SUBREL_BEGIN as u64, arr);
+            mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_CAP as u64, 4);
+            mem.write_i32(rel + profile::DOMAIN53_RELATION_SUBREL_COUNT as u64, 1);
+            mem.write_u64(arr, obj);
+            mem.write_u64(
+                obj,
+                module + profile::DOMAIN53_REL_NON_AGGRESSION_PACT_VTABLE_RVA as u64,
+            );
+            mem.write_u32(obj + profile::DOMAIN53_REL_BASE_FIRST as u64, 3);
+            mem.write_u32(obj + profile::DOMAIN53_REL_BASE_SECOND as u64, 4);
+            mem.write_i32(obj + profile::DOMAIN53_REL_BASE_START_DATE as u64, 100);
+            mem.write_i32(obj + profile::DOMAIN53_REL_BASE_END_DATE as u64, 200);
+            let mut acc = RowAccumulator::default();
+            let mut seen = BTreeSet::new();
+            // Bucket is (1,2) but the object is (3,4) -> rejected.
+            read_relation_container(&mem, rel, &vtables, 1, 2, 1000, &mut acc, &mut seen);
+            assert!(acc.rows.relation_flags.is_empty());
+            assert_eq!(acc.skipped_rows, 1);
+        }
     }
 
     // T2 deliverable (d): the precomputed opinion-label cache indexed by
