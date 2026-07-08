@@ -651,7 +651,43 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
 /// for every snapshot `s`, field-for-field including `parse_errors` order/strings
 /// and the `data_units_total` map. Header/kind/truncation/count-mismatch checks in
 /// `decode_payload` are UNREACHABLE on a valid encode and so never emitted here.
+/// W2.1 measure-first split of `summarize_snapshot`'s internal cost (surfaced by
+/// the collector as `domain53_seg_payload_summary_*_us`). Observational only —
+/// populated by [`summarize_snapshot_instrumented`], never affects the gate
+/// summary bytes, its equality, or its errors. These spans are SUB-components of
+/// `summary_us`, NOT additive on top of it: `base_rows_us` covers the whole
+/// 12-family base row loop; `opinions_us` and `state_events_us` are the two
+/// ~191k families carved out of `base_rows_us` (the ones whose `seen_*` dedup
+/// BTreeSets Codex/T2 bet dominate); `trailers_us` is the trailer re-encode +
+/// real-decoder replay. The tail (status-vs-row block) = `summary_us` −
+/// `base_rows_us` − `trailers_us` in analysis.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SummaryPhaseTimes {
+    pub base_rows_us: u64,
+    pub opinions_us: u64,
+    pub state_events_us: u64,
+    pub trailers_us: u64,
+}
+
+#[inline]
+fn micros_u64(elapsed: std::time::Duration) -> u64 {
+    elapsed.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+/// Non-instrumented entry point (production/test callers that don't need the
+/// W2.1 split). Behavior-identical to [`summarize_snapshot_instrumented`].
 pub fn summarize_snapshot(offset: usize, snapshot: &DiplomacyIntelSnapshot) -> Domain53GateSummary {
+    summarize_snapshot_instrumented(offset, snapshot, &mut SummaryPhaseTimes::default())
+}
+
+/// Instrumented variant: identical output, additionally records the W2.1
+/// sub-phase split into `phase`. The `Instant` reads are the only added work (a
+/// handful per call) and never influence the returned summary.
+pub fn summarize_snapshot_instrumented(
+    offset: usize,
+    snapshot: &DiplomacyIntelSnapshot,
+    phase: &mut SummaryPhaseTimes,
+) -> Domain53GateSummary {
     let mut summary = Domain53GateSummary::default();
 
     let row_count = snapshot.row_count() as usize;
@@ -704,6 +740,7 @@ pub fn summarize_snapshot(offset: usize, snapshot: &DiplomacyIntelSnapshot) -> D
     // decoder assigns. Each block mirrors the corresponding `validate_*_row` push
     // order exactly (reading snapshot fields instead of decoded bytes). The
     // "kind/length/truncation" branches in decode_payload are impossible here.
+    let base_rows_started = std::time::Instant::now();
     let mut row_index = 0usize;
     for row in &snapshot.countries {
         if row.at_war_count > 0 || row.casualties != 0 {
@@ -716,10 +753,12 @@ pub fn summarize_snapshot(offset: usize, snapshot: &DiplomacyIntelSnapshot) -> D
         summarize_war_row(offset, row_index, row, &mut seen_wars, &mut summary);
         row_index += 1;
     }
+    let opinions_started = std::time::Instant::now();
     for row in &snapshot.opinions {
         summarize_opinion_row(offset, row_index, row, &mut seen_opinions, &mut summary);
         row_index += 1;
     }
+    phase.opinions_us = micros_u64(opinions_started.elapsed());
     for row in &snapshot.relation_flags {
         summarize_relation_flag_row(offset, row_index, row, &mut seen_flags, &mut summary);
         row_index += 1;
@@ -767,17 +806,21 @@ pub fn summarize_snapshot(offset: usize, snapshot: &DiplomacyIntelSnapshot) -> D
         summarize_intel_map_row(offset, row_index, row, &mut seen_intel_map, &mut summary);
         row_index += 1;
     }
+    let state_events_started = std::time::Instant::now();
     for row in &snapshot.state_events {
         state_event_source_counts.add(row.source_kind);
         summarize_state_event_row(offset, row_index, row, &mut seen_state_events, &mut summary);
         row_index += 1;
     }
+    phase.state_events_us = micros_u64(state_events_started.elapsed());
+    phase.base_rows_us = micros_u64(base_rows_started.elapsed());
 
     // Trailers — re-encode ONLY the trailer suffix (emit order) and run the REAL
     // decoder trailer state machine so `consumed==0` early-abort, row_count caps,
     // INGR/FACS count gates, unique-recipient counting, and every trailer error
     // string are byte-identical by construction. Codex-confirmed: no trailer error
     // reachable from encoder-produced bytes embeds an absolute payload offset.
+    let trailers_started = std::time::Instant::now();
     let mut trailer_bytes = Vec::new();
     append_operation_instance_trailer(&mut trailer_bytes, &snapshot.operation_instances);
     append_incoming_action_queue_trailer(&mut trailer_bytes, &snapshot.incoming_actions);
@@ -871,6 +914,7 @@ pub fn summarize_snapshot(offset: usize, snapshot: &DiplomacyIntelSnapshot) -> D
     // Status-vs-row consistency block (decode_payload:1602..) — SAME order, SAME
     // strings. Base counts come from snapshot vec lens; the graph count comes from
     // the DECODED trailer rows above.
+    phase.trailers_us = micros_u64(trailers_started.elapsed());
     let war_count = snapshot.wars.len();
     let country_count = snapshot.countries.len();
     if status_flags & STATUS_WAR_ROOT_UNVALIDATED != 0

@@ -1,24 +1,24 @@
 use crate::compact::{
-    decode_payload, encode_payload, summarize_snapshot, AgencyCapacityClusterRow, AgencyRow,
-    CountryDiplomacyRow, CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, FactionRow,
-    IncomingActionQueueRow, IntelMapRow, IntelNetworkGraphRow, OperationAnchorRow,
+    decode_payload, encode_payload, summarize_snapshot_instrumented, AgencyCapacityClusterRow,
+    AgencyRow, CountryDiplomacyRow, CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary,
+    FactionRow, IncomingActionQueueRow, IntelMapRow, IntelNetworkGraphRow, OperationAnchorRow,
     OperationInstanceRow, OperativeRow, OpinionRow, RelationFlagRow, StateEventRow, SubjectRow,
-    WarRelationRow, DOMAIN_ID_PROPOSED, MAX_ACTION_DATE_HOURS, MAX_AGENCY_CAPACITY_CLUSTER_VALUE,
-    MAX_CASUALTIES, MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW, MAX_INTEL_NETWORK_STATE_ID,
-    MAX_OPERATION_ID, MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL,
-    MAX_OPINION_ABS, MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE,
-    REL_KIND_DOCKING_RIGHTS, REL_KIND_EMBARGO, REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION,
-    REL_KIND_GUARANTEE, REL_KIND_IMPROVE_RELATIONS, REL_KIND_LICENCE_PRODUCTION,
-    REL_KIND_MARKET_ACCESS_RIGHTS, REL_KIND_MILITARY_ACCESS, REL_KIND_NAVAL_BLOCKADE,
-    REL_KIND_NON_AGGRESSION_PACT, REL_KIND_PUPPET, STATE_EVENT_KIND_OBSERVED,
-    STATE_EVENT_SOURCE_AGENCY_CAPACITY, STATE_EVENT_SOURCE_AGENCY_SCALAR,
-    STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP, STATE_EVENT_SOURCE_CRYPTOLOGY,
-    STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE, STATE_EVENT_SOURCE_RELATION_FLAG,
-    STATE_EVENT_SOURCE_RELATION_OPINION, STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
-    STATUS_FACTION_GROUP_UNVALIDATED, STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED,
-    STATUS_INTEL_MAP_RESISTED, STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED,
-    STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
-    STATUS_WAR_ROOT_UNVALIDATED,
+    SummaryPhaseTimes, WarRelationRow, DOMAIN_ID_PROPOSED, MAX_ACTION_DATE_HOURS,
+    MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES, MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW,
+    MAX_INTEL_NETWORK_STATE_ID, MAX_OPERATION_ID, MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG,
+    MAX_OPERATIVE_SKILL, MAX_OPINION_ABS, MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS,
+    REL_KIND_ATTACHE, REL_KIND_DOCKING_RIGHTS, REL_KIND_EMBARGO,
+    REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION, REL_KIND_GUARANTEE, REL_KIND_IMPROVE_RELATIONS,
+    REL_KIND_LICENCE_PRODUCTION, REL_KIND_MARKET_ACCESS_RIGHTS, REL_KIND_MILITARY_ACCESS,
+    REL_KIND_NAVAL_BLOCKADE, REL_KIND_NON_AGGRESSION_PACT, REL_KIND_PUPPET,
+    STATE_EVENT_KIND_OBSERVED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+    STATE_EVENT_SOURCE_AGENCY_SCALAR, STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
+    STATE_EVENT_SOURCE_CRYPTOLOGY, STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
+    STATE_EVENT_SOURCE_RELATION_FLAG, STATE_EVENT_SOURCE_RELATION_OPINION,
+    STATE_EVENT_SOURCE_SUBJECT_AUTONOMY, STATUS_FACTION_GROUP_UNVALIDATED,
+    STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
+    STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED, STATUS_OPERATIONS_DETAIL_RESISTED,
+    STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED, STATUS_WAR_ROOT_UNVALIDATED,
 };
 use compact_contract::build_profile as profile;
 use std::collections::{BTreeMap, BTreeSet};
@@ -3731,6 +3731,15 @@ pub struct PayloadPhaseTimes {
     pub encode_us: u64,
     pub summary_us: u64,
     pub decode_gate_us: u64,
+    /// W2.1 measure-first split of `summary_us` (see [`SummaryPhaseTimes`]). These
+    /// are SUB-components of `summary_us`, NOT additive on top of it: `base_rows`
+    /// is the 12-family row loop, of which `opinions` and `state_events` are the
+    /// two ~191k families carved out; `trailers` is the trailer re-encode+decode.
+    /// The summary tail = `summary_us` − `summary_base_rows_us` − `summary_trailers_us`.
+    pub summary_base_rows_us: u64,
+    pub summary_opinions_us: u64,
+    pub summary_state_events_us: u64,
+    pub summary_trailers_us: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -4119,7 +4128,8 @@ fn build_domain53_payload_sampled(
     // (offset 0 matches the pre-W2 `decode_payload(0, &payload)`), removing the
     // per-frame re-parse of the ~380k-row payload.
     let summary_started = Instant::now();
-    let gate_summary = summarize_snapshot(0, &snapshot);
+    let mut summary_phase = SummaryPhaseTimes::default();
+    let gate_summary = summarize_snapshot_instrumented(0, &snapshot, &mut summary_phase);
     let summary_us = duration_micros_u64_saturating(summary_started.elapsed());
 
     // W2 sampled cross-check: on 1/N frames, run the full decode and assert the
@@ -4153,6 +4163,10 @@ fn build_domain53_payload_sampled(
             encode_us,
             summary_us,
             decode_gate_us,
+            summary_base_rows_us: summary_phase.base_rows_us,
+            summary_opinions_us: summary_phase.opinions_us,
+            summary_state_events_us: summary_phase.state_events_us,
+            summary_trailers_us: summary_phase.trailers_us,
         },
     }
 }
