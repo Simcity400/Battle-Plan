@@ -24,6 +24,10 @@ directory map.
 - Extraction domain IDs: `extractor/documents/DOMAIN_REGISTRY.md`
 - Reverse-engineering/tooling setup:
   `extractor/documents/REVERSE_ENGINEERING_TOOLING.md`
+- Replay-layer architecture (crates, data flow, ingest boundary, sequencing):
+  `replay_interface/documents/REPLAY_ARCHITECTURE.md`
+- Replay->extraction seam requests:
+  `replay_interface/documents/EXTRACTION_INTERFACE_REQUESTS.md`
 - Replay container format:
   `replay_interface/documents/HOI4REPLAY_CONTAINER_SPEC.md`
 - Replay schema: `replay_interface/documents/REPLAY_SCHEMA.md`

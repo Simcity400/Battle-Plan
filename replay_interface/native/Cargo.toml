@@ -3,7 +3,13 @@ resolver = "2"
 members = [
     "map_viewer",
     "terrain_capture",
+    "replay_core",
+    "replay_app",
+    "game_ui",
+    "replay_qa",
 ]
 
-# Native replay-interface workspace: map viewer and game-backed capture helpers
-# used to rebuild the visual replay surface.
+# Native replay-interface workspace. See documents/REPLAY_ARCHITECTURE.md:
+# replay_core owns .battleplan ingest and the scrubbable world timeline,
+# replay_app is the product D3D11 replay surface, map_viewer owns map bundle
+# tooling and captured-pass validation/replay, terrain_capture owns capture.

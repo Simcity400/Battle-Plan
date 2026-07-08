@@ -1,12 +1,15 @@
 # the game Map Replica Plan
 
-This is the canonical map-first plan for rebuilding the replay surface after the
-old UI/map reset. The map app and the map-generation checkpoint are Rust-owned.
+This is the canonical map-parity plan. The map app and the map-generation
+checkpoint are Rust-owned.
 
-The first visible replay surface must be the map itself. No decorative panels,
-mock UI, browser debug viewers, or inherited renderer assumptions should return
-until the native Rust map is inspectable and being compared against the real
-game.
+Sequencing note (2026-07-02): the old rule that no UI or dynamic replay work
+may start until the map is 1:1 is retired. `REPLAY_ARCHITECTURE.md` now owns
+sequencing: the replay spine and the data-driven map surface (`replay_app`)
+proceed in parallel with the terrain-parity program in this document. The
+grounding rules, stop points, and per-layer evidence standards below remain
+binding for every visual parity claim. Mock UI, browser debug viewers, and
+invented map styling remain forbidden.
 
 ## Source Of Truth
 
@@ -53,6 +56,23 @@ before adding an approximation.
 The current Rust map visual is useful as a source-file-backed scaffold, but it is
 not yet a 1:1 the game render. These are the known grounding boundaries.
 
+Capture evidence 2026-07-02 (session at
+`map_viewer/out/captures/session_20260702`, gitignored): an early-injection
+run with `multi_sampling=0` captured a full 21-draw terrain pass with
+single-sample render/depth targets (the old MSAA blocker is gone), all 16 PS
+SRVs, VS/PS constant buffers, IA buffers, and shader bytecode/reflection.
+`TerrainIDMap` re-captured hash-identical to 2026-06-30
+(`f493368c56224ab1`) — the engine-packed map is stable per save/build.
+Measured: `GradientBorderChannel1/2` are 2816x2050 `B8G8R8A8_UNORM_SRGB`
+(half map resolution, two stacked ~1024-row halves) but were ALL-ZERO
+placeholders bound to both slots — the engine generates them only after map
+load completes, as is `ProvinceSecondaryColorMap`; `SnowMudData` was already
+real at load. The bundle is formally blocked (pass never closed) because the
+capture hook's ~3.7 GB of synchronous per-draw readbacks froze the game
+during load; the DLL is being reworked (payload dedupe, finalize-time
+snapshotting of generated textures, off-thread writes) before the next
+capture window.
+
 | Area | the game source evidence | Current Rust status | Next grounded action |
 | --- | --- | --- | --- |
 | Province identity | `map/default.map` names `definition.csv` and `provinces.bmp`; `map/definition.csv` maps RGB to province IDs. | Confirmed. Rust decodes the full province-id buffer from these files. | Keep as the hit-test source. |
@@ -68,6 +88,93 @@ not yet a 1:1 the game render. These are the known grounding boundaries.
 | Borders | `pdxmap.shader`, `pdxwater.shader`, and `river.shader` call `gradient_border_apply(...)`; `standardfuncsgfx.fxh` defines gradient-border alpha and camera behavior; `border.shader` samples `BorderDiffuse` with `BORDER_TILE = 0.4f`; `common/defines/00_graphics.lua` defines border width, gradient-border thicknesses, outline cutoffs, camera overrides, optimization range, and refresh frequency. | Blocked generated-buffer gap with preserved material inputs and a material contract. Rust preserves all primary country/state/sea/province/impassable/sea-region border DDS variants as alpha-capable RGBA sources, but it does not raster-stamp province contacts. Gradient border channels are explicitly marked generated/runtime-blocked. The capture DLL can request `borders_pass` only when the active pixel shader declares the `border.shader` resource family; map-viewer now validates that bundle and can promote it in the production graph after rivers. | Capture a real `borders_pass` bundle from the game and validate whether it carries standalone border mesh data, generated gradient channels, or both before implementing pass replay. |
 | Trees, cities, seasons | `map/default.map` names `trees.bmp` and `seasons.txt`; `map/cities.bmp`, `map/cities.txt`, `map/terrain/Tree_*.bmp`, `tree.shader`, city-light textures, snow/mud/ice textures are present. `map/cities.txt` points to `map/cities.bmp` and maps `color_index` groups to entity meshes. | Source-cataloged, not rendered. Rust now copies the exact city/tree/season source files, decodes `cities.r8`, `trees.r8`, `tree_tint.rgbx`, and `tree_season.rgbx`, catalogs city groups, default-map tree indices, season dates, entity/shader source files, and common building rules in `map_object_meta.json`. It does not scatter trees/cities or apply seasons because the engine generation path is not yet reproduced. The capture DLL can request `trees_pass` only when the active pixel shader declares the `tree.shader` resource family; map-viewer now validates that bundle and can promote it in the production graph after borders. `cities_pass` remains rejected until an equivalent grounded shader/resource signature exists. | Capture a real `trees_pass` bundle from the game, implement D3D11 replay of that pass after borders, then identify a grounded city draw signature before accepting `cities_pass`. |
 | Static objects and map positions | Vanilla ships `map/buildings.txt`, `map/railways.txt`, `map/supply_nodes.txt`, `map/unitstacks.txt`, `map/ambient_object.txt`, `map/weatherpositions.txt`, and `map/positions.txt`. Entity/rule sources include `gfx/entities/*.gfx`, `gfx/entities/*.asset`, `common/buildings/*.txt`, supply/rail model GFX, and related shaders. | Source-cataloged, not rendered. Rust now copies these exact files into the generated bundle, hashes them in the manifest, and emits row counts, category counts, ambient object counts, building-rule metadata, and text source catalogs in `map_object_meta.json`. | Parse validated placement/topology/entity references into renderer-ready data before drawing buildings, railways, supply nodes, stack positions, ambient objects, or weather markers. |
+
+## Map Completion Checklist (to 100%, before UI work)
+
+Definition of done: every row below is either (a) rendered through the
+captured-pass replay or an exact shader-source port and signed off by the
+visual QA harness, or (b) explicitly badged with a decision recorded here.
+Statuses: DONE / IN FLIGHT / READY (unblocked, not started) / CAPTURE-GATED
+(needs the next clean capture) / RESEARCH (generation semantics unknown) /
+DECISION (user scoping call).
+
+Track 1 — political look (no game session needed):
+- [DONE 2026-07-02] Gradient borders: exact `gradient_border_apply` port +
+  replay-data generated channel fields (country + state). Open sub-items:
+  GPU jump-flood generation (CPU rebuild is ~1.8s per ownership change) and
+  validation against real captured channels.
+- [DONE 2026-07-02] Occupation striping: `secondary_color_mask` port +
+  generated `ProvinceSecondaryColorMap` from controller-vs-owner divergence;
+  political base color now follows the CONTROLLER (SEMANTIC-ASSUMPTION
+  comments in code; validate against next occupied-save capture).
+- [FOLLOW-UP] Field-generation performance (GPU jump-flood) and captured-
+  channel validation are the two remaining gradient/striping sub-items.
+
+Track 2 — terrain look:
+- [READY: re-dispatch] CPU lighting subset (HeightNormal/TerrainNormal N.L sun +
+  day ambient; verified port was destroyed by a concurrent job revert before
+  commit — re-run from its report).
+- [NEW, READY] Post-processing tone map: the game composes the map into an fp16
+  HDR target (~0.23 land luminance measured in the 2026-07-02 capture) and
+  brightens via its postfx shader; port that term or all brightness parity
+  claims are off. Source: the postfx shader family + captured HDR values.
+- [CAPTURE-GATED] Captured-pass terrain replay as the app's base layer
+  (supersedes the CPU underlay wherever a valid bundle exists).
+
+Track 3 — capture-gated layers:
+- [DONE 2026-07-02] Capture DLL rework + correctness fixes (dedupe,
+  settle/dwell-end snapshots, CB naming contract + repair tool, variant-aware
+  pass close, boundary-time references). Sessions under
+  `map_viewer/out/captures/`.
+- [DONE 2026-07-02] Terrain bundle VALIDATED: session_20260702d replays the
+  captured pass BYTE-IDENTICAL to the game's own render target (7 draws,
+  camera-updatable TerrainSceneCB0). Water bundle VALIDATED same session.
+- [DONE 2026-07-02] Live GradientBorderChannel1/2 ground truth captured
+  (dwell-end snapshots); ProvinceSecondaryColorMap confirmed all-zero on a
+  live occupied political map (user-reported no-stripes rule proven).
+- [CAPTURE-GATED] rivers_pass, borders_pass, trees_pass: need a session with
+  deep-zoom camera work; the 2026-07-02 session crashed ~3 min in before
+  rivers drew (crash cause undiagnosed — investigate DLL involvement before
+  the next window).
+- [RESEARCH] cities_pass: no grounded shader/resource signature yet.
+- [DONE 2026-07-02] Convergence integration: replay_app renders the validated
+  captured terrain+water passes as its map base (grounded camera bridge from
+  decomposed captured VP + defines; water via engine-equivalent fp16->BGRA8
+  refraction copy), with OUR generated GB channels + secondary map substituted
+  into the game shader's SRV slots — the game's own renderer painting replay
+  data (~14 ms/frame with water).
+- [CAPTURE-GATED, named 2026-07-02] Terrain CHUNK LIBRARY: the game
+  frustum-culls terrain chunks CPU-side, so a captured session only contains
+  the chunks visible to the game's camera at capture time (whole-map fit
+  renders 0% black; deep Europe zoom 98.5% black). Free-camera coverage
+  requires accumulating unique chunk draws across a camera SWEEP during
+  capture, then culling/drawing from that library per app frame. This is the
+  main remaining captured-terrain work item.
+
+Track 4 — time-varying visuals from replay data:
+- [READY] Day/night cycle: `DayNightWithBlend` + sun/moon selection ported,
+  driven by the replay clock; ship as a toggle like the game's.
+- [RESEARCH] Weather visuals: SnowMudData generation from recorded
+  `weather_live` drivers + seasons; interim = captured static state, badged.
+- [READY after day/night] City lights at night (tail term + light maps).
+- [DECISION: recorded] FOW intentionally omitted — the replay is all-seeing.
+  This is an intentional read-only divergence, not a gap.
+
+Track 5 — map furniture:
+- [READY] Map labels: curved country names, state names, VP/city labels with
+  zoom LOD (fonts done; curved-layout algorithm is engine-side — approximation
+  must be badged until compared side-by-side).
+- [DECISION] 3D map objects (fort/naval-base/rail/supply models, unit-stack
+  meshes, ambient objects): a full entity-mesh render system. Visible only at
+  close zoom. Proposed: defer past UI phase; placement data is already
+  bundled, nothing is lost by deferring.
+
+Track 6 — identity and sign-off:
+- [READY] Mod-over-vanilla map bundle: generate the bundle from the recording's
+  mod-set (the group plays a mod that edits states/colors); currently
+  vanilla-only.
+- [READY] Visual QA harness (Phase 6): fixed-camera side-by-side scenes vs real
+  the game, per-layer diff ledger. The 100% claim is made HERE, not per-lane.
 
 ## Stop Points Before More Visual Work
 

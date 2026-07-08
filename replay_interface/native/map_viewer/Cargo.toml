@@ -11,6 +11,7 @@ serde_json = "1"
 winapi = { version = "0.3.9", features = [
     "d3d11",
     "d3dcommon",
+    "d3dcompiler",
     "dxgi",
     "dxgiformat",
     "minwindef",

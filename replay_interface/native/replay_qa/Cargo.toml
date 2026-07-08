@@ -1,0 +1,7 @@
+[package]
+name = "replay_qa"
+version = "0.1.0"
+edition = "2021"
+description = "Subprocess-driven MAP-PARITY QA harness for the Battle Plan renderer"
+
+[dependencies]

@@ -1,0 +1,140 @@
+{
+ "schema": "battle-plan-frame4700-placement-gate-v1",
+ "source": "RenderDoc hoi4_vanilla_frame4700 decode; engine PRIMARY (largest-arc) mapname VB per tag; map-space via (x, 2048-z); angle_deg = engine glyph-quad orientation, directly comparable to CountryLabelPlacement.angle",
+ "note": "NAME3 anchor gate: the distance-weighted core anchor of each tag home component must land near the engine primary anchor (esp. NORWAY, raw centroid missed 122px). angle_deg is uniform-PCA reference (GREECE ~29deg residual documented, not gated tight).",
+ "labels": [
+  {
+   "tag": "AUS",
+   "anchor_x": 3016.7,
+   "anchor_y": 581.6,
+   "angle_deg": -10.8,
+   "arc_w": 69.8
+  },
+  {
+   "tag": "BUL",
+   "anchor_x": 3199.2,
+   "anchor_y": 674.2,
+   "angle_deg": -3.7,
+   "arc_w": 52.9
+  },
+  {
+   "tag": "CZE",
+   "anchor_x": 3093.5,
+   "anchor_y": 546.5,
+   "angle_deg": 11.7,
+   "arc_w": 124.0
+  },
+  {
+   "tag": "FIN",
+   "anchor_x": 3225.3,
+   "anchor_y": 179.2,
+   "angle_deg": 88.7,
+   "arc_w": 148.1
+  },
+  {
+   "tag": "GER",
+   "anchor_x": 2981.2,
+   "anchor_y": 497.2,
+   "angle_deg": -20.2,
+   "arc_w": 103.3
+  },
+  {
+   "tag": "GRE",
+   "anchor_x": 3157.5,
+   "anchor_y": 741.9,
+   "angle_deg": -86.5,
+   "arc_w": 59.8
+  },
+  {
+   "tag": "HUN",
+   "anchor_x": 3110.7,
+   "anchor_y": 586.4,
+   "angle_deg": -15.4,
+   "arc_w": 70.4
+  },
+  {
+   "tag": "IRQ",
+   "anchor_x": 3487.8,
+   "anchor_y": 846.2,
+   "angle_deg": 72.3,
+   "arc_w": 96.9
+  },
+  {
+   "tag": "ITA",
+   "anchor_x": 3074.3,
+   "anchor_y": 957.7,
+   "angle_deg": 10.9,
+   "arc_w": 139.6
+  },
+  {
+   "tag": "NOR",
+   "anchor_x": 2945.7,
+   "anchor_y": 279.4,
+   "angle_deg": -44.9,
+   "arc_w": 90.2
+  },
+  {
+   "tag": "PER",
+   "anchor_x": 3635.6,
+   "anchor_y": 852.4,
+   "angle_deg": 17.4,
+   "arc_w": 114.3
+  },
+  {
+   "tag": "POL",
+   "anchor_x": 3149.5,
+   "anchor_y": 493.3,
+   "angle_deg": 3.5,
+   "arc_w": 103.4
+  },
+  {
+   "tag": "POR",
+   "anchor_x": 2682.1,
+   "anchor_y": 733.3,
+   "angle_deg": -85.6,
+   "arc_w": 49.6
+  },
+  {
+   "tag": "ROM",
+   "anchor_x": 3205.5,
+   "anchor_y": 610.2,
+   "angle_deg": 1.4,
+   "arc_w": 93.0
+  },
+  {
+   "tag": "SAU",
+   "anchor_x": 3509.6,
+   "anchor_y": 1008.0,
+   "angle_deg": 27.9,
+   "arc_w": 229.8
+  },
+  {
+   "tag": "SPR",
+   "anchor_x": 2598.9,
+   "anchor_y": 993.9,
+   "angle_deg": -57.6,
+   "arc_w": 77.7
+  },
+  {
+   "tag": "SWE",
+   "anchor_x": 3064.6,
+   "anchor_y": 243.9,
+   "angle_deg": -68.0,
+   "arc_w": 191.1
+  },
+  {
+   "tag": "TUR",
+   "anchor_x": 3360.5,
+   "anchor_y": 744.0,
+   "angle_deg": 0.4,
+   "arc_w": 138.4
+  },
+  {
+   "tag": "YUG",
+   "anchor_x": 3094.2,
+   "anchor_y": 642.0,
+   "angle_deg": 24.7,
+   "arc_w": 92.4
+  }
+ ]
+}

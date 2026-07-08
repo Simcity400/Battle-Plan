@@ -79,8 +79,17 @@ injecting. That keeps a stale or still-running HOI4 process from locking the
 Rust build output at `target\debug\terrain_capture.dll`.
 
 The current attach proof writes `terrain_capture_probe.jsonl` beside the DLL.
-The production hook writes capture events under `terrain_capture\` beside the
-DLL. A successful run writes:
+By default, the production hook writes capture events and payloads under
+`terrain_capture\` beside the DLL. Pass `--capture-out-dir <dir>` to
+`terrain_capture_attach` to route all session output there instead; the helper
+records that path in `terrain_capture_control.json` as `capture_out_dir`.
+Use fast local storage that is not synced by OneDrive or similar tools. The
+helper warns on stderr and writes `capture_output_dir_warning` when the resolved
+output path contains `OneDrive` or an ancestor contains the
+`.849C9593-D756-4E56-8D6E-42412F2A707B` marker. The warning is advisory and does
+not block capture.
+
+A successful run writes:
 
 - `terrain_capture\map_capture_session.json`
 - `terrain_capture\map_frame_bundle.json`
@@ -130,6 +139,10 @@ bound on one of those slots and the source texture dimensions exactly match the
 shader-cache map size. When a terrain frame bundle is written, the active
 shader's declared TerrainIDMap slot selects the matching shader-cache signature
 and serializes it as `shader_cache_constants` in `map_frame_bundle.json`.
+The control file can also set `max_payload_writer_queue_bytes`; the default is
+536870912 bytes. This caps pending async writer bytes rather than the old
+fixed-size pending item count, so one large payload cannot be hidden behind a
+small item queue.
 The bundle also records output-merger render-target/depth-stencil resource
 identity, `Texture2D` descriptors, and the last captured
 `ClearRenderTargetView` / `ClearDepthStencilView` provenance for every terrain

@@ -1,0 +1,2008 @@
+//! pdxasset (`.mesh` / `.anim`) decoder — the Paradox Clausewitz binary model
+//! format shipped under `gfx/models/**` (and DLC copies under `dlc/*/gfx/models/**`).
+//!
+//! # Format law (derived from first principles against the shipped bytes)
+//!
+//! The grammar below was reverse-engineered from hexdumps and then validated
+//! against every shipped asset: 2880 files (1262 `.mesh`, 1618 `.anim`) across
+//! vanilla + DLC parse with zero unknown structure; 2873 are binary (`@@b@`)
+//! and 7 (all under `gfx/models/anim_blend_test/`) are the text twin (`@@t@`).
+//!
+//! Binary stream:
+//!
+//! ```text
+//! magic        := "@@b@"
+//! token        := property | object
+//! property     := '!' u8:name_len name_bytes type_char payload
+//!   type 'i'   := u32:count count*i32le
+//!   type 'f'   := u32:count count*f32le
+//!   type 's'   := u32:count count*(u32:byte_len bytes)   ; byte_len includes a
+//!                                                        ; single trailing NUL
+//! object       := '['{depth} name_bytes '\0'             ; depth = bracket run
+//! ```
+//!
+//! Object depth is 1-based; an object at depth `d` becomes a child of the most
+//! recent object at depth `d-1` (root = depth 0). Properties attach to the
+//! most recently opened object. The text twin uses the same tree with
+//! whitespace-separated tokens, `[name]`/`[[name]]`… nesting and quoted
+//! strings (`shader s 1 "Collision"`).
+//!
+//! Observed inventory (exhaustive over all 2880 shipped files):
+//!
+//! * root: `pdxasset i` — version list, always `[1, 0]`.
+//! * `.mesh`: `[object]` → shape nodes (free names, optional `lod i1`) →
+//!   `[[[mesh]]]` (repeatable per shape; optional `boundingsphere f4`) with
+//!   `p f(3v)`, optional `n f(3v)` / `ta f(4v)` / `u0 u1 f(2v)`, `tri i(3t)`,
+//!   `[[[[aabb]]]]` (`min f3`, `max f3`, always present), `[[[[material]]]]`
+//!   (`shader s1` always; `diff`/`n`/`spec s1` optional), optional
+//!   `[[[[skin]]]]` (`bones i1` in 1..=4, `ix i(4v)`, `w f(4v)` — always 4
+//!   slots per vertex regardless of `bones`), optional `[[[skeleton]]]` →
+//!   joint nodes (`ix i1`, optional `pa i1`, `tx f12` — 3x4 payload of the
+//!   INVERSE world-space bind transform, written transposed by the
+//!   io_pdx_mesh exporter — rare `rcf i1`); `[locator]` → locator nodes
+//!   (`p f3`, `q f4`, optional `pa s1` parent-bone name, optional `tx f16`).
+//! * `.anim`: `[info]` (`fps f1`, `sa i1` sample count, `j i1` joint count) →
+//!   per-joint nodes (`sa s1` channel flags over "tqs", `t f3`, `q f4`,
+//!   `s f1`), then `[samples]` with `t f`, `q f`, `s f`. Sample totals obey
+//!   `len(t) = 3*sa*#joints-with-t`, `len(q) = 4*sa*#q`, `len(s) = 1*sa*#s`
+//!   (verified on all 1612 binary anims). Sample ORDER is frame-major over
+//!   the animated-joint subsequence in info order per channel array —
+//!   confirmed against the io_pdx_mesh import/export source (Codex review
+//!   2026-07-04); totals are proven against shipped bytes, ordering rests on
+//!   that source.
+//!
+//! Everything outside this inventory fails closed: the tree parser rejects
+//! unknown type chars / malformed framing, and the typed extractors collect
+//! and report unknown object/property names instead of skipping them.
+//! Known format extensions used by OTHER Paradox titles that would fail
+//! closed here by design (named in the error): `u2`/`u3` UV sets, `lodperc`,
+//! and 3-component (non-uniform) anim scale.
+//!
+//! Mod compatibility (MOD_COMPATIBILITY.md, "the one rule"): all game-file
+//! reads go through [`GameFileResolver`]; `*_from_game_dir` helpers exist for
+//! tests and debug bins only and construct a vanilla resolver internally.
+
+use crate::{GameFileResolver, Result};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+
+pub const PDX_ASSET_BINARY_MAGIC: &[u8; 4] = b"@@b@";
+pub const PDX_ASSET_TEXT_MAGIC: &[u8; 4] = b"@@t@";
+/// The only shipped pdxasset version (all 2880 vanilla+DLC files).
+pub const PDX_ASSET_SUPPORTED_VERSION: [i32; 2] = [1, 0];
+/// Root of the model tree, resolver-relative.
+pub const PDX_MODELS_ROOT: &str = "gfx/models";
+
+// ---------------------------------------------------------------------------
+// Property tree
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PdxValues {
+    I32(Vec<i32>),
+    F32(Vec<f32>),
+    Str(Vec<String>),
+}
+
+impl PdxValues {
+    pub fn type_char(&self) -> char {
+        match self {
+            PdxValues::I32(_) => 'i',
+            PdxValues::F32(_) => 'f',
+            PdxValues::Str(_) => 's',
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            PdxValues::I32(values) => values.len(),
+            PdxValues::F32(values) => values.len(),
+            PdxValues::Str(values) => values.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxProperty {
+    pub name: String,
+    pub values: PdxValues,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxNode {
+    pub name: String,
+    pub properties: Vec<PdxProperty>,
+    pub children: Vec<PdxNode>,
+}
+
+impl PdxNode {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            properties: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    pub fn property(&self, name: &str) -> Option<&PdxProperty> {
+        self.properties.iter().find(|prop| prop.name == name)
+    }
+
+    pub fn children_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a PdxNode> {
+        self.children.iter().filter(move |child| child.name == name)
+    }
+}
+
+/// Parsed pdxasset property tree. `root` is a synthetic node holding the
+/// top-level objects; the `pdxasset` version property stays in
+/// `root.properties` and is mirrored in `version`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxAssetTree {
+    pub version: Vec<i32>,
+    pub root: PdxNode,
+}
+
+// ---------------------------------------------------------------------------
+// Grammar-level parser (binary + text twins)
+// ---------------------------------------------------------------------------
+
+/// Parse a pdxasset byte stream (`.mesh` or `.anim`, binary `@@b@` or text
+/// `@@t@`). Fails closed on unknown magic, unknown value type chars,
+/// malformed framing, or an unsupported `pdxasset` version.
+pub fn parse_pdx_asset(bytes: &[u8]) -> Result<PdxAssetTree> {
+    match bytes.get(..4) {
+        Some(magic) if magic == PDX_ASSET_BINARY_MAGIC => parse_pdx_asset_binary(bytes),
+        Some(magic) if magic == PDX_ASSET_TEXT_MAGIC => parse_pdx_asset_text(bytes),
+        Some(magic) => Err(format!(
+            "not a pdxasset stream: magic {:?} (wanted {:?} or {:?})",
+            String::from_utf8_lossy(magic),
+            String::from_utf8_lossy(PDX_ASSET_BINARY_MAGIC),
+            String::from_utf8_lossy(PDX_ASSET_TEXT_MAGIC),
+        )
+        .into()),
+        None => Err("not a pdxasset stream: fewer than 4 bytes".into()),
+    }
+}
+
+fn finish_tree(mut stack: Vec<PdxNode>) -> Result<PdxAssetTree> {
+    while stack.len() > 1 {
+        let node = stack.pop().expect("non-root node");
+        stack.last_mut().expect("parent node").children.push(node);
+    }
+    let root = stack.pop().expect("root node");
+    let version = match root.property("pdxasset") {
+        Some(PdxProperty {
+            values: PdxValues::I32(values),
+            ..
+        }) => values.clone(),
+        Some(other) => {
+            return Err(format!(
+                "pdxasset version property has type '{}', wanted 'i'",
+                other.values.type_char()
+            )
+            .into())
+        }
+        None => return Err("missing pdxasset version property at root".into()),
+    };
+    if version != PDX_ASSET_SUPPORTED_VERSION {
+        return Err(format!(
+            "unsupported pdxasset version {version:?} (only {PDX_ASSET_SUPPORTED_VERSION:?} is \
+             format-law-verified); refusing to guess"
+        )
+        .into());
+    }
+    Ok(PdxAssetTree { version, root })
+}
+
+fn push_object(stack: &mut Vec<PdxNode>, depth: usize, name: String, at: String) -> Result<()> {
+    if depth == 0 || depth > stack.len() {
+        return Err(format!(
+            "object '{name}' {at} jumps to depth {depth} from depth {}",
+            stack.len() - 1
+        )
+        .into());
+    }
+    while stack.len() > depth {
+        let node = stack.pop().expect("non-root node");
+        stack.last_mut().expect("parent node").children.push(node);
+    }
+    stack.push(PdxNode::new(name));
+    Ok(())
+}
+
+struct BinCursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> BinCursor<'a> {
+    fn take(&mut self, len: usize, what: &str) -> Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .filter(|end| *end <= self.bytes.len())
+            .ok_or_else(|| {
+                format!(
+                    "pdxasset binary truncated at byte {}: wanted {len} bytes for {what}, {} left",
+                    self.pos,
+                    self.bytes.len() - self.pos
+                )
+            })?;
+        let out = &self.bytes[self.pos..end];
+        self.pos = end;
+        Ok(out)
+    }
+
+    fn u8(&mut self, what: &str) -> Result<u8> {
+        Ok(self.take(1, what)?[0])
+    }
+
+    fn u32(&mut self, what: &str) -> Result<u32> {
+        let raw = self.take(4, what)?;
+        Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+    }
+}
+
+fn parse_pdx_asset_binary(bytes: &[u8]) -> Result<PdxAssetTree> {
+    let mut cursor = BinCursor { bytes, pos: 4 };
+    let mut stack = vec![PdxNode::new("<root>".to_string())];
+    while cursor.pos < bytes.len() {
+        let at = cursor.pos;
+        match cursor.u8("token tag")? {
+            b'!' => {
+                let name_len = cursor.u8("property name length")? as usize;
+                if name_len == 0 {
+                    return Err(format!("empty property name at byte {at}").into());
+                }
+                let name = utf8_owned(cursor.take(name_len, "property name")?, "property name")?;
+                let type_char = cursor.u8("property type char")?;
+                let values = match type_char {
+                    b'i' => {
+                        let count = cursor.u32("i32 count")? as usize;
+                        let raw = cursor.take(
+                            count.checked_mul(4).ok_or("i32 payload length overflows")?,
+                            "i32 payload",
+                        )?;
+                        PdxValues::I32(
+                            raw.chunks_exact(4)
+                                .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect(),
+                        )
+                    }
+                    b'f' => {
+                        let count = cursor.u32("f32 count")? as usize;
+                        let raw = cursor.take(
+                            count.checked_mul(4).ok_or("f32 payload length overflows")?,
+                            "f32 payload",
+                        )?;
+                        PdxValues::F32(
+                            raw.chunks_exact(4)
+                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect(),
+                        )
+                    }
+                    b's' => {
+                        let count = cursor.u32("string count")? as usize;
+                        let mut values = Vec::with_capacity(count);
+                        for index in 0..count {
+                            let len = cursor.u32("string byte length")? as usize;
+                            let raw = cursor.take(len, "string payload")?;
+                            let Some((&0, body)) = raw.split_last() else {
+                                return Err(format!(
+                                    "string {index} of property '{name}' at byte {at} is not \
+                                     NUL-terminated"
+                                )
+                                .into());
+                            };
+                            if body.contains(&0) {
+                                return Err(format!(
+                                    "string {index} of property '{name}' at byte {at} has an \
+                                     interior NUL"
+                                )
+                                .into());
+                            }
+                            values.push(utf8_owned(body, "string payload")?);
+                        }
+                        PdxValues::Str(values)
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown pdxasset value type char {:?} for property '{name}' at byte \
+                             {at}; refusing to skip",
+                            other as char
+                        )
+                        .into())
+                    }
+                };
+                stack
+                    .last_mut()
+                    .expect("current node")
+                    .properties
+                    .push(PdxProperty { name, values });
+            }
+            b'[' => {
+                let mut depth = 1usize;
+                while cursor.pos < bytes.len() && bytes[cursor.pos] == b'[' {
+                    depth += 1;
+                    cursor.pos += 1;
+                }
+                let rest = &bytes[cursor.pos..];
+                let nul = rest
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .ok_or_else(|| format!("unterminated object name at byte {at}"))?;
+                let name = utf8_owned(&rest[..nul], "object name")?;
+                cursor.pos += nul + 1;
+                push_object(&mut stack, depth, name, format!("at byte {at}"))?;
+            }
+            other => {
+                return Err(format!(
+                    "unexpected byte 0x{other:02x} at offset {at}: not a property ('!') or \
+                     object ('[') tag"
+                )
+                .into())
+            }
+        }
+    }
+    finish_tree(stack)
+}
+
+fn utf8_owned(bytes: &[u8], what: &str) -> Result<String> {
+    std::str::from_utf8(bytes)
+        .map(|value| value.to_string())
+        .map_err(|err| format!("{what} is not UTF-8: {err}").into())
+}
+
+// --- text twin -------------------------------------------------------------
+
+fn parse_pdx_asset_text(bytes: &[u8]) -> Result<PdxAssetTree> {
+    let text = std::str::from_utf8(&bytes[4..])
+        .map_err(|err| format!("pdxasset text stream is not UTF-8: {err}"))?;
+    let mut tokens = TextTokens { rest: text };
+    let mut stack = vec![PdxNode::new("<root>".to_string())];
+    while let Some(token) = tokens.next_token()? {
+        if let Some(stripped) = token.strip_prefix('[') {
+            let leading = token.len() - token.trim_start_matches('[').len();
+            let name = stripped.trim_start_matches('[').trim_end_matches(']');
+            let trailing = token.len() - token.trim_end_matches(']').len();
+            if leading != trailing || name.is_empty() {
+                return Err(format!("malformed text object token {token:?}").into());
+            }
+            push_object(
+                &mut stack,
+                leading,
+                name.to_string(),
+                format!("(text token {token:?})"),
+            )?;
+            continue;
+        }
+        let name = token.to_string();
+        let type_token = tokens
+            .next_token()?
+            .ok_or_else(|| format!("property '{name}': missing type token"))?;
+        let count_token = tokens
+            .next_token()?
+            .ok_or_else(|| format!("property '{name}': missing count token"))?;
+        let count: usize = count_token
+            .parse()
+            .map_err(|err| format!("property '{name}': bad count {count_token:?}: {err}"))?;
+        let values = match type_token {
+            "i" => {
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let raw = tokens
+                        .next_token()?
+                        .ok_or_else(|| format!("property '{name}': missing i32 value"))?;
+                    values.push(
+                        raw.parse::<i32>()
+                            .map_err(|err| format!("property '{name}': bad i32 {raw:?}: {err}"))?,
+                    );
+                }
+                PdxValues::I32(values)
+            }
+            "f" => {
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let raw = tokens
+                        .next_token()?
+                        .ok_or_else(|| format!("property '{name}': missing f32 value"))?;
+                    values.push(
+                        raw.parse::<f32>()
+                            .map_err(|err| format!("property '{name}': bad f32 {raw:?}: {err}"))?,
+                    );
+                }
+                PdxValues::F32(values)
+            }
+            "s" => {
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let raw = tokens
+                        .next_token()?
+                        .ok_or_else(|| format!("property '{name}': missing string value"))?;
+                    let inner = raw
+                        .strip_prefix('"')
+                        .and_then(|value| value.strip_suffix('"'))
+                        .ok_or_else(|| {
+                            format!("property '{name}': string {raw:?} is not quoted")
+                        })?;
+                    values.push(inner.to_string());
+                }
+                PdxValues::Str(values)
+            }
+            other => {
+                return Err(format!(
+                    "unknown pdxasset value type token {other:?} for property '{name}'; \
+                     refusing to skip"
+                )
+                .into())
+            }
+        };
+        stack
+            .last_mut()
+            .expect("current node")
+            .properties
+            .push(PdxProperty { name, values });
+    }
+    finish_tree(stack)
+}
+
+struct TextTokens<'a> {
+    rest: &'a str,
+}
+
+impl<'a> TextTokens<'a> {
+    fn next_token(&mut self) -> Result<Option<&'a str>> {
+        self.rest = self.rest.trim_start();
+        if self.rest.is_empty() {
+            return Ok(None);
+        }
+        if self.rest.starts_with('"') {
+            let Some(end) = self.rest[1..].find('"') else {
+                return Err("unterminated quoted string in pdxasset text stream".into());
+            };
+            let token = &self.rest[..end + 2];
+            self.rest = &self.rest[end + 2..];
+            return Ok(Some(token));
+        }
+        let end = self
+            .rest
+            .find(char::is_whitespace)
+            .unwrap_or(self.rest.len());
+        let token = &self.rest[..end];
+        self.rest = &self.rest[end..];
+        Ok(Some(token))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Typed extraction — meshes
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxMaterial {
+    /// Engine material name; observed vanilla+DLC set: PdxMeshAdvanced,
+    /// Collision, PdxMeshAdvancedAnim, PdxMeshAdvancedSnow, PdxMeshStandard,
+    /// PdxMeshSnow, standard, PdxMeshTrain, PdxMeshBorder.
+    pub shader: String,
+    pub diffuse: Option<String>,
+    pub normal_map: Option<String>,
+    pub specular: Option<String>,
+}
+
+impl PdxMaterial {
+    pub fn is_collision(&self) -> bool {
+        self.shader == "Collision"
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxSkin {
+    /// Influences actually used per vertex (`bones` property, 1..=4).
+    pub influences_per_vertex: i32,
+    /// 4 joint indices per vertex (unused slots are -1).
+    pub joint_indices: Vec<i32>,
+    /// 4 weights per vertex.
+    pub weights: Vec<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxJoint {
+    pub name: String,
+    pub index: i32,
+    pub parent: Option<i32>,
+    /// 3x4 payload of the inverse world-space bind transform as shipped
+    /// (`tx f12`; the io_pdx_mesh exporter writes it transposed — consumers
+    /// must transpose back).
+    pub transform_3x4: [f32; 12],
+    /// Rare and undocumented (`rcf i1`); shipped only in
+    /// dlc047 ENG_prototype_armor_1.mesh (value 6). Preserved verbatim.
+    pub rcf: Option<i32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxLocator {
+    pub name: String,
+    pub position: [f32; 3],
+    pub rotation_quat: [f32; 4],
+    /// Bone the locator hangs off, when skeletal.
+    pub parent_bone: Option<String>,
+    /// Optional full 4x4 transform (`tx f16`).
+    pub transform_4x4: Option<[f32; 16]>,
+}
+
+/// One drawable (or collision) mesh inside a shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxMeshData {
+    pub verts: Vec<[f32; 3]>,
+    pub normals: Option<Vec<[f32; 3]>>,
+    pub tangents: Option<Vec<[f32; 4]>>,
+    pub uv0: Option<Vec<[f32; 2]>>,
+    pub uv1: Option<Vec<[f32; 2]>>,
+    /// Triangle list, 3 indices per triangle, all < verts.len().
+    pub indices: Vec<u32>,
+    pub aabb_min: [f32; 3],
+    pub aabb_max: [f32; 3],
+    /// Rare (`boundingsphere f4`, center + radius).
+    pub bounding_sphere: Option<[f32; 4]>,
+    pub material: PdxMaterial,
+    pub skin: Option<PdxSkin>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxShape {
+    pub name: String,
+    pub lod: Option<i32>,
+    pub meshes: Vec<PdxMeshData>,
+    pub skeleton: Vec<PdxJoint>,
+}
+
+/// Typed contents of one `.mesh` pdxasset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxModel {
+    /// `loddist f` on the `[object]` node (LOD switch distances), when present.
+    pub lod_distances: Vec<f32>,
+    pub shapes: Vec<PdxShape>,
+    pub locators: Vec<PdxLocator>,
+}
+
+struct UnknownCollector {
+    unknowns: Vec<String>,
+}
+
+impl UnknownCollector {
+    fn new() -> Self {
+        Self {
+            unknowns: Vec::new(),
+        }
+    }
+
+    fn property(&mut self, path: &str, prop: &PdxProperty) {
+        self.unknowns.push(format!(
+            "property {path} :: {} (type '{}', {} values)",
+            prop.name,
+            prop.values.type_char(),
+            prop.values.len()
+        ));
+    }
+
+    fn object(&mut self, path: &str, node: &PdxNode) {
+        self.unknowns.push(format!("object {path}/{}", node.name));
+    }
+
+    fn finish(self, what: &str) -> Result<()> {
+        if self.unknowns.is_empty() {
+            return Ok(());
+        }
+        let mut message = format!(
+            "{what}: {} unrecognized structure(s); failing closed rather than skipping:",
+            self.unknowns.len()
+        );
+        for unknown in &self.unknowns {
+            let _ = write!(message, "\n  {unknown}");
+        }
+        Err(message.into())
+    }
+}
+
+fn floats_exact(node_path: &str, prop: &PdxProperty, want: usize) -> Result<Vec<f32>> {
+    match &prop.values {
+        PdxValues::F32(values) if values.len() == want => Ok(values.clone()),
+        PdxValues::F32(values) => Err(format!(
+            "{node_path} :: {}: wanted {want} floats, got {}",
+            prop.name,
+            values.len()
+        )
+        .into()),
+        other => Err(format!(
+            "{node_path} :: {}: wanted floats, got type '{}'",
+            prop.name,
+            other.type_char()
+        )
+        .into()),
+    }
+}
+
+fn ints_exact(node_path: &str, prop: &PdxProperty, want: usize) -> Result<Vec<i32>> {
+    match &prop.values {
+        PdxValues::I32(values) if values.len() == want => Ok(values.clone()),
+        PdxValues::I32(values) => Err(format!(
+            "{node_path} :: {}: wanted {want} ints, got {}",
+            prop.name,
+            values.len()
+        )
+        .into()),
+        other => Err(format!(
+            "{node_path} :: {}: wanted ints, got type '{}'",
+            prop.name,
+            other.type_char()
+        )
+        .into()),
+    }
+}
+
+fn single_string(node_path: &str, prop: &PdxProperty) -> Result<String> {
+    match &prop.values {
+        PdxValues::Str(values) if values.len() == 1 => Ok(values[0].clone()),
+        other => Err(format!(
+            "{node_path} :: {}: wanted exactly one string, got type '{}' with {} values",
+            prop.name,
+            other.type_char(),
+            other.len()
+        )
+        .into()),
+    }
+}
+
+fn fixed<const N: usize>(node_path: &str, name: &str, values: &[f32]) -> Result<[f32; N]> {
+    values.try_into().map_err(|_| {
+        format!(
+            "{node_path} :: {name}: wanted {N} floats, got {}",
+            values.len()
+        )
+        .into()
+    })
+}
+
+/// Extract the typed model from a parsed `.mesh` tree. Fails closed: any
+/// object or property outside the verified inventory is collected and
+/// reported by name.
+pub fn extract_pdx_model(tree: &PdxAssetTree) -> Result<PdxModel> {
+    let mut unknown = UnknownCollector::new();
+    let mut model = PdxModel {
+        lod_distances: Vec::new(),
+        shapes: Vec::new(),
+        locators: Vec::new(),
+    };
+
+    for prop in &tree.root.properties {
+        if prop.name != "pdxasset" {
+            unknown.property("<root>", prop);
+        }
+    }
+    for top in &tree.root.children {
+        match top.name.as_str() {
+            "object" => {
+                for prop in &top.properties {
+                    match prop.name.as_str() {
+                        "loddist" => match &prop.values {
+                            PdxValues::F32(values) => model.lod_distances = values.clone(),
+                            _ => unknown.property("object", prop),
+                        },
+                        _ => unknown.property("object", prop),
+                    }
+                }
+                for shape_node in &top.children {
+                    model.shapes.push(extract_shape(shape_node, &mut unknown)?);
+                }
+            }
+            "locator" => {
+                if !top.properties.is_empty() {
+                    for prop in &top.properties {
+                        unknown.property("locator", prop);
+                    }
+                }
+                for locator_node in &top.children {
+                    if let Some(locator) = extract_locator(locator_node, &mut unknown)? {
+                        model.locators.push(locator);
+                    }
+                }
+            }
+            _ => unknown.object("<root>", top),
+        }
+    }
+    unknown.finish("pdxasset mesh extraction")?;
+    Ok(model)
+}
+
+fn extract_shape(shape_node: &PdxNode, unknown: &mut UnknownCollector) -> Result<PdxShape> {
+    let path = format!("object/{}", shape_node.name);
+    let mut shape = PdxShape {
+        name: shape_node.name.clone(),
+        lod: None,
+        meshes: Vec::new(),
+        skeleton: Vec::new(),
+    };
+    for prop in &shape_node.properties {
+        match prop.name.as_str() {
+            "lod" => shape.lod = Some(ints_exact(&path, prop, 1)?[0]),
+            _ => unknown.property(&path, prop),
+        }
+    }
+    for child in &shape_node.children {
+        match child.name.as_str() {
+            "mesh" => shape.meshes.push(extract_mesh(&path, child, unknown)?),
+            "skeleton" => {
+                if !child.properties.is_empty() {
+                    for prop in &child.properties {
+                        unknown.property(&format!("{path}/skeleton"), prop);
+                    }
+                }
+                for joint_node in &child.children {
+                    shape
+                        .skeleton
+                        .push(extract_joint(&path, joint_node, unknown)?);
+                }
+            }
+            _ => unknown.object(&path, child),
+        }
+    }
+    Ok(shape)
+}
+
+fn extract_mesh(
+    shape_path: &str,
+    mesh_node: &PdxNode,
+    unknown: &mut UnknownCollector,
+) -> Result<PdxMeshData> {
+    let path = format!("{shape_path}/mesh");
+    let mut positions: Option<Vec<f32>> = None;
+    let mut normals: Option<Vec<f32>> = None;
+    let mut tangents: Option<Vec<f32>> = None;
+    let mut uv0: Option<Vec<f32>> = None;
+    let mut uv1: Option<Vec<f32>> = None;
+    let mut indices: Option<Vec<i32>> = None;
+    let mut bounding_sphere = None;
+    for prop in &mesh_node.properties {
+        match (prop.name.as_str(), &prop.values) {
+            ("p", PdxValues::F32(values)) => positions = Some(values.clone()),
+            ("n", PdxValues::F32(values)) => normals = Some(values.clone()),
+            ("ta", PdxValues::F32(values)) => tangents = Some(values.clone()),
+            ("u0", PdxValues::F32(values)) => uv0 = Some(values.clone()),
+            ("u1", PdxValues::F32(values)) => uv1 = Some(values.clone()),
+            ("tri", PdxValues::I32(values)) => indices = Some(values.clone()),
+            ("boundingsphere", PdxValues::F32(values)) => {
+                bounding_sphere = Some(fixed::<4>(&path, "boundingsphere", values)?)
+            }
+            _ => unknown.property(&path, prop),
+        }
+    }
+
+    let positions = positions.ok_or_else(|| format!("{path}: missing p (positions)"))?;
+    if positions.is_empty() || positions.len() % 3 != 0 {
+        return Err(format!(
+            "{path}: p has {} floats, not a multiple of 3",
+            positions.len()
+        )
+        .into());
+    }
+    let vert_count = positions.len() / 3;
+    let verts = positions
+        .chunks_exact(3)
+        .map(|c| [c[0], c[1], c[2]])
+        .collect::<Vec<_>>();
+
+    let normals = per_vertex(&path, "n", normals, vert_count, 3)?
+        .map(|values| values.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect());
+    let tangents = per_vertex(&path, "ta", tangents, vert_count, 4)?.map(|values| {
+        values
+            .chunks_exact(4)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect()
+    });
+    let uv0 = per_vertex(&path, "u0", uv0, vert_count, 2)?
+        .map(|values| values.chunks_exact(2).map(|c| [c[0], c[1]]).collect());
+    let uv1 = per_vertex(&path, "u1", uv1, vert_count, 2)?
+        .map(|values| values.chunks_exact(2).map(|c| [c[0], c[1]]).collect());
+
+    let raw_indices = indices.ok_or_else(|| format!("{path}: missing tri (indices)"))?;
+    if raw_indices.len() % 3 != 0 {
+        return Err(format!(
+            "{path}: tri has {} indices, not a multiple of 3",
+            raw_indices.len()
+        )
+        .into());
+    }
+    let mut tri = Vec::with_capacity(raw_indices.len());
+    for &index in &raw_indices {
+        if index < 0 || index as usize >= vert_count {
+            return Err(format!(
+                "{path}: triangle index {index} out of bounds for {vert_count} vertices"
+            )
+            .into());
+        }
+        tri.push(index as u32);
+    }
+
+    let mut aabb = None;
+    let mut material = None;
+    let mut skin = None;
+    for child in &mesh_node.children {
+        match child.name.as_str() {
+            "aabb" => aabb = Some(extract_aabb(&path, child, unknown)?),
+            "material" => material = Some(extract_material(&path, child, unknown)?),
+            "skin" => skin = Some(extract_skin(&path, child, vert_count, unknown)?),
+            _ => unknown.object(&path, child),
+        }
+    }
+    let (aabb_min, aabb_max) =
+        aabb.ok_or_else(|| format!("{path}: missing aabb node (present in every shipped mesh)"))?;
+    let material = material
+        .ok_or_else(|| format!("{path}: missing material node (present in every shipped mesh)"))?;
+
+    Ok(PdxMeshData {
+        verts,
+        normals,
+        tangents,
+        uv0,
+        uv1,
+        indices: tri,
+        aabb_min,
+        aabb_max,
+        bounding_sphere,
+        material,
+        skin,
+    })
+}
+
+fn per_vertex(
+    path: &str,
+    name: &str,
+    values: Option<Vec<f32>>,
+    vert_count: usize,
+    components: usize,
+) -> Result<Option<Vec<f32>>> {
+    let Some(values) = values else {
+        return Ok(None);
+    };
+    if values.len() != vert_count * components {
+        return Err(format!(
+            "{path}: {name} has {} floats, wanted {components} per vertex x {vert_count}",
+            values.len()
+        )
+        .into());
+    }
+    Ok(Some(values))
+}
+
+fn extract_aabb(
+    mesh_path: &str,
+    node: &PdxNode,
+    unknown: &mut UnknownCollector,
+) -> Result<([f32; 3], [f32; 3])> {
+    let path = format!("{mesh_path}/aabb");
+    let mut min = None;
+    let mut max = None;
+    for prop in &node.properties {
+        match prop.name.as_str() {
+            "min" => min = Some(fixed::<3>(&path, "min", &floats_exact(&path, prop, 3)?)?),
+            "max" => max = Some(fixed::<3>(&path, "max", &floats_exact(&path, prop, 3)?)?),
+            _ => unknown.property(&path, prop),
+        }
+    }
+    for child in &node.children {
+        unknown.object(&path, child);
+    }
+    match (min, max) {
+        (Some(min), Some(max)) => Ok((min, max)),
+        _ => Err(format!("{path}: needs both min and max").into()),
+    }
+}
+
+fn extract_material(
+    mesh_path: &str,
+    node: &PdxNode,
+    unknown: &mut UnknownCollector,
+) -> Result<PdxMaterial> {
+    let path = format!("{mesh_path}/material");
+    let mut shader = None;
+    let mut diffuse = None;
+    let mut normal_map = None;
+    let mut specular = None;
+    for prop in &node.properties {
+        match prop.name.as_str() {
+            "shader" => shader = Some(single_string(&path, prop)?),
+            "diff" => diffuse = Some(single_string(&path, prop)?),
+            "n" => normal_map = Some(single_string(&path, prop)?),
+            "spec" => specular = Some(single_string(&path, prop)?),
+            _ => unknown.property(&path, prop),
+        }
+    }
+    for child in &node.children {
+        unknown.object(&path, child);
+    }
+    Ok(PdxMaterial {
+        shader: shader.ok_or_else(|| format!("{path}: missing shader"))?,
+        diffuse,
+        normal_map,
+        specular,
+    })
+}
+
+fn extract_skin(
+    mesh_path: &str,
+    node: &PdxNode,
+    vert_count: usize,
+    unknown: &mut UnknownCollector,
+) -> Result<PdxSkin> {
+    let path = format!("{mesh_path}/skin");
+    let mut bones = None;
+    let mut joint_indices = None;
+    let mut weights = None;
+    for prop in &node.properties {
+        match (prop.name.as_str(), &prop.values) {
+            ("bones", _) => bones = Some(ints_exact(&path, prop, 1)?[0]),
+            ("ix", PdxValues::I32(values)) => joint_indices = Some(values.clone()),
+            ("w", PdxValues::F32(values)) => weights = Some(values.clone()),
+            _ => unknown.property(&path, prop),
+        }
+    }
+    for child in &node.children {
+        unknown.object(&path, child);
+    }
+    let influences_per_vertex = bones.ok_or_else(|| format!("{path}: missing bones"))?;
+    if !(1..=4).contains(&influences_per_vertex) {
+        return Err(format!(
+            "{path}: bones={influences_per_vertex} outside the verified 1..=4 range"
+        )
+        .into());
+    }
+    let joint_indices = joint_indices.ok_or_else(|| format!("{path}: missing ix"))?;
+    let weights = weights.ok_or_else(|| format!("{path}: missing w"))?;
+    if joint_indices.len() != vert_count * 4 || weights.len() != vert_count * 4 {
+        return Err(format!(
+            "{path}: skin arrays must be 4 per vertex (ix {} w {} for {vert_count} verts)",
+            joint_indices.len(),
+            weights.len()
+        )
+        .into());
+    }
+    Ok(PdxSkin {
+        influences_per_vertex,
+        joint_indices,
+        weights,
+    })
+}
+
+fn extract_joint(
+    shape_path: &str,
+    node: &PdxNode,
+    unknown: &mut UnknownCollector,
+) -> Result<PdxJoint> {
+    let path = format!("{shape_path}/skeleton/{}", node.name);
+    let mut index = None;
+    let mut parent = None;
+    let mut transform = None;
+    let mut rcf = None;
+    for prop in &node.properties {
+        match prop.name.as_str() {
+            "ix" => index = Some(ints_exact(&path, prop, 1)?[0]),
+            "pa" => parent = Some(ints_exact(&path, prop, 1)?[0]),
+            "tx" => {
+                let values = floats_exact(&path, prop, 12)?;
+                transform = Some(fixed::<12>(&path, "tx", &values)?);
+            }
+            "rcf" => rcf = Some(ints_exact(&path, prop, 1)?[0]),
+            _ => unknown.property(&path, prop),
+        }
+    }
+    for child in &node.children {
+        unknown.object(&path, child);
+    }
+    Ok(PdxJoint {
+        name: node.name.clone(),
+        index: index.ok_or_else(|| format!("{path}: missing ix"))?,
+        parent,
+        transform_3x4: transform.ok_or_else(|| format!("{path}: missing tx"))?,
+        rcf,
+    })
+}
+
+fn extract_locator(node: &PdxNode, unknown: &mut UnknownCollector) -> Result<Option<PdxLocator>> {
+    let path = format!("locator/{}", node.name);
+    let mut position = None;
+    let mut rotation = None;
+    let mut parent_bone = None;
+    let mut transform = None;
+    for prop in &node.properties {
+        match prop.name.as_str() {
+            "p" => position = Some(fixed::<3>(&path, "p", &floats_exact(&path, prop, 3)?)?),
+            "q" => rotation = Some(fixed::<4>(&path, "q", &floats_exact(&path, prop, 4)?)?),
+            "pa" => parent_bone = Some(single_string(&path, prop)?),
+            "tx" => {
+                let values = floats_exact(&path, prop, 16)?;
+                transform = Some(fixed::<16>(&path, "tx", &values)?);
+            }
+            _ => unknown.property(&path, prop),
+        }
+    }
+    for child in &node.children {
+        unknown.object(&path, child);
+    }
+    let (Some(position), Some(rotation)) = (position, rotation) else {
+        return Err(format!("{path}: needs both p and q").into());
+    };
+    Ok(Some(PdxLocator {
+        name: node.name.clone(),
+        position,
+        rotation_quat: rotation,
+        parent_bone,
+        transform_4x4: transform,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Typed extraction — animations
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxAnimJoint {
+    pub name: String,
+    /// Channel flags over "tqs": which of translation / rotation / scale are
+    /// sampled per frame (empty = fully static joint).
+    pub channels: String,
+    pub base_translation: [f32; 3],
+    pub base_rotation_quat: [f32; 4],
+    pub base_scale: f32,
+}
+
+/// Typed contents of one `.anim` pdxasset. Sample totals are validated
+/// against the per-joint channel flags (`len(samples.t) == 3 * sample_count *
+/// #joints-with-t`, etc. — proven on all 1612 shipped binary anims). The raw
+/// sample arrays are exposed as shipped; per-frame slicing assumes the
+/// frame-major order documented in the module header.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdxAnimData {
+    pub fps: f32,
+    pub sample_count: i32,
+    pub joints: Vec<PdxAnimJoint>,
+    pub samples_t: Vec<f32>,
+    pub samples_q: Vec<f32>,
+    pub samples_s: Vec<f32>,
+}
+
+pub fn extract_pdx_anim(tree: &PdxAssetTree) -> Result<PdxAnimData> {
+    let mut unknown = UnknownCollector::new();
+    let mut info = None;
+    let mut samples_t = Vec::new();
+    let mut samples_q = Vec::new();
+    let mut samples_s = Vec::new();
+    for prop in &tree.root.properties {
+        if prop.name != "pdxasset" {
+            unknown.property("<root>", prop);
+        }
+    }
+    for top in &tree.root.children {
+        match top.name.as_str() {
+            "info" => info = Some(extract_anim_info(top, &mut unknown)?),
+            "samples" => {
+                for prop in &top.properties {
+                    match (prop.name.as_str(), &prop.values) {
+                        ("t", PdxValues::F32(values)) => samples_t = values.clone(),
+                        ("q", PdxValues::F32(values)) => samples_q = values.clone(),
+                        ("s", PdxValues::F32(values)) => samples_s = values.clone(),
+                        _ => unknown.property("samples", prop),
+                    }
+                }
+                for child in &top.children {
+                    unknown.object("samples", child);
+                }
+            }
+            _ => unknown.object("<root>", top),
+        }
+    }
+    unknown.finish("pdxasset anim extraction")?;
+    let (fps, sample_count, joint_count, joints) =
+        info.ok_or("pdxasset anim: missing info node")?;
+    if joints.len() != joint_count as usize {
+        return Err(format!(
+            "pdxasset anim: info.j={joint_count} but {} joint nodes",
+            joints.len()
+        )
+        .into());
+    }
+    let count = |flag: char| joints.iter().filter(|j| j.channels.contains(flag)).count();
+    let expect = [
+        ("t", samples_t.len(), 3 * sample_count as usize * count('t')),
+        ("q", samples_q.len(), 4 * sample_count as usize * count('q')),
+        ("s", samples_s.len(), sample_count as usize * count('s')),
+    ];
+    for (channel, got, want) in expect {
+        if got != want {
+            return Err(format!(
+                "pdxasset anim: samples.{channel} has {got} floats, law requires {want} \
+                 (sample_count {sample_count})"
+            )
+            .into());
+        }
+    }
+    Ok(PdxAnimData {
+        fps,
+        sample_count,
+        joints,
+        samples_t,
+        samples_q,
+        samples_s,
+    })
+}
+
+#[allow(clippy::type_complexity)]
+fn extract_anim_info(
+    node: &PdxNode,
+    unknown: &mut UnknownCollector,
+) -> Result<(f32, i32, i32, Vec<PdxAnimJoint>)> {
+    let path = "info";
+    let mut fps = None;
+    let mut sample_count = None;
+    let mut joint_count = None;
+    for prop in &node.properties {
+        match prop.name.as_str() {
+            "fps" => fps = Some(floats_exact(path, prop, 1)?[0]),
+            "sa" => sample_count = Some(ints_exact(path, prop, 1)?[0]),
+            "j" => joint_count = Some(ints_exact(path, prop, 1)?[0]),
+            _ => unknown.property(path, prop),
+        }
+    }
+    let mut joints = Vec::new();
+    for joint_node in &node.children {
+        let joint_path = format!("info/{}", joint_node.name);
+        let mut channels = None;
+        let mut base_t = None;
+        let mut base_q = None;
+        let mut base_s = None;
+        for prop in &joint_node.properties {
+            match prop.name.as_str() {
+                "sa" => channels = Some(single_string(&joint_path, prop)?),
+                "t" => {
+                    base_t = Some(fixed::<3>(
+                        &joint_path,
+                        "t",
+                        &floats_exact(&joint_path, prop, 3)?,
+                    )?)
+                }
+                "q" => {
+                    base_q = Some(fixed::<4>(
+                        &joint_path,
+                        "q",
+                        &floats_exact(&joint_path, prop, 4)?,
+                    )?)
+                }
+                "s" => base_s = Some(floats_exact(&joint_path, prop, 1)?[0]),
+                _ => unknown.property(&joint_path, prop),
+            }
+        }
+        for child in &joint_node.children {
+            unknown.object(&joint_path, child);
+        }
+        let channels = channels.ok_or_else(|| format!("{joint_path}: missing sa"))?;
+        if channels.chars().any(|flag| !"tqs".contains(flag)) {
+            return Err(format!(
+                "{joint_path}: channel flags {channels:?} outside the verified \"tqs\" alphabet"
+            )
+            .into());
+        }
+        joints.push(PdxAnimJoint {
+            name: joint_node.name.clone(),
+            channels,
+            base_translation: base_t.ok_or_else(|| format!("{joint_path}: missing t"))?,
+            base_rotation_quat: base_q.ok_or_else(|| format!("{joint_path}: missing q"))?,
+            base_scale: base_s.ok_or_else(|| format!("{joint_path}: missing s"))?,
+        });
+    }
+    Ok((
+        fps.ok_or("info: missing fps")?,
+        sample_count.ok_or("info: missing sa")?,
+        joint_count.ok_or("info: missing j")?,
+        joints,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Validation report (gate evidence)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct PdxMeshValidationRow {
+    pub shape: String,
+    pub mesh_index: usize,
+    pub material_shader: String,
+    pub vert_count: usize,
+    pub triangle_count: usize,
+    pub max_index: u32,
+    pub indices_in_bounds: bool,
+    pub aabb_contains_positions: bool,
+    /// Largest positive excursion of any position component outside the aabb.
+    pub max_aabb_deviation: f32,
+    pub uv_min: Option<f32>,
+    pub uv_max: Option<f32>,
+}
+
+pub fn validate_pdx_model(model: &PdxModel) -> Vec<PdxMeshValidationRow> {
+    let mut rows = Vec::new();
+    for shape in &model.shapes {
+        for (mesh_index, mesh) in shape.meshes.iter().enumerate() {
+            let max_index = mesh.indices.iter().copied().max().unwrap_or(0);
+            let mut deviation = 0f32;
+            for vert in &mesh.verts {
+                for axis in 0..3 {
+                    deviation = deviation
+                        .max(mesh.aabb_min[axis] - vert[axis])
+                        .max(vert[axis] - mesh.aabb_max[axis]);
+                }
+            }
+            let mut uv_min = None;
+            let mut uv_max = None;
+            for uvs in [&mesh.uv0, &mesh.uv1].into_iter().flatten() {
+                for uv in uvs {
+                    for &component in uv {
+                        uv_min = Some(uv_min.map_or(component, |v: f32| v.min(component)));
+                        uv_max = Some(uv_max.map_or(component, |v: f32| v.max(component)));
+                    }
+                }
+            }
+            rows.push(PdxMeshValidationRow {
+                shape: shape.name.clone(),
+                mesh_index,
+                material_shader: mesh.material.shader.clone(),
+                vert_count: mesh.verts.len(),
+                triangle_count: mesh.indices.len() / 3,
+                max_index,
+                indices_in_bounds: mesh.verts.is_empty() || (max_index as usize) < mesh.verts.len(),
+                aabb_contains_positions: deviation <= 1e-3,
+                max_aabb_deviation: deviation,
+                uv_min,
+                uv_max,
+            });
+        }
+    }
+    rows
+}
+
+// ---------------------------------------------------------------------------
+// Resolver-routed access + install-wide scan
+// ---------------------------------------------------------------------------
+
+pub fn pdx_model_from_resolver(resolver: &GameFileResolver, rel_path: &str) -> Result<PdxModel> {
+    let path = resolver.resolve_required(rel_path, "pdxasset mesh")?;
+    let bytes = std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let tree = parse_pdx_asset(&bytes)
+        .map_err(|err| format!("{rel_path} (resolved {}): {err}", path.display()))?;
+    extract_pdx_model(&tree).map_err(|err| format!("{rel_path}: {err}").into())
+}
+
+pub fn pdx_anim_from_resolver(resolver: &GameFileResolver, rel_path: &str) -> Result<PdxAnimData> {
+    let path = resolver.resolve_required(rel_path, "pdxasset anim")?;
+    let bytes = std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let tree = parse_pdx_asset(&bytes)
+        .map_err(|err| format!("{rel_path} (resolved {}): {err}", path.display()))?;
+    extract_pdx_anim(&tree).map_err(|err| format!("{rel_path}: {err}").into())
+}
+
+/// Test/debug-only convenience wrapper (vanilla resolver, no mods).
+pub fn pdx_model_from_game_dir(game_dir: &std::path::Path, rel_path: &str) -> Result<PdxModel> {
+    pdx_model_from_resolver(
+        &GameFileResolver::vanilla(game_dir.to_path_buf())?,
+        rel_path,
+    )
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PdxAssetScanReport {
+    pub mesh_files: usize,
+    pub anim_files: usize,
+    pub binary_files: usize,
+    pub text_files: usize,
+    pub mesh_failures: Vec<(String, String)>,
+    pub anim_failures: Vec<(String, String)>,
+    /// (structural parent pattern, property name, type char) -> occurrences.
+    pub property_inventory: BTreeMap<(String, String, char), usize>,
+    pub validation_rows: usize,
+    pub validation_failures: Vec<(String, String)>,
+}
+
+impl PdxAssetScanReport {
+    pub fn all_parsed(&self) -> bool {
+        self.mesh_failures.is_empty()
+            && self.anim_failures.is_empty()
+            && self.validation_failures.is_empty()
+    }
+}
+
+/// Parse every `.mesh` and `.anim` under `rel_root` (resolver-routed,
+/// recursive), run typed extraction + semantic validation, and inventory the
+/// property names observed at grammar level.
+pub fn scan_pdx_assets_from_resolver(
+    resolver: &GameFileResolver,
+    rel_root: &str,
+) -> Result<PdxAssetScanReport> {
+    let mut report = PdxAssetScanReport::default();
+    for extension in ["mesh", "anim"] {
+        let files = resolver.resolve_dir_files_recursive(rel_root, Some(extension))?;
+        for (rel, path) in files {
+            let bytes =
+                std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+            match bytes.get(..4) {
+                Some(magic) if magic == PDX_ASSET_BINARY_MAGIC => report.binary_files += 1,
+                Some(magic) if magic == PDX_ASSET_TEXT_MAGIC => report.text_files += 1,
+                _ => {}
+            }
+            let tree = match parse_pdx_asset(&bytes) {
+                Ok(tree) => tree,
+                Err(err) => {
+                    if extension == "mesh" {
+                        report.mesh_failures.push((rel, err.to_string()));
+                        report.mesh_files += 1;
+                    } else {
+                        report.anim_failures.push((rel, err.to_string()));
+                        report.anim_files += 1;
+                    }
+                    continue;
+                }
+            };
+            inventory_node(&tree.root, "<root>", &mut report.property_inventory);
+            if extension == "mesh" {
+                report.mesh_files += 1;
+                match extract_pdx_model(&tree) {
+                    Ok(model) => {
+                        for row in validate_pdx_model(&model) {
+                            report.validation_rows += 1;
+                            if !row.indices_in_bounds || !row.aabb_contains_positions {
+                                report.validation_failures.push((
+                                    rel.clone(),
+                                    format!(
+                                        "shape {} mesh {}: indices_in_bounds={} \
+                                         aabb_contains={} (deviation {})",
+                                        row.shape,
+                                        row.mesh_index,
+                                        row.indices_in_bounds,
+                                        row.aabb_contains_positions,
+                                        row.max_aabb_deviation
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    Err(err) => report.mesh_failures.push((rel, err.to_string())),
+                }
+            } else {
+                report.anim_files += 1;
+                if let Err(err) = extract_pdx_anim(&tree) {
+                    report.anim_failures.push((rel, err.to_string()));
+                }
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn inventory_node(
+    node: &PdxNode,
+    pattern: &str,
+    inventory: &mut BTreeMap<(String, String, char), usize>,
+) {
+    for prop in &node.properties {
+        *inventory
+            .entry((
+                pattern.to_string(),
+                prop.name.clone(),
+                prop.values.type_char(),
+            ))
+            .or_insert(0) += 1;
+    }
+    for child in &node.children {
+        let child_pattern = child_pattern(pattern, &child.name);
+        inventory_node(child, &child_pattern, inventory);
+    }
+}
+
+/// Collapse free-form names (shape/bone/locator/joint) so the inventory stays
+/// a compact structural fingerprint.
+fn child_pattern(parent_pattern: &str, child_name: &str) -> String {
+    let structural = matches!(
+        child_name,
+        "object"
+            | "locator"
+            | "info"
+            | "samples"
+            | "mesh"
+            | "aabb"
+            | "material"
+            | "skin"
+            | "skeleton"
+    );
+    let tail = if structural { child_name } else { "<name>" };
+    if parent_pattern == "<root>" {
+        tail.to_string()
+    } else {
+        format!("{parent_pattern}/{tail}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OBJ dump (debug evidence)
+// ---------------------------------------------------------------------------
+
+/// Serialize a model as Wavefront OBJ text so a human can LOOK at it.
+/// Collision meshes are emitted as their own groups (commented) so viewers
+/// can hide them; V is flipped (1-v) per OBJ convention. Skin/skeleton data
+/// has no OBJ representation and is noted in comments only.
+pub fn pdx_model_to_obj(model: &PdxModel, source_label: &str) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# pdxasset OBJ dump — {source_label}");
+    let _ = writeln!(
+        out,
+        "# shapes {} locators {} lod_distances {:?}",
+        model.shapes.len(),
+        model.locators.len(),
+        model.lod_distances
+    );
+    let mut vertex_base = 1usize; // OBJ indices are 1-based
+    for shape in &model.shapes {
+        for (mesh_index, mesh) in shape.meshes.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "g {}_mesh{}_{}",
+                sanitize_obj_name(&shape.name),
+                mesh_index,
+                sanitize_obj_name(&mesh.material.shader)
+            );
+            let _ = writeln!(
+                out,
+                "# material shader={} diff={:?} n={:?} spec={:?} lod={:?} skinned={}",
+                mesh.material.shader,
+                mesh.material.diffuse,
+                mesh.material.normal_map,
+                mesh.material.specular,
+                shape.lod,
+                mesh.skin.is_some()
+            );
+            for vert in &mesh.verts {
+                let _ = writeln!(out, "v {} {} {}", vert[0], vert[1], vert[2]);
+            }
+            let has_uv = mesh.uv0.is_some();
+            if let Some(uvs) = &mesh.uv0 {
+                for uv in uvs {
+                    let _ = writeln!(out, "vt {} {}", uv[0], 1.0 - uv[1]);
+                }
+            }
+            let has_normals = mesh.normals.is_some();
+            if let Some(normals) = &mesh.normals {
+                for normal in normals {
+                    let _ = writeln!(out, "vn {} {} {}", normal[0], normal[1], normal[2]);
+                }
+            }
+            for triangle in mesh.indices.chunks_exact(3) {
+                let face = triangle
+                    .iter()
+                    .map(|index| {
+                        let global = vertex_base + *index as usize;
+                        match (has_uv, has_normals) {
+                            (true, true) => format!("{global}/{global}/{global}"),
+                            (true, false) => format!("{global}/{global}"),
+                            (false, true) => format!("{global}//{global}"),
+                            (false, false) => format!("{global}"),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let _ = writeln!(out, "f {face}");
+            }
+            vertex_base += mesh.verts.len();
+        }
+    }
+    for locator in &model.locators {
+        let _ = writeln!(
+            out,
+            "# locator {} p=({}, {}, {}) parent={:?}",
+            locator.name,
+            locator.position[0],
+            locator.position[1],
+            locator.position[2],
+            locator.parent_bone
+        );
+    }
+    out
+}
+
+fn sanitize_obj_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::temp_test_dir;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
+
+    // --- synthetic byte builders (mirror the verified grammar) ---
+
+    fn push_prop_f(bytes: &mut Vec<u8>, name: &str, values: &[f32]) {
+        bytes.push(b'!');
+        bytes.push(name.len() as u8);
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.push(b'f');
+        bytes.extend_from_slice(&(values.len() as u32).to_le_bytes());
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn push_prop_i(bytes: &mut Vec<u8>, name: &str, values: &[i32]) {
+        bytes.push(b'!');
+        bytes.push(name.len() as u8);
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.push(b'i');
+        bytes.extend_from_slice(&(values.len() as u32).to_le_bytes());
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn push_prop_s(bytes: &mut Vec<u8>, name: &str, value: &str) {
+        bytes.push(b'!');
+        bytes.push(name.len() as u8);
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.push(b's');
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&((value.len() + 1) as u32).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
+    }
+
+    fn push_object(bytes: &mut Vec<u8>, depth: usize, name: &str) {
+        bytes.extend(std::iter::repeat(b'[').take(depth));
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.push(0);
+    }
+
+    fn synthetic_mesh_bytes(x_offset: f32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        push_object(&mut bytes, 1, "object");
+        push_prop_f(&mut bytes, "loddist", &[50.0, 200.0]);
+        push_object(&mut bytes, 2, "testShape");
+        push_prop_i(&mut bytes, "lod", &[0]);
+        push_object(&mut bytes, 3, "mesh");
+        push_prop_f(
+            &mut bytes,
+            "p",
+            &[
+                x_offset,
+                0.0,
+                0.0,
+                x_offset + 1.0,
+                0.0,
+                0.0,
+                x_offset,
+                1.0,
+                0.0,
+            ],
+        );
+        push_prop_f(
+            &mut bytes,
+            "n",
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        );
+        push_prop_f(
+            &mut bytes,
+            "ta",
+            &[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+        );
+        push_prop_f(&mut bytes, "u0", &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        push_prop_i(&mut bytes, "tri", &[0, 2, 1]);
+        push_object(&mut bytes, 4, "aabb");
+        push_prop_f(&mut bytes, "min", &[x_offset, 0.0, 0.0]);
+        push_prop_f(&mut bytes, "max", &[x_offset + 1.0, 1.0, 0.0]);
+        push_object(&mut bytes, 4, "material");
+        push_prop_s(&mut bytes, "shader", "PdxMeshStandard");
+        push_prop_s(&mut bytes, "diff", "test_diffuse.dds");
+        push_object(&mut bytes, 1, "locator");
+        push_object(&mut bytes, 2, "smoke_e");
+        push_prop_f(&mut bytes, "p", &[0.5, 0.5, 0.5]);
+        push_prop_f(&mut bytes, "q", &[0.0, 0.0, 0.0, 1.0]);
+        push_prop_s(&mut bytes, "pa", "testBone");
+        bytes
+    }
+
+    fn synthetic_anim_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        push_object(&mut bytes, 1, "info");
+        push_prop_f(&mut bytes, "fps", &[15.0]);
+        push_prop_i(&mut bytes, "sa", &[2]);
+        push_prop_i(&mut bytes, "j", &[2]);
+        push_object(&mut bytes, 2, "root_bone");
+        push_prop_s(&mut bytes, "sa", "tq");
+        push_prop_f(&mut bytes, "t", &[0.0, 1.0, 0.0]);
+        push_prop_f(&mut bytes, "q", &[0.0, 0.0, 0.0, 1.0]);
+        push_prop_f(&mut bytes, "s", &[1.0]);
+        push_object(&mut bytes, 2, "still_bone");
+        push_prop_s(&mut bytes, "sa", "");
+        push_prop_f(&mut bytes, "t", &[0.0, 0.0, 0.0]);
+        push_prop_f(&mut bytes, "q", &[0.0, 0.0, 0.0, 1.0]);
+        push_prop_f(&mut bytes, "s", &[1.0]);
+        push_object(&mut bytes, 1, "samples");
+        push_prop_f(&mut bytes, "t", &[0.0, 1.0, 0.0, 0.0, 1.5, 0.0]);
+        push_prop_f(&mut bytes, "q", &[0.0, 0.0, 0.0, 1.0, 0.1, 0.0, 0.0, 0.9]);
+        bytes
+    }
+
+    #[test]
+    fn binary_round_trip_parses_tree_and_extracts_model() {
+        let tree = parse_pdx_asset(&synthetic_mesh_bytes(0.0)).expect("parse synthetic mesh");
+        assert_eq!(tree.version, vec![1, 0]);
+        let model = extract_pdx_model(&tree).expect("extract synthetic mesh");
+        assert_eq!(model.lod_distances, vec![50.0, 200.0]);
+        assert_eq!(model.shapes.len(), 1);
+        assert_eq!(model.shapes[0].name, "testShape");
+        assert_eq!(model.shapes[0].lod, Some(0));
+        let mesh = &model.shapes[0].meshes[0];
+        assert_eq!(mesh.verts.len(), 3);
+        assert_eq!(mesh.indices, vec![0, 2, 1]);
+        assert_eq!(mesh.aabb_min, [0.0, 0.0, 0.0]);
+        assert_eq!(mesh.material.shader, "PdxMeshStandard");
+        assert_eq!(mesh.material.diffuse.as_deref(), Some("test_diffuse.dds"));
+        assert_eq!(model.locators.len(), 1);
+        assert_eq!(model.locators[0].parent_bone.as_deref(), Some("testBone"));
+        let rows = validate_pdx_model(&model);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].indices_in_bounds);
+        assert!(rows[0].aabb_contains_positions);
+    }
+
+    #[test]
+    fn text_twin_parses_to_the_same_shapes() {
+        let text = br#"@@t@pdxasset i 2 1 0
+[object]
+	[[testShape]]
+		[[[mesh]]]
+			p f 9 0 0 0 1 0 0 0 1 0
+			tri i 3 0 2 1
+			[[[[aabb]]]]
+				min f 3 0 0 0
+				max f 3 1 1 0
+			[[[[material]]]]
+				shader s 1 "Collision"
+[locator]
+	[[node]]
+		p f 3 0 0 0
+		q f 4 0 0 0 1
+"#;
+        let tree = parse_pdx_asset(text).expect("parse text twin");
+        let model = extract_pdx_model(&tree).expect("extract text twin");
+        assert_eq!(model.shapes.len(), 1);
+        assert_eq!(model.shapes[0].meshes[0].material.shader, "Collision");
+        assert!(model.shapes[0].meshes[0].material.is_collision());
+        assert_eq!(model.locators.len(), 1);
+    }
+
+    #[test]
+    fn anim_round_trip_validates_sample_law() {
+        let tree = parse_pdx_asset(&synthetic_anim_bytes()).expect("parse synthetic anim");
+        let anim = extract_pdx_anim(&tree).expect("extract synthetic anim");
+        assert_eq!(anim.fps, 15.0);
+        assert_eq!(anim.sample_count, 2);
+        assert_eq!(anim.joints.len(), 2);
+        assert_eq!(anim.joints[0].channels, "tq");
+        assert_eq!(anim.samples_t.len(), 6);
+        assert_eq!(anim.samples_q.len(), 8);
+        assert!(anim.samples_s.is_empty());
+    }
+
+    #[test]
+    fn anim_sample_count_mismatch_fails_closed() {
+        // Same anim as synthetic_anim_bytes but samples.q carries 4 floats
+        // where the sample law requires 4 * sample_count(2) * one 'q' joint = 8.
+        let mut bytes = synthetic_anim_bytes();
+        let q_prop_len = 1 + 1 + 1 + 1 + 4 + 4 * 8; // '!', len, "q", 'f', count, 8 floats
+        bytes.truncate(bytes.len() - q_prop_len);
+        push_prop_f(&mut bytes, "q", &[0.0, 0.0, 0.0, 1.0]);
+        let tree = parse_pdx_asset(&bytes).expect("parse tampered anim");
+        let err = extract_pdx_anim(&tree).expect_err("sample law violation");
+        assert!(err.to_string().contains("samples.q"), "{err}");
+    }
+
+    #[test]
+    fn unknown_property_fails_closed_with_name() {
+        let mut bytes = synthetic_mesh_bytes(0.0);
+        push_prop_f(&mut bytes, "mystery", &[1.0]);
+        let tree = parse_pdx_asset(&bytes).expect("grammar still parses");
+        let err = extract_pdx_model(&tree).expect_err("unknown property");
+        let message = err.to_string();
+        assert!(message.contains("mystery"), "{message}");
+        assert!(message.contains("failing closed"), "{message}");
+    }
+
+    #[test]
+    fn unknown_type_char_fails_at_grammar_level() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        bytes.push(b'!');
+        bytes.push(3);
+        bytes.extend_from_slice(b"bad");
+        bytes.push(b'd'); // no such value type
+        let err = parse_pdx_asset(&bytes).expect_err("unknown type char");
+        assert!(
+            err.to_string().contains("unknown pdxasset value type"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn truncated_payload_fails_with_offset() {
+        let mut bytes = synthetic_mesh_bytes(0.0);
+        bytes.truncate(bytes.len() - 3);
+        let err = parse_pdx_asset(&bytes).expect_err("truncated stream");
+        assert!(err.to_string().contains("truncated"), "{err}");
+    }
+
+    #[test]
+    fn unsupported_version_fails_closed() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
+        push_prop_i(&mut bytes, "pdxasset", &[2, 0]);
+        let err = parse_pdx_asset(&bytes).expect_err("future version");
+        assert!(
+            err.to_string().contains("unsupported pdxasset version"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn out_of_bounds_triangle_index_fails_closed() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        push_object(&mut bytes, 1, "object");
+        push_object(&mut bytes, 2, "shape");
+        push_object(&mut bytes, 3, "mesh");
+        push_prop_f(&mut bytes, "p", &[0.0; 9]);
+        push_prop_i(&mut bytes, "tri", &[0, 1, 7]);
+        push_object(&mut bytes, 4, "aabb");
+        push_prop_f(&mut bytes, "min", &[0.0; 3]);
+        push_prop_f(&mut bytes, "max", &[0.0; 3]);
+        push_object(&mut bytes, 4, "material");
+        push_prop_s(&mut bytes, "shader", "PdxMeshStandard");
+        let tree = parse_pdx_asset(&bytes).expect("grammar parses");
+        let err = extract_pdx_model(&tree).expect_err("index out of bounds");
+        assert!(err.to_string().contains("out of bounds"), "{err}");
+    }
+
+    // --- resolver contract (MOD_COMPATIBILITY.md) ---
+
+    fn write_bytes(root: &Path, rel: &str, bytes: &[u8]) {
+        let path = rel
+            .split('/')
+            .fold(root.to_path_buf(), |path, part| path.join(part));
+        fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture dir");
+        fs::write(path, bytes).expect("write fixture file");
+    }
+
+    const TEST_MESH_REL: &str = "gfx/models/buildings/test_building.mesh";
+
+    #[test]
+    fn pdx_model_from_resolver_uses_mod_override() {
+        let root = temp_test_dir("pdx_mesh_resolver_mod_override");
+        let vanilla = root.join("vanilla");
+        let mod_root = root.join("mod");
+        write_bytes(&vanilla, TEST_MESH_REL, &synthetic_mesh_bytes(0.0));
+        write_bytes(&mod_root, TEST_MESH_REL, &synthetic_mesh_bytes(100.0));
+
+        let resolver = crate::GameFileResolver::with_mod_paths(vanilla, vec![mod_root.clone()])
+            .expect("resolver");
+        let model = pdx_model_from_resolver(&resolver, TEST_MESH_REL).expect("modded mesh");
+        assert_eq!(
+            model.shapes[0].meshes[0].verts[0],
+            [100.0, 0.0, 0.0],
+            "mod layer must win"
+        );
+        assert_eq!(resolver.stats().overridden_file_count, 1);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn pdx_model_from_resolver_honors_replace_path_exclusion() {
+        let root = temp_test_dir("pdx_mesh_resolver_replace_path");
+        let vanilla = root.join("vanilla");
+        let mod_root = root.join("mod");
+        write_bytes(&vanilla, TEST_MESH_REL, &synthetic_mesh_bytes(0.0));
+        write_bytes(
+            &mod_root,
+            "descriptor.mod",
+            b"name=\"ReplaceModels\"\nreplace_path=\"gfx/models/buildings\"\n",
+        );
+
+        let resolver =
+            crate::GameFileResolver::with_mod_paths(vanilla, vec![mod_root]).expect("resolver");
+        let err = pdx_model_from_resolver(&resolver, TEST_MESH_REL)
+            .expect_err("replace_path removes vanilla mesh");
+        assert!(err.to_string().contains("missing pdxasset mesh"), "{err}");
+        assert_eq!(resolver.stats().replace_path_excluded_file_count, 1);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn scan_uses_recursive_resolver_listing_with_mod_added_meshes() {
+        let root = temp_test_dir("pdx_mesh_scan_recursive");
+        let vanilla = root.join("vanilla");
+        let mod_root = root.join("mod");
+        write_bytes(&vanilla, TEST_MESH_REL, &synthetic_mesh_bytes(0.0));
+        write_bytes(
+            &mod_root,
+            "gfx/models/new_units/added.mesh",
+            &synthetic_mesh_bytes(5.0),
+        );
+
+        let resolver =
+            crate::GameFileResolver::with_mod_paths(vanilla, vec![mod_root]).expect("resolver");
+        let report = scan_pdx_assets_from_resolver(&resolver, PDX_MODELS_ROOT).expect("scan");
+        assert_eq!(
+            report.mesh_files, 2,
+            "vanilla + mod-added mesh both scanned"
+        );
+        assert!(report.all_parsed(), "failures: {:?}", report.mesh_failures);
+        fs::remove_dir_all(root).ok();
+    }
+
+    // --- vanilla install gates (skipped when the install is absent) ---
+
+    fn vanilla_dir() -> Option<PathBuf> {
+        let dir = PathBuf::from(VANILLA_GAME_DIR);
+        if dir.is_dir() {
+            Some(dir)
+        } else {
+            eprintln!("skipping vanilla pdxasset gate: {VANILLA_GAME_DIR} is absent");
+            None
+        }
+    }
+
+    #[test]
+    fn gate_a_all_vanilla_mesh_and_anim_files_parse() {
+        let Some(game_dir) = vanilla_dir() else {
+            return;
+        };
+        let resolver = crate::GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let report =
+            scan_pdx_assets_from_resolver(&resolver, PDX_MODELS_ROOT).expect("vanilla scan");
+        assert!(
+            report.mesh_files >= 400,
+            "vanilla install should ship hundreds of meshes, saw {}",
+            report.mesh_files
+        );
+        assert!(
+            report.anim_files >= 500,
+            "vanilla install should ship hundreds of anims, saw {}",
+            report.anim_files
+        );
+        assert!(
+            report.mesh_failures.is_empty(),
+            "mesh failures: {:?}",
+            report.mesh_failures
+        );
+        assert!(
+            report.anim_failures.is_empty(),
+            "anim failures: {:?}",
+            report.anim_failures
+        );
+        assert!(
+            report.validation_failures.is_empty(),
+            "validation failures: {:?}",
+            report.validation_failures
+        );
+        println!(
+            "gate_a: {} mesh + {} anim vanilla files parsed ({} binary, {} text); {} \
+             validation rows clean; {} distinct property patterns",
+            report.mesh_files,
+            report.anim_files,
+            report.binary_files,
+            report.text_files,
+            report.validation_rows,
+            report.property_inventory.len()
+        );
+        for ((pattern, name, type_char), count) in &report.property_inventory {
+            println!("  inventory {count:8} {type_char} {pattern} :: {name}");
+        }
+    }
+
+    #[test]
+    fn gate_b_diverse_mesh_semantic_checks() {
+        let Some(game_dir) = vanilla_dir() else {
+            return;
+        };
+        let resolver = crate::GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let picks = [
+            ("building", "gfx/models/buildings/bunker.mesh"),
+            ("unit", "gfx/models/units/ENG_infantry.mesh"),
+            ("tree", "gfx/models/mapitems/trees/beech.mesh"),
+            ("ship", "gfx/models/units/ships/generic_battleship.mesh"),
+            ("plane", "gfx/models/units/planes/ENG_plane_medium.mesh"),
+        ];
+        println!(
+            "gate_b: {:10} {:44} {:>6} {:>6} {:>8} {:>9} {:>18} shader",
+            "kind", "rel", "verts", "tris", "maxidx", "aabb_dev", "uv_range"
+        );
+        for (kind, rel) in picks {
+            let model = pdx_model_from_resolver(&resolver, rel).expect(rel);
+            let rows = validate_pdx_model(&model);
+            assert!(!rows.is_empty(), "{rel}: no meshes");
+            for row in &rows {
+                assert!(
+                    row.indices_in_bounds,
+                    "{rel} shape {} mesh {}: max index {} vs {} verts",
+                    row.shape, row.mesh_index, row.max_index, row.vert_count
+                );
+                assert!(
+                    row.aabb_contains_positions,
+                    "{rel} shape {} mesh {}: aabb deviation {}",
+                    row.shape, row.mesh_index, row.max_aabb_deviation
+                );
+                if let (Some(uv_min), Some(uv_max)) = (row.uv_min, row.uv_max) {
+                    assert!(
+                        uv_min >= -64.0 && uv_max <= 64.0,
+                        "{rel}: implausible uv range [{uv_min}, {uv_max}]"
+                    );
+                }
+                println!(
+                    "gate_b: {:10} {:44} {:>6} {:>6} {:>8} {:>9.6} {:>18} {}",
+                    kind,
+                    rel,
+                    row.vert_count,
+                    row.triangle_count,
+                    row.max_index,
+                    row.max_aabb_deviation,
+                    match (row.uv_min, row.uv_max) {
+                        (Some(lo), Some(hi)) => format!("[{lo:.3}, {hi:.3}]"),
+                        _ => "-".to_string(),
+                    },
+                    row.material_shader
+                );
+            }
+            // unit + ship + plane should carry skeletons; building + tree need not.
+            if matches!(kind, "unit") {
+                assert!(
+                    model.shapes.iter().any(|shape| !shape.skeleton.is_empty()),
+                    "{rel}: expected a skeleton on the infantry mesh"
+                );
+                assert!(
+                    model
+                        .shapes
+                        .iter()
+                        .flat_map(|shape| &shape.meshes)
+                        .any(|mesh| mesh.skin.is_some()),
+                    "{rel}: expected skinning on the infantry mesh"
+                );
+            }
+        }
+    }
+}

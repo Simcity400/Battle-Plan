@@ -1,0 +1,577 @@
+{
+ "schema": "battle-plan-engine-label-oracle-v1",
+ "source": "Decoded engine mapname VBs from RenderDoc captures, map-space via (x, 2048-z). EU=hoi4_vanilla_frame4700 (1936, Europe), SA=hoi4_vanilla_frame3088546 (1936, South/Central America). Primary (largest-arc) label per (capture,tag). NAME4 solver ground-truth oracle.",
+ "captures": {
+  "EU": "frame4700",
+  "SA": "frame3088546"
+ },
+ "labels": [
+  {
+   "capture": "EU",
+   "tag": "ALB",
+   "anchor_x": 3118.5,
+   "anchor_y": 702.8,
+   "angle_deg": 85.7,
+   "arc": 35.5,
+   "glyphs": 15
+  },
+  {
+   "capture": "EU",
+   "tag": "AUS",
+   "anchor_x": 3016.7,
+   "anchor_y": 581.6,
+   "angle_deg": -10.8,
+   "arc": 69.8,
+   "glyphs": 7
+  },
+  {
+   "capture": "EU",
+   "tag": "BEL",
+   "anchor_x": 2873.6,
+   "anchor_y": 516.3,
+   "angle_deg": 14.1,
+   "arc": 27.8,
+   "glyphs": 7
+  },
+  {
+   "capture": "EU",
+   "tag": "BUL",
+   "anchor_x": 3199.2,
+   "anchor_y": 674.2,
+   "angle_deg": -3.7,
+   "arc": 52.9,
+   "glyphs": 8
+  },
+  {
+   "capture": "EU",
+   "tag": "CZE",
+   "anchor_x": 3093.5,
+   "anchor_y": 546.5,
+   "angle_deg": 11.7,
+   "arc": 124.0,
+   "glyphs": 20
+  },
+  {
+   "capture": "EU",
+   "tag": "DEN",
+   "anchor_x": 2964.6,
+   "anchor_y": 407.9,
+   "angle_deg": 19.5,
+   "arc": 43.5,
+   "glyphs": 7
+  },
+  {
+   "capture": "EU",
+   "tag": "ENG",
+   "anchor_x": 3272.4,
+   "anchor_y": 1117.6,
+   "angle_deg": -88.1,
+   "arc": 300.6,
+   "glyphs": 13
+  },
+  {
+   "capture": "EU",
+   "tag": "EST",
+   "anchor_x": 3188.9,
+   "anchor_y": 342.0,
+   "angle_deg": -2.0,
+   "arc": 45.3,
+   "glyphs": 7
+  },
+  {
+   "capture": "EU",
+   "tag": "FIN",
+   "anchor_x": 3225.3,
+   "anchor_y": 179.2,
+   "angle_deg": 88.7,
+   "arc": 148.1,
+   "glyphs": 7
+  },
+  {
+   "capture": "EU",
+   "tag": "FRA",
+   "anchor_x": 2842.7,
+   "anchor_y": 596.1,
+   "angle_deg": 84.7,
+   "arc": 103.2,
+   "glyphs": 6
+  },
+  {
+   "capture": "EU",
+   "tag": "GER",
+   "anchor_x": 2981.2,
+   "anchor_y": 497.2,
+   "angle_deg": -20.2,
+   "arc": 103.3,
+   "glyphs": 11
+  },
+  {
+   "capture": "EU",
+   "tag": "GRE",
+   "anchor_x": 3157.5,
+   "anchor_y": 741.9,
+   "angle_deg": -86.5,
+   "arc": 59.8,
+   "glyphs": 15
+  },
+  {
+   "capture": "EU",
+   "tag": "HOL",
+   "anchor_x": 2887.5,
+   "anchor_y": 486.2,
+   "angle_deg": -31.4,
+   "arc": 39.8,
+   "glyphs": 11
+  },
+  {
+   "capture": "EU",
+   "tag": "HUN",
+   "anchor_x": 3110.7,
+   "anchor_y": 586.4,
+   "angle_deg": -15.4,
+   "arc": 70.4,
+   "glyphs": 16
+  },
+  {
+   "capture": "EU",
+   "tag": "IRE",
+   "anchor_x": 2666.6,
+   "anchor_y": 457.6,
+   "angle_deg": -75.3,
+   "arc": 39.3,
+   "glyphs": 7
+  },
+  {
+   "capture": "EU",
+   "tag": "IRQ",
+   "anchor_x": 3487.8,
+   "anchor_y": 846.2,
+   "angle_deg": 72.3,
+   "arc": 96.9,
+   "glyphs": 13
+  },
+  {
+   "capture": "EU",
+   "tag": "ITA",
+   "anchor_x": 3074.3,
+   "anchor_y": 957.7,
+   "angle_deg": 10.9,
+   "arc": 139.6,
+   "glyphs": 5
+  },
+  {
+   "capture": "EU",
+   "tag": "JOR",
+   "anchor_x": 3376.3,
+   "anchor_y": 889.2,
+   "angle_deg": -79.5,
+   "arc": 41.4,
+   "glyphs": 20
+  },
+  {
+   "capture": "EU",
+   "tag": "KUW",
+   "anchor_x": 3548.3,
+   "anchor_y": 913.7,
+   "angle_deg": 8.5,
+   "arc": 15.3,
+   "glyphs": 17
+  },
+  {
+   "capture": "EU",
+   "tag": "LAT",
+   "anchor_x": 3191.0,
+   "anchor_y": 385.7,
+   "angle_deg": 6.7,
+   "arc": 63.7,
+   "glyphs": 6
+  },
+  {
+   "capture": "EU",
+   "tag": "LEB",
+   "anchor_x": 3364.2,
+   "anchor_y": 837.7,
+   "angle_deg": -57.1,
+   "arc": 22.4,
+   "glyphs": 16
+  },
+  {
+   "capture": "EU",
+   "tag": "LIT",
+   "anchor_x": 3172.9,
+   "anchor_y": 414.1,
+   "angle_deg": 4.4,
+   "arc": 49.2,
+   "glyphs": 9
+  },
+  {
+   "capture": "EU",
+   "tag": "LUX",
+   "anchor_x": 2899.9,
+   "anchor_y": 535.1,
+   "angle_deg": 74.3,
+   "arc": 9.2,
+   "glyphs": 10
+  },
+  {
+   "capture": "EU",
+   "tag": "NOR",
+   "anchor_x": 2945.7,
+   "anchor_y": 279.4,
+   "angle_deg": -44.9,
+   "arc": 90.2,
+   "glyphs": 6
+  },
+  {
+   "capture": "EU",
+   "tag": "OMA",
+   "anchor_x": 3683.6,
+   "anchor_y": 976.1,
+   "angle_deg": -86.8,
+   "arc": 6.1,
+   "glyphs": 24
+  },
+  {
+   "capture": "EU",
+   "tag": "PAL",
+   "anchor_x": 3353.1,
+   "anchor_y": 878.9,
+   "angle_deg": -82.3,
+   "arc": 44.1,
+   "glyphs": 18
+  },
+  {
+   "capture": "EU",
+   "tag": "PER",
+   "anchor_x": 3635.6,
+   "anchor_y": 852.4,
+   "angle_deg": 17.4,
+   "arc": 114.3,
+   "glyphs": 4
+  },
+  {
+   "capture": "EU",
+   "tag": "POL",
+   "anchor_x": 3149.5,
+   "anchor_y": 493.3,
+   "angle_deg": 3.5,
+   "arc": 103.4,
+   "glyphs": 6
+  },
+  {
+   "capture": "EU",
+   "tag": "POR",
+   "anchor_x": 2682.1,
+   "anchor_y": 733.3,
+   "angle_deg": -85.6,
+   "arc": 49.6,
+   "glyphs": 8
+  },
+  {
+   "capture": "EU",
+   "tag": "ROM",
+   "anchor_x": 3205.5,
+   "anchor_y": 610.2,
+   "angle_deg": 1.4,
+   "arc": 93.0,
+   "glyphs": 7
+  },
+  {
+   "capture": "EU",
+   "tag": "SAU",
+   "anchor_x": 3509.6,
+   "anchor_y": 1008.0,
+   "angle_deg": 27.9,
+   "arc": 229.8,
+   "glyphs": 11
+  },
+  {
+   "capture": "EU",
+   "tag": "SOV",
+   "anchor_x": 4386.9,
+   "anchor_y": 304.8,
+   "angle_deg": -7.3,
+   "arc": 1145.8,
+   "glyphs": 11
+  },
+  {
+   "capture": "EU",
+   "tag": "SPR",
+   "anchor_x": 2598.9,
+   "anchor_y": 993.9,
+   "angle_deg": -57.6,
+   "arc": 77.7,
+   "glyphs": 5
+  },
+  {
+   "capture": "EU",
+   "tag": "SWE",
+   "anchor_x": 3064.6,
+   "anchor_y": 243.9,
+   "angle_deg": -68.0,
+   "arc": 191.1,
+   "glyphs": 6
+  },
+  {
+   "capture": "EU",
+   "tag": "SWI",
+   "anchor_x": 2933.2,
+   "anchor_y": 597.3,
+   "angle_deg": -1.3,
+   "arc": 44.5,
+   "glyphs": 11
+  },
+  {
+   "capture": "EU",
+   "tag": "SYR",
+   "anchor_x": 3411.3,
+   "anchor_y": 812.3,
+   "angle_deg": -17.8,
+   "arc": 52.9,
+   "glyphs": 15
+  },
+  {
+   "capture": "EU",
+   "tag": "TUR",
+   "anchor_x": 3360.5,
+   "anchor_y": 744.0,
+   "angle_deg": 0.4,
+   "arc": 138.4,
+   "glyphs": 6
+  },
+  {
+   "capture": "EU",
+   "tag": "YUG",
+   "anchor_x": 3094.2,
+   "anchor_y": 642.0,
+   "angle_deg": 24.7,
+   "arc": 92.4,
+   "glyphs": 10
+  },
+  {
+   "capture": "SA",
+   "tag": "ARG",
+   "anchor_x": 1791.6,
+   "anchor_y": 1762.2,
+   "angle_deg": -74.6,
+   "arc": 285.1,
+   "glyphs": 9
+  },
+  {
+   "capture": "SA",
+   "tag": "BOL",
+   "anchor_x": 1795.2,
+   "anchor_y": 1437.8,
+   "angle_deg": 73.9,
+   "arc": 152.2,
+   "glyphs": 7
+  },
+  {
+   "capture": "SA",
+   "tag": "BRA",
+   "anchor_x": 1951.1,
+   "anchor_y": 1345.9,
+   "angle_deg": 29.2,
+   "arc": 408.2,
+   "glyphs": 6
+  },
+  {
+   "capture": "SA",
+   "tag": "CHL",
+   "anchor_x": 1697.5,
+   "anchor_y": 1847.5,
+   "angle_deg": -85.9,
+   "arc": 188.0,
+   "glyphs": 5
+  },
+  {
+   "capture": "SA",
+   "tag": "COL",
+   "anchor_x": 1659.1,
+   "anchor_y": 1111.3,
+   "angle_deg": 78.4,
+   "arc": 161.1,
+   "glyphs": 8
+  },
+  {
+   "capture": "SA",
+   "tag": "COS",
+   "anchor_x": 1492.6,
+   "anchor_y": 1020.9,
+   "angle_deg": 32.8,
+   "arc": 40.2,
+   "glyphs": 9
+  },
+  {
+   "capture": "SA",
+   "tag": "DOM",
+   "anchor_x": 1713.2,
+   "anchor_y": 875.4,
+   "angle_deg": 4.8,
+   "arc": 37.5,
+   "glyphs": 17
+  },
+  {
+   "capture": "SA",
+   "tag": "ECU",
+   "anchor_x": 1585.5,
+   "anchor_y": 1202.7,
+   "angle_deg": -20.2,
+   "arc": 69.1,
+   "glyphs": 7
+  },
+  {
+   "capture": "SA",
+   "tag": "ELS",
+   "anchor_x": 1417.6,
+   "anchor_y": 959.1,
+   "angle_deg": 12.3,
+   "arc": 27.1,
+   "glyphs": 10
+  },
+  {
+   "capture": "SA",
+   "tag": "ENG",
+   "anchor_x": 1883.6,
+   "anchor_y": 1101.5,
+   "angle_deg": 76.2,
+   "arc": 80.4,
+   "glyphs": 13
+  },
+  {
+   "capture": "SA",
+   "tag": "FRA",
+   "anchor_x": 2893.5,
+   "anchor_y": 1099.9,
+   "angle_deg": 26.4,
+   "arc": 431.9,
+   "glyphs": 6
+  },
+  {
+   "capture": "SA",
+   "tag": "GUA",
+   "anchor_x": 1396.3,
+   "anchor_y": 922.9,
+   "angle_deg": -76.1,
+   "arc": 48.3,
+   "glyphs": 9
+  },
+  {
+   "capture": "SA",
+   "tag": "HAI",
+   "anchor_x": 1666.1,
+   "anchor_y": 876.6,
+   "angle_deg": -18.8,
+   "arc": 29.2,
+   "glyphs": 5
+  },
+  {
+   "capture": "SA",
+   "tag": "HOL",
+   "anchor_x": 1929.4,
+   "anchor_y": 1113.3,
+   "angle_deg": -2.8,
+   "arc": 40.8,
+   "glyphs": 11
+  },
+  {
+   "capture": "SA",
+   "tag": "HON",
+   "anchor_x": 1458.9,
+   "anchor_y": 939.3,
+   "angle_deg": -6.8,
+   "arc": 66.5,
+   "glyphs": 8
+  },
+  {
+   "capture": "SA",
+   "tag": "LIB",
+   "anchor_x": 2661.5,
+   "anchor_y": 1297.1,
+   "angle_deg": 39.8,
+   "arc": 43.2,
+   "glyphs": 7
+  },
+  {
+   "capture": "SA",
+   "tag": "MEX",
+   "anchor_x": 1179.3,
+   "anchor_y": 783.4,
+   "angle_deg": 34.8,
+   "arc": 333.8,
+   "glyphs": 19
+  },
+  {
+   "capture": "SA",
+   "tag": "NIC",
+   "anchor_x": 1472.0,
+   "anchor_y": 974.9,
+   "angle_deg": -7.2,
+   "arc": 41.8,
+   "glyphs": 9
+  },
+  {
+   "capture": "SA",
+   "tag": "PAN",
+   "anchor_x": 1580.6,
+   "anchor_y": 1040.4,
+   "angle_deg": 40.9,
+   "arc": 31.4,
+   "glyphs": 6
+  },
+  {
+   "capture": "SA",
+   "tag": "PAR",
+   "anchor_x": 1895.6,
+   "anchor_y": 1559.0,
+   "angle_deg": 44.9,
+   "arc": 109.6,
+   "glyphs": 8
+  },
+  {
+   "capture": "SA",
+   "tag": "POR",
+   "anchor_x": 2569.1,
+   "anchor_y": 1204.9,
+   "angle_deg": 0.0,
+   "arc": 29.6,
+   "glyphs": 8
+  },
+  {
+   "capture": "SA",
+   "tag": "PRU",
+   "anchor_x": 1635.6,
+   "anchor_y": 1317.2,
+   "angle_deg": 54.0,
+   "arc": 167.5,
+   "glyphs": 4
+  },
+  {
+   "capture": "SA",
+   "tag": "SPR",
+   "anchor_x": 2600.3,
+   "anchor_y": 994.0,
+   "angle_deg": -55.2,
+   "arc": 104.3,
+   "glyphs": 16
+  },
+  {
+   "capture": "SA",
+   "tag": "URG",
+   "anchor_x": 1930.4,
+   "anchor_y": 1721.2,
+   "angle_deg": 9.0,
+   "arc": 57.5,
+   "glyphs": 25
+  },
+  {
+   "capture": "SA",
+   "tag": "VEN",
+   "anchor_x": 1765.6,
+   "anchor_y": 1057.1,
+   "angle_deg": 16.3,
+   "arc": 136.0,
+   "glyphs": 9
+  }
+ ]
+}

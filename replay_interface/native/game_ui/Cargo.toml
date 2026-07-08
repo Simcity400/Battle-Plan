@@ -1,0 +1,16 @@
+[package]
+name = "game_ui"
+version = "0.1.0"
+edition = "2021"
+description = "game UI parser, sprite registry, and texture decoder foundation"
+
+[dependencies]
+
+[[bin]]
+name = "ui_probe"
+path = "src/bin/ui_probe.rs"
+
+[[test]]
+name = "acceptance"
+path = "tests/acceptance.rs"
+harness = false

@@ -8,6 +8,20 @@
 >
 > Status: **normative** for container_version `1`. Prior review findings are
 > folded in below and tagged `[Codex …]`.
+>
+> **Payload flavors (2026-07-02 clarification).** Two payload shapes exist in
+> the wild under this container format:
+>
+> 1. **Snapshot flavor** (this spec's §1 tree): hourly world snapshots +
+>    populated `index.json`. This is the shape the replay layer consumes
+>    (`replay_core`), and the proposed production contract — see
+>    `EXTRACTION_INTERFACE_REQUESTS.md` R1.
+> 2. **Compact-stream flavor** (current production recorder): `index.json`
+>    with an empty `snapshots` list plus entries with roles
+>    `collector_compact_stream` and `recorder_manifest`. Container mechanics
+>    (§1.1–§4) apply unchanged; there is no consumable world state inside.
+>    Replay tooling refuses these for playback with a precise error rather
+>    than guessing compact record layouts.
 
 ---
 
