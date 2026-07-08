@@ -318,6 +318,10 @@ pub struct ExtractedDomain53Frame {
     /// W1 per-family wall timers (perf_rearch_20260706 T4). Observational only;
     /// see [`Domain53PhaseTimes`].
     pub phase_times: Domain53PhaseTimes,
+    /// W3-a0 relation-flag match-offset histogram (perf_rearch_20260706).
+    /// Observational only; see [`RelationFlagOffsetHistogram`]. Deterministic
+    /// given the scanned blobs, so it does not perturb the derived `PartialEq`.
+    pub relflag_offsets: RelationFlagOffsetHistogram,
 }
 
 pub const DOMAIN53_DISCOVERY_DEGRADED: &str = "domain53_discovery_degraded";
@@ -341,11 +345,65 @@ struct CountryRoot {
     country_ptr: u64,
 }
 
+/// W3-a0 instrument (perf_rearch_20260706): observational histogram of the
+/// byte-offsets within each per-pair relation blob at which a relation-flag
+/// vtable matched, keyed by `flag_kind`. Accumulated across the whole frame's
+/// relation scan. The blob is `DOMAIN53_RELATION_SCAN_BYTES` (0x340 = 832 bytes
+/// = 104 qwords), so a match `offset` (0, 8, .. < 832) maps to a bit index
+/// `offset / 8` in `0..=103`: bits `0..=63` live in `lo`, bits `64..=103` in the
+/// low 40 bits of `hi` (bit index `n >= 64` -> `hi` bit `n - 64`). This measures
+/// whether each flag type lives at a small FIXED set of offsets (offset-RE is
+/// data-safe) or is scattered (a data-loss trap) — BEFORE any read is changed.
+///
+/// Purely observational: it is OR-ed in at the match site ALONGSIDE the existing
+/// match handling (PUPPET skip, `seen_flags` dedup, row push), which is entirely
+/// untouched; it records EVERY vtable match (incl. PUPPET and dedup-suppressed
+/// ones) because the offset-RE question is where each vtable APPEARS in the blob,
+/// independent of downstream dedup. It changes no row, wire byte, guarded read,
+/// status flag, error variant, or control flow. Surfaced through the collector's
+/// d53 DOMAIN_PERF diagnostic trailer (`domain53_relflag_*`), never the folded
+/// DATA snapshot. Deterministic given the scanned blobs, so it does not perturb
+/// the derived `PartialEq` of `ExtractedDomain53Frame` (equal frames scan equal
+/// blobs and therefore produce equal histograms).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RelationFlagOffsetHistogram {
+    /// Per-`flag_kind` matched-offset bitmask `(lo, hi)` (see struct doc for the
+    /// bit layout). A kind absent from the map had zero matches this frame.
+    pub per_kind: BTreeMap<u16, (u64, u64)>,
+    /// Plain count of relation-flag vtable matches this frame (a volume
+    /// sanity-check for the analysis; == sum of set bits across `per_kind`).
+    pub total_matches: u64,
+}
+
+impl RelationFlagOffsetHistogram {
+    /// Record one relation-flag vtable match at byte `offset` within the blob for
+    /// `flag_kind`. Sets bit `offset / 8` in the kind's `(lo, hi)` mask and bumps
+    /// `total_matches`. `offset / 8 < 104` (the caller's scan bound guarantees
+    /// `offset + 8 <= 832`, so `offset <= 824` and `offset / 8 <= 103`), so the
+    /// `lo`/`hi` split never overflows; the saturating add on the count is a
+    /// formality (matches are rare — a handful per pair). Observational only.
+    fn record(&mut self, flag_kind: u16, offset: usize) {
+        let bit = offset / 8;
+        let entry = self.per_kind.entry(flag_kind).or_default();
+        if bit < 64 {
+            entry.0 |= 1u64 << bit;
+        } else {
+            // bit is in 64..=103; (bit - 64) is in 0..=39 — always a valid shift.
+            entry.1 |= 1u64 << (bit - 64);
+        }
+        self.total_matches = self.total_matches.saturating_add(1);
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct RowAccumulator {
     rows: ExtractedDomain53Rows,
     skipped_rows: u32,
     observed_rows: u32,
+    /// W3-a0 observational instrument: relation-flag match-offset histogram,
+    /// accumulated at the relation scan's match site. Diagnostic only (see
+    /// [`RelationFlagOffsetHistogram`]).
+    relflag_offsets: RelationFlagOffsetHistogram,
 }
 
 impl RowAccumulator {
@@ -936,6 +994,9 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         stale_dropped_total: staleness.stale_dropped_total(),
         family_counts,
         phase_times,
+        // W3-a0 observational instrument: carry the relation-flag match-offset
+        // histogram out to the collector's DOMAIN_PERF trailer. Diagnostic only.
+        relflag_offsets: acc.relflag_offsets,
     })
 }
 
@@ -1779,6 +1840,17 @@ fn read_relation_rows<M: Domain53Memory>(
                     continue;
                 }
                 if let Some(flag_kind) = relation_vtables.get(&qword).copied() {
+                    // W3-a0 observational instrument (perf_rearch_20260706): OR
+                    // this match's byte-offset into the per-flag_kind histogram
+                    // BEFORE the (unchanged) match handling. `offset` here is the
+                    // byte offset (0, 8, .. < DOMAIN53_RELATION_SCAN_BYTES) where
+                    // the flag vtable was found; `offset / 8` is the bit index.
+                    // Records EVERY vtable match (incl. PUPPET and dedup-suppressed
+                    // ones) — the offset-RE question is where each vtable appears,
+                    // independent of downstream dedup. Diagnostic only: it changes
+                    // no row, read, status, or control flow (see the row handling
+                    // below, which is byte-identical to before).
+                    acc.relflag_offsets.record(flag_kind, offset);
                     // PUPPET is handled by the +0x288 pointer hop above (its
                     // vtable is never inline); skip it here to avoid a spurious
                     // inline match and duplicate flag row.
@@ -6619,6 +6691,138 @@ mod tests {
             !reference.is_empty(),
             "expected the synthetic blob to contain vtable matches"
         );
+    }
+
+    /// W3-a0 instrument (perf_rearch_20260706): drive the relation-flag
+    /// match-offset histogram exactly as the live scan does — a
+    /// `while offset + 8 <= bytes.len()` walk over a crafted 832-byte blob with
+    /// KNOWN flag vtables placed at KNOWN qword offsets, calling
+    /// `RelationFlagOffsetHistogram::record(flag_kind, offset)` on every match
+    /// (the same call the match site makes). Assert the emitted `(lo, hi)`
+    /// bitmasks have EXACTLY the expected bits set (`offset / 8`) for the right
+    /// `flag_kind`s, that PUPPET is recorded like any other match (the histogram
+    /// records ALL matches, independent of the downstream PUPPET/dedup handling),
+    /// and that `total_matches` counts every match. Also assert the empty-blob
+    /// case emits nothing (`total_matches == 0`, no per-kind entries).
+    #[test]
+    fn relflag_offset_histogram_records_exact_bits() {
+        let module_base = 0x1_4000_0000u64;
+        let vtables = relation_vtable_kinds(module_base).expect("vtables");
+        // Map flag_kind -> its vtable value, so we can plant a specific kind at a
+        // specific offset.
+        let vtable_for: BTreeMap<u16, u64> = vtables.iter().map(|(&addr, &k)| (k, addr)).collect();
+
+        // The live blob is DOMAIN53_RELATION_SCAN_BYTES = 832 bytes = 104 qwords.
+        // Plant matches at hand-picked qword slots that exercise:
+        //   - slot 0                    -> bit 0   (lo)
+        //   - slot 63                   -> bit 63  (lo, the lo/hi boundary)
+        //   - slot 64                   -> bit 64  (hi bit 0, the first hi bit)
+        //   - slot 103                  -> bit 103 (hi bit 39, the LAST valid slot)
+        //   - a kind appearing at TWO slots (7 and 70) -> lo bit 7 + hi bit 6
+        //   - PUPPET at slot 40         -> recorded despite the match-site skip
+        // Expected (flag_kind, slot) plants:
+        let plants: &[(u16, usize)] = &[
+            (REL_KIND_NON_AGGRESSION_PACT, 0),
+            (REL_KIND_EMBARGO, 63),
+            (REL_KIND_MILITARY_ACCESS, 64),
+            (REL_KIND_GUARANTEE, 103),
+            (REL_KIND_ATTACHE, 7),
+            (REL_KIND_ATTACHE, 70),
+            (REL_KIND_PUPPET, 40),
+        ];
+
+        let mut blob = vec![0u8; profile::DOMAIN53_RELATION_SCAN_BYTES];
+        assert_eq!(blob.len() / 8, 104, "blob is 104 qwords");
+        for &(kind, slot) in plants {
+            let vtable = *vtable_for.get(&kind).expect("planted kind has a vtable");
+            let byte = slot * 8;
+            blob[byte..byte + 8].copy_from_slice(&vtable.to_le_bytes());
+        }
+
+        // Scan exactly like the live match site (visit every offset, `get`, and
+        // `record` on a hit) — no dedup/PUPPET-skip, since the histogram records
+        // every match.
+        let mut hist = RelationFlagOffsetHistogram::default();
+        let mut offset = 0usize;
+        while offset + 8 <= blob.len() {
+            let qword = u64::from_le_bytes(blob[offset..offset + 8].try_into().unwrap());
+            if let Some(flag_kind) = vtables.get(&qword).copied() {
+                hist.record(flag_kind, offset);
+            }
+            offset += 8;
+        }
+
+        // total_matches == number of plants (each is one match, zero-qwords never
+        // match a vtable).
+        assert_eq!(hist.total_matches, plants.len() as u64);
+
+        // Compute the expected (lo, hi) mask per kind from the plants and compare
+        // to what `record` accumulated.
+        let mut expected: BTreeMap<u16, (u64, u64)> = BTreeMap::new();
+        for &(kind, slot) in plants {
+            let entry = expected.entry(kind).or_default();
+            if slot < 64 {
+                entry.0 |= 1u64 << slot;
+            } else {
+                entry.1 |= 1u64 << (slot - 64);
+            }
+        }
+        assert_eq!(hist.per_kind, expected, "per-kind offset bitmasks");
+
+        // Spot-check the boundary bits explicitly.
+        assert_eq!(
+            hist.per_kind[&REL_KIND_NON_AGGRESSION_PACT],
+            (1u64 << 0, 0),
+            "slot 0 -> lo bit 0"
+        );
+        assert_eq!(
+            hist.per_kind[&REL_KIND_EMBARGO],
+            (1u64 << 63, 0),
+            "slot 63 -> lo bit 63"
+        );
+        assert_eq!(
+            hist.per_kind[&REL_KIND_MILITARY_ACCESS],
+            (0, 1u64 << 0),
+            "slot 64 -> hi bit 0"
+        );
+        assert_eq!(
+            hist.per_kind[&REL_KIND_GUARANTEE],
+            (0, 1u64 << 39),
+            "slot 103 -> hi bit 39 (last valid slot)"
+        );
+        assert_eq!(
+            hist.per_kind[&REL_KIND_ATTACHE],
+            (1u64 << 7, 1u64 << 6),
+            "slots 7 & 70 -> lo bit 7 + hi bit 6"
+        );
+        // PUPPET is recorded like any other match (the match-site PUPPET skip does
+        // not touch the histogram): slot 40 -> lo bit 40.
+        assert_eq!(
+            hist.per_kind[&REL_KIND_PUPPET],
+            (1u64 << 40, 0),
+            "slot 40 (PUPPET) -> lo bit 40, recorded despite the match-site skip"
+        );
+    }
+
+    /// W3-a0: an all-zero (no flag vtable) blob records NOTHING — `total_matches`
+    /// stays 0 and no per-kind entry is created (so the collector emits no
+    /// per-kind units for it).
+    #[test]
+    fn relflag_offset_histogram_empty_on_no_matches() {
+        let module_base = 0x1_4000_0000u64;
+        let vtables = relation_vtable_kinds(module_base).expect("vtables");
+        let blob = vec![0u8; profile::DOMAIN53_RELATION_SCAN_BYTES];
+        let mut hist = RelationFlagOffsetHistogram::default();
+        let mut offset = 0usize;
+        while offset + 8 <= blob.len() {
+            let qword = u64::from_le_bytes(blob[offset..offset + 8].try_into().unwrap());
+            if let Some(flag_kind) = vtables.get(&qword).copied() {
+                hist.record(flag_kind, offset);
+            }
+            offset += 8;
+        }
+        assert_eq!(hist.total_matches, 0);
+        assert!(hist.per_kind.is_empty());
     }
 
     // T2 deliverable (d): the precomputed opinion-label cache indexed by
