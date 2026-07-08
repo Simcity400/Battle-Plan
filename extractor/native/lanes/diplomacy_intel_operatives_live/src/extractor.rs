@@ -1374,19 +1374,82 @@ fn resolve_country_roots<M: Domain53Memory>(
 /// T3 (perf_rearch_20260706): prefetch lookahead distance, in **iterations**,
 /// for the d53 relation pair loop (~64k pairs/frame). While processing target
 /// `i`, we prefetch the relation entry of target `i + PREFETCH_DIST_RELATION`.
-/// The value is PROVISIONAL: a live distance sweep {8, 16, 32, 64} — measured
-/// d53-alone and full-frame — is deferred to the next live session (see the
-/// "Deferred to a live session" section of `W0_EXECUTION_PLAN.md`). Prefetch is
-/// a hint only; this constant affects timing, never rows/bytes/errors.
-const PREFETCH_DIST_RELATION: usize = 16;
+/// The value is the DEFAULT: a live distance sweep {0, 8, 16, 32, 64} — measured
+/// d53-alone and full-frame — is run from a SINGLE build via the runtime
+/// override [`prefetch_dist_relation`] (env `BATTLE_PLAN_PREFETCH_DIST_RELATION`); this
+/// constant is the fallback when the env var is absent/unparseable. Prefetch is
+/// a hint only; this value affects timing, never rows/bytes/errors.
+const PREFETCH_DIST_RELATION_DEFAULT: usize = 16;
 
 /// T3 (perf_rearch_20260706): prefetch lookahead distance, in **iterations**,
 /// for the flat address-slice candidate loops (`read_operatives`,
 /// `read_operations`, `read_war_rows_from_validated_addrs`). While validating
-/// `hits[i]`, we prefetch the candidate address `hits[i + PREFETCH_DIST_CANDIDATES]`.
-/// PROVISIONAL — same deferred live {8, 16, 32, 64} sweep as above. Hint only;
-/// no effect on rows/bytes/errors.
-const PREFETCH_DIST_CANDIDATES: usize = 32;
+/// `hits[i]`, we prefetch the candidate address `hits[i + dist]`. This is the
+/// DEFAULT — the same single-build live {0, 8, 16, 32, 64} sweep applies via the
+/// runtime override [`prefetch_dist_candidates`] (env
+/// `BATTLE_PLAN_PREFETCH_DIST_CANDIDATES`); this constant is the fallback when the env
+/// var is absent/unparseable. Hint only; no effect on rows/bytes/errors.
+const PREFETCH_DIST_CANDIDATES_DEFAULT: usize = 32;
+
+/// Environment variable overriding [`prefetch_dist_relation`] (the relation pair
+/// loop lookahead). See [`parse_prefetch_dist`] for the parse contract.
+const ENV_PREFETCH_DIST_RELATION: &str = "BATTLE_PLAN_PREFETCH_DIST_RELATION";
+
+/// Environment variable overriding [`prefetch_dist_candidates`] (the flat
+/// candidate loops' lookahead). See [`parse_prefetch_dist`] for the parse
+/// contract.
+const ENV_PREFETCH_DIST_CANDIDATES: &str = "BATTLE_PLAN_PREFETCH_DIST_CANDIDATES";
+
+/// Pure parse for a runtime prefetch-distance override, factored out so the
+/// contract is unit-testable without mutating the process environment (parallel
+/// test env mutation is unsafe).
+///
+/// `raw` is the raw env-var value (`None` when unset). Returns `default` when
+/// `raw` is `None`, empty, or does not parse as a `usize` (garbage). A parsed
+/// value is returned as-is, **including `0`** — a distance of `0` is the
+/// meaningful "prefetch OFF" arm of the sweep (the caller skips the lookahead
+/// block entirely, issuing no `prefetch_read`). Perf-only: the result only
+/// changes which non-faulting prefetch hints are issued, never rows/bytes/errors.
+fn parse_prefetch_dist(raw: Option<&str>, default: usize) -> usize {
+    match raw {
+        Some(s) => s.trim().parse::<usize>().unwrap_or(default),
+        None => default,
+    }
+}
+
+/// Runtime lookahead distance for the d53 relation pair loop, read ONCE from
+/// `BATTLE_PLAN_PREFETCH_DIST_RELATION` on first use and cached in a `OnceLock` (the env
+/// is NOT read per-pair — that would perturb the measurement). Falls back to
+/// [`PREFETCH_DIST_RELATION_DEFAULT`] (16) when the env var is absent/garbage. A
+/// cached value of `0` DISABLES prefetch for the relation loop (the caller skips
+/// the whole lookahead block, issuing no hint). Hint-only; default is identical
+/// to the pre-override behavior.
+fn prefetch_dist_relation() -> usize {
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_prefetch_dist(
+            std::env::var(ENV_PREFETCH_DIST_RELATION).ok().as_deref(),
+            PREFETCH_DIST_RELATION_DEFAULT,
+        )
+    })
+}
+
+/// Runtime lookahead distance for the flat candidate loops (`read_operatives`,
+/// `read_operations`, `read_war_rows_from_validated_addrs`), read ONCE from
+/// `BATTLE_PLAN_PREFETCH_DIST_CANDIDATES` on first use and cached in a `OnceLock` (never
+/// per-candidate). Falls back to [`PREFETCH_DIST_CANDIDATES_DEFAULT`] (32) when
+/// the env var is absent/garbage. A cached value of `0` DISABLES prefetch for
+/// those loops (the caller skips the lookahead block). Hint-only; default is
+/// identical to the pre-override behavior.
+fn prefetch_dist_candidates() -> usize {
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_prefetch_dist(
+            std::env::var(ENV_PREFETCH_DIST_CANDIDATES).ok().as_deref(),
+            PREFETCH_DIST_CANDIDATES_DEFAULT,
+        )
+    })
+}
 
 fn relation_slot_ptr<M: Domain53Memory>(
     mem: &M,
@@ -1492,6 +1555,13 @@ fn read_relation_rows<M: Domain53Memory>(
         .and_then(|slots| slots.checked_mul(8))
         .and_then(|len| usize::try_from(len).ok());
 
+    // T3 sweep (perf_rearch_20260706): resolve the relation-loop prefetch
+    // distance ONCE per call (cached OnceLock env read inside — NOT read
+    // per-pair, which would perturb the measurement). `0` == prefetch OFF for
+    // this loop (the per-target lookahead block below is skipped entirely, so no
+    // `prefetch_read` is issued). Default (no env) == 16, identical to before.
+    let prefetch_dist_relation = prefetch_dist_relation();
+
     for src in countries {
         let manager_addr = add_addr(src.country_ptr, profile::DOMAIN53_RELATION_MANAGER)?;
         let manager = match mem.read_u64(manager_addr) {
@@ -1553,31 +1623,44 @@ fn read_relation_rows<M: Domain53Memory>(
             // and never read that entry; prefetching it is simply a harmless warm
             // (it changes no read and no row). Removing this whole block leaves
             // rows/wire-bytes/errors byte-identical.
-            if let Some(bytes) = table_bytes.as_deref() {
-                if let Some(future) = countries.get(target_index + PREFETCH_DIST_RELATION) {
-                    let lo = (future.tag_db_id as usize) * 8;
-                    if let Some(slot) = bytes.get(lo..lo + 8) {
-                        let future_entry =
-                            u64::from_le_bytes(slot.try_into().expect("relation slot u64"));
-                        // Two useful lines of the ~832 B (13-cache-line) entry:
-                        //   +DOMAIN53_RELATION_OPINION (0x300, the FIRST field this
-                        //   loop reads per pair — offset >= 64, so we prefetch
-                        //   entry+0x300 rather than entry+0, per the T3 spec) and
-                        //   +DOMAIN53_RELATION_SUBJECT_PTR (0x288). The hardware
-                        // stream prefetcher follows the rest of the blob once the
-                        // first touched line is resolved, so we deliberately do
-                        // NOT prefetch all 13 lines. `checked_add` guards u64 wrap;
-                        // `prefetch_read` applies the `is_heap_ptr` gate to the
-                        // final (base+offset) address.
-                        if let Some(opinion_line) =
-                            future_entry.checked_add(profile::DOMAIN53_RELATION_OPINION as u64)
-                        {
-                            prefetch_read(opinion_line);
-                        }
-                        if let Some(subject_line) =
-                            future_entry.checked_add(profile::DOMAIN53_RELATION_SUBJECT_PTR as u64)
-                        {
-                            prefetch_read(subject_line);
+            // When the runtime distance is 0 (prefetch OFF arm of the sweep),
+            // skip the whole lookahead block — no `prefetch_read` is issued and
+            // no extra work is done (`future` is never resolved).
+            if prefetch_dist_relation != 0 {
+                if let Some(bytes) = table_bytes.as_deref() {
+                    // `checked_add` so a pathological runtime distance (e.g.
+                    // `BATTLE_PLAN_PREFETCH_DIST_RELATION=usize::MAX`) can never overflow
+                    // the index — on overflow we simply skip the lookahead (None),
+                    // exactly like an out-of-range `.get`. Keeps control flow
+                    // identical to the const path for every real distance.
+                    if let Some(future) = target_index
+                        .checked_add(prefetch_dist_relation)
+                        .and_then(|i| countries.get(i))
+                    {
+                        let lo = (future.tag_db_id as usize) * 8;
+                        if let Some(slot) = bytes.get(lo..lo + 8) {
+                            let future_entry =
+                                u64::from_le_bytes(slot.try_into().expect("relation slot u64"));
+                            // Two useful lines of the ~832 B (13-cache-line) entry:
+                            //   +DOMAIN53_RELATION_OPINION (0x300, the FIRST field this
+                            //   loop reads per pair — offset >= 64, so we prefetch
+                            //   entry+0x300 rather than entry+0, per the T3 spec) and
+                            //   +DOMAIN53_RELATION_SUBJECT_PTR (0x288). The hardware
+                            // stream prefetcher follows the rest of the blob once the
+                            // first touched line is resolved, so we deliberately do
+                            // NOT prefetch all 13 lines. `checked_add` guards u64 wrap;
+                            // `prefetch_read` applies the `is_heap_ptr` gate to the
+                            // final (base+offset) address.
+                            if let Some(opinion_line) =
+                                future_entry.checked_add(profile::DOMAIN53_RELATION_OPINION as u64)
+                            {
+                                prefetch_read(opinion_line);
+                            }
+                            if let Some(subject_line) = future_entry
+                                .checked_add(profile::DOMAIN53_RELATION_SUBJECT_PTR as u64)
+                            {
+                                prefetch_read(subject_line);
+                            }
                         }
                     }
                 }
@@ -2430,16 +2513,28 @@ fn read_operations<M: Domain53Memory>(
     let mut rows = Vec::new();
     let mut seen = BTreeSet::new();
     let mut drops = OperationDropBreakdown::default();
+    // T3 sweep: resolve the candidate-loop prefetch distance ONCE (cached env
+    // read; NOT per-candidate). `0` == prefetch OFF (block skipped). Default 32.
+    let prefetch_dist_candidates = prefetch_dist_candidates();
     for (hit_index, hit) in hits.iter().enumerate() {
         let hit = *hit;
         // T3 (perf_rearch_20260706): prefetch-ahead (MLP). Same pattern as
         // `read_operatives`: while validating `hits[i]` (`read_u64(hit)` at the
-        // object head), prefetch the candidate PREFETCH_DIST_CANDIDATES ahead so
+        // object head), prefetch the candidate `prefetch_dist_candidates` ahead so
         // its DRAM latency overlaps. Raw u64 candidates; `prefetch_read` applies
         // the `is_heap_ptr` gate before the non-faulting hint; no guarded read
-        // added; byte-identical.
-        if let Some(&future_hit) = hits.get(hit_index + PREFETCH_DIST_CANDIDATES) {
-            prefetch_read(future_hit);
+        // added; byte-identical. When the runtime distance is 0 (prefetch OFF arm
+        // of the sweep), skip the block entirely — no `prefetch_read` is issued.
+        if prefetch_dist_candidates != 0 {
+            // `checked_add` guards against a pathological runtime distance
+            // overflowing the index; on overflow we skip the lookahead (None),
+            // same as an out-of-range `.get`.
+            if let Some(&future_hit) = hit_index
+                .checked_add(prefetch_dist_candidates)
+                .and_then(|i| hits.get(i))
+            {
+                prefetch_read(future_hit);
+            }
         }
         // Revalidate the cached vtable fresh. A vtable mismatch is genuine
         // staleness (the object at this address is gone / reused).
@@ -2717,18 +2812,30 @@ fn read_operatives<M: Domain53Memory>(
     let operative_vtable = add_addr(module_base, profile::DOMAIN53_OPERATIVE_VTABLE_RVA)?;
     let mut seen = BTreeSet::new();
     let mut stale_dropped = 0usize;
+    // T3 sweep: resolve the candidate-loop prefetch distance ONCE (cached env
+    // read; NOT per-candidate). `0` == prefetch OFF (block skipped). Default 32.
+    let prefetch_dist_candidates = prefetch_dist_candidates();
     for (hit_index, hit) in hits.iter().enumerate() {
         let hit = *hit;
         // T3 (perf_rearch_20260706): prefetch-ahead (MLP). While validating this
         // candidate (`read_u64(hit)` at the object head), prefetch the candidate
-        // PREFETCH_DIST_CANDIDATES positions ahead so its DRAM latency overlaps.
+        // `prefetch_dist_candidates` positions ahead so its DRAM latency overlaps.
         // `hits[i]` are raw u64 candidate addresses; `prefetch_read` applies the
         // `is_heap_ptr` gate (the same heap-range predicate the loop's reads rely
         // on) before the non-faulting hint. No guarded read is added — the
         // address is only prefetched, never dereferenced here — so rows/errors
-        // are byte-identical.
-        if let Some(&future_hit) = hits.get(hit_index + PREFETCH_DIST_CANDIDATES) {
-            prefetch_read(future_hit);
+        // are byte-identical. When the runtime distance is 0 (prefetch OFF arm of
+        // the sweep), skip the block entirely — no `prefetch_read` is issued.
+        if prefetch_dist_candidates != 0 {
+            // `checked_add` guards against a pathological runtime distance
+            // overflowing the index; on overflow we skip the lookahead (None),
+            // same as an out-of-range `.get`.
+            if let Some(&future_hit) = hit_index
+                .checked_add(prefetch_dist_candidates)
+                .and_then(|i| hits.get(i))
+            {
+                prefetch_read(future_hit);
+            }
         }
         match mem.read_u64(hit) {
             Ok(vtable) if vtable == operative_vtable => {}
@@ -3006,18 +3113,31 @@ fn read_war_rows_from_validated_addrs<M: Domain53Memory>(
     let mut rows = Vec::new();
     let mut seen = BTreeSet::new();
     let mut stale_dropped = 0usize;
+    // T3 sweep: resolve the candidate-loop prefetch distance ONCE (cached env
+    // read; NOT per-row). `0` == prefetch OFF (block skipped). Default 32.
+    let prefetch_dist_candidates = prefetch_dist_candidates();
     for (row_index, &row_addr) in war_row_addrs.iter().enumerate() {
         // T3 (perf_rearch_20260706): prefetch-ahead (MLP). `war_row_addrs` is a
         // flat slice of raw u64 war-row base addresses (same shape as the
         // operative/operation candidate lists), so the same pattern applies:
-        // while validating this row, prefetch the row-base PREFETCH_DIST_CANDIDATES
+        // while validating this row, prefetch the row-base `prefetch_dist_candidates`
         // ahead. The row's fields span offsets 0x00..=0x6C (two cache lines from
         // the base); prefetching the base line (which the first `read_u64` at
         // +0x08 touches) lets the hardware streamer follow to the casualty/echo
         // line. `prefetch_read` applies the `is_heap_ptr` gate before the
-        // non-faulting hint; no guarded read added; byte-identical.
-        if let Some(&future_addr) = war_row_addrs.get(row_index + PREFETCH_DIST_CANDIDATES) {
-            prefetch_read(future_addr);
+        // non-faulting hint; no guarded read added; byte-identical. When the
+        // runtime distance is 0 (prefetch OFF arm of the sweep), skip the block
+        // entirely — no `prefetch_read` is issued.
+        if prefetch_dist_candidates != 0 {
+            // `checked_add` guards against a pathological runtime distance
+            // overflowing the index; on overflow we skip the lookahead (None),
+            // same as an out-of-range `.get`.
+            if let Some(&future_addr) = row_index
+                .checked_add(prefetch_dist_candidates)
+                .and_then(|i| war_row_addrs.get(i))
+            {
+                prefetch_read(future_addr);
+            }
         }
         // Re-validate the date-object vtable at this address (ABA defense: a
         // freed/reused slot no longer carries a war date vtable → stale).
@@ -4046,6 +4166,47 @@ fn has(source_proofs: u64, required: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // T3 sweep (perf_rearch_20260706): the runtime prefetch-distance override
+    // parses through `parse_prefetch_dist`. Test the PURE parse (not the live
+    // env read) so the assertion is deterministic and does not mutate the
+    // process environment (parallel test env mutation is unsafe). Contract:
+    // fall back to `default` on None / empty / garbage; return the parsed value
+    // otherwise; PRESERVE 0 (the "prefetch OFF" arm). Perf-only: the result
+    // only changes which prefetch hints issue, never rows/bytes/errors.
+    #[test]
+    fn parse_prefetch_dist_falls_back_when_absent_or_garbage() {
+        // Unset -> default.
+        assert_eq!(parse_prefetch_dist(None, 16), 16);
+        assert_eq!(parse_prefetch_dist(None, 32), 32);
+        // Empty / whitespace-only -> default (not parseable as usize).
+        assert_eq!(parse_prefetch_dist(Some(""), 16), 16);
+        assert_eq!(parse_prefetch_dist(Some("   "), 32), 32);
+        // Garbage -> default.
+        assert_eq!(parse_prefetch_dist(Some("abc"), 16), 16);
+        assert_eq!(parse_prefetch_dist(Some("16x"), 16), 16);
+        assert_eq!(parse_prefetch_dist(Some("-4"), 32), 32);
+        assert_eq!(parse_prefetch_dist(Some("3.5"), 32), 32);
+    }
+
+    #[test]
+    fn parse_prefetch_dist_returns_parsed_value() {
+        assert_eq!(parse_prefetch_dist(Some("8"), 16), 8);
+        assert_eq!(parse_prefetch_dist(Some("64"), 32), 64);
+        // Surrounding whitespace is trimmed before parsing.
+        assert_eq!(parse_prefetch_dist(Some("  24  "), 16), 24);
+        // A parsed value overrides the default even when it equals a common one.
+        assert_eq!(parse_prefetch_dist(Some("16"), 32), 16);
+    }
+
+    #[test]
+    fn parse_prefetch_dist_honors_zero_disable() {
+        // 0 is a VALID parsed value (prefetch OFF), NOT treated as garbage — it
+        // must NOT fall back to the default.
+        assert_eq!(parse_prefetch_dist(Some("0"), 16), 0);
+        assert_eq!(parse_prefetch_dist(Some("0"), 32), 0);
+        assert_eq!(parse_prefetch_dist(Some(" 0 "), 32), 0);
+    }
 
     // P3: the shared-sweep needle order MUST line up with the field order
     // `domain53_discovery_from_needle_hits` assigns, or discovery is silently
