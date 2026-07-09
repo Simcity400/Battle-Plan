@@ -4,6 +4,7 @@ members = [
     "map_viewer",
     "terrain_capture",
     "replay_core",
+    "replay_fixture_gen",
     "replay_app",
     "game_ui",
     "replay_qa",

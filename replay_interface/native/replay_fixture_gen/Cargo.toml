@@ -1,0 +1,9 @@
+[package]
+name = "replay_fixture_gen"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic fixture .battleplan generator for replay_core conformance tests"
+
+[dependencies]
+serde_json = "1"
+snapshot = { path = "../../../extractor/native/snapshot" }

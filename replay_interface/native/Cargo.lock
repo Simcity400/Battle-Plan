@@ -461,6 +461,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "replay_fixture_gen"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "snapshot",
+]
+
+[[package]]
 name = "replay_qa"
 version = "0.1.0"
 
