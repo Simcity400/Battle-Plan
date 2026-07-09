@@ -34,7 +34,11 @@ Standard attach recipe (handoff "Operating rules" item 7) with:
 The camera stays over the SAME location (suggest: center on Munich/Alps —
 land + sea within view at wide zooms). For each stop the USER sets the zoom,
 then the ORCHESTRATOR writes the round command to
-`<out-dir>\terrain_capture_control.json`:
+the control file **next to the injected DLL** (NOT the out-dir — live
+2026-07-09, commands written to the out-dir are silently never read; the DLL
+polls `module_dir\terrain_capture_control.json`, i.e. for the standard debug
+build: `replay_interface\native\target\debug\terrain_capture_control.json`;
+back up the attach-written config JSON in it before the first overwrite):
 
     {"type":"capture_map_frames_round","label":"h<height>"}
 
