@@ -10806,15 +10806,19 @@ impl WorldFold {
             );
             return Err("compact_status_failure".to_string());
         }
-        if is_delta && is_partial {
-            self.domain53_known_this_hour = false;
-            self.mark_fold_domain_unknown(
-                DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
-                "delta_partial_unsupported",
-                "diplomacy_intel_operatives_live DELTA_DATA with PARTIAL_DATA is unsupported; domain53 extras omitted",
-            );
-            return Err("delta_partial_unsupported".to_string());
-        }
+        // DELTA|PARTIAL is ACCEPTED (lane/d53-partial-delta). It was previously
+        // rejected here, which — combined with the collector re-emitting the full
+        // read on every partial frame — is why the d53 delta path never fired in
+        // deep war (400/400 frames partial). A DELTA|PARTIAL frame is a delta
+        // diffed against the last authoritative (non-partial) full read, with the
+        // collector's baseline pinned across the partial. It flows into the
+        // `is_delta` branch below, which seeds the hour from the fold's mirror
+        // delta baseline (`domain53_delta_*`) and applies the upserts/tombstones;
+        // the baseline-advance guard at the end of this function keeps that
+        // baseline pinned on partial frames (`if !is_partial`), exactly mirroring
+        // the collector. `reject_delta_before_baseline` below still requires a
+        // prior clean baseline, so a DELTA|PARTIAL frame can never apply against
+        // an empty baseline.
         if self.reject_delta_before_baseline(
             DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
             "diplomacy_intel_operatives_live",
@@ -10874,6 +10878,13 @@ impl WorldFold {
                 .intel_network_graphs
                 .clear();
             self.domain53_world_overlay_this_hour.factions.clear();
+            // A DELTA|PARTIAL frame (lane/d53-partial-delta) is still a partial
+            // read: record the same non-fatal partial-data problem the legacy
+            // full-emit partial frame records, so the folded snapshot's
+            // provenance stays byte-identical between full and reduced emission.
+            if is_partial {
+                self.record_domain_problem(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID, "partial_data");
+            }
         } else {
             // Tolerated per-row skips: record the (non-fatal) partial-data problem
             // for manifest visibility, mirroring the generic expected-partial
@@ -11101,9 +11112,36 @@ impl WorldFold {
         }
         self.domain53_country_overlays_this_hour
             .retain(|_, overlay| !overlay.is_empty());
-        if !is_partial || is_delta {
+        // ESTABLISH-FROM-FIRST-PARTIAL (lane/d53-partial-delta). Deep-war captures
+        // can be all-partial from the very first d53 frame (measured 400/400
+        // partial), so if the delta baseline were only ever set by a clean frame it
+        // would never be established there and delta would stay disabled. The
+        // collector emits the FIRST frame in full and seeds its baseline from it
+        // regardless of the partial bit; mirror that here: a partial FULL frame
+        // (is_partial && !is_delta) that is the first d53 frame establishes the
+        // baseline and marks it seen, so the following DELTA|PARTIAL frames pass
+        // `reject_delta_before_baseline` and seed from it. This is backward-safe:
+        // a legacy recording emits no DELTA|PARTIAL, so a baseline seeded from its
+        // first partial-full frame is either never consumed OR is overwritten by
+        // the next clean-full frame before any pure-delta consumes it.
+        let establishing_first_baseline = is_partial
+            && !is_delta
+            && !self
+                .delta_baselines_seen
+                .contains(&DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);
+        // Advance the delta baseline on a non-partial frame (clean or pure delta),
+        // OR on the first-baseline-establishing partial-full frame. A subsequent
+        // DELTA|PARTIAL frame leaves it PINNED (mirroring the collector's
+        // `last_emitted` guard) so a row torn on a partial frame is never lost from
+        // the baseline. (Was `!is_partial || is_delta`; `|| is_delta` only ever
+        // fired for pure-delta frames, which are also `!is_partial`.)
+        if !is_partial || establishing_first_baseline {
             self.domain53_delta_country_overlays = self.domain53_country_overlays_this_hour.clone();
             self.domain53_delta_world_overlay = self.domain53_world_overlay_this_hour.clone();
+        }
+        if establishing_first_baseline {
+            self.delta_baselines_seen
+                .insert(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);
         }
         self.domain53_known_this_hour = true;
         self.mark_fold_domain_success(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);

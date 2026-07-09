@@ -23940,6 +23940,463 @@ mod tests {
         assert_eq!(reduced_snapshots, full_snapshots);
     }
 
+    // lane/d53-partial-delta: the losslessness gate for enabling delta emission on
+    // tolerated-PARTIAL d53 frames. In deep war 400/400 d53 frames are partial, so
+    // the delta path never fired and d53 re-emitted its full ~245k-row read every
+    // hour (92.3% of the whole stream). The new collector emits DELTA|PARTIAL on
+    // partial frames (diffed against a pinned baseline, tombstone-all-absent) and
+    // the fold seeds each hour from its mirror delta baseline. Because the collector
+    // tombstones EVERY baseline row absent from the read (it cannot distinguish a
+    // torn read from a genuine deletion), the reduced-partial fold reconstructs the
+    // EXACT rows the frame carried — byte-identical to today's seed-from-empty
+    // full-emit snapshot, on all cases: unchanged partials, genuine changes,
+    // reverted values, deletions/tombstones, clean frames interleaved, and
+    // multi-hour spans across the per-hour overlay clear.
+    #[test]
+    fn compact_d53_reduced_partial_folds_identically_to_full_emission() {
+        use diplomacy53::compact as d53c;
+        use std::collections::BTreeMap;
+
+        // Recursively sort every JSON array by each element's canonical string so
+        // two snapshots that carry the same rows in different array order compare
+        // equal (decoded-row equality, plan G1).
+        fn canonicalize_json(v: &Value) -> Value {
+            match v {
+                Value::Array(items) => {
+                    let mut canon: Vec<Value> = items.iter().map(canonicalize_json).collect();
+                    canon.sort_by_key(|e| e.to_string());
+                    Value::Array(canon)
+                }
+                Value::Object(map) => Value::Object(
+                    map.iter()
+                        .map(|(k, val)| (k.clone(), canonicalize_json(val)))
+                        .collect(),
+                ),
+                other => other.clone(),
+            }
+        }
+
+        #[derive(Clone, Default)]
+        struct WorldState {
+            countries: BTreeMap<u32, i64>,                     // tag -> casualties
+            opinions: BTreeMap<(u32, u32), i32>,               // (src,tgt) -> opinion
+            state_events: BTreeMap<(u32, u32), i64>,           // (owner,obj) -> value
+            subjects: BTreeMap<(u32, u32), u32>,               // (overlord,subject) -> autonomy
+        }
+
+        fn country_row(tag: u32, casualties: i64) -> d53c::CountryDiplomacyRow {
+            d53c::CountryDiplomacyRow {
+                tag_db_id: tag,
+                faction_group: 0,
+                at_war_count: 0,
+                casualties,
+            }
+        }
+        fn opinion_row(src: u32, tgt: u32, value: i32) -> d53c::OpinionRow {
+            d53c::OpinionRow {
+                src_tag_db_id: src,
+                target_tag_db_id: tgt,
+                opinion: value,
+            }
+        }
+        fn state_event_row(owner: u32, obj: u32, value: i64) -> d53c::StateEventRow {
+            let deleted = owner & d53c::ROW_ID_DELETED != 0;
+            d53c::StateEventRow {
+                owner_tag_db_id: owner,
+                target_tag_db_id: None,
+                event_kind: d53c::STATE_EVENT_KIND_OBSERVED,
+                source_kind: d53c::STATE_EVENT_SOURCE_RELATION_OPINION,
+                object_hash: obj,
+                value_hash: if deleted { 0 } else { 1 },
+                value_raw: if deleted { 0 } else { value },
+            }
+        }
+        fn subject_row(overlord: u32, subject: u32, autonomy: u32) -> d53c::SubjectRow {
+            let deleted = overlord & d53c::ROW_ID_DELETED != 0;
+            d53c::SubjectRow {
+                overlord_tag_db_id: overlord,
+                subject_tag_db_id: subject,
+                // Live rows need a nonzero autonomy_state_hash and a positive
+                // start_date; tombstones must zero every live field.
+                autonomy_state_hash: if deleted { 0 } else { autonomy },
+                autonomy_ratio_raw: 0,
+                start_date_raw: if deleted { 0 } else { 60_795_475 },
+            }
+        }
+        const DEL: u32 = d53c::ROW_ID_DELETED;
+        // Country rows carry casualties -> the strict stream validator counts them
+        // as "country war projection rows" and requires this badge on every frame
+        // that emits them. Set on ALL frames (full and reduced) so the projected
+        // diplomacy_world status_flags stay byte-identical between the two streams.
+        const WAR_BADGE: u32 = d53c::STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
+
+        // FULL emission: encode every row of `state`, with the given status.
+        fn encode_full(state: &WorldState, status: u32) -> Vec<u8> {
+            let snap = d53c::DiplomacyIntelSnapshot {
+                status_flags: status | WAR_BADGE,
+                countries: state
+                    .countries
+                    .iter()
+                    .map(|(&t, &c)| country_row(t, c))
+                    .collect(),
+                opinions: state
+                    .opinions
+                    .iter()
+                    .map(|(&(s, t), &v)| opinion_row(s, t, v))
+                    .collect(),
+                state_events: state
+                    .state_events
+                    .iter()
+                    .map(|(&(o, h), &v)| state_event_row(o, h, v))
+                    .collect(),
+                subjects: state
+                    .subjects
+                    .iter()
+                    .map(|(&(o, s), &a)| subject_row(o, s, a))
+                    .collect(),
+                ..Default::default()
+            };
+            d53c::encode_payload(&snap)
+        }
+
+        // REDUCED delta emission: mirror the collector's tombstone-all diff of
+        // `current` vs the pinned `baseline`, with the given status (DELTA or
+        // DELTA|PARTIAL). Emits changed/new rows and a tombstone for every
+        // baseline key absent from `current`.
+        fn encode_delta(baseline: &WorldState, current: &WorldState, status: u32) -> Vec<u8> {
+            let mut snap = d53c::DiplomacyIntelSnapshot {
+                status_flags: status | WAR_BADGE,
+                ..Default::default()
+            };
+            for (&t, &c) in &current.countries {
+                if baseline.countries.get(&t) != Some(&c) {
+                    snap.countries.push(country_row(t, c));
+                }
+            }
+            for &t in baseline.countries.keys() {
+                if !current.countries.contains_key(&t) {
+                    snap.countries.push(country_row(t | DEL, 0));
+                }
+            }
+            for (&(s, tg), &v) in &current.opinions {
+                if baseline.opinions.get(&(s, tg)) != Some(&v) {
+                    snap.opinions.push(opinion_row(s, tg, v));
+                }
+            }
+            for &(s, tg) in baseline.opinions.keys() {
+                if !current.opinions.contains_key(&(s, tg)) {
+                    snap.opinions.push(opinion_row(s | DEL, tg, 0));
+                }
+            }
+            for (&(o, h), &v) in &current.state_events {
+                if baseline.state_events.get(&(o, h)) != Some(&v) {
+                    snap.state_events.push(state_event_row(o, h, v));
+                }
+            }
+            for &(o, h) in baseline.state_events.keys() {
+                if !current.state_events.contains_key(&(o, h)) {
+                    snap.state_events.push(state_event_row(o | DEL, h, 0));
+                }
+            }
+            for (&(o, s), &a) in &current.subjects {
+                if baseline.subjects.get(&(o, s)) != Some(&a) {
+                    snap.subjects.push(subject_row(o, s, a));
+                }
+            }
+            for &(o, s) in baseline.subjects.keys() {
+                if !current.subjects.contains_key(&(o, s)) {
+                    snap.subjects.push(subject_row(o | DEL, s, 0));
+                }
+            }
+            d53c::encode_payload(&snap)
+        }
+
+        fn row_count(payload: &[u8]) -> u32 {
+            d53c::decode_snapshot_payload(0, payload)
+                .map(|s| s.row_count())
+                .unwrap_or(0)
+        }
+
+        fn append_hour(raw: &mut Vec<u8>, seq: &mut u64, hour: i32, payload: &[u8]) {
+            let rc = row_count(payload);
+            append_test_compact_record(
+                raw,
+                *seq,
+                hour,
+                53,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(500, rc, rc, 0, 0, 0),
+            );
+            *seq += 1;
+            append_test_compact_record(raw, *seq, hour, 53, COMPACT_RECORD_TYPE_DOMAIN_DATA, payload);
+            *seq += 1;
+            append_test_compact_record(
+                raw,
+                *seq,
+                hour,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *seq += 1;
+        }
+
+        // ---- Hand-built scenario covering every required case ----
+        // Hour 0: CLEAN baseline.
+        let h0 = WorldState {
+            countries: [(1, 100), (2, 200)].into_iter().collect(),
+            opinions: [((1, 2), 5), ((1, 3), 7), ((2, 1), -3)].into_iter().collect(),
+            state_events: [((1, 0xaa), 1000)].into_iter().collect(),
+            subjects: [((1, 2), 50)].into_iter().collect(),
+        };
+        // Hour 1 PARTIAL: change op(1,2) & country 1 & subject(1,2); DELETE op(1,3);
+        // leave op(2,1)/country 2/state_event unchanged.
+        let h1 = WorldState {
+            countries: [(1, 150), (2, 200)].into_iter().collect(),
+            opinions: [((1, 2), 6), ((2, 1), -3)].into_iter().collect(),
+            state_events: [((1, 0xaa), 1000)].into_iter().collect(),
+            subjects: [((1, 2), 60)].into_iter().collect(),
+        };
+        // Hour 2 PARTIAL: REVERT op(1,2) & country 1 back to baseline; CHANGE
+        // state_event; subject stays 60 (still != baseline).
+        let h2 = WorldState {
+            countries: [(1, 100), (2, 200)].into_iter().collect(),
+            opinions: [((1, 2), 5), ((2, 1), -3)].into_iter().collect(),
+            state_events: [((1, 0xaa), 2000)].into_iter().collect(),
+            subjects: [((1, 2), 60)].into_iter().collect(),
+        };
+        // Hour 3 CLEAN: annex country 2, end the subject relation, keep the rest.
+        let h3 = WorldState {
+            countries: [(1, 100)].into_iter().collect(),
+            opinions: [((1, 2), 5)].into_iter().collect(),
+            state_events: [((1, 0xaa), 2000)].into_iter().collect(),
+            subjects: BTreeMap::new(),
+        };
+
+        let mut full_raw = Vec::new();
+        let mut reduced_raw = Vec::new();
+        let mut fseq = 1u64;
+        let mut rseq = 1u64;
+        let base_hour = 60_759_360;
+
+        // FULL stream: every hour is a full read (partial hours carry the full R).
+        append_hour(&mut full_raw, &mut fseq, base_hour, &encode_full(&h0, 0));
+        append_hour(
+            &mut full_raw,
+            &mut fseq,
+            base_hour + 1,
+            &encode_full(&h1, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_hour(
+            &mut full_raw,
+            &mut fseq,
+            base_hour + 2,
+            &encode_full(&h2, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_hour(&mut full_raw, &mut fseq, base_hour + 3, &encode_full(&h3, 0));
+
+        // REDUCED stream: hour 0 is the full clean baseline; hour 1/2 are
+        // DELTA|PARTIAL vs the PINNED hour-0 baseline; hour 3 is a plain DELTA
+        // (clean read) that also advances the baseline.
+        append_hour(&mut reduced_raw, &mut rseq, base_hour, &encode_full(&h0, 0));
+        append_hour(
+            &mut reduced_raw,
+            &mut rseq,
+            base_hour + 1,
+            &encode_delta(&h0, &h1, COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_hour(
+            &mut reduced_raw,
+            &mut rseq,
+            base_hour + 2,
+            &encode_delta(&h0, &h2, COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_hour(
+            &mut reduced_raw,
+            &mut rseq,
+            base_hour + 3,
+            &encode_delta(&h0, &h3, COMPACT_STATUS_DELTA_DATA),
+        );
+
+        for raw in [&full_raw, &reduced_raw] {
+            let summary = summarize_compact_stream(raw);
+            assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        }
+
+        let full_snapshots = fold_compact_snapshots(&full_raw);
+        let reduced_snapshots = fold_compact_snapshots(&reduced_raw);
+        assert_eq!(full_snapshots.len(), 4);
+        assert_eq!(reduced_snapshots.len(), 4);
+        assert_eq!(
+            reduced_snapshots, full_snapshots,
+            "reduced-partial d53 delta stream must fold byte-identically to full emission"
+        );
+
+        // ---- EMPTY-FIRST-FRAME regression (Codex finding 3/4) ----
+        // A session whose first success frame carries ZERO rows must still seed an
+        // (empty) baseline on both sides; the next non-empty frame is a delta vs
+        // that empty baseline. The bug dropped those rows at fold time.
+        {
+            let e0 = WorldState::default();
+            let e1 = WorldState {
+                opinions: [((1, 2), 5), ((1, 3), 7)].into_iter().collect(),
+                countries: [(1, 100)].into_iter().collect(),
+                ..Default::default()
+            };
+            let mut fr = Vec::new();
+            let mut rr = Vec::new();
+            let (mut fs, mut rs) = (1u64, 1u64);
+            // FULL: empty(partial) baseline, then full partial reads.
+            append_hour(&mut fr, &mut fs, base_hour, &encode_full(&e0, COMPACT_STATUS_PARTIAL_DATA));
+            append_hour(&mut fr, &mut fs, base_hour + 1, &encode_full(&e1, COMPACT_STATUS_PARTIAL_DATA));
+            append_hour(&mut fr, &mut fs, base_hour + 2, &encode_full(&e1, COMPACT_STATUS_PARTIAL_DATA));
+            // REDUCED: empty(partial) baseline seeds; then DELTA|PARTIAL vs empty.
+            append_hour(&mut rr, &mut rs, base_hour, &encode_full(&e0, COMPACT_STATUS_PARTIAL_DATA));
+            let dp = COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA;
+            append_hour(&mut rr, &mut rs, base_hour + 1, &encode_delta(&e0, &e1, dp));
+            append_hour(&mut rr, &mut rs, base_hour + 2, &encode_delta(&e0, &e1, dp));
+            let fsn = fold_compact_snapshots(&fr);
+            let rsn = fold_compact_snapshots(&rr);
+            assert_eq!(fsn.len(), 3);
+            assert_eq!(
+                rsn, fsn,
+                "empty-first-frame: reduced folds identically (rows must not vanish at H1/H2)"
+            );
+        }
+
+        // ---- Randomized property test (gate b): fuzz change sequences ----
+        // A tiny deterministic LCG drives the mutations; a test-side collector-sim
+        // produces the reduced stream exactly as the real collector would (diff vs
+        // pinned baseline, tombstone-all, advance-baseline only on clean frames).
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                self.0 >> 16
+            }
+            fn below(&mut self, n: u64) -> u64 {
+                self.next() % n
+            }
+        }
+
+        for seed in 0..48u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+            let mut truth = WorldState::default();
+            // A pinned collector baseline that advances only on clean frames, plus a
+            // "seen a clean baseline yet" flag mirroring the collector/fold.
+            let mut baseline: Option<WorldState> = None;
+
+            let mut full_raw = Vec::new();
+            let mut reduced_raw = Vec::new();
+            let mut fseq = 1u64;
+            let mut rseq = 1u64;
+            let mut hour = base_hour;
+            let mut expected_snaps = 0usize;
+
+            let hours = 6 + rng.below(6) as i32;
+            for _ in 0..hours {
+                // Mutate the ground truth: a handful of add/change/delete ops.
+                let ops = 1 + rng.below(5);
+                for _ in 0..ops {
+                    let fam = rng.below(4);
+                    let del = rng.below(3) == 0;
+                    match fam {
+                        0 => {
+                            let t = 1 + rng.below(4) as u32;
+                            if del {
+                                truth.countries.remove(&t);
+                            } else {
+                                truth.countries.insert(t, rng.below(500) as i64);
+                            }
+                        }
+                        1 => {
+                            let s = 1 + rng.below(4) as u32;
+                            let tg = 1 + rng.below(4) as u32;
+                            if s == tg {
+                                continue;
+                            }
+                            if del {
+                                truth.opinions.remove(&(s, tg));
+                            } else {
+                                truth.opinions.insert((s, tg), rng.below(400) as i32 - 200);
+                            }
+                        }
+                        2 => {
+                            let o = 1 + rng.below(4) as u32;
+                            let h = 0xa0 + rng.below(4) as u32;
+                            if del {
+                                truth.state_events.remove(&(o, h));
+                            } else {
+                                truth.state_events.insert((o, h), rng.below(9000) as i64);
+                            }
+                        }
+                        _ => {
+                            let o = 1 + rng.below(4) as u32;
+                            let s = 1 + rng.below(4) as u32;
+                            if o == s {
+                                continue;
+                            }
+                            if del {
+                                truth.subjects.remove(&(o, s));
+                            } else {
+                                // autonomy_state_hash must be nonzero for a live row.
+                                truth.subjects.insert((o, s), rng.below(100) as u32 + 1);
+                            }
+                        }
+                    }
+                }
+
+                // Frame is partial ~2 in 3, INCLUDING the first frame — the first
+                // frame is always emitted in full and seeds the baseline even when
+                // partial (mirrors the collector's deep-war all-partial cold start).
+                let is_partial = rng.below(3) != 0;
+                let full_status = if is_partial { COMPACT_STATUS_PARTIAL_DATA } else { 0 };
+                let full_payload = encode_full(&truth, full_status);
+
+                let reduced_payload = match &baseline {
+                    // First frame: full emission (may carry the partial bit).
+                    None => encode_full(&truth, full_status),
+                    Some(b) => {
+                        let status = COMPACT_STATUS_DELTA_DATA
+                            | if is_partial { COMPACT_STATUS_PARTIAL_DATA } else { 0 };
+                        encode_delta(b, &truth, status)
+                    }
+                };
+                // Seed on the first frame regardless; afterwards advance the pinned
+                // baseline only on non-partial (clean) frames.
+                if baseline.is_none() || !is_partial {
+                    baseline = Some(truth.clone());
+                }
+
+                append_hour(&mut full_raw, &mut fseq, hour, &full_payload);
+                append_hour(&mut reduced_raw, &mut rseq, hour, &reduced_payload);
+                hour += 1;
+                expected_snaps += 1;
+            }
+
+            let full_snaps = fold_compact_snapshots(&full_raw);
+            let reduced_snaps = fold_compact_snapshots(&reduced_raw);
+            assert_eq!(full_snaps.len(), expected_snaps, "seed {seed}");
+            // DECODED-ROW EQUALITY (plan G1: "byte-identical per-hour snapshots OR
+            // decoded-row equality"). The world-overlay row Vecs (subjects/wars) and
+            // per-country Vecs are rendered in upsert/append order, which the delta
+            // projection reaches by a different path than a full replace — so the
+            // SET of rows is identical but the array ORDER can differ. That ordering
+            // is a pre-existing, semantically-irrelevant property of the delta
+            // projection (shared with the already-shipped pure-delta path), so
+            // canonicalize array order before comparing: this proves every array
+            // carries exactly the same rows (no loss, no duplication, no corruption)
+            // hour for hour.
+            for (idx, (f, r)) in full_snaps.iter().zip(reduced_snaps.iter()).enumerate() {
+                let (cf, cr) = (canonicalize_json(f), canonicalize_json(r));
+                assert_eq!(
+                    cf, cr,
+                    "seed {seed} hour {idx}: reduced-partial d53 delta must fold to the same rows as full emission"
+                );
+            }
+        }
+    }
+
     #[test]
     fn compact_summary_rejects_unknown_project_state_flags() {
         let mut payload = test_projects_data_payload(0);
