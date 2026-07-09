@@ -80,8 +80,14 @@ spec may introduce a bare vanilla path join.
   `game_ui`, `replay_core`, `terrain_capture` (incl. all pool/oracle/fixture
   gate suites). Was 820 at plan authoring; +216 from the 2026-07-09
   orchestration wave (see §1a).
-- **Fidelity ledger** (`FIDELITY_LEDGER.md` §1): **78 FILE / 24 CAPTURE /
-  38 FIT / 46 UNKNOWN** parameter rows. FIT+UNKNOWN = the burn-down (§3 there).
+- **Fidelity ledger** (`FIDELITY_LEDGER.md` §1, LEDGER3 recount 2026-07-09 after
+  the 8-lane wave + OBJ-1 fold): **90 FILE / 24 CAPTURE / 34 FIT / 49 UNKNOWN**
+  map-render parameter rows (was 78/24/38/46 pre-wave). Net wave-2 movement:
+  +12 FILE, −4 FIT, +3 UNKNOWN — the FILE gain is rivers/trees/buildings/naval
+  file-derivations; UNKNOWN rises because monolithic naval/building-render
+  placeholders were decomposed into precisely-scoped residuals. Plus 1 product-UX
+  FIT tracked outside the render sum (playback speed table, e-shell). FIT+UNKNOWN =
+  the burn-down (§3 there; §3.0 ranks it, top 5 offline-closable).
 - **Parity oracle:** 38 vanilla political RenderDoc frames mined
   (zoom ladder); scoreboard mean |err| 0.014–0.03 at h>500, degrading to 0.135
   at h=50 — the close-zoom gap **is** the unrendered dynamic content (units,
