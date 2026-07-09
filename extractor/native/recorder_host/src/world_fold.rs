@@ -29,11 +29,10 @@ use capitulation_war_state_live as capwar60;
 use characters_leaders_cabinet_live_lane as domain47;
 use compact_contract::calendar::{date_from_raw, hour_index_from_raw};
 use compact_contract::{
-    compact_status_is_failure, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
-    COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_FAILURE_MASK,
-    COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_SOURCE_UNAVAILABLE,
-    COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+    compact_status_is_failure, parse_compact_record_header, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
+    COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_FAILURE_MASK, COMPACT_STATUS_PARTIAL_DATA,
+    COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_TRANSITION_BASELINE_RESET,
 };
 use construction_buildings_state_damage_live_lane as domain48;
 use diplomacy_intel_operatives_live as diplomacy53;
@@ -45,6 +44,14 @@ use serde_json::{json, Map, Value};
 use session_multiplayer_metadata_live as session57;
 
 const SCHEMA_VERSION: &str = "1";
+
+/// The canonical world-state snapshot schema version stamped into every folded
+/// hour (`schema_version` field). Exposed so a stream consumer (e.g. the
+/// `replay_decoder` facade) can report it as session metadata without folding a
+/// snapshot first.
+pub fn schema_version() -> &'static str {
+    SCHEMA_VERSION
+}
 
 const FUEL_SCALE: f64 = 32768.0;
 const PRODUCTION_SCALE: f64 = 100_000.0;
@@ -1179,28 +1186,24 @@ impl WorldFold {
             if remaining < COMPACT_RECORD_HEADER_LEN {
                 break;
             }
-            let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
-            if &header[0..4] != COMPACT_RECORD_MAGIC {
-                break;
-            }
-            if read_u16(header, 4) != COMPACT_RECORD_VERSION {
-                break;
-            }
-            let header_len = read_u16(header, 6) as usize;
-            if header_len != COMPACT_RECORD_HEADER_LEN {
-                break;
-            }
-            let game_hour_raw = read_i32(header, 16);
-            let domain_id = read_u16(header, 20);
-            let record_type = read_u16(header, 22);
-            let payload_len = read_u32(header, 24) as usize;
-            let record_flags = read_u32(header, 28);
-            let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+            // The single H4CR framing primitive (compact_contract). Any malformed
+            // header stops the walk, exactly as before.
+            let header = match parse_compact_record_header(&raw[offset..]) {
+                Ok(h) => h,
+                Err(_) => break,
+            };
+            let record_len = header.record_len();
             if record_len > remaining {
                 break;
             }
             let payload = &raw[offset + COMPACT_RECORD_HEADER_LEN..offset + record_len];
-            self.ingest_record(game_hour_raw, domain_id, record_type, payload, record_flags);
+            self.ingest_record(
+                header.game_hour_raw,
+                header.domain_id,
+                header.record_type,
+                payload,
+                header.record_flags,
+            );
             offset += record_len;
         }
     }

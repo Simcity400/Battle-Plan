@@ -1,0 +1,11 @@
+[package]
+name = "replay_decoder"
+version = "0.1.0"
+edition = "2021"
+description = "Shared pull-based decoder for the game compact record stream: frames H4CR records, drives the one production WorldFold, and yields canonical per-game-hour world-state JSON. A thin facade over compact_contract framing + recorder_host fold + the snapshot container reader (no forked decode, no forked fold)."
+
+[dependencies]
+compact_contract = { path = "../compact_contract" }
+recorder_host = { path = "../recorder_host" }
+snapshot = { path = "../snapshot" }
+serde_json = "1"

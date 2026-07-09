@@ -39,6 +39,94 @@ pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
 /// future perf payload extensions cannot collide with the trailer magic.
 pub const COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 = 1 << 30;
 
+// --- H4CR record-header parsing (the single framing primitive) --------------
+
+/// A parsed 32-byte H4CR record header. This is the ONE place the compact
+/// record envelope is decoded from bytes; every stream walker (the production
+/// streaming fold, the fold-equivalence gate, and the shared `replay_decoder`
+/// facade) frames records through [`parse_compact_record_header`] so the wire
+/// contract has a single decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactRecordHeader {
+    pub sequence: u64,
+    pub game_hour_raw: i32,
+    pub domain_id: CompactDomainId,
+    pub record_type: u16,
+    pub payload_len: usize,
+    pub record_flags: u32,
+}
+
+impl CompactRecordHeader {
+    /// Total on-wire length of the record (header + payload). Saturating so a
+    /// hostile `payload_len` cannot overflow the offset arithmetic.
+    pub fn record_len(&self) -> usize {
+        COMPACT_RECORD_HEADER_LEN.saturating_add(self.payload_len)
+    }
+}
+
+/// Why a candidate 32-byte header is not a valid H4CR record. Callers add the
+/// byte offset for their diagnostics; the variants keep the offending value so
+/// existing messages ("unsupported record version {v} ...") reproduce exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordFramingError {
+    /// Leading four bytes are not `H4CR`.
+    BadMagic,
+    /// Header `version` field != [`COMPACT_RECORD_VERSION`].
+    UnsupportedVersion(u16),
+    /// Header `header_len` field != [`COMPACT_RECORD_HEADER_LEN`].
+    UnsupportedHeaderLen(usize),
+}
+
+impl core::fmt::Display for RecordFramingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RecordFramingError::BadMagic => write!(f, "invalid record magic"),
+            RecordFramingError::UnsupportedVersion(v) => {
+                write!(f, "unsupported record version {v}")
+            }
+            RecordFramingError::UnsupportedHeaderLen(l) => {
+                write!(f, "unsupported header length {l}")
+            }
+        }
+    }
+}
+
+/// Parse the fixed 32-byte H4CR record header at the front of `buf`, validating
+/// magic, version, and header length. `buf` must be at least
+/// [`COMPACT_RECORD_HEADER_LEN`] bytes; a shorter slice panics in debug and is a
+/// caller bug (callers gate on `remaining >= COMPACT_RECORD_HEADER_LEN` first).
+///
+/// This mirrors, byte-for-byte, the header decode previously inlined in the
+/// streaming fold and the `fold_check` gate — extracting it keeps the H4CR
+/// envelope decoded in exactly one place.
+pub fn parse_compact_record_header(buf: &[u8]) -> Result<CompactRecordHeader, RecordFramingError> {
+    debug_assert!(
+        buf.len() >= COMPACT_RECORD_HEADER_LEN,
+        "parse_compact_record_header needs a full {COMPACT_RECORD_HEADER_LEN}-byte header"
+    );
+    if &buf[0..4] != COMPACT_RECORD_MAGIC {
+        return Err(RecordFramingError::BadMagic);
+    }
+    let version = u16::from_le_bytes([buf[4], buf[5]]);
+    if version != COMPACT_RECORD_VERSION {
+        return Err(RecordFramingError::UnsupportedVersion(version));
+    }
+    let header_len = u16::from_le_bytes([buf[6], buf[7]]) as usize;
+    if header_len != COMPACT_RECORD_HEADER_LEN {
+        return Err(RecordFramingError::UnsupportedHeaderLen(header_len));
+    }
+    Ok(CompactRecordHeader {
+        sequence: u64::from_le_bytes([
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+        ]),
+        game_hour_raw: i32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]),
+        domain_id: u16::from_le_bytes([buf[20], buf[21]]),
+        record_type: u16::from_le_bytes([buf[22], buf[23]]),
+        payload_len: u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]) as usize,
+        record_flags: u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]),
+    })
+}
+
 // --- Compact stream status flags (record header `flags` field) -------------
 
 pub const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
@@ -1175,6 +1263,68 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn header_bytes(
+        version: u16,
+        header_len: u16,
+        game_hour_raw: i32,
+        domain_id: u16,
+        record_type: u16,
+        payload_len: u32,
+        flags: u32,
+    ) -> [u8; COMPACT_RECORD_HEADER_LEN] {
+        let mut b = [0u8; COMPACT_RECORD_HEADER_LEN];
+        b[0..4].copy_from_slice(COMPACT_RECORD_MAGIC);
+        b[4..6].copy_from_slice(&version.to_le_bytes());
+        b[6..8].copy_from_slice(&header_len.to_le_bytes());
+        b[8..16].copy_from_slice(&7u64.to_le_bytes());
+        b[16..20].copy_from_slice(&game_hour_raw.to_le_bytes());
+        b[20..22].copy_from_slice(&domain_id.to_le_bytes());
+        b[22..24].copy_from_slice(&record_type.to_le_bytes());
+        b[24..28].copy_from_slice(&payload_len.to_le_bytes());
+        b[28..32].copy_from_slice(&flags.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn record_header_round_trips_and_rejects_malformed() {
+        let ok = header_bytes(
+            COMPACT_RECORD_VERSION,
+            COMPACT_RECORD_HEADER_LEN as u16,
+            123,
+            53,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            9,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        );
+        let h = parse_compact_record_header(&ok).expect("valid header");
+        assert_eq!(h.sequence, 7);
+        assert_eq!(h.game_hour_raw, 123);
+        assert_eq!(h.domain_id, 53);
+        assert_eq!(h.record_type, COMPACT_RECORD_TYPE_DOMAIN_DATA);
+        assert_eq!(h.payload_len, 9);
+        assert_eq!(h.record_flags, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2);
+        assert_eq!(h.record_len(), COMPACT_RECORD_HEADER_LEN + 9);
+
+        let mut bad_magic = ok;
+        bad_magic[0] = b'X';
+        assert_eq!(
+            parse_compact_record_header(&bad_magic),
+            Err(RecordFramingError::BadMagic)
+        );
+
+        let bad_version = header_bytes(2, COMPACT_RECORD_HEADER_LEN as u16, 0, 1, 2, 0, 0);
+        assert_eq!(
+            parse_compact_record_header(&bad_version),
+            Err(RecordFramingError::UnsupportedVersion(2))
+        );
+
+        let bad_hlen = header_bytes(COMPACT_RECORD_VERSION, 40, 0, 1, 2, 0, 0);
+        assert_eq!(
+            parse_compact_record_header(&bad_hlen),
+            Err(RecordFramingError::UnsupportedHeaderLen(40))
+        );
+    }
 
     #[test]
     fn capture_profile_round_trips_and_presets_are_coherent() {

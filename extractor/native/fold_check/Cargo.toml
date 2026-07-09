@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 # Fold-equivalence gate (G1). Streams a collector compact record stream (or the
-# collector_compact_stream entry of a .battleplan container) through the EXISTING
-# production `recorder_host::world_fold::WorldFold` and hashes the per-game-hour
-# folded snapshot, so an optimized collector can be certified fold-identical.
+# collector_compact_stream entry of a .battleplan container) through the shared
+# `replay_decoder` facade — which drives the EXISTING production
+# `recorder_host::world_fold::WorldFold` — and hashes the per-game-hour folded
+# snapshot, so an optimized collector can be certified fold-identical.
 
 [dependencies]
-recorder_host = { path = "../recorder_host" }
+replay_decoder = { path = "../replay_decoder" }
 snapshot = { path = "../snapshot" }
 compact_contract = { path = "../compact_contract" }
 serde_json = "1"

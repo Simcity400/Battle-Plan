@@ -21,8 +21,9 @@ use std::io::{self, BufReader, Read};
 use std::path::Path;
 
 use compact_contract::{
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
+    parse_compact_record_header, RecordFramingError, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_END,
 };
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -159,53 +160,48 @@ pub fn drive_fold<R: Read>(
             if remaining < COMPACT_RECORD_HEADER_LEN {
                 break;
             }
-            let hdr = &carry[off..off + COMPACT_RECORD_HEADER_LEN];
-            if &hdr[0..4] != COMPACT_RECORD_MAGIC {
-                stats.stop_reason = Some(format!(
-                    "invalid record magic at byte {}",
-                    processed + off as u64
-                ));
-                hard_stop = true;
-                break;
-            }
-            let version = u16::from_le_bytes([hdr[4], hdr[5]]);
-            if version != COMPACT_RECORD_VERSION {
-                stats.stop_reason = Some(format!(
-                    "unsupported record version {version} at byte {}",
-                    processed + off as u64
-                ));
-                hard_stop = true;
-                break;
-            }
-            let header_len = u16::from_le_bytes([hdr[6], hdr[7]]) as usize;
-            if header_len != COMPACT_RECORD_HEADER_LEN {
-                stats.stop_reason = Some(format!(
-                    "unsupported header length {header_len} at byte {}",
-                    processed + off as u64
-                ));
-                hard_stop = true;
-                break;
-            }
-            let game_hour_raw = i32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
-            let domain_id = u16::from_le_bytes([hdr[20], hdr[21]]);
-            let record_type = u16::from_le_bytes([hdr[22], hdr[23]]);
-            let payload_len = u32::from_le_bytes([hdr[24], hdr[25], hdr[26], hdr[27]]) as usize;
-            let record_flags = u32::from_le_bytes([hdr[28], hdr[29], hdr[30], hdr[31]]);
-            let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+            // The single H4CR framing primitive (compact_contract); malformed
+            // headers stop the walk with the same diagnostic strings as before.
+            let header = match parse_compact_record_header(&carry[off..]) {
+                Ok(h) => h,
+                Err(e) => {
+                    let at = processed + off as u64;
+                    stats.stop_reason = Some(match e {
+                        RecordFramingError::BadMagic => {
+                            format!("invalid record magic at byte {at}")
+                        }
+                        RecordFramingError::UnsupportedVersion(v) => {
+                            format!("unsupported record version {v} at byte {at}")
+                        }
+                        RecordFramingError::UnsupportedHeaderLen(l) => {
+                            format!("unsupported header length {l} at byte {at}")
+                        }
+                    });
+                    hard_stop = true;
+                    break;
+                }
+            };
+            let record_len = header.record_len();
             if record_len > remaining {
                 break; // payload not fully buffered yet
             }
             let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
 
             stats.records_total += 1;
-            match record_type {
+            match header.record_type {
                 COMPACT_RECORD_TYPE_DOMAIN_DATA => stats.data_records += 1,
                 COMPACT_RECORD_TYPE_FRAME_END => stats.frame_end_records += 1,
                 COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
                 _ => stats.other_records += 1,
             }
 
-            fold.ingest_record(game_hour_raw, domain_id, record_type, payload, record_flags);
+            fold.ingest_record(
+                header.game_hour_raw,
+                header.domain_id,
+                header.record_type,
+                payload,
+                header.record_flags,
+            );
             off += record_len;
         }
 
@@ -228,7 +224,10 @@ pub fn drive_fold<R: Read>(
 mod tests {
     use super::*;
     use compact_contract::calendar::DATE_EPOCH_CONST;
-    use compact_contract::{COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END};
+    use compact_contract::{
+        COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
+        COMPACT_RECORD_VERSION,
+    };
     use snapshot::sha256::{to_hex, Sha256};
     use std::io::Cursor;
     use std::path::PathBuf;

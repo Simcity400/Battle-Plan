@@ -5,12 +5,14 @@
 //! production fold** ([`recorder_host::world_fold::WorldFold`]) to produce the
 //! per-game-hour world snapshots, then emits a canonical SHA-256 per hour.
 //!
-//! There is exactly ONE decode+fold in the codebase: this tool reuses it via
-//! [`WorldFold::ingest_record`] / [`WorldFold::take_finished`]. Only the 32-byte
-//! record envelope (`H4CR` header — a stable wire contract in `compact_contract`)
-//! is framed here, so the stream can be walked incrementally without buffering a
-//! multi-GB file in memory. That is what lets the tool certify that an optimized
-//! collector folds byte-identically to the current one (Extraction Optimization
+//! There is exactly ONE decode+fold in the codebase. This tool now reuses it
+//! through the shared [`replay_decoder`] facade: `replay_decoder` frames the
+//! `H4CR` records (via the single `compact_contract::parse_compact_record_header`
+//! primitive), drives the production `recorder_host::world_fold::WorldFold`, and
+//! yields each game-hour's canonical snapshot bytes in bounded memory. `fold_check`
+//! just hashes those bytes. Folding under the fixed [`FOLD_CHECK_GAME_ID`] makes a
+//! raw stream and the same stream packed in a container hash identically, so an
+//! optimized collector can be certified byte-identical (Extraction Optimization
 //! Plan, gate G1).
 //!
 //! Usage:
@@ -28,17 +30,12 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{self, BufReader, Cursor, Read, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use compact_contract::{
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
-};
-use recorder_host::world_fold::WorldFold;
+use replay_decoder::{DecodeStats, OpenOptions, Source};
 use serde_json::{json, Map, Value};
-use snapshot::container::{Container, ExpectedIdentity};
 use snapshot::sha256::{to_hex, Sha256};
 
 /// Fixed synthetic game id so the folded snapshot's `game_id` field (and thus the
@@ -46,14 +43,14 @@ use snapshot::sha256::{to_hex, Sha256};
 /// with identical stream bytes therefore hash identically — the whole point.
 const FOLD_CHECK_GAME_ID: &str = "fold_check";
 
-/// Streaming read granularity for the raw-stream path.
-const CHUNK: usize = 8 * 1024 * 1024;
-
-/// ZIP local-file header magic (`PK\x03\x04`).
-const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
-
-/// Manifest role of the compact stream inside a `.battleplan` container.
-const STREAM_ROLE: &str = "collector_compact_stream";
+/// The decode options every `fold_check` run uses: fold under the fixed
+/// [`FOLD_CHECK_GAME_ID`] regardless of source, so a raw stream and the same
+/// stream packed in a container hash identically.
+fn fold_check_opts() -> OpenOptions {
+    OpenOptions {
+        game_id: Some(FOLD_CHECK_GAME_ID.to_string()),
+    }
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -127,207 +124,52 @@ struct FoldRun {
     totals: Totals,
 }
 
-/// Drive the production fold over a record stream, invoking `on_hour` as each
-/// game-hour closes so the caller can hash-and-release without holding every
-/// snapshot. `total_len` is the full decoded-stream length (file size, or the
-/// container entry's uncompressed size) so the truncated tail can be reported.
-fn drive_fold<R: Read>(
-    mut reader: R,
-    total_len: u64,
-    mut on_hour: impl FnMut(i64, &str, &[u8], &BTreeMap<u16, u64>),
-) -> io::Result<Totals> {
-    let mut fold = WorldFold::new(FOLD_CHECK_GAME_ID);
-    let mut totals = Totals {
-        stream_bytes: total_len,
-        ..Totals::default()
-    };
-    // DOMAIN_DATA counts since the last FRAME_END (the domains feeding this hour).
-    let mut cur_counts: BTreeMap<u16, u64> = BTreeMap::new();
-    let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
-    let mut chunk = vec![0u8; CHUNK];
-    let mut processed: u64 = 0;
-
-    'read: loop {
-        let n = reader.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        carry.extend_from_slice(&chunk[..n]);
-
-        // Frame every whole record currently buffered at the front of `carry`.
-        let mut off = 0usize;
-        let mut hard_stop = false;
-        loop {
-            let remaining = carry.len() - off;
-            if remaining < COMPACT_RECORD_HEADER_LEN {
-                break; // need more bytes (or EOF tail)
-            }
-            let hdr = &carry[off..off + COMPACT_RECORD_HEADER_LEN];
-            if &hdr[0..4] != COMPACT_RECORD_MAGIC {
-                totals.stop_reason = Some(format!(
-                    "invalid record magic at byte {}",
-                    processed + off as u64
-                ));
-                hard_stop = true;
-                break;
-            }
-            let version = u16::from_le_bytes([hdr[4], hdr[5]]);
-            if version != COMPACT_RECORD_VERSION {
-                totals.stop_reason = Some(format!(
-                    "unsupported record version {version} at byte {}",
-                    processed + off as u64
-                ));
-                hard_stop = true;
-                break;
-            }
-            let header_len = u16::from_le_bytes([hdr[6], hdr[7]]) as usize;
-            if header_len != COMPACT_RECORD_HEADER_LEN {
-                totals.stop_reason = Some(format!(
-                    "unsupported header length {header_len} at byte {}",
-                    processed + off as u64
-                ));
-                hard_stop = true;
-                break;
-            }
-            let game_hour_raw = i32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
-            let domain_id = u16::from_le_bytes([hdr[20], hdr[21]]);
-            let record_type = u16::from_le_bytes([hdr[22], hdr[23]]);
-            let payload_len = u32::from_le_bytes([hdr[24], hdr[25], hdr[26], hdr[27]]) as usize;
-            let record_flags = u32::from_le_bytes([hdr[28], hdr[29], hdr[30], hdr[31]]);
-            let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
-            if record_len > remaining {
-                break; // payload not fully buffered yet
-            }
-            let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
-
-            totals.records_total += 1;
-            match record_type {
-                COMPACT_RECORD_TYPE_DOMAIN_DATA => {
-                    totals.data_records += 1;
-                    *totals.per_domain_data_records.entry(domain_id).or_default() += 1;
-                    *cur_counts.entry(domain_id).or_default() += 1;
-                }
-                COMPACT_RECORD_TYPE_FRAME_END => totals.frame_end_records += 1,
-                COMPACT_RECORD_TYPE_DOMAIN_PERF => totals.perf_records += 1,
-                _ => totals.other_records += 1,
-            }
-
-            // The single production fold. PERF / probe records carry no folded
-            // state and are ignored inside `ingest_record`, exactly as the
-            // whole-buffer `ingest_stream` ignores them.
-            fold.ingest_record(game_hour_raw, domain_id, record_type, payload, record_flags);
-
-            if record_type == COMPACT_RECORD_TYPE_FRAME_END {
-                for (h, date, bytes) in fold.take_finished() {
-                    on_hour(h, &date, &bytes, &cur_counts);
-                    totals.hours_emitted += 1;
-                }
-                cur_counts.clear();
-            }
-            off += record_len;
-        }
-
-        processed += off as u64;
-        carry.drain(0..off);
-        if hard_stop {
-            break 'read;
-        }
+/// Convert a [`replay_decoder`] pass's totals into the report `Totals`. The two
+/// share the same accounting shape (the decoder mirrors what this tool used to
+/// count inline); this is a plain field copy.
+fn totals_from_stats(s: &DecodeStats) -> Totals {
+    Totals {
+        stream_bytes: s.stream_bytes,
+        bytes_folded: s.bytes_folded,
+        truncated_tail_bytes: s.truncated_tail_bytes,
+        records_total: s.records_total,
+        data_records: s.data_records,
+        frame_end_records: s.frame_end_records,
+        perf_records: s.perf_records,
+        other_records: s.other_records,
+        hours_emitted: s.hours_emitted,
+        per_domain_data_records: s.per_domain_data_records.clone(),
+        stop_reason: s.stop_reason.clone(),
     }
-
-    totals.bytes_folded = processed;
-    totals.truncated_tail_bytes = total_len.saturating_sub(processed);
-    Ok(totals)
 }
 
-/// Read a compact stream from disk, auto-detecting a raw stream vs a container,
-/// and fold it. The raw path streams the file; the container path extracts the
-/// verified `collector_compact_stream` entry through `snapshot::Container` and
-/// folds it from memory. That container path intentionally inherits the in-RAM
-/// reader's 2 GiB per-entry cap; use a raw `collector_stream.bin` input for
-/// multi-GiB fold checks until fold_check grows a direct streaming container
-/// entry reader.
+/// Fold an input file through the shared [`replay_decoder`] cursor (auto-detecting
+/// a raw `collector_stream.bin` vs a `.battleplan` container), invoking `on_hour`
+/// as each game-hour closes so the caller can hash-and-release. The decoder folds
+/// under [`FOLD_CHECK_GAME_ID`] regardless of source. The container path inherits
+/// the in-RAM entry reader's per-entry cap; use a raw stream for multi-GiB checks.
 fn fold_input(
     path: &Path,
-    on_hour: impl FnMut(i64, &str, &[u8], &BTreeMap<u16, u64>),
+    mut on_hour: impl FnMut(i64, &str, &[u8], &BTreeMap<u16, u64>),
 ) -> Result<(Totals, &'static str), String> {
-    let kind = detect_kind(path)?;
-    match kind {
-        InputKind::RawStream => {
-            let file = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-            let total_len = file
-                .metadata()
-                .map_err(|e| format!("stat {}: {e}", path.display()))?
-                .len();
-            let reader = BufReader::with_capacity(CHUNK, file);
-            let totals = drive_fold(reader, total_len, on_hour)
-                .map_err(|e| format!("fold {}: {e}", path.display()))?;
-            Ok((totals, "raw_stream"))
-        }
-        InputKind::Container => {
-            let bytes = extract_container_stream(path)?;
-            let total_len = bytes.len() as u64;
-            let totals = drive_fold(Cursor::new(bytes), total_len, on_hour)
-                .map_err(|e| format!("fold {}: {e}", path.display()))?;
-            Ok((totals, "container"))
-        }
+    let source = Source::detect(path).map_err(|e| e.to_string())?;
+    let kind = match source {
+        Source::StreamFile(_) => "raw_stream",
+        Source::Container(_) => "container",
+    };
+    let mut cursor = source
+        .open_cursor(&fold_check_opts())
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    while let Some(hour) = cursor.next_hour() {
+        let hour = hour.map_err(|e| format!("fold {}: {e}", path.display()))?;
+        on_hour(
+            hour.hour_index,
+            &hour.date,
+            &hour.snapshot,
+            &hour.domain_data_counts,
+        );
     }
-}
-
-enum InputKind {
-    RawStream,
-    Container,
-}
-
-/// Detect the input by its leading bytes, independent of filename: a compact
-/// stream starts with `H4CR`; a `.battleplan` container is a zip (`PK\x03\x04`).
-fn detect_kind(path: &Path) -> Result<InputKind, String> {
-    let mut f = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    let mut magic = [0u8; 4];
-    let read =
-        read_up_to(&mut f, &mut magic).map_err(|e| format!("read {}: {e}", path.display()))?;
-    if read >= 4 && &magic == COMPACT_RECORD_MAGIC {
-        Ok(InputKind::RawStream)
-    } else if read >= 4 && &magic == ZIP_MAGIC {
-        Ok(InputKind::Container)
-    } else {
-        Err(format!(
-            "{}: unrecognized input (leading bytes {:02x?}); expected an H4CR stream or a .battleplan container",
-            path.display(),
-            &magic[..read.min(4)]
-        ))
-    }
-}
-
-fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        match r.read(&mut buf[filled..])? {
-            0 => break,
-            n => filled += n,
-        }
-    }
-    Ok(filled)
-}
-
-/// Open a `.battleplan`, verify it, and return the raw bytes of the single
-/// `collector_compact_stream` entry (integrity-checked against the manifest).
-fn extract_container_stream(path: &Path) -> Result<Vec<u8>, String> {
-    let container = Container::open(path, &ExpectedIdentity::default())
-        .map_err(|e| format!("open container {}: {e}", path.display()))?;
-    let entries = container.entries_by_role(STREAM_ROLE);
-    match entries.len() {
-        0 => Err(format!(
-            "container {} has no entry with role {STREAM_ROLE:?}",
-            path.display()
-        )),
-        1 => container
-            .read_entry_bytes(&entries[0].path)
-            .map_err(|e| format!("read {} from {}: {e}", entries[0].path, path.display())),
-        n => Err(format!(
-            "container {} has {n} entries with role {STREAM_ROLE:?}; expected exactly one",
-            path.display()
-        )),
-    }
+    Ok((totals_from_stats(cursor.stats()), kind))
 }
 
 /// Record one closed hour into the running `hours` list. The fold's output is
@@ -359,16 +201,27 @@ fn run_input(path: &Path) -> Result<(FoldRun, &'static str), String> {
     Ok((FoldRun { hours, totals }, kind))
 }
 
-/// Fold an already-opened reader into a [`FoldRun`]. Used by the unit tests,
-/// which fold an in-memory `Cursor` without going through a file.
+/// Fold an already-opened in-memory reader into a [`FoldRun`] through the shared
+/// [`replay_decoder`] cursor. Used by the unit tests, which fold an in-memory
+/// `Cursor` (under [`FOLD_CHECK_GAME_ID`]) without going through a file.
 #[cfg(test)]
-fn collect_run<R: Read>(reader: R, total_len: u64) -> Result<FoldRun, String> {
+fn collect_run(reader: std::io::Cursor<Vec<u8>>, total_len: u64) -> Result<FoldRun, String> {
     let mut hours: Vec<HourReport> = Vec::new();
-    let totals = drive_fold(reader, total_len, |hour_index, date, bytes, counts| {
-        push_hour(&mut hours, hour_index, date, bytes, counts)
+    let mut cursor = replay_decoder::open_reader(reader, total_len, FOLD_CHECK_GAME_ID);
+    while let Some(hour) = cursor.next_hour() {
+        let hour = hour.map_err(|e| e.to_string())?;
+        push_hour(
+            &mut hours,
+            hour.hour_index,
+            &hour.date,
+            &hour.snapshot,
+            &hour.domain_data_counts,
+        );
+    }
+    Ok(FoldRun {
+        hours,
+        totals: totals_from_stats(cursor.stats()),
     })
-    .map_err(|e| e.to_string())?;
-    Ok(FoldRun { hours, totals })
 }
 
 /// Chain hash over the ordered per-hour hashes: a single anchor whose equality

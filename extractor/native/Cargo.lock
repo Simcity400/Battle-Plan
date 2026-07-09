@@ -168,7 +168,7 @@ name = "fold_check"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
- "recorder_host",
+ "replay_decoder",
  "serde_json",
  "snapshot",
 ]
@@ -315,6 +315,16 @@ dependencies = [
  "scripted_state_flags_variables_live_lane",
  "serde_json",
  "session_multiplayer_metadata_live",
+ "snapshot",
+]
+
+[[package]]
+name = "replay_decoder"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "recorder_host",
+ "serde_json",
  "snapshot",
 ]
 

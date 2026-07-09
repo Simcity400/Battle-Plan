@@ -5,6 +5,10 @@
 
 use super::*;
 use compact_contract::calendar::DATE_EPOCH_CONST;
+use compact_contract::{
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
+};
 use std::io::Cursor;
 
 // --- synthetic stream builders -------------------------------------------
