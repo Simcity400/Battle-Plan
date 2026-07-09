@@ -15,6 +15,16 @@ multiplayer campaign and plays it back as a full-fidelity, read-only recreation
 of the game map and UI — every visual parameter engine-derived (binary RE of
 `hoi4.exe` + shipped installed content), no fitted guesses left unlabelled.
 
+**Product model (user directive 2026-07-09): OBSERVER MODE.** The app should
+feel like the game's observer mode. Default view = omniscient observer: whole
+world visible, no fog of war. The viewer can additionally **observe as a
+country** — enter a player country's POV and see its fog of war and only what
+it could see (unspotted units hidden, furniture/UI keyed to that country) —
+then toggle back to the world view. POV candidates = the session's player
+countries (requirements item 4). Data dependency = requirements **item 13**
+(per-country province visibility + spotted-unit sets, promoted from deferred
+on 2026-07-09); render dependency = the FoW visual law (Phase C8 below).
+
 **Constraint 1 — FULL EXTRACTOR DECOUPLING (user directive 2026-07-09).**
 The extractor agent will not have a usable recording any time soon. The replay
 layer must therefore be finished **completely independently**:
@@ -135,8 +145,8 @@ the trichotomy (value / inherited / unavailable) preserved.
 | # | Item | Gate | Status |
 |---|---|---|---|
 | A1 | Fixture generator v1: extend `replay_interface/replay/` to emit schema-complete synthetic recordings (hourly snapshots + compact deltas, all container roles) | shared-validator conformance pass on every fixture | OPEN |
-| A2 | Scenario fixture set: owner/controller flips, cosmetic-tag + ideology changes, war/faction matrix evolution, capital moves, weather sweep, topbar scalar sweep, division movement, naval/air activity, building damage | one named fixture per consumer contract; enumerated in a manifest | OPEN |
-| A3 | `replay_core` ingest of every requirements item (1–10 + 7b/8b/9b): parse, index by time, expose typed views | round-trip gates: generator value == view value at every probed hour, incl. delta-reconstruction == snapshot cross-check | PARTIAL (owner/controller views exist, world_timeline tests green; most fields unserved) |
+| A2 | Scenario fixture set: owner/controller flips, cosmetic-tag + ideology changes, war/faction matrix evolution, capital moves, weather sweep, topbar scalar sweep, division movement, naval/air activity, building damage, **per-POV visibility evolution (FoW flips + unit spot/lose events)** | one named fixture per consumer contract; enumerated in a manifest | OPEN |
+| A3 | `replay_core` ingest of every requirements item (1–10 + 7b/8b/9b/**13**): parse, index by time, expose typed views (incl. `visibility_for(pov_tag)` province view + spotted-units view) | round-trip gates: generator value == view value at every probed hour, incl. delta-reconstruction == snapshot cross-check | PARTIAL (owner/controller views exist, world_timeline tests green; most fields unserved) |
 | A4 | Time semantics: hourly resolution, seek/scrub to arbitrary hour, forward/backward, mid-file start (snapshot + delta replay) | seek(h) == linear-play-to(h) equality gate on all fixtures | PARTIAL (timeline.rs scrub exists for captured moments) |
 | A5 | Renderer keying swap: political fill/borders/labels/furniture read owner+controller+cosmetic from WorldTimeline instead of static history parse | pixel-identical output at t0 vs current static path on the 1936 baseline; then divergence gates on flip fixtures (expected-diff oracles) | OPEN — **this is the single highest-leverage item in the plan** |
 | A6 | Fail-closed data absence: every view distinguishes "field absent from recording" and renderers surface it per Constraint 3 | absence-injection fixture gates | PARTIAL (Leaf trichotomy exists) |
@@ -158,10 +168,10 @@ Offline (Codex jobs, no user session needed):
 | B6 | Remaining ledger tail (#16–21): moon `.z`, height scale, PCF/shadow path, occupation stripes, camera interpolation shape | per-row cited closure | OPEN, lower priority |
 
 Capture-dependent (blocked on §4 sessions, then a closing Codex job each):
-B7 terrain vSnap frustum (needs §4-C1) → 170/176 target; B8 night `FoW.w`
-path + night `.x/.yzw(hour)` (§4-C3); B9 unclamped exposure branch (§4-C4);
-B10 label owner-vs-controller keying + per-label `Transp_OffsetX.x` (§4-C5);
-B11 VP color columns 1/3 confirmation (§4-C2); B12 no-FOW sea base look;
+B7 terrain vSnap frustum (needs §4-CAP1) → 170/176 target; B8 night `FoW.w`
+path + night `.x/.yzw(hour)` (§4-CAP3); B9 unclamped exposure branch (§4-CAP4);
+B10 label owner-vs-controller keying + per-label `Transp_OffsetX.x` (§4-CAP5);
+B11 VP color columns 1/3 confirmation (§4-CAP2); B12 no-FOW sea base look;
 B13 snow/mud — **recording-fed** (SNOW_LAW §6), so its product path rides
 Phase A fixtures, not a capture.
 
@@ -174,13 +184,14 @@ extractor-independent.
 
 | # | Item | Law source | Gate | Status |
 |---|---|---|---|---|
-| C1 | Unit counters (NATO/sprite): quad geometry, atlas, strength/org bars, stacking/aggregation-by-zoom | hoi4.exe RE + interface gfx files + one live counter capture (§4-C6) | pixel parity vs captured counter frame; fixture-driven placement gates | OPEN |
+| C1 | Unit counters (NATO/sprite): quad geometry, atlas, strength/org bars, stacking/aggregation-by-zoom | hoi4.exe RE + interface gfx files + one live counter capture (§4-CAP6) | pixel parity vs captured counter frame; fixture-driven placement gates | OPEN |
 | C2 | Division/fleet/wing positions over time served from recording; interpolation between hourly samples matches engine hourly snap (no invented smoothing without evidence) | REPLAY_DATA_REQUIREMENTS units items + fixtures | seek==play equality; placement matches fixture ground truth | OPEN (schema listed) |
 | C3 | Battle bubbles / combat indicators | RE + capture | parity gate | OPEN |
 | C4 | Front lines + movement/plan arrows (or explicit descope for v1 if not in recording — arrows are player-plan state; **decision needed, tracked in REPLAY_DATA_REQUIREMENTS**) | RE + requirements | parity or descope note | OPEN |
 | C5 | Rail/supply overlay | RE + defines | parity gate | OPEN |
 | C6 | Sea-zone naval-supremacy tint (recording R6/D56 shaped) | GB-field law + fixtures | parity vs captured supremacy frame | OPEN |
 | C7 | Close-zoom 3D pass completion (units/buildings/rails/shadows) measured by the existing oracle: h=50 scoreboard mean |err| 0.135 → ≤0.03 | all of C1–C6 + B3/B4 | RenderDoc-oracle scoreboard at low h | OPEN — **this is the definition-of-done metric for Phase C** |
+| C8 | **FoW visual law (observer country-POV)**: RE the fog-of-war terrain transform (darkening/desaturation mask path in the map shaders) + hidden-unit culling; known anchors: scene-CB0 `FoW.w` gate (LIGHT_LAW — our omniscient baseline runs `FoW.w=1`), FoW mask texture inputs in pdxmap shader chain, and the existing "FOW-contaminated" captures which are ground truth for the FoW-ON look | installed content first (shader sources), then §4-CAP10 paired frames | fogged-vs-clear pixel parity vs the capture pair; POV-fixture unit-hiding gates | OPEN — NEW 2026-07-09 (observer directive) |
 
 ### Phase D — UI chrome completion (game_ui)
 
@@ -194,7 +205,7 @@ law); the gap is bindings + population + remaining widgets.
 | D2 | Ruling-party/ideology-driven texts + flag/portrait keying (7b, LAB4 `<TAG>_<ideology>` localisation) | fixture ideology-flip changes rendered text correctly | OPEN |
 | D3 | Outliner (army/navy/air lists) populated from unit views | listbox law gates + fixture population counts | OPEN |
 | D4 | Country/diplomacy panels (read-only): relations, wars, factions from 8/8b views | fixture war-matrix renders correct rows | OPEN |
-| D5 | Scrollbar thumb-travel law (UNTRACED, fail-closed) + any remaining widget primitives (checkbox/tab states as static chrome) | RE citation or capture (§4-C7 open-panel frame) | OPEN |
+| D5 | Scrollbar thumb-travel law (UNTRACED, fail-closed) + any remaining widget primitives (checkbox/tab states as static chrome) | RE citation or capture (§4-CAP7 open-panel frame) | OPEN |
 | D6 | Date/speed clock — replay-native (shows recording time; speed = playback speed) | unit gates | PARTIAL (freeze-clock tooling exists) |
 
 ### Phase E — Playback UX (the product shell)
@@ -206,6 +217,7 @@ law); the gap is bindings + population + remaining widgets.
 | E3 | Map-mode switching (political first; terrain/naval as laws allow) — colors computed replay-side from inputs (NEVER recorded; standing override) | per-mode parity gates | PARTIAL (political is the lane) |
 | E4 | Recording open/validate UX: schema validation errors, modset mismatch surfacing (mod_resolver), version handshake | malformed-fixture rejection matrix | OPEN |
 | E5 | Session ergonomics: window resize, monitor DPI, save-position — plain Win32 hygiene | smoke gates | OPEN |
+| E6 | **Observer POV mode (core UX, 2026-07-09 directive)**: default = omniscient world view (no FoW); country picker over the session's player countries; entering a POV switches on the FoW layer (C8) from `visibility_for(pov)`, hides unspotted units, re-keys viewed-tag-dependent surfaces (VP-icon diplomatic columns already parameterized on `viewed_tag` per FURN-REL law; topbar/outliner re-bind to the POV country); one-key toggle back to world view | POV fixture: same hour renders world-view vs POV-view with expected-diff oracle (fogged provinces darken, unspotted units absent, VP columns flip); toggle is stateless/idempotent | OPEN |
 
 ### Phase F — Performance & hardening
 
@@ -221,7 +233,7 @@ law); the gap is bindings + population + remaining widgets.
 | # | Item | Gate |
 |---|---|---|
 | G1 | Full-ladder pixel parity vs the 38-frame RenderDoc oracle: mean |err| ≤0.03 at ALL heights incl. h=50 (non-snow frames per the winter confound) | scoreboard |
-| G2 | Fixture end-to-end: open synthetic 1936–1945 recording → play → scrub → every surface updates; recorded as a scripted headless run with frame hashes | e2e hash gate |
+| G2 | Fixture end-to-end: open synthetic 1936–1945 recording → play → scrub → **enter a country POV → verify FoW/unit-hiding → toggle back** → every surface updates; recorded as a scripted headless run with frame hashes | e2e hash gate |
 | G3 | Fidelity ledger: zero unlabelled FIT in any product-path parameter; every remaining UNKNOWN either product-blocked or explicitly descoped in this doc | ledger audit |
 | G4 | Full test suite green + Codex adversarial release review (read-only, xhigh) | 100 % pass + review disposition log |
 
@@ -242,15 +254,16 @@ Phase B/C/D closures but nothing in Phase A/E/F.
 
 | # | Ask | Closes |
 |---|---|---|
-| C1 | Single-frame, NO-pan, wide-frustum mixed-LOD terrain capture recording render-view side planes / tessellation visibility flags (signed-byte owner map) | B7: vSnap 146→170/176 |
-| C2 | Player-POV political frame with enemy-owned + same-faction VPs on screen | B11: VP diplomatic color columns 1/3 |
-| C3 | Game-speed night capture with `FoW.w≠0` + multi-hour night sweep | B8: night look + `.x/.yzw(hour)` |
-| C4 | Bright close-up `restore_pass` frame exceeding the 0.5 exposure floor | B9: unclamped exposure branch |
-| C5 | Multi-zoom label captures over occupied territory (owner≠controller) | B10: label keying + per-label alpha |
-| C6 | Close-zoom frame with land units + counters visible (and a naval stack) | C1: counter geometry/atlas ground truth |
-| C7 | Frame with an open scrollable panel (thumb positions at known content sizes) | D5: scrollbar thumb travel |
-| C8 | No-FOW sea frame | B12: sea base look referee |
-| C9 | Tree instance buffer + cities_pass (standing ledger asks) | B3/B4 |
+| CAP1 | Single-frame, NO-pan, wide-frustum mixed-LOD terrain capture recording render-view side planes / tessellation visibility flags (signed-byte owner map) | B7: vSnap 146→170/176 |
+| CAP2 | Player-POV political frame with enemy-owned + same-faction VPs on screen | B11: VP diplomatic color columns 1/3 |
+| CAP3 | Game-speed night capture with `FoW.w≠0` + multi-hour night sweep | B8: night look + `.x/.yzw(hour)` |
+| CAP4 | Bright close-up `restore_pass` frame exceeding the 0.5 exposure floor | B9: unclamped exposure branch |
+| CAP5 | Multi-zoom label captures over occupied territory (owner≠controller) | B10: label keying + per-label alpha |
+| CAP6 | Close-zoom frame with land units + counters visible (and a naval stack) | C1: counter geometry/atlas ground truth |
+| CAP7 | Frame with an open scrollable panel (thumb positions at known content sizes) | D5: scrollbar thumb travel |
+| CAP8 | No-FOW sea frame | B12: sea base look referee |
+| CAP9 | Tree instance buffer + cities_pass (standing ledger asks) | B3/B4 |
+| CAP10 | Paired same-camera frames: observe-as-country (FoW ON, fogged provinces + hidden units in view) vs observer world view (FoW OFF), same hour/zoom — isolates the FoW visual transform byte-for-byte | C8: FoW visual law referee (also strengthens B12) |
 
 ---
 
@@ -271,7 +284,9 @@ schema drift is caught by the shared validator, not by integration day.
   the closing jobs are quick once evidence exists.
 - C needs A3 (unit views) + its own RE lanes; C7 (the h=50 oracle metric)
   additionally needs B3/B4.
-- D needs A3 (scalar/diplomacy/ideology views); D5 needs §4-C7.
+- D needs A3 (scalar/diplomacy/ideology views); D5 needs §4-CAP7.
+- E6 (observer POV) needs A3 (`visibility_for` views) + C8 (FoW law); the UX
+  shell and world-view default need neither and can land first.
 - E needs A4 (seek) and is otherwise independent; F needs A+C volume to be
   meaningful; G last; H deferred.
 - Suggested wave 1 (now): A1+A2 (one Codex lane), A3 unit/scalar views
@@ -294,7 +309,7 @@ schema drift is caught by the shared validator, not by integration day.
 | Risk | Mitigation |
 |---|---|
 | Fixture drift from what the extractor actually writes | shared validator (A1 rule 3) + the reconciliation sweeps against `extractor/` source (read-only) like 2026-07-09's |
-| Units/counters RE turns out capture-heavy | front-load §4-C6 into the next live session; game interface gfx files first per game-files-first directive |
+| Units/counters RE turns out capture-heavy | front-load §4-CAP6 into the next live session; game interface gfx files first per game-files-first directive |
 | Arrows/plans not in recording (player intent, not world state) | C4 decision: descope for v1 unless the extractor confirms availability |
 | Close-zoom parity target (≤0.03 at h=50) unreachable without shadows/particles | treat particles as v1 descope candidate; shadows are ledger #21 with an engine-law lane |
 | Capture sessions delayed | nothing on the A/C/D/E critical path waits on them; only B residual closure does |

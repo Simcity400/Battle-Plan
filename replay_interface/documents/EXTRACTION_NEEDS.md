@@ -27,6 +27,7 @@ implemented · OPEN = not yet requested/implemented.
 | A11 | Air/naval mission arrows, battles, fronts | hourly | war-state overlays (late-frame passes seen in the 1940 capture) | OPEN (far future; explicitly out of static-1936 scope) |
 | A12 | Diplomatic pair-state (war/faction/subject/guarantee/NAP/access/embargo) + faction membership + capital_state per country | on change | map-furniture VP-icon diplomatic color column (furniture lane 2026-07-09) + capital-star relocation + war overlays; d53 relation flags already live-extracted — ask = fold into hourly snapshots | FILED (REPLAY_DATA_REQUIREMENTS item 8b) |
 | A13 | Topbar scalar set per country per hour (political_power, stability, war_support, command_power, manpower.available, xp.*, factories.civ/mil/dockyard, fuel.current/max, convoy count) | hourly | UI-chrome topbar bindings (all 453 .gui parse; topbar rects gate ≤1px vs engine quads; every number is recording-gated) | FILED (REPLAY_DATA_REQUIREMENTS item 9b); schema shapes exist §3.1–3.3 |
+| A14 | Per-country fog of war: province visibility state + spotted-foreign-units set, per PLAYER country only (session metadata names them; do NOT record all ~200 AI tags) | hourly (or engine FoW cadence if finer) | observer country-POV mode — core UX per user directive 2026-07-09 (default stays omniscient/no-FoW and needs nothing) | FILED (REPLAY_DATA_REQUIREMENTS item 13, PROMOTED from deferred 2026-07-09) |
 
 ## B. Capture sessions (user-produced, on request)
 
@@ -41,6 +42,7 @@ implemented · OPEN = not yet requested/implemented.
 | B7 | Close-zoom frames with units visible/moving | unit-model render lane references | OPEN — with A7 |
 | B8 | qrenderdoc python-shell RT extraction | ONLY if statistical gates stop sufficing (currently NOT needed — initial-contents MainScene gives byte referees) | NOT NEEDED now |
 | B9 | One political frame framing ≥3 HYPER-ELONGATED countries at once (Chile + Peru + Vietnam, or Norway + Sweden + Italy) at mid zoom | fit the NAME2 hyper-elongated ANCHOR law (C3): VP-weighted anchor moves Norway 122→53px but the aspect gate is fit to one example — needs ≥3 to pin the boundary + blend curve | OPEN — add to next wishlist |
+| B10 | Paired same-camera frames: observe-as-country (FoW ON) vs observer world view (FoW OFF), same hour/zoom, fogged provinces + hidden units in view | FoW visual-transform law (production plan C8/CAP10); also strengthens B1's clean-sea referee | OPEN — add to next wishlist |
 
 Keep all existing .rdc files until pixel-level extraction is exhausted.
 

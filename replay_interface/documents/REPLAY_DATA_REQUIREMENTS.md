@@ -324,12 +324,40 @@ Player-drawn plan arrows and frontline orders (schema §12 order_of_battle
 plans). Deliberately deferred until the replay schedules plan rendering;
 listed so the eventual ask isn't a surprise.
 
-## 13. Player-POV fog of war (DEFERRED — likely never needed)
+## 13. Per-country fog of war / visibility (PROMOTED 2026-07-09 — REQUIRED)
 
-The default replay is omniscient (whole map visible) — that needs NOTHING
-from you. Only if we ever add a "see what player X saw" view would we
-need per-country province visibility/intel state per hour. Listed purely
-so the registry is complete; do not build.
+**Was "deferred — likely never needed"; now a core product feature by user
+directive (2026-07-09):** the replay defaults to omniscient observer (whole
+map visible, no FoW — that part still needs nothing from you), but the viewer
+can enter a country's POV — seeing that country's fog of war and only what it
+could see — and toggle back to the world view, exactly like the game observer
+mode when you observe as a specific country.
+
+What the replay needs, per POV country, per hour:
+
+- **Province visibility state** from that country's perspective — at minimum
+  a fogged/visible flag per province; if the engine holds more levels (e.g.
+  terrain-seen vs actively-watched), preserve the levels rather than
+  collapsing them. This drives the FoW terrain darkening layer.
+- **Visible-foreign-units set** — which foreign divisions/fleets/wings (item
+  3/8 unit ids) are spotted from that POV that hour, so POV mode hides
+  unspotted units. If the engine stores per-unit intel levels (detected vs
+  identified), preserve the level.
+- Alternatively: if the raw per-country intel state the engine evaluates FoW
+  *from* is cheaper to record than the evaluated result, record that instead
+  and tell us — the replay can apply engine rules replay-side given the
+  inputs. Whichever representation is cheaper on your end wins.
+
+**Scope bound (keeps this affordable):** POV candidates are only the
+*player-controlled* countries in the session (item 4 session metadata already
+names them) — typically far under 32 tags. A per-province visibility bitset
+over ≤32 POVs is roughly 1.6 KB/hour raw before deltas, and visibility
+changes slowly, so compact deltas should make this cheap. Do NOT record POV
+state for all ~200 AI tags unless it is free.
+
+**Cadence:** hourly-or-finer like everything else; thinning to the hour
+boundary is acceptable ONLY if that matches the engine's own FoW update
+cadence — otherwise record at the engine's cadence (zero-data-loss rule).
 
 ---
 
@@ -364,6 +392,7 @@ so the registry is complete; do not build.
 | 10 | building levels live | largely LANDED (D48 incl. damage); replay ingest deferred |
 | 11 | rail/supply state | deferred |
 | 12 | battle plans | deferred — do not build yet |
+| 13 | per-country FoW / visibility | **PROMOTED 2026-07-09** (observer country-POV is now core UX); per-player-country province visibility + spotted-units per hour; OPEN on both sides |
 
 The replay layer keeps this file current; anything new the replay needs
 from memory gets added HERE (nowhere else).
