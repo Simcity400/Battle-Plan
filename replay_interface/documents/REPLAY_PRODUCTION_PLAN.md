@@ -252,11 +252,31 @@ extractor-independent.
 | C7 | Close-zoom 3D pass completion (units/buildings/rails/shadows) measured by the existing oracle: h=50 scoreboard mean |err| 0.135 → ≤0.03 | all of C1–C6 + B3/B4 + **B6 shadow/PCF path** + an explicit **particles decision** (descope candidate — if descoped, restate the h=50 target on particle-free frames or a documented delta) | RenderDoc-oracle scoreboard at low h | OPEN — **this is the definition-of-done metric for Phase C** |
 | C8 | **FoW visual law (observer country-POV)**: terrain shader transform is now mined: CAP4 proves the carrier is the screen-space `ShadowMap` SRV, with FoW color/alpha packed in `.g/.b`; shipped `fow.fxh` / `pdxmap.shader` define the final blend and producer packing. Remaining scope: regenerate the producer inputs (`IntelTex`/`ExtraFOW`/visibility state) for arbitrary camera/time and mine hidden-unit culling from a labelled counter/UI pair. Scene-CB0 FoW gate did not change in CAP4, so C8 is texture/draw-state driven for this pair. | installed content first (shader sources) + CAP4 pair; follow-up §4-CAP10 for producer/counter residuals | `map_viewer` FoW gate: identical terrain draw sets, only `ShadowMap` terrain SRV differs; clear-region parity plus adversarial mismatch; future POV-fixture unit-hiding gates | PARTIAL — carrier + shader law implemented/gated in tooling (`fow_law.rs`); product path still blocked by producer-input + hidden-unit evidence |
 
-### Phase D — UI chrome completion (game_ui)
+### Phase D — UI completion: EVERY panel at full fidelity (game_ui)
 
-Goal: the full read-only UI shell rendered and *populated from the timeline*.
-Layout law is strong (GetGlobalPosition verbatim, listbox/gridbox/scrollbar
-law); the gap is bindings + population + remaining widgets.
+**Scope (user directive 2026-07-09): v1 renders EVERY UI panel, not the
+informational-shell subset.** All 133 shipped `.gui` panel files (130 base +
+3 DLC music), ~2,009 `containerWindowType` window definitions — every major
+view, HUD element, popup, event/decision chrome, tooltip, and country
+scripted-GUI — rendered read-only and populated from the timeline. Every
+interactive control (designers, deployment drag, nudger, sliders) renders
+**inert / read-only snapshot**; it is in scope, not descoped, per the directive.
+Frontend/menu/lobby/dev panels (25) + DLC music (3) are the only v1 descopes
+(they never appear during an in-game replay).
+
+**Residual ledger:** `documents/UI_COVERAGE_MATRIX.md` is the authoritative
+per-panel coverage matrix (category, source `.gui`, status, data dependency,
+capture/RE need) and the definition-of-remaining for this phase. It counts:
+105 in-scope panels, of which **3 are POPULATED today** (topbar D1/D2, outliner
+D3, diplomacy D4) and 102 need data-binding beyond the (solid) layout law; it
+also enumerates **14 new recording-data dependencies** (§9 there) to fold into
+REPLAY_DATA_REQUIREMENTS.md.
+
+Goal: the full read-only UI rendered and *populated from the timeline*. Layout
+law is strong (GetGlobalPosition verbatim, listbox/gridbox/scrollbar law); the
+gap is bindings + population across all 105 panels + the remaining widgets. The
+rows below (D1–D8) track the FIRST-WAVE panels; the matrix tracks the long tail.
+See the **UI derivation wave plan** in §6a for how the long tail is batched.
 
 | # | Item | Gate | Status |
 |---|---|---|---|
@@ -275,7 +295,7 @@ law); the gap is bindings + population + remaining widgets.
 |---|---|---|---|
 | E1 | Transport controls: play/pause, speed steps, seek bar with date ticks, jump-to-date | seek==play gate reused from A4; input-latency budget | OPEN (scrub tooling exists, product-blocked) |
 | E2 | Free camera with engine pan/zoom law (CAMDEF1 clamps landed; interpolation shape pending B6) | camera law gates | PARTIAL |
-| E3 | Map-mode switching (political first; terrain/naval as laws allow) — colors computed replay-side from inputs (NEVER recorded; standing override) | per-mode parity gates | PARTIAL (political is the lane) |
+| E3 | Map-mode switching — **ALL modes (user scope 2026-07-09)**: 16 selectable modes (12 toolbar clicksound-identified + 4 engine hard-coded: states/diplomacy/players/ideology) + 6 display toggles (day-night/player-counters/counter-color/allied-plans/fog/radar); colors computed replay-side from inputs (NEVER recorded; standing override). Residual ledger = `documents/MAPMODE_COVERAGE_MATRIX.md` (per-mode fill-law source, data dep, status): 1 done (political), 8 law-known (naval/terrain/resource/factions/states/diplomacy/players/ideology), 7 not-started (air/operatives/supply/resistance/compliance/infrastructure/raids). Mods add scripted modes → generic scripted-layer composer (type/color/text/thickness per `common/map_modes/documentation.md`). | per-mode parity gates | PARTIAL (political done; naval/FoW law-known; 7 modes not-started) |
 | E4 | Recording open/validate UX: schema validation errors, modset mismatch surfacing (mod_resolver), version handshake | malformed-fixture rejection matrix | OPEN |
 | E5 | Session ergonomics: window resize, monitor DPI, save-position — plain Win32 hygiene | smoke gates | OPEN |
 | E6 | **Observer POV mode (core UX, 2026-07-09 directive)**: default = omniscient world view (no FoW); country picker over the session's player countries; entering a POV switches on the FoW layer (C8) from `visibility_for(pov)`, hides unspotted units, re-keys viewed-tag-dependent surfaces (VP-icon diplomatic columns already parameterized on `viewed_tag` per FURN-REL law; topbar/outliner re-bind to the POV country); one-key toggle back to world view | POV fixture: same hour renders world-view vs POV-view with expected-diff oracle (fogged provinces darken, unspotted units absent, VP columns flip); toggle is stateless/idempotent | OPEN |
@@ -362,6 +382,84 @@ schema drift is caught by the shared validator, not by integration day.
   waits for A1/A2 output, per the critical path), B1 water residuals (third
   lane), C1 counter RE prep from installed content (fourth lane) — all disjoint
   files.
+
+## 6a. UI + map-mode derivation wave plan (Phase D/E3 batching)
+
+The 105 in-scope panels (`UI_COVERAGE_MATRIX.md`) and 16 map modes
+(`MAPMODE_COVERAGE_MATRIX.md`) are batched into lanes by **shared law**, so one
+lane closes N similar surfaces, ordered by **replay-war value** (what fires
+during a war replay first). Every wave depends on Phase A3 typed views for its
+data class; layout is already composable for all of them. Waves are parallel
+where files are disjoint.
+
+**Wave U1 — war-legibility HUD + popups (highest value, mostly item 3/8/8b data).**
+Panels that appear/fire during a war: `mapicons` (VP + unit counters, ties to
+Phase C1), `unitview`, `divisions_summary`, `landcombat`, `navalcombat`,
+`navalcombatresultswindow`, `combatlogview`, `waroverview`, `alerts`,
+`worldtensionwindowpopup`. Shared law: unit/combat/relation views (already
+skeletoned in A3) + counter render (C1). Finishes D3-adjacent HUD. **Do first.**
+
+**Wave U2 — event/decision chrome (data-driven, tiny panel count, huge coverage).**
+`eventwindow`, `popupwindow`, `countrydecisionview`. One binding lane renders
+hundreds of event/decision instances from the fired-event stream (new dep 13) +
+decision state (new dep 11) + localisation join (item 9). Very high coverage per
+unit effort. **Do second.**
+
+**Wave U3 — country economy/politics majors (shared listbox/gridbox law).**
+`countrypoliticsview`, `countryproductionlineview`, `countryconstructionsview`,
+`countrytradeview`, `equipmentoverview`, `countrystateview`. Shared law: gridbox/
+listbox row population + progress bars. Needs new deps 3/4/7 + item 10.
+
+**Wave U4 — research + focus trees (shared tree-layout law).**
+`countrytechnologyview`, `countrytechtreeview`, `countrydoctrinetreeview`,
+`nationalfocusview`. One tree-layout + prereq-line law lane covers all four; new
+deps 1/2 (research/focus state).
+
+**Wave U5 — military rosters + leaders (shared roster/trait law).**
+`countryarmyview`, `naviesview`, `strategicairview`, `airgroupview`,
+`countryofficercorpview`, `unitleaderwindow`, `navyleaderview`, `leadergroups`,
+`acesview`, `armytraittreewindow`, `navytraittreewindow`, `traittreewindow_common`.
+Shared law: roster listbox + trait tree. New dep 9 (leader roster/traits).
+
+**Wave U6 — designers (interactive→read-only snapshot, shared template law).**
+`divisiondesignerview`, `equipmentdesignerview`, `equipmentupgradedesignerwindow`,
+`tank_designer_view`, `plane_designer_view`. One read-only-snapshot lane; new dep 5
+(templates/variants).
+
+**Wave U7 — intel + occupation + logistics (LaR/specialist).**
+`countryintelligenceagencyview`, `countryintelledger`, `operationoverview`,
+`operative`, `operativeleader`, `countryoccupationview`, `garrisonlogview`,
+`countrylogisticsview`, `powerbalanceview`. New deps 6/8/10 + items 10/11. These
+also unblock the resistance/compliance/supply/operatives/infrastructure MAP MODES
+(shared occupation/supply/intel data), so pair U7 with map-mode wave M2.
+
+**Wave U8 — country scripted-GUI (generic composer, mod-critical).**
+The 23 `*_scripted_gui.gui` national-mechanic panels. Do NOT hand-build 23; build
+ONE generic scripted-GUI composer driven by recorded scripted-variable state (new
+dep 14), so vanilla + arbitrary mod scripted-GUIs render from the same lane.
+
+**Wave U9 — remaining HUD/popup tail + tooltips.** `command_character_view`,
+`abilitylist`, `battleplantools` (inert), `findview` (read-only), `rightclickmenu`
+(inert), music/social (inert), `airwingdetails`, `carrierairwingcompositionwindow`,
+`insrevolutionwindow`, `naval_losses`, `destroyedshipswindow`, `detailedwindows`,
+`railway_gun`, `advisorroleselectionview`, `insigniaselection`,
+`airwingreorganization` + the dynamic-breakdown tooltip evaluator.
+
+**Map-mode waves (parallel to U-waves):**
+- **M0 (done):** political (COL3). **M1 (law-known → gate):** naval (C6), terrain,
+  resource, factions, states, diplomacy, players, ideology — 8 modes whose fill
+  law is file-derivable/ported; one lane per shared primitive (engine layer types)
+  binds + gates them. **M2 (not-started, needs data + RE):** air, supply,
+  infrastructure (ride on items 8/11/10 from U3/U7), then resistance, compliance,
+  operatives, raids (LaR/BBA specialist RE, pair with U7). **M3:** generic
+  scripted-map-mode layer composer for mods.
+
+**Ordering rationale:** U1+U2 make a war replay legible with the least work
+(reuse A3 unit/combat/event views + the tiny event/decision chrome). U3–U6 are
+the deep country panels grouped by shared law (tree, listbox, designer template)
+so each lane amortizes. U7+M2 share occupation/intel/supply data. U8 is one
+generic lane covering an unbounded (mod) class. Every wave is gated by the
+matrix's per-panel/per-mode status flip to POPULATED/done.
 
 ## 7. Definition of production
 
