@@ -129,13 +129,13 @@ Fired during a war replay; high value (Phase D wave 2). All chrome-composable.
 | Event window | eventwindow.gui | chrome-composable | 9 (event id→loc) + **NEW: fired-event stream** | data-driven content; renders hundreds of events |
 | Generic popup | popupwindow.gui | chrome-composable | 9 + event stream | shared popup chrome |
 | World-tension popup | worldtensionwindowpopup.gui | chrome-composable | 9b (world_tension) | binding |
-| Land combat | landcombat.gui | chrome-composable | 3 (combats) | binding; fires in war |
+| Land combat | landcombat.gui | **POPULATED (U1)** | 3 (combats) + **A16 (display detail, OPEN)** | `combat_binding.rs`: identity + participant division counts bound from `replay_core::CombatRow`; progress/bombardment/air-superiority/combat-width/leaders are recording-Absent (A16) → fail-closed |
 | Naval combat | navalcombat.gui | chrome-composable | 8 + **NEW: naval combat detail** | binding |
 | Naval combat results | navalcombatresultswindow.gui | chrome-composable | **NEW: naval combat results** | binding |
 | Naval losses | naval_losses.gui | chrome-composable | **NEW: naval losses** | binding |
 | Destroyed ships | destroyedshipswindow.gui | chrome-composable | **NEW: naval losses** | binding |
 | Combat log | combatlogview.gui | chrome-composable | 3/8 (combat events) | binding |
-| War overview | waroverview.gui | chrome-composable | 8b (wars/participants) | binding |
+| War overview | waroverview.gui | **POPULATED (U1)** | 8b (wars/participants) + **NEW: war-participant stats (OPEN)** | `waroverview_binding.rs`: belligerent-pair casualties (from `DiplomacyView::war_relations`) + belligerent/POV-belligerent sets bound; war-object grouping (attacker/defender sides, front) is a `replay_core` view gap; warscore/divisions/IC/surrender-progress are a NEW recording dep → fail-closed |
 | Insurrection/civil-war window | insrevolutionwindow.gui | chrome-composable | 7/7b (splinter/ideology) | binding |
 | Garrison log | garrisonlogview.gui | chrome-composable | **NEW: occupation/garrison state** | binding |
 | Air wing details | airwingdetails.gui | chrome-composable | 8 (air) | binding |
@@ -268,7 +268,7 @@ cross-cutting residual, not per-panel.
 |---|---|---|
 | Major views (§1) | 31 | chrome-composable; 1 POPULATED (diplomacy) |
 | HUD chrome (§2) | 24 | chrome-composable; 5 POPULATED (topbar, outliner, alerts, selected-unit, map-icon counter content) |
-| Popups (§3) | 27 | chrome-composable |
+| Popups (§3) | 27 | chrome-composable; 2 POPULATED (land combat, war overview — U1) |
 | Country scripted-GUI (§4) | 23 | chrome-composable shell / population not-started |
 | Frontend/meta/dev (§5) | 25 | not-started / descope |
 | DLC music (§6) | 3 | not-started / descope |
@@ -277,9 +277,11 @@ cross-cutting residual, not per-panel.
 
 **Grand total = 133 panel files** (130 base `interface/*.gui` + 3 DLC music).
 True sub-panel surface = **2,009 `containerWindowType` window definitions**.
-POPULATED today: **6 panels** (topbar D1/D2, outliner D3, diplomacy D4, alerts
-strip U1, selected-unit panel U1, map-icon counter content U1) + the observer-POV
-shell (E6, a `replay_app` mode, not a panel). Everything else is
+POPULATED today: **8 panels** (topbar D1/D2, outliner D3, diplomacy D4, alerts
+strip U1, selected-unit panel U1, map-icon counter content U1, land combat U1,
+war overview U1) + the observer-POV shell (E6, a `replay_app` mode, not a
+panel). Everything else is `chrome-composable` (layout law solid, binding
+pending) or descoped.
 `chrome-composable` (layout law solid, binding pending) or descoped.
 
 In-scope for a replay (excludes §5 frontend/meta + §6 music) = **105 panels**:

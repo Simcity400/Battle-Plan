@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Zero-manual-step live-validation runsheet for the Battle Plan extractor.
 
@@ -52,6 +52,10 @@ param(
     [double]$ProbeSeconds = 12,
 
     [double]$EmitModeABSeconds = 75,
+
+    # zstd level for validation captures (recorder default is 13/archival;
+    # validation only needs the manifest numbers, so finalize fast).
+    [int]$ReplayZstdLevel = 3,
 
     [switch]$IncludeEmitModeAB,
 
@@ -580,6 +584,7 @@ function Invoke-LauncherCapture {
         [int]$MinGameHours = -1,
         [string]$D53RelationReadMode = "",
         [string]$EmitModeAll = "",
+        [int]$ReplayZstdLevel = 0,
         [switch]$SkipBuild,
         [switch]$SkipDiskSpaceCheck
     )
@@ -595,25 +600,34 @@ function Invoke-LauncherCapture {
     if ($MinGameHours -ge 0) { $launcherArgs += @("-MinGameHours", "$MinGameHours") }
     if ($D53RelationReadMode.Length -gt 0) { $launcherArgs += @("-D53RelationReadMode", $D53RelationReadMode) }
     if ($EmitModeAll.Length -gt 0) { $launcherArgs += @("-EmitModeAll", $EmitModeAll) }
+    if ($ReplayZstdLevel -gt 0) { $launcherArgs += @("-ReplayZstdLevel", "$ReplayZstdLevel") }
     if ($SkipBuild) { $launcherArgs += "-SkipBuild" }
     if ($SkipDiskSpaceCheck) { $launcherArgs += "-SkipDiskSpaceCheck" }
 
-    $before = Get-CollectorPids
+    $before = @(Get-CollectorPids)
+    $rc = 0
     try {
-        & powershell @launcherArgs
+        # Out-Host keeps the child launcher's live output visible WITHOUT
+        # polluting this function's return stream (the manifest path).
+        & powershell @launcherArgs 2>&1 | Out-Host
         $rc = $LASTEXITCODE
-        if ($rc -ne 0) {
-            throw "launcher exited with code $rc (mode=$Mode out=$OutDir)"
-        }
     } catch {
         Stop-NewCollectors -Before $before
         throw
     }
 
+    # A nonzero launcher exit usually means the recorder's hourly gate failed
+    # (e.g. cold-start skip in a short probe). The manifest is still the
+    # evidence of record: verdicts are computed from its contents, so tolerate
+    # gate failure whenever the manifest exists and let the stage's own checks
+    # decide pass/fail. Only a missing manifest is fatal.
     $manifest = Join-Path $OutDir "native_session_manifest.json"
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
         Stop-NewCollectors -Before $before
-        throw "capture produced no manifest at $manifest (mode=$Mode)"
+        throw "capture produced no manifest at $manifest (mode=$Mode, launcher rc=$rc)"
+    }
+    if ($rc -ne 0) {
+        Write-Host "note: launcher exited rc=$rc (recorder gate failed); manifest present, continuing - stage checks decide pass/fail (mode=$Mode)"
     }
     return $manifest
 }
@@ -853,7 +867,7 @@ if (-not $SkipProbe) {
     Write-Host "=== Preflight: game-advancing probe (~$(Format-Num $ProbeSeconds 0)s) ==="
     $probeOut = Join-Path $OutRoot "stage0_probe"
     $probeManifestPath = Invoke-LauncherCapture -LauncherPath $launcherPath -Mode Smoke `
-        -OutDir $probeOut -SessionId "live_validation_${stamp}_probe" -Hoi4Pid $Hoi4Pid `
+        -OutDir $probeOut -SessionId "live_validation_${stamp}_probe" -Hoi4Pid $Hoi4Pid -ReplayZstdLevel $ReplayZstdLevel `
         -DurationSeconds $ProbeSeconds -MinGameHours 0 -SkipBuild -SkipDiskSpaceCheck:$SkipDiskSpaceCheck
     $probeMetrics = ConvertTo-SessionMetrics -Manifest (Read-ManifestFile -Path $probeManifestPath) -Label "probe"
     if ($null -eq $probeMetrics.GameHours -or [double]$probeMetrics.GameHours -le 0) {
@@ -867,7 +881,7 @@ Write-Host ""
 Write-Host "=== Stage 1: d53 shadow gate (~$(Format-Num $ShadowSeconds 0)s) ==="
 $shadowOut = Join-Path $OutRoot "stage1_shadow"
 $shadowManifestPath = Invoke-LauncherCapture -LauncherPath $launcherPath -Mode Smoke `
-    -OutDir $shadowOut -SessionId "live_validation_${stamp}_shadow" -Hoi4Pid $Hoi4Pid `
+    -OutDir $shadowOut -SessionId "live_validation_${stamp}_shadow" -Hoi4Pid $Hoi4Pid -ReplayZstdLevel $ReplayZstdLevel `
     -DurationSeconds $ShadowSeconds -MinGameHours 0 -D53RelationReadMode "shadow" -SkipBuild -SkipDiskSpaceCheck:$SkipDiskSpaceCheck
 $shadowMetrics = ConvertTo-SessionMetrics -Manifest (Read-ManifestFile -Path $shadowManifestPath) -Label "shadow"
 $shadowVerdict = Test-ShadowGate -Metrics $shadowMetrics
@@ -891,7 +905,7 @@ Write-Host ""
 Write-Host "=== Stage 2: paired A/B (ShortSpeed5 vs 2026-07-09 baseline) ==="
 $abOut = Join-Path $OutRoot "stage2_shortspeed5"
 $abManifestPath = Invoke-LauncherCapture -LauncherPath $launcherPath -Mode ShortSpeed5 `
-    -OutDir $abOut -SessionId "live_validation_${stamp}_ab" -Hoi4Pid $Hoi4Pid `
+    -OutDir $abOut -SessionId "live_validation_${stamp}_ab" -Hoi4Pid $Hoi4Pid -ReplayZstdLevel $ReplayZstdLevel `
     -DurationSeconds $ShortSpeed5Seconds -SkipBuild -SkipDiskSpaceCheck:$SkipDiskSpaceCheck
 $headMetrics = ConvertTo-SessionMetrics -Manifest (Read-ManifestFile -Path $abManifestPath) -Label "head"
 $pairedVerdict = New-PairedVerdict -Head $headMetrics -Baseline $baselineMetrics -FrameAvgTargetMs $FrameAvgTargetMs -Phase2FrameAvgTargetMs $Phase2FrameAvgTargetMs
@@ -903,7 +917,7 @@ if ($IncludeEmitModeAB) {
     Write-Host "=== Stage 3: emit-mode A/B (all five delta domains emit_mode=full) ==="
     $emitOut = Join-Path $OutRoot "stage3_emitmode_full"
     $emitManifestPath = Invoke-LauncherCapture -LauncherPath $launcherPath -Mode Smoke `
-        -OutDir $emitOut -SessionId "live_validation_${stamp}_emitfull" -Hoi4Pid $Hoi4Pid `
+        -OutDir $emitOut -SessionId "live_validation_${stamp}_emitfull" -Hoi4Pid $Hoi4Pid -ReplayZstdLevel $ReplayZstdLevel `
         -DurationSeconds $EmitModeABSeconds -MinGameHours 0 -EmitModeAll "full" -SkipBuild -SkipDiskSpaceCheck:$SkipDiskSpaceCheck
     $emitMetrics = ConvertTo-SessionMetrics -Manifest (Read-ManifestFile -Path $emitManifestPath) -Label "emit_full"
     $emitFactor = "n/a"

@@ -2,6 +2,7 @@ pub mod alerts;
 pub mod assets;
 pub mod binding;
 pub mod binding_counters;
+pub mod combat_binding;
 pub mod compose;
 pub mod dds;
 pub mod font;
@@ -17,6 +18,7 @@ pub mod probe;
 pub mod tga;
 pub mod topbar;
 pub mod unitview;
+pub mod waroverview_binding;
 pub mod widget_layout;
 
 use std::fmt;

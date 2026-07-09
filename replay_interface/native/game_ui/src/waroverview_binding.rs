@@ -1,0 +1,232 @@
+//! War-overview / war-summary panel population (U1 wave —
+//! `interface/waroverview.gui` `waroverview_window`: the global list of ongoing
+//! wars, their belligerents, and per-participant summary stats).
+//!
+//! Population seam over `replay_core`'s read-only [`DiplomacyView`] (items
+//! 8/8b). It parses no recording bytes (Constraint 2) and fabricates nothing
+//! (Constraint 3): an unmeasured casualty tally is `None`, never `0`.
+//!
+//! ## What is POPULATED
+//!
+//! * **Belligerent-pair casualties** — from `DiplomacyView::war_relations`
+//!   (the live `diplomacy_live.war_relations` feed), each row is an ordered
+//!   `(first, second)` belligerent pair plus the two running casualty tallies.
+//!   These feed the war-participant rows' `casualties` textbox.
+//! * **Belligerent set** — the union of every country in an `at_war==true`
+//!   pair (`DiplomacyView::pairs`) or any `war_relations` row, giving the
+//!   participant column contents.
+//! * **POV belligerents** — the countries the POV country is at war with, for
+//!   the POV-highlight (mirrors the diplomacy panel's `wars`).
+//!
+//! ## KNOWN GAPS (fail-closed; filed in `LANE_REPORT.md` / docs)
+//!
+//! * **War-object grouping** — `waroverview.gui` groups participants into
+//!   attacker vs defender *sides* per named war, with a wargoal and front. The
+//!   recording carries `diplomacy_world.wars` objects
+//!   (`{attackers, defenders, front, start_hour}`), but the read-only
+//!   `DiplomacyView` exposes only per-pair `at_war` booleans + the flat
+//!   `war_relations` casualty rows — it does not surface war objects. So this
+//!   binding lists belligerent PAIRS and the flat belligerent set, not
+//!   attacker/defender sides of a named war. Closing this is a `replay_core`
+//!   change (this lane is READ-ONLY on it), documented as the same D4 view gap.
+//! * **Per-participant aggregate stats** — the panel's `warscore` / `divisions`
+//!   / `ic` textboxes and the `surrender_progressbar` (capitulation progress),
+//!   plus wargoal icons, are **not carried by any current view** and are a NEW
+//!   recording dependency (REPLAY_DATA_REQUIREMENTS / EXTRACTION_NEEDS §A).
+//!   They render fail-closed (absent) here.
+
+use replay_core::{DiplomacyView, Leaf, ViewStatus, WorldFrame};
+use std::collections::BTreeSet;
+
+/// One live belligerent-pair casualty row from `DiplomacyView::war_relations`.
+/// The pair identity requires both tags measured; each casualty tally is
+/// `Some` only when measured (fail-closed, never a fabricated `0`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WarRelationSummary {
+    pub first: String,
+    pub second: String,
+    pub first_casualties: Option<i64>,
+    pub second_casualties: Option<i64>,
+}
+
+/// Read-only war-overview panel binding for one POV at one world frame (U1).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WarOverviewBinding {
+    pub pov_tag: String,
+    /// `true` only when the underlying [`DiplomacyView`] status is `Present`.
+    pub available: bool,
+    /// Live belligerent-pair casualty rows (verbatim from `war_relations`),
+    /// filtered to rows whose pair identity (`first`,`second`) is measured.
+    pub war_relations: Vec<WarRelationSummary>,
+    /// Every country in any `at_war==true` pair OR any `war_relations` row,
+    /// sorted ascending and de-duplicated — the participant column.
+    pub belligerents: Vec<String>,
+    /// The POV's own belligerents (other tags with `at_war == Some(true)` from
+    /// `pov -> other`), sorted ascending — for the POV highlight.
+    pub pov_belligerents: Vec<String>,
+}
+
+/// Belligerent-pair casualty rows from the view, dropping any row whose pair
+/// identity is not measured (a row with no tags cannot be attributed).
+fn war_relation_summaries(view: &DiplomacyView) -> Vec<WarRelationSummary> {
+    let rows = match view.war_relations.measured() {
+        Some(rows) => rows,
+        None => return Vec::new(),
+    };
+    rows.iter()
+        .filter_map(|r| {
+            let first = r.first.measured()?.clone();
+            let second = r.second.measured()?.clone();
+            Some(WarRelationSummary {
+                first,
+                second,
+                first_casualties: r.first_casualties.measured().copied(),
+                second_casualties: r.second_casualties.measured().copied(),
+            })
+        })
+        .collect()
+}
+
+/// Union of all tags in the casualty rows plus all tags in any measured
+/// `at_war==true` pair, sorted + de-duplicated.
+fn belligerents(view: &DiplomacyView, summaries: &[WarRelationSummary]) -> Vec<String> {
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    for s in summaries {
+        set.insert(s.first.clone());
+        set.insert(s.second.clone());
+    }
+    for ((a, b), pair) in &view.pairs {
+        if matches!(pair.at_war, Leaf::Measured(true)) {
+            set.insert(a.clone());
+            set.insert(b.clone());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// The POV's own belligerents: other tags where `pov -> other` has
+/// `at_war == Some(true)`.
+fn pov_belligerents(view: &DiplomacyView, pov_tag: &str) -> Vec<String> {
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    for ((a, b), pair) in &view.pairs {
+        if a == pov_tag && matches!(pair.at_war, Leaf::Measured(true)) {
+            set.insert(b.clone());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Build the read-only war-overview panel for `pov_tag` at one world frame
+/// (U1). When the diplomacy view is not `Present`, returns the fail-closed
+/// empty binding (`available: false`, no rows).
+pub fn war_overview_from_frame(frame: &WorldFrame, pov_tag: &str) -> WarOverviewBinding {
+    let view = frame.diplomacy();
+    if view.status != ViewStatus::Present {
+        return WarOverviewBinding {
+            pov_tag: pov_tag.to_string(),
+            available: false,
+            ..WarOverviewBinding::default()
+        };
+    }
+    let war_relations = war_relation_summaries(view);
+    let belligerents = belligerents(view, &war_relations);
+    let pov_belligerents = pov_belligerents(view, pov_tag);
+    WarOverviewBinding {
+        pov_tag: pov_tag.to_string(),
+        available: true,
+        war_relations,
+        belligerents,
+        pov_belligerents,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay_core::{DiplomaticPairState, WarRelationRow};
+    use std::collections::BTreeMap;
+
+    fn pair_at_war() -> DiplomaticPairState {
+        DiplomaticPairState {
+            at_war: Leaf::Measured(true),
+            same_faction: Leaf::Absent,
+            non_aggression_pact: Leaf::Absent,
+            military_access: Leaf::Absent,
+            guarantee: Leaf::Absent,
+            embargo: Leaf::Absent,
+            subject: Leaf::Absent,
+        }
+    }
+
+    fn view_with(
+        status: ViewStatus,
+        pairs: Vec<((&str, &str), DiplomaticPairState)>,
+        war_relations: Leaf<Vec<WarRelationRow>>,
+    ) -> DiplomacyView {
+        let mut map = BTreeMap::new();
+        for ((a, b), p) in pairs {
+            map.insert((a.to_string(), b.to_string()), p);
+        }
+        DiplomacyView {
+            status,
+            pairs: map,
+            countries: BTreeMap::new(),
+            war_relations,
+            faction_members: Leaf::Absent,
+            relation_flags: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn casualty_rows_and_belligerents_populate() {
+        let view = view_with(
+            ViewStatus::Present,
+            vec![
+                (("GER", "ENG"), pair_at_war()),
+                (("ENG", "GER"), pair_at_war()),
+            ],
+            Leaf::Measured(vec![WarRelationRow {
+                first: Leaf::Measured("GER".to_string()),
+                second: Leaf::Measured("ENG".to_string()),
+                first_casualties: Leaf::Measured(1200),
+                second_casualties: Leaf::Measured(900),
+            }]),
+        );
+        let summaries = war_relation_summaries(&view);
+        assert_eq!(
+            summaries,
+            vec![WarRelationSummary {
+                first: "GER".to_string(),
+                second: "ENG".to_string(),
+                first_casualties: Some(1200),
+                second_casualties: Some(900),
+            }]
+        );
+        assert_eq!(belligerents(&view, &summaries), vec!["ENG", "GER"]);
+        assert_eq!(pov_belligerents(&view, "GER"), vec!["ENG"]);
+    }
+
+    #[test]
+    fn absent_view_is_fail_closed() {
+        let view = view_with(ViewStatus::DomainAbsent, vec![], Leaf::Absent);
+        assert!(war_relation_summaries(&view).is_empty());
+        assert!(belligerents(&view, &[]).is_empty());
+    }
+
+    #[test]
+    fn unmeasured_casualties_are_none_not_zero() {
+        let view = view_with(
+            ViewStatus::Present,
+            vec![],
+            Leaf::Measured(vec![WarRelationRow {
+                first: Leaf::Measured("ITA".to_string()),
+                second: Leaf::Measured("ENG".to_string()),
+                first_casualties: Leaf::Unobtained,
+                second_casualties: Leaf::Absent,
+            }]),
+        );
+        let s = war_relation_summaries(&view);
+        assert_eq!(s[0].first_casualties, None);
+        assert_eq!(s[0].second_casualties, None);
+    }
+}

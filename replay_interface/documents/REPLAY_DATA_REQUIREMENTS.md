@@ -323,6 +323,25 @@ col 0, else neutral col 4; ported as `vp_icon_relation_column`, degrades
 to neutral gray). The BROADER pair-state set above stays requested for the
 other consumers (war overlays, diplomacy UI).
 
+War-overview panel consumer (2026-07-09, U1 lane `waroverview.gui`): the
+war-summary window already renders **belligerent-pair casualties** from the
+live `diplomacy_live.war_relations` feed (item 8b, already extracted) plus the
+belligerent set from `at_war` pairs — `game_ui/src/waroverview_binding.rs`
+binds both, fail-closed. TWO gaps remain, both fail-closed today:
+1. **War-object grouping** — the panel groups participants into attacker vs
+   defender *sides* of a named war (with a front + wargoal). The recording
+   carries `diplomacy_world.wars` (`{attackers, defenders, front, start_hour}`),
+   but the read-only `replay_core::DiplomacyView` surfaces only per-pair
+   `at_war` + flat `war_relations`; exposing war objects is a `replay_core`
+   view change (no new recording field — the data is already in the snapshot).
+2. **Per-participant aggregate stats (NEW recording dep)** — the panel's
+   `warscore` / `divisions` / `ic` columns and the `surrender_progressbar`
+   (capitulation progress), plus wargoal icons, are not carried by any current
+   stream. Ask: per hour (or on-change) per war participant
+   `{tag, warscore, division_count, industrial_capacity, capitulation_progress
+   (0..1), wargoals[]}`. Degrades to blank columns. Consumer: `waroverview.gui`
+   participant rows (`war_ally_entry` `warscore`/`divisions`/`ic`/`casualties`).
+
 ## 9. Localisation / token joins
 
 The replay UI renders tokens the recording emits (focus ids, idea tokens,

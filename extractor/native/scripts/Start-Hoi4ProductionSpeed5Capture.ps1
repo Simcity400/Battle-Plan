@@ -1,4 +1,4 @@
-param(
+﻿param(
     # Smoke/ShortSpeed5/FullGame run the lean `--profile production` preset
     # (RC per-read counters OFF, sidecar logs OFF, compact country frame ON).
     # Debug runs `--profile debug` (full diagnostics: RC counters ON, sidecar
@@ -39,6 +39,10 @@ param(
     # defaults to delta). "full" is used by the emit-mode A/B size-attribution run.
     [ValidateSet("", "delta", "full")]
     [string]$EmitModeAll = "",
+
+    # Replay container zstd level override (0 = recorder default, level 13).
+    # Validation sessions pass a low level (e.g. 3) so finalize takes seconds.
+    [int]$ReplayZstdLevel = 0,
 
     [switch]$DryRun
 )
@@ -277,6 +281,11 @@ $runArgs = @(
     "--static-gfx-icon-manifest", $staticGfxIconManifest
 )
 
+if ($ReplayZstdLevel -gt 0) {
+    $runArgs += "--replay-zstd-level"
+    $runArgs += "$ReplayZstdLevel"
+}
+
 if ($D53RelationReadMode.Length -gt 0) {
     $runArgs += "--d53-relation-read-mode"
     $runArgs += $D53RelationReadMode
@@ -296,7 +305,12 @@ $commandLine = "& `"$collectorRecord`" " + ($runArgs | ForEach-Object {
 $commandPath = Join-Path $OutDir "production_command.ps1"
 Set-Content -LiteralPath $commandPath -Value $commandLine -Encoding UTF8
 
-$d53RelationDisplay = if ($D53RelationReadMode.Length -gt 0) { $D53RelationReadMode } else { "(default)" }
+$d53RelationDisplay = if ($ReplayZstdLevel -gt 0) {
+    $runArgs += "--replay-zstd-level"
+    $runArgs += "$ReplayZstdLevel"
+}
+
+if ($D53RelationReadMode.Length -gt 0) { $D53RelationReadMode } else { "(default)" }
 $emitModeDisplay = if ($EmitModeAll.Length -gt 0) { $EmitModeAll } else { "(default)" }
 Write-Host "mode=$Mode profile=$CaptureProfile pid=$Hoi4Pid duration_s=$durationArg min_game_hours=$MinGameHours sample_ms=$SampleMs reader_concurrency=$ReaderConcurrency d53_relation_read_mode=$d53RelationDisplay emit_mode_all=$emitModeDisplay"
 Write-Host "out_dir=$OutDir"
