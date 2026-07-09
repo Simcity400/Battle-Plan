@@ -520,8 +520,13 @@ dep 14), so vanilla + arbitrary mod scripted-GUIs render from the same lane.
 - **M0 (done):** political (COL3). **M1 (law-known → gate):** naval (C6), terrain,
   resource, factions, states, diplomacy, players, ideology — 8 modes whose fill
   law is file-derivable/ported; one lane per shared primitive (engine layer types)
-  binds + gates them. **M2 (partial — M1d lane):** **air** (`mapmode_air.rs`) and
-  **infrastructure** (`mapmode_infrastructure.rs`) now law-known + fixture-gated
+  binds + gates them. **M1c IMPL 2026-07-09:** `mapmode_diplomacy.rs` (relation
+  classification extends FURN-REL to whole-country fill, per-POV; fill RGB
+  UNKNOWN/fail-closed — VP strip DDS is grayscale, no define) + `mapmode_factions.rs`
+  (membership fold; non-member = `FACTIONS_COLOR_NOT_MEMBER` FILE, member =
+  leader colour DERIVED). Both gated on `fx_war_faction_matrix` (flips @ tick 3/7);
+  +16 map_viewer tests. See FIDELITY_LEDGER §2.23/§2.24. **M2 (partial — M1d
+  lane):** **air** (`mapmode_air.rs`) and
   (FILE colours/geometry, recording-fed via items 8/10; air POV thresholds +
   infra normalisation-denominator remain capture-gated, ledger §2.20/2.21);
   supply still rides item 11 (not-started), then resistance, compliance,

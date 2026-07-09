@@ -49,7 +49,7 @@ noted where known but flagged runtime.
 | 8 | **Compliance** | `mapmode_button_8` / `ui_mapmode_compliance` / F7 | per-state compliance level gradient | **NEW: occupation/compliance state** | not-started | compliance-mode gradient RE (LaR-gated) |
 | 9 | **Resource** | `mapmode_button_9` / `ui_mapmode_resource` / F8 | state resource-deposit overlay (static deposits + control) | item 2 (control) + files (`00_resources.txt`, `history/states`) | **law-known — deposits DONE, fill UNKNOWN (M1a 2026-07-09)** — `map_mode_terrain_resource`; 7 resource defs (icon_frame 1..7, `00_resources.txt`) + deposits from `history/states` (gate: 467 states, 717 entries, per-resource counts/totals cited); overlay=strip icon (`GFX_resources_strip`). **Per-resource map FILL color/threshold has NO shipped-file source → UNKNOWN, fail-closed (`resource_state_fill`→None, no guess)** | resource-mode FILL color = engine RE + strategic capture; deposit/icon law closed |
 | 10 | **Infrastructure** | `mapmode_button_10` / `ui_mapmode_infrastructure` / F9 | per-state infrastructure level gradient | item 10 (buildings — infrastructure level) | **law-known** (`mapmode_infrastructure.rs`: FILE gradient `MAP_MODE_INFRA_RANGE_COLOR_FROM/TO` + FILE ceiling `infrastructure.level_cap.state_max`=5; level from buildings view; linear-over-[0,state_max] DERIVED) | confirm engine normalises over state_max vs dynamic map max (capture) |
-| 11 | **Factions** | `mapmode_button_11` / `ui_mapmode_factions` / F10 | faction-membership coloring — engine `game_map_mode_factions` layer | item 8b (faction membership) | **law-known** (hard-coded layer; color = faction/leader) | faction-mode color rule cite |
+| 11 | **Factions** | `mapmode_button_11` / `ui_mapmode_factions` / F10 | faction-membership coloring — engine `game_map_mode_factions` layer | item 8b (faction membership) | **impl** (`mapmode_factions.rs`): membership fold + fill; non-member = `FACTIONS_COLOR_NOT_MEMBER` {0.7,0.7,0.7,0.7} **FILE**; member = leader colour **DERIVED**; fx_war_faction_matrix gate (flip @ tick 3) | residuals: leader-vs-own colour + raw-vs-COL3 colour (capture) |
 | 12 | **Raids** (naval/air raids) | `mapmode_button_12` / `ui_mapmode_raids` | raid-target / naval-raid coloring | **NEW: raid state** (or item 8 naval) | not-started | raid-mode RE (BBA/MtG-gated) |
 
 ## 2. Engine hard-coded layer modes exposed via the "all map modes" list (4 additional)
@@ -61,7 +61,7 @@ the engine primitives not already on the toolbar. `country`=political (#1) and
 | # | Mode | engine layer type | what it colors | data dependency | status |
 |---|---|---|---|---|---|
 | 13 | **States** | `game_map_mode_states` | state borders/fill (administrative) — owner fill with state outlines | item 2 (owner) + static state map | **law-known** (owner fill + state borders, both file-derivable) |
-| 14 | **Diplomacy** | `game_map_mode_diplomacy` | pair-relation coloring vs viewed country (ally/enemy/neutral) | item 8b (relations) — FURN-REL column law partly ported (`vp_icon_relation_column`) | **law-known** (relation→color rule ported for VP icons; extend to fill) |
+| 14 | **Diplomacy** | `game_map_mode_diplomacy` | pair-relation coloring vs viewed country (ally/enemy/neutral) | item 8b (relations) | **impl** (`mapmode_diplomacy.rs`): relation CLASSIFICATION solved — extends FURN-REL `vp_icon_relation_column` to whole-country fill, per-POV; fx_war_faction_matrix gate (flips @ tick 3/7, 2 POVs). Fill RGB **UNKNOWN/fail-closed**: VP strip DDS is grayscale (measured), no `MAP_MODE_DIPLOMACY_*` define — colours are engine-hardcoded modulate |
 | 15 | **Players** | `game_map_mode_players` | one color per human player (MP) | item 4 (player↔country mapping) | **law-known** (player map file-trivial; color assignment RE) |
 | 16 | **Ideology** | `game_map_mode_ideology` | ruling-ideology coloring (fascism/communism/democratic/neutrality) | item 7b (ruling party) | **law-known** (4 ideology colors file-derivable from `00_*` ideology defs) |
 
@@ -101,6 +101,9 @@ a replay render option, several already have law.
     an engine-RE/capture item, so resource is not fully closed).
   - `not-started` = **5** (operatives, supply, resistance, compliance, raids —
     need mode-specific RE + a new/deferred data stream).
+  - **M1c (2026-07-09): diplomacy + factions now impl-gated** (`mapmode_diplomacy.rs`
+    + `mapmode_factions.rs` landed, fixture-gated per-POV; diplomacy fill RGB
+    UNKNOWN/fail-closed, factions member-colour DERIVED with 2 capture residuals).
 - **New data dependencies for map modes** (fold into REPLAY_DATA_REQUIREMENTS):
   intel/operatives state (mode 4), occupation resistance/compliance (modes 7/8) —
   **shared with UI_COVERAGE_MATRIX §9 items 6 & 8** (no duplicate stream), raid

@@ -35,6 +35,8 @@ mod map_text;
 mod mapmode_air;
 mod mapmode_infrastructure;
 mod mod_resolver;
+mod mapmode_diplomacy;
+mod mapmode_factions;
 mod naval_supremacy_tint;
 mod occupation_stripe_law;
 mod pass_graph;
@@ -278,6 +280,16 @@ pub use map_mode_terrain_resource::{
     RESOURCE_DEFINITIONS_SOURCE, RESOURCE_DEPOSITS_STATES_DIR, RESOURCE_ICON_STRIP_SOURCE,
     TERRAIN_CATEGORIES_SOURCE, TERRAIN_DEFINITION_CSV_SOURCE, VANILLA_RESOURCE_DEFINITIONS,
     VANILLA_TERRAIN_CATEGORY_COLORS,
+};
+pub use mapmode_diplomacy::{
+    classify_relation, country_relations, relation_fill, relation_to_vp_column, DiploPairInput,
+    DiplomacyPalette, DiplomacyRelation, DIPLOMACY_GRAPHICS_DEFINES_SOURCE,
+    DIPLOMACY_VP_STRIP_TEXTURE,
+};
+pub use mapmode_factions::{
+    country_faction_memberships, faction_fill, factions_defines_from_resolver,
+    factions_defines_from_source, membership_for, FactionInput, FactionMembership, FactionsDefines,
+    FACTIONS_GRAPHICS_DEFINES_SOURCE, VANILLA_FACTIONS_DEFINES,
 };
 pub use naval_supremacy_tint::{
     classify_naval_regions, naval_region_set_from_resolver, naval_supremacy_tints,
