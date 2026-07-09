@@ -1,7 +1,16 @@
 ﻿# Extraction Optimization Plan — sub-20 ms frames + lean replays (2026-07-09)
 
-Owner: extraction lane. Status: PLAN (approved targets, implementation not started).
-Codex CLI is unavailable until the user re-enables it; no step below may depend on it.
+Owner: extraction lane. Status: ACTIVE — phases 1/1b/2/3 landed, Phase 4 (change-driven
+capture) in progress. See the dated status sections below for what is proven vs projected.
+
+**Delegation (2026-07-10):** Codex CLI is the sole delegation engine and adversarial reviewer,
+pinned `-m gpt-5.6-sol -c model_reasoning_effort=xhigh`. The earlier "Codex unavailable / do not
+depend on it" note is DEAD.
+
+**Lanes: read [`CODEX_LANE_BRIEF.md`](CODEX_LANE_BRIEF.md) first** — it carries the hard
+requirements, the established facts, the proven NULLs, and the gates. **Lanes must not edit this
+plan**; write [`lane_reports/<lane>.md`](lane_reports/) instead (concurrent edits here conflict).
+The orchestrator folds lane reports into this document.
 
 ## Hard requirements (user, 2026-07-09 — binding)
 
