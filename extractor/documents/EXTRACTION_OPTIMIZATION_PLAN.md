@@ -531,6 +531,61 @@ Measure after Phase 2 — if deep-war is still >20 ms:
 Final target (G2/G3): deep-war warm avg **<20 ms** (internal 12–15 ms) speed-5 zero-skip on
 the dev rig; hourly gate holds at 6 cores.
 
+## Instrumentation — per-frame lane-wall counter (deep-war lever #5) — LANDED 2026-07-10
+
+(Status note: the "DEEP-WAR LEVER RANKING" section this lever was ranked in is not present
+in this pinned revision, so the landing is recorded here.)
+
+WHY: deep-war analysis (2026-07-09 night) measured sum(per-domain avg `read_time_us`) =
+693.6 ms vs frame avg 151.5 ms at reader_concurrency=12 (~4.58x effective parallelism). The
+frame is CRITICAL-PATH bound, but nothing recorded which domains shared a reader lane or
+which lane's wall bounded the frame, so every per-domain ms-saved claim carried a 1x–4.58x
+attribution band. This lever removes that blindness. Instrumentation only — zero
+capture-semantics change, all profiles.
+
+WHAT LANDED (branch `lane/lane-wall-counter`):
+- `ReaderGate` permits now carry a lane identity (0..reader_concurrency; free-list
+  semaphore, scheduling semantics unchanged). Every top-level fan-out worker records a
+  `(domain tag, lane, start_us, end_us)` span (offsets from `worker_read_started`; span
+  starts AFTER permit acquire so queue wait is not counted as work). Post-join serial reads
+  (d55/d54/d45/d47/d18/d63..d69) record under the synthetic MAIN lane (65535). The
+  country-bundle worker reports as synthetic tag 200 (compact domains 10..=17).
+- Per frame the collector emits summable `lw_*` diagnostic units on the reserved probe
+  domain 250 in EVERY profile (production included). Safety: old and new hosts exclude
+  domain 250 from every coverage/perf-count gate, the fold ignores PERF records, fold_check
+  counts them as `perf_records_ignored`. Units: `lw_frames`, `lw_worker_span_us`,
+  `lw_crit_wall_us`, `lw_crit_busy_us`, per lane `lw_l{n}_wall_us`/`lw_l{n}_busy_us`
+  (n < 32; overflow folds into `lw_lother_wall_us`), `lw_lmain_wall_us`, and
+  `lw_d{id}_crit_us` for each domain on the critical-path lane (argmax lane wall,
+  ties -> lowest lane).
+- Debug sidecar (`collector_compact_phase_timing.jsonl`, `--sidecar-log`) additionally
+  carries the full per-frame assignment:
+  `"lane_wall":{"crit_lane":..,"crit_wall_us":..,"spans":[[tag,lane,start_us,end_us],...]}`.
+- Manifest (production): `compact_stream.lane_wall` = `frames`, `crit_wall_us`
+  (count/avg/p95/max), `crit_wall_us_total`, `crit_busy_us_total`, `main_wall_us_total`,
+  `other_wall_us_total`, `per_lane.l{n}` (wall count/avg/p95/max + busy total),
+  `per_domain_critical_path_us_total`, `per_domain_critical_path_share`.
+
+OFFLINE FORMULAS (derivable from the manifest alone):
+- avg critical-path wall/frame = `crit_wall_us_total / frames` (should closely track
+  `frame_time_us` minus prewarm + MAIN-lane serial reads + encode/append).
+- critical-path share of domain d = `per_domain_critical_path_us_total[d] / crit_wall_us_total`.
+- critical-path ms/frame of domain d = `per_domain_critical_path_us_total[d] / frames / 1000`
+  — the exact ms-saved upper bound for optimizing d (replaces the 1x–4.58x band).
+- scheduler slack on the critical lane = `crit_wall_us_total - crit_busy_us_total`
+  (idle gaps between assignments on the bounding lane).
+
+WIRE FORMAT: unchanged — reuses the existing DOMAIN_PERF + PDU1 diagnostic-unit trailer and
+the reserved probe domain 250 (no compact_contract change needed). Old streams decode
+identically (host test `lane_wall_absent_in_old_streams_is_zero`); new streams decode on old
+hosts because domain 250 was already skipped wholesale. fold_check hash on the legacy
+fixture is byte-identical pre/post (gate evidence in the landing commit message).
+
+COST: measured 4.81 us/frame in release (`lane_wall_micro_cost_measure`, 2000 frames, 48
+spans/frame — the full added path: span recording + summary + probe-record encode); budget
+was <100 us. Per worker it is 2 timestamps + 1 uncontended mutex push, outside every domain
+read loop.
+
 ## Phase 5 — Acceptance & soak
 
 Full-game-length soak (or the longest practical session): speed-5 zero-skip, deep-war,

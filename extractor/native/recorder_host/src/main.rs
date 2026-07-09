@@ -975,6 +975,20 @@ struct CompactSummary {
     // domains_seen / domain_perf_record_count so the exact perf-count
     // verification gate is unaffected; surfaced as compact_stream.read_ab_probe.
     read_ab_probe: BTreeMap<String, u64>,
+    // Lane-wall counter (deep-war lever #5): per-frame per-lane wall +
+    // critical-path aggregates carried by `lw_*` diagnostic units on the same
+    // reserved probe domain. Also kept OUT of per_domain / gates; surfaced as
+    // compact_stream.lane_wall. `lw_crit_wall_us` and `lw_l{n}_wall_us` arrive
+    // once per frame, so the Vecs hold per-frame values (avg/p95/max).
+    lane_wall_frames: u64,
+    lane_wall_worker_span_us_total: u64,
+    lane_wall_crit_walls_us: Vec<u64>,
+    lane_wall_crit_busy_us_total: u64,
+    lane_wall_main_wall_us_total: u64,
+    lane_wall_other_wall_us_total: u64,
+    lane_wall_per_lane_walls_us: BTreeMap<u16, Vec<u64>>,
+    lane_wall_per_lane_busy_us_total: BTreeMap<u16, u64>,
+    lane_wall_domain_crit_us_total: BTreeMap<u16, u64>,
 }
 
 #[derive(Debug, Default)]
@@ -16304,6 +16318,7 @@ fn compact_stream_manifest_json(
         "per_domain": compact_domain_summaries_json(summary),
         "frame_time_us": timing_summary_json(&summary.frame_times_us),
         "read_ab_probe": serde_json::to_value(&summary.read_ab_probe).unwrap_or(Value::Null),
+        "lane_wall": lane_wall_summary_json(summary),
     })
 }
 
@@ -16418,6 +16433,11 @@ fn add_compact_domain_perf_diagnostic_unit(
     value: u64,
 ) {
     if domain_id == RC_PROBE_DOMAIN_ID {
+        // Lane-wall counter (lever #5): lw_* units get a dedicated aggregate
+        // with per-frame value vectors (avg/p95/max in the manifest).
+        if add_compact_lane_wall_unit(summary, name, value) {
+            return;
+        }
         // Plan-v2 read A/B probe units go to a dedicated aggregate, never
         // per_domain (which the coverage/perf-count gates read).
         let entry = summary.read_ab_probe.entry(name.to_string()).or_default();
@@ -16441,6 +16461,131 @@ fn add_compact_domain_perf_diagnostic_unit(
 
 fn compact_sum_to_usize(value: u128) -> usize {
     value.min(usize::MAX as u128) as usize
+}
+
+/// Lane-wall counter (deep-war lever #5): route one `lw_*` diagnostic unit
+/// from the reserved probe domain into the dedicated aggregates. Returns
+/// false for non-`lw_` (and unrecognized `lw_`) names so they keep flowing to
+/// `read_ab_probe` (forward compatibility).
+fn add_compact_lane_wall_unit(summary: &mut CompactSummary, name: &str, value: u64) -> bool {
+    let Some(rest) = name.strip_prefix("lw_") else {
+        return false;
+    };
+    match rest {
+        "frames" => {
+            summary.lane_wall_frames = summary.lane_wall_frames.saturating_add(value);
+        }
+        "worker_span_us" => {
+            summary.lane_wall_worker_span_us_total =
+                summary.lane_wall_worker_span_us_total.saturating_add(value);
+        }
+        "crit_wall_us" => summary.lane_wall_crit_walls_us.push(value),
+        "crit_busy_us" => {
+            summary.lane_wall_crit_busy_us_total =
+                summary.lane_wall_crit_busy_us_total.saturating_add(value);
+        }
+        "lmain_wall_us" => {
+            summary.lane_wall_main_wall_us_total =
+                summary.lane_wall_main_wall_us_total.saturating_add(value);
+        }
+        "lother_wall_us" => {
+            summary.lane_wall_other_wall_us_total =
+                summary.lane_wall_other_wall_us_total.saturating_add(value);
+        }
+        _ => {
+            if let Some(id) = rest
+                .strip_prefix('d')
+                .and_then(|s| s.strip_suffix("_crit_us"))
+                .and_then(|s| s.parse::<u16>().ok())
+            {
+                let entry = summary
+                    .lane_wall_domain_crit_us_total
+                    .entry(id)
+                    .or_default();
+                *entry = entry.saturating_add(value);
+                return true;
+            }
+            if let Some(lane) = rest
+                .strip_prefix('l')
+                .and_then(|s| s.strip_suffix("_wall_us"))
+                .and_then(|s| s.parse::<u16>().ok())
+            {
+                summary
+                    .lane_wall_per_lane_walls_us
+                    .entry(lane)
+                    .or_default()
+                    .push(value);
+                return true;
+            }
+            if let Some(lane) = rest
+                .strip_prefix('l')
+                .and_then(|s| s.strip_suffix("_busy_us"))
+                .and_then(|s| s.parse::<u16>().ok())
+            {
+                let entry = summary
+                    .lane_wall_per_lane_busy_us_total
+                    .entry(lane)
+                    .or_default();
+                *entry = entry.saturating_add(value);
+                return true;
+            }
+            return false;
+        }
+    }
+    true
+}
+
+/// Lane-wall manifest aggregate (compact_stream.lane_wall). Everything needed
+/// to attribute critical-path milliseconds per domain is derivable from this
+/// object alone:
+///   avg crit wall/frame        = crit_wall_us_total / frames
+///   crit-path share of domain  = per_domain_critical_path_us_total[d] / crit_wall_us_total
+///   crit-path ms/frame of dom. = per_domain_critical_path_us_total[d] / frames / 1000
+/// Domain key "200" is the country-bundle worker (compact domains 10..=17).
+fn lane_wall_summary_json(summary: &CompactSummary) -> Value {
+    let crit_wall_us_total: u64 = summary
+        .lane_wall_crit_walls_us
+        .iter()
+        .fold(0u64, |acc, &v| acc.saturating_add(v));
+    let mut per_lane = serde_json::Map::new();
+    for (&lane, walls) in &summary.lane_wall_per_lane_walls_us {
+        let busy = summary
+            .lane_wall_per_lane_busy_us_total
+            .get(&lane)
+            .copied()
+            .unwrap_or(0);
+        per_lane.insert(
+            format!("l{lane}"),
+            json!({
+                "wall_us": timing_summary_json(walls),
+                "busy_us_total": busy,
+            }),
+        );
+    }
+    let mut per_domain_crit = serde_json::Map::new();
+    let mut per_domain_share = serde_json::Map::new();
+    for (&domain, &crit_us) in &summary.lane_wall_domain_crit_us_total {
+        per_domain_crit.insert(domain.to_string(), json!(crit_us));
+        if crit_wall_us_total != 0 {
+            per_domain_share.insert(
+                domain.to_string(),
+                json!(crit_us as f64 / crit_wall_us_total as f64),
+            );
+        }
+    }
+    json!({
+        "frames": summary.lane_wall_frames,
+        "worker_span_us_total": summary.lane_wall_worker_span_us_total,
+        "crit_wall_us": timing_summary_json(&summary.lane_wall_crit_walls_us),
+        "crit_wall_us_total": crit_wall_us_total,
+        "crit_busy_us_total": summary.lane_wall_crit_busy_us_total,
+        "main_wall_us_total": summary.lane_wall_main_wall_us_total,
+        "other_wall_us_total": summary.lane_wall_other_wall_us_total,
+        "per_lane": Value::Object(per_lane),
+        "per_domain_critical_path_us_total": Value::Object(per_domain_crit),
+        "per_domain_critical_path_share": Value::Object(per_domain_share),
+        "country_bundle_tag": 200,
+    })
 }
 
 fn timing_summary_json(values: &[u64]) -> Value {
@@ -29513,6 +29658,213 @@ mod tests {
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         out.extend_from_slice(&record_flags.to_le_bytes());
         out.extend_from_slice(payload);
+    }
+
+    /// Lane-wall counter (lever #5) test helper: a probe-domain PERF payload
+    /// (40-byte header, zeros) with a PDU1 diagnostic-unit trailer.
+    fn test_perf_diagnostic_payload(units: &[(&str, u64)]) -> Vec<u8> {
+        let mut payload = vec![0u8; 40];
+        payload.extend_from_slice(b"PDU1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&(units.len() as u16).to_le_bytes());
+        for (name, value) in units {
+            payload.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&0u16.to_le_bytes());
+            payload.extend_from_slice(&value.to_le_bytes());
+            payload.extend_from_slice(name.as_bytes());
+        }
+        payload
+    }
+
+    #[test]
+    fn lane_wall_units_aggregate_into_manifest_and_skip_gates() {
+        let mut raw = Vec::new();
+        // Frame 1: crit lane 0 (wall 800), lane 1 wall 300, main 50; d48 on the
+        // critical path for 450 us and the country bundle (200) for 350 us.
+        append_test_compact_record_with_flags(
+            &mut raw,
+            1,
+            100,
+            250,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &test_perf_diagnostic_payload(&[
+                ("lw_frames", 1),
+                ("lw_worker_span_us", 1_000),
+                ("lw_crit_wall_us", 800),
+                ("lw_crit_busy_us", 800),
+                ("lw_lmain_wall_us", 50),
+                ("lw_l0_wall_us", 800),
+                ("lw_l0_busy_us", 800),
+                ("lw_l1_wall_us", 300),
+                ("lw_l1_busy_us", 300),
+                ("lw_d48_crit_us", 450),
+                ("lw_d200_crit_us", 350),
+            ]),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 0),
+        );
+        // Frame 2: crit lane 0 again (wall 400).
+        append_test_compact_record_with_flags(
+            &mut raw,
+            3,
+            101,
+            250,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &test_perf_diagnostic_payload(&[
+                ("lw_frames", 1),
+                ("lw_worker_span_us", 500),
+                ("lw_crit_wall_us", 400),
+                ("lw_crit_busy_us", 380),
+                ("lw_l0_wall_us", 400),
+                ("lw_l0_busy_us", 380),
+                ("lw_d48_crit_us", 400),
+            ]),
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
+            101,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 0),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(summary.ordering_errors.is_empty());
+        // Probe records stay out of every accounting the gates read.
+        assert!(!summary.domains_seen.contains(&250));
+        assert!(!summary.per_domain.contains_key(&250));
+        assert_eq!(summary.domain_perf_record_count, 0);
+        assert_eq!(summary.frame_end_record_count, 2);
+        // lw_* units do NOT leak into the read A/B probe aggregate.
+        assert!(summary.read_ab_probe.is_empty());
+        // Aggregates.
+        assert_eq!(summary.lane_wall_frames, 2);
+        assert_eq!(summary.lane_wall_worker_span_us_total, 1_500);
+        assert_eq!(summary.lane_wall_crit_walls_us, vec![800, 400]);
+        assert_eq!(summary.lane_wall_crit_busy_us_total, 1_180);
+        assert_eq!(summary.lane_wall_main_wall_us_total, 50);
+        assert_eq!(
+            summary.lane_wall_per_lane_walls_us.get(&0),
+            Some(&vec![800, 400])
+        );
+        assert_eq!(
+            summary.lane_wall_per_lane_walls_us.get(&1),
+            Some(&vec![300])
+        );
+        assert_eq!(
+            summary.lane_wall_per_lane_busy_us_total.get(&0).copied(),
+            Some(1_180)
+        );
+        assert_eq!(
+            summary.lane_wall_domain_crit_us_total.get(&48).copied(),
+            Some(850)
+        );
+        assert_eq!(
+            summary.lane_wall_domain_crit_us_total.get(&200).copied(),
+            Some(350)
+        );
+        // Manifest JSON: per-domain critical-path share is derivable from the
+        // manifest alone.
+        let value = lane_wall_summary_json(&summary);
+        assert_eq!(value["frames"], json!(2));
+        assert_eq!(value["crit_wall_us_total"], json!(1_200));
+        assert_eq!(value["crit_wall_us"]["count"], json!(2));
+        assert_eq!(value["crit_wall_us"]["max"], json!(800));
+        assert_eq!(value["per_lane"]["l0"]["wall_us"]["count"], json!(2));
+        assert_eq!(value["per_lane"]["l1"]["busy_us_total"], json!(300));
+        let d48_share = value["per_domain_critical_path_share"]["48"]
+            .as_f64()
+            .unwrap();
+        assert!(
+            (d48_share - 850.0 / 1_200.0).abs() < 1e-12,
+            "d48 share {d48_share}"
+        );
+        assert_eq!(
+            value["per_domain_critical_path_us_total"]["200"],
+            json!(350)
+        );
+    }
+
+    #[test]
+    fn lane_wall_absent_in_old_streams_is_zero() {
+        // Old streams (no lw_* probe records) must decode exactly as before
+        // and report an empty lane_wall aggregate.
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_250, 355, 12, 44, 44),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary.parse_errors.is_empty());
+        assert_eq!(summary.lane_wall_frames, 0);
+        assert!(summary.lane_wall_crit_walls_us.is_empty());
+        let value = lane_wall_summary_json(&summary);
+        assert_eq!(value["frames"], json!(0));
+        assert_eq!(value["crit_wall_us"]["count"], json!(0));
+        assert_eq!(value["crit_wall_us_total"], json!(0));
+    }
+
+    #[test]
+    fn lane_wall_unit_parser_routes_and_rejects() {
+        let mut summary = CompactSummary::default();
+        assert!(add_compact_lane_wall_unit(&mut summary, "lw_frames", 1));
+        assert!(add_compact_lane_wall_unit(&mut summary, "lw_l3_wall_us", 7));
+        assert!(add_compact_lane_wall_unit(&mut summary, "lw_l3_busy_us", 5));
+        assert!(add_compact_lane_wall_unit(
+            &mut summary,
+            "lw_d53_crit_us",
+            9
+        ));
+        assert!(add_compact_lane_wall_unit(
+            &mut summary,
+            "lw_lother_wall_us",
+            2
+        ));
+        // Non-lw and unrecognized lw_ names fall through (read_ab_probe path).
+        assert!(!add_compact_lane_wall_unit(&mut summary, "rc_seh_reads", 3));
+        assert!(!add_compact_lane_wall_unit(&mut summary, "lw_bogus", 3));
+        assert!(!add_compact_lane_wall_unit(
+            &mut summary,
+            "lw_lx_wall_us",
+            3
+        ));
+        assert_eq!(summary.lane_wall_frames, 1);
+        assert_eq!(summary.lane_wall_per_lane_walls_us.get(&3), Some(&vec![7]));
+        assert_eq!(
+            summary.lane_wall_per_lane_busy_us_total.get(&3).copied(),
+            Some(5)
+        );
+        assert_eq!(
+            summary.lane_wall_domain_crit_us_total.get(&53).copied(),
+            Some(9)
+        );
+        assert_eq!(summary.lane_wall_other_wall_us_total, 2);
     }
 
     fn append_test_fuel_compact_frame(
