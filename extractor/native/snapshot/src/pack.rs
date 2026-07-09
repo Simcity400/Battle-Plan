@@ -48,6 +48,23 @@ pub struct FileBackedPackEntry<'a> {
     pub hour_index: Option<i64>,
 }
 
+/// One STREAMING file-backed entry — like [`FileBackedPackEntry`] but the bytes
+/// are compressed and written in bounded-memory chunks (see
+/// [`write_zip_file_streaming`]) instead of the whole file being read into RAM.
+/// This is what lets the recorder append a multi-GB raw compact stream to the
+/// container without ever materializing it. `sha256`, when supplied, is the
+/// caller-computed digest of the file's raw bytes (e.g. the capture-time rolling
+/// hash of the pipe stream); it is trusted for the manifest so the packer does
+/// not re-read the whole file just to hash it. When `None`, the packer streams
+/// the file once to compute the digest.
+pub struct StreamingFileEntry<'a> {
+    pub path: String,
+    pub file_path: &'a Path,
+    pub role: &'static str,
+    pub hour_index: Option<i64>,
+    pub sha256: Option<String>,
+}
+
 /// Identity recorded into the manifest (the values the capture read at session
 /// start — all already redacted of personal paths upstream).
 #[derive(Clone, Default)]
@@ -267,6 +284,157 @@ pub fn pack_mixed_to_writer<W: Write>(
     Ok(())
 }
 
+/// Streaming production packer: like [`pack_mixed_to_writer`] but the large
+/// `streaming_entries` (the raw compact stream) are compressed and appended in
+/// bounded-memory chunks, so peak memory stays O(one chunk) regardless of stream
+/// length. `borrowed_entries` (index/timeline/manifest/static) are small and
+/// stay in RAM; `file_entries` (per-hour snapshots) are read one-at-a-time.
+///
+/// The written ZIP uses a trailing data descriptor for each streaming entry (the
+/// crc/sizes are unknown until the whole entry is written), and records the true
+/// crc/sizes in the central directory, which is the authority our reader
+/// ([`crate::zip`]) trusts. NOTE (zip32): a single streaming entry above 4 GiB
+/// compressed or uncompressed needs zip64, which this container does not yet
+/// support — such an entry is rejected (fail-closed) rather than truncated.
+pub fn pack_streaming_to_writer<W: Write>(
+    game_id: &str,
+    borrowed_entries: &[BorrowedPackEntry<'_>],
+    file_entries: &[FileBackedPackEntry<'_>],
+    streaming_entries: &[StreamingFileEntry<'_>],
+    identity: &PackIdentity,
+    deflate: bool,
+    writer: &mut W,
+) -> Result<(), PackError> {
+    let mut manifest_entries: Vec<Value> =
+        Vec::with_capacity(borrowed_entries.len() + file_entries.len() + streaming_entries.len());
+    let mut counts_snapshots = 0u64;
+
+    let mut push_manifest_entry =
+        |path: &str, sha: String, bytes: u64, role: &str, hour_index: Option<i64>| {
+            let mut ent = json!({
+                "path": path,
+                "sha256": sha,
+                "bytes": bytes,
+                "role": role,
+            });
+            if let Some(h) = hour_index {
+                ent.as_object_mut()
+                    .unwrap()
+                    .insert("hour_index".into(), json!(h));
+            }
+            if role == "snapshot" {
+                counts_snapshots += 1;
+            }
+            manifest_entries.push(ent);
+        };
+
+    for e in borrowed_entries {
+        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        let sha = to_hex(&Sha256::digest(e.bytes));
+        push_manifest_entry(&e.path, sha, e.bytes.len() as u64, e.role, e.hour_index);
+    }
+    for e in file_entries {
+        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        let (sha, len) = sha256_file(e.file_path)?;
+        push_manifest_entry(&e.path, sha, len, e.role, e.hour_index);
+    }
+    for e in streaming_entries {
+        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        let (sha, len) = match &e.sha256 {
+            Some(sha) => {
+                // Trust the caller's digest but still need the byte length for the
+                // manifest; stat the file rather than re-hashing it.
+                let len = fs::metadata(e.file_path)?.len();
+                (sha.clone(), len)
+            }
+            None => sha256_file(e.file_path)?,
+        };
+        push_manifest_entry(&e.path, sha, len, e.role, e.hour_index);
+    }
+
+    manifest_entries.sort_by(|a, b| {
+        a["path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["path"].as_str().unwrap_or(""))
+    });
+
+    let mut manifest = json!({
+        "format": "hoi4replay",
+        "container_version": 1,
+        "required_features": [],
+        "optional_features": [],
+        "schema_version": identity.schema_version,
+        "game_id": game_id,
+        "build": {
+            "exe_sha256": identity.build_exe_sha256,
+            "pinned": identity.build_pinned,
+        },
+        "mod_identity": identity.mod_identity.clone().unwrap_or(Value::Null),
+        "created_utc": identity.created_utc,
+        "recorder": { "tool": "hoi4replay-recorder", "tool_version": "1.0.0" },
+        "counts": { "snapshots": counts_snapshots },
+        "entries": manifest_entries,
+        "manifest_digest": Value::Null,
+        "signature": Value::Null,
+    });
+    let digest = to_hex(&Sha256::digest(&manifest_canonical_bytes(&manifest)));
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .insert("manifest_digest".into(), json!(digest));
+
+    let mut central = Vec::new();
+    let mut written = 0u64;
+    let mut file_count = 0usize;
+    for e in borrowed_entries {
+        write_zip_file(
+            writer,
+            &mut central,
+            &mut written,
+            &e.path,
+            e.bytes,
+            deflate,
+        )?;
+        file_count += 1;
+    }
+    for e in file_entries {
+        write_zip_file_from_path(
+            writer,
+            &mut central,
+            &mut written,
+            &e.path,
+            e.file_path,
+            deflate,
+        )?;
+        file_count += 1;
+    }
+    for e in streaming_entries {
+        write_zip_file_streaming(
+            writer,
+            &mut central,
+            &mut written,
+            &e.path,
+            e.file_path,
+            deflate,
+        )?;
+        file_count += 1;
+    }
+
+    let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest serializes");
+    write_zip_file(
+        writer,
+        &mut central,
+        &mut written,
+        "manifest.json",
+        &manifest_bytes,
+        false,
+    )?;
+    file_count += 1;
+    finish_zip(writer, &mut central, written, file_count)?;
+    Ok(())
+}
+
 /// As [`pack`] but with [`PackOptions`] for negative-test fixtures.
 pub fn pack_with(
     game_id: &str,
@@ -442,6 +610,144 @@ fn write_zip_file_from_path<W: Write>(
 ) -> std::io::Result<()> {
     let data = fs::read(path)?;
     write_zip_file(out, central, written, name, &data, deflate)
+}
+
+/// A `Write` adapter that counts the bytes passed through it. Used to measure the
+/// compressed size of a streamed entry without buffering it, since the DEFLATE
+/// encoder emits directly to the output file.
+struct CountingWriter<'a, W: Write> {
+    inner: &'a mut W,
+    count: u64,
+}
+impl<W: Write> Write for CountingWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.count = self.count.saturating_add(n as u64);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Chunk size for streaming a large file entry into the container.
+const STREAM_CHUNK: usize = 4 * 1024 * 1024;
+
+/// Append a file to the zip in bounded memory: the local header is written with a
+/// data-descriptor flag (crc/sizes deferred), the payload is streamed through the
+/// DEFLATE encoder (or STORE) directly to `out` while the crc32 and lengths are
+/// computed incrementally, a trailing data descriptor is written, and the central
+/// directory record carries the TRUE crc/sizes (the authority our reader trusts).
+///
+/// Fails closed if the entry exceeds the zip32 4 GiB field range (zip64 is not
+/// yet supported by this container).
+fn write_zip_file_streaming<W: Write>(
+    out: &mut W,
+    central: &mut Vec<u8>,
+    written: &mut u64,
+    name: &str,
+    path: &Path,
+    deflate: bool,
+) -> std::io::Result<()> {
+    let lho = *written as u32;
+    let method: u16 = if deflate { 8 } else { 0 };
+    // general-purpose bit 3: crc-32 and sizes are in a trailing data descriptor.
+    let flags: u16 = 0x0008;
+    let name_len = name.len() as u16;
+
+    // --- local file header (crc + sizes zeroed; real values in descriptor + CD) ---
+    write_all_counted(out, written, &0x0403_4b50u32.to_le_bytes())?; // sig
+    write_all_counted(out, written, &20u16.to_le_bytes())?; // version needed
+    write_all_counted(out, written, &flags.to_le_bytes())?;
+    write_all_counted(out, written, &method.to_le_bytes())?;
+    write_all_counted(out, written, &0u16.to_le_bytes())?; // mod time
+    write_all_counted(out, written, &0u16.to_le_bytes())?; // mod date
+    write_all_counted(out, written, &0u32.to_le_bytes())?; // crc (deferred)
+    write_all_counted(out, written, &0u32.to_le_bytes())?; // comp size (deferred)
+    write_all_counted(out, written, &0u32.to_le_bytes())?; // uncomp size (deferred)
+    write_all_counted(out, written, &name_len.to_le_bytes())?;
+    write_all_counted(out, written, &0u16.to_le_bytes())?; // extra len
+    write_all_counted(out, written, name.as_bytes())?;
+
+    // --- stream the payload, hashing + measuring as we go ---
+    let mut file = fs::File::open(path)?;
+    let mut hasher = crc32fast::Hasher::new();
+    let mut data_len: u64 = 0;
+    let mut buf = vec![0u8; STREAM_CHUNK];
+    let comp_len: u64 = if deflate {
+        let mut cw = CountingWriter {
+            inner: out,
+            count: 0,
+        };
+        {
+            let mut enc = DeflateEncoder::new(&mut cw, Compression::default());
+            loop {
+                let n = file.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                data_len = data_len.saturating_add(n as u64);
+                enc.write_all(&buf[..n])?;
+            }
+            enc.finish()?;
+        }
+        cw.count
+    } else {
+        let mut n_total: u64 = 0;
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            data_len = data_len.saturating_add(n as u64);
+            out.write_all(&buf[..n])?;
+            n_total = n_total.saturating_add(n as u64);
+        }
+        n_total
+    };
+    *written = written.saturating_add(comp_len);
+    let crc = hasher.finalize();
+
+    if data_len > u64::from(u32::MAX) || comp_len > u64::from(u32::MAX) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "streaming entry {name} exceeds zip32 range (uncompressed {data_len}, \
+                 compressed {comp_len}); zip64 not yet supported by this container"
+            ),
+        ));
+    }
+    let comp_len32 = comp_len as u32;
+    let data_len32 = data_len as u32;
+
+    // --- data descriptor (with signature, per APPNOTE 4.3.9.3) ---
+    write_all_counted(out, written, &0x0807_4b50u32.to_le_bytes())?; // dd sig
+    write_all_counted(out, written, &crc.to_le_bytes())?;
+    write_all_counted(out, written, &comp_len32.to_le_bytes())?;
+    write_all_counted(out, written, &data_len32.to_le_bytes())?;
+
+    // --- central directory record (true crc/sizes: the reader's authority) ---
+    central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+    central.extend_from_slice(&20u16.to_le_bytes()); // version made by
+    central.extend_from_slice(&20u16.to_le_bytes()); // version needed
+    central.extend_from_slice(&flags.to_le_bytes());
+    central.extend_from_slice(&method.to_le_bytes());
+    central.extend_from_slice(&0u16.to_le_bytes()); // time
+    central.extend_from_slice(&0u16.to_le_bytes()); // date
+    central.extend_from_slice(&crc.to_le_bytes());
+    central.extend_from_slice(&comp_len32.to_le_bytes());
+    central.extend_from_slice(&data_len32.to_le_bytes());
+    central.extend_from_slice(&name_len.to_le_bytes());
+    central.extend_from_slice(&0u16.to_le_bytes()); // extra
+    central.extend_from_slice(&0u16.to_le_bytes()); // comment
+    central.extend_from_slice(&0u16.to_le_bytes()); // disk no
+    central.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+    central.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+    central.extend_from_slice(&lho.to_le_bytes());
+    central.extend_from_slice(name.as_bytes());
+    Ok(())
 }
 
 fn write_zip_file<W: Write>(

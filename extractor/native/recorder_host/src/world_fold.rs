@@ -1170,6 +1170,12 @@ impl WorldFold {
         std::mem::take(&mut self.out)
     }
 
+    /// Number of distinct game-hours whose snapshot has been emitted so far
+    /// (in-memory or spilled to disk). Authoritative in both fold modes.
+    pub fn emitted_hours_count(&self) -> usize {
+        self.emitted_hours.len()
+    }
+
     fn note(&mut self, msg: impl Into<String>) {
         self.notes_this_hour.push(msg.into());
     }

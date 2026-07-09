@@ -9,6 +9,77 @@ hook alive for the worker duration, reads the DLL named-pipe stream, writes
 either debug `collector_frames.jsonl` or compact `collector_stream.bin`, and
 emits `native_session_manifest.json` with cadence and skipped-hour diagnostics.
 
+## Bounded-memory streaming fold/pack (Phase 1b, gate G5)
+
+The recorder never holds the whole session in RAM. Peak memory is
+`O(current world-fold state)` — independent of how long the capture runs — so a
+full-game capture completes on a weaker PC and finalization takes seconds, not
+minutes.
+
+Pipeline (compact/production path):
+
+1. **Capture streams to disk.** `capture_pipe_to_file` writes every pipe byte
+   straight into `collector_stream.bin` through a `BufWriter`, computing a rolling
+   SHA-256 and byte count on the way. Nothing accumulates in memory (the old path
+   buffered the entire multi-GB stream in a `Vec<u8>` — the 27 GB working-set
+   defect this replaces).
+2. **Summarize over a memory map.** The manifest gate (`summarize_compact_stream`,
+   coverage/hourly checks, per-domain perf/status accounting) runs over a
+   read-only memory map (`mmap::Mmap`) of the on-disk stream. Its pages are
+   file-backed and evictable, so peak *private* bytes do not scale with stream
+   length and the scan never OOMs under pressure.
+3. **Streaming fold.** `stream_fold::fold_compact_stream_file` reads the stream in
+   8 MiB chunks, frames each `H4CR` record against a small carry buffer, and drives
+   the one production fold (`WorldFold::ingest_record`). The fold is file-backed
+   (`WorldFold::new_file_backed`): each per-hour snapshot is serialized, spilled to
+   disk, and *released* the moment its `FRAME_END` closes. The framing is the same
+   contract `fold_check` walks, so streaming snapshots are hash-identical to the
+   batch fold (gate **G1**).
+4. **Streaming pack.** `snapshot::pack_streaming_to_writer` appends the raw stream
+   as a `StreamingFileEntry`: it is compressed and written to the container in
+   bounded chunks (a trailing zip data descriptor carries the deferred crc/sizes;
+   the true sizes live in the central directory, which is the reader's authority).
+   Small entries (index/timeline/manifest/static) stay in RAM; snapshots are read
+   one file at a time. The stream entry's manifest sha256 is the capture rolling
+   hash (no re-read to hash it).
+5. **Streaming verify.** `snapshot::verify_replay_container_streaming` re-opens the
+   finished container FROM DISK and hashes every entry against the manifest, one at
+   a time, seeking to each local header and streaming its compressed bytes through
+   the decompressor. The stream entry's decompressed sha256 is compared to the
+   capture hash — the streaming replacement for the old whole-stream in-RAM
+   byte-compare (behavior delta: evidence-equivalent hash compare rather than a
+   `Vec == Vec`). Zip32 sizes cap a single streamed entry at 4 GiB compressed /
+   uncompressed (zip64 is deferred to the Phase 3 container overhaul).
+
+All hourly gate checks, coverage verification, per-domain perf/status accounting,
+manifest fields, and the quarantine-on-gate-fail naming
+(`native_session.failed.battleplan`) are preserved unchanged.
+
+### G5 telemetry (`native_session_manifest.json` → `host_finalize`)
+
+Written after fold/pack/verify so bounded memory is measurable from the manifest
+of every run:
+
+- `host_finalize.peak_private_bytes` — peak private (pagefile-committed) bytes.
+  The headline bound: it excludes evictable file-backed pages, so it is the honest
+  "did we allocate proportional to the stream?" number.
+- `host_finalize.peak_working_set_bytes` — peak working set (includes resident
+  file-backed/mapped pages, which the OS evicts under pressure).
+- `host_finalize.finalize_seconds` — post-capture finalize wall time.
+- `host_finalize.stream_bytes` / `stream_sha256` — capture byte count + rolling hash.
+- `host_finalize.fold.*` — hours emitted, record counts, truncated-tail bytes.
+- `host_finalize.verify.*` — entries verified and
+  `stream_sha256_matches_capture` (the streaming byte-compare result).
+
+### Offline tools
+
+- `stream_fold <collector_stream.bin> <out_dir> [--game-id ID] [--json report.json]`
+  runs the identical streaming fold offline: it re-folds an old recording's raw
+  stream, reports its own peak private/working-set bytes, and prints per-hour
+  `snapshot_hash`es that match `fold_check hash` on the same stream (G1, when
+  `--game-id` matches; default `fold_check`).
+- `fold_check hash|compare` — the G1 fold-equivalence gate (see `../fold_check`).
+
 ## Capture profiles (`--profile production|debug`)
 
 `--profile` selects one coherent preset cluster instead of hand-assembling the

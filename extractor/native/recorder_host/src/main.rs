@@ -12,13 +12,14 @@ use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
 use occupation_resistance_compliance_live_lane as occupation52;
 use recorder_host::compact_domain_registry;
-use recorder_host::world_fold::{FoldedSnapshotFile, WorldFold, FOLDED_DOMAIN_IDS};
+use recorder_host::world_fold::{FoldedSnapshotFile, FOLDED_DOMAIN_IDS};
 use serde_json::{json, Value};
 use session_multiplayer_metadata_live as session57;
 use snapshot::sha256::{to_hex, Sha256};
 use snapshot::{
-    pack_borrowed_to_writer, pack_mixed_to_writer, BorrowedPackEntry, Container, ExpectedIdentity,
-    FileBackedPackEntry, PackIdentity,
+    pack_borrowed_to_writer, pack_mixed_to_writer, pack_streaming_to_writer,
+    verify_replay_container_streaming, BorrowedPackEntry, Container, ExpectedIdentity,
+    FileBackedPackEntry, PackIdentity, StreamingFileEntry,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -885,16 +886,36 @@ fn run() -> Result<(), String> {
         .saturating_add(1_000);
     let pipe_timeout_ms = hook_hold_ms.saturating_add(3_000);
     let pipe_name = format!(r"\\.\pipe\battle-plan_collector_{}_{}", cfg.pid, pipe_token);
-    let pipe_thread = thread::spawn(move || read_pipe_bytes(&pipe_name, pipe_timeout_ms));
-    attach_hook(cfg.pid, &cfg.dll, hook_hold_ms)?;
-    let pipe_bytes = pipe_thread
-        .join()
-        .map_err(|_| "pipe thread panicked".to_string())??;
+    // The pipe stream is written STRAIGHT to disk during capture (bounded memory);
+    // `capture` carries only the byte count + rolling sha256, never the bytes.
+    let capture = {
+        let pipe_name = pipe_name.clone();
+        let raw_path = raw_path.clone();
+        let pipe_thread =
+            thread::spawn(move || capture_pipe_to_file(&pipe_name, pipe_timeout_ms, &raw_path));
+        attach_hook(cfg.pid, &cfg.dll, hook_hold_ms)?;
+        pipe_thread
+            .join()
+            .map_err(|_| "pipe thread panicked".to_string())??
+    };
+    // Post-capture finalization (summarize + streaming fold + streaming pack +
+    // streaming verify) must complete in seconds, not the minutes the old whole-
+    // stream-in-RAM path took; this clock is reported into the manifest (G5).
+    let finalize_started = Instant::now();
 
-    fs::write(&raw_path, &pipe_bytes).map_err(|e| format!("write raw stream failed: {e}"))?;
+    // Production (compact) never re-reads the whole stream into RAM: it is summarized
+    // over a read-only memory map and folded in a bounded streaming pass. The JSON
+    // debug stream is dev-only and small, so it is read back into RAM unchanged.
+    let json_bytes: Option<Vec<u8>> = match cfg.stream_format {
+        StreamFormat::Json => {
+            Some(fs::read(&raw_path).map_err(|e| format!("read raw stream failed: {e}"))?)
+        }
+        StreamFormat::Compact => None,
+    };
     let (mut manifest, hourly_met) = match cfg.stream_format {
         StreamFormat::Json => {
-            let summary = summarize_frames(&pipe_bytes);
+            let json_bytes = json_bytes.as_deref().unwrap_or(&[]);
+            let summary = summarize_frames(json_bytes);
             let hourly_problems = json_hourly_problems(&summary, cfg.min_game_hours);
             let hourly_met = hourly_problems.is_empty();
             (
@@ -952,7 +973,11 @@ fn run() -> Result<(), String> {
             )
         }
         StreamFormat::Compact => {
-            let summary = summarize_compact_stream(&pipe_bytes);
+            // Memory-map the on-disk stream so the full summarize pass runs without a
+            // session-proportional heap allocation (file-backed, evictable pages).
+            let stream_map = recorder_host::mmap::Mmap::open(&raw_path)
+                .map_err(|e| format!("map raw stream failed: {e}"))?;
+            let summary = summarize_compact_stream(&stream_map);
             let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
             let coverage_errors = compact_domain_coverage_errors(&summary, &expected_domain_ids);
             let gate_status = compact_gate_status(&summary);
@@ -1143,32 +1168,48 @@ fn run() -> Result<(), String> {
     // Fold the decoded compact records into per-game-hour world-state snapshots.
     // Only the compact stream carries H4CR records; the JSON debug stream has no
     // fold and packs an empty snapshots array.
+    let mut fold_stats_telemetry: Option<recorder_host::stream_fold::FoldStreamStats> = None;
+    let mut verify_report_telemetry: Option<snapshot::StreamVerifyReport> = None;
     match cfg.stream_format {
         StreamFormat::Compact => {
             let snapshot_spill_dir = create_unique_snapshot_spill_dir(&cfg.out_dir)?;
-            let replay_result = (|| -> Result<(), String> {
-                let mut fold =
-                    WorldFold::new_file_backed(replay_game_id.clone(), &snapshot_spill_dir)
-                        .map_err(|e| format!("create folded snapshot spill failed: {e}"))?;
-                fold.ingest_stream(&pipe_bytes);
-                let world_snapshot_files = fold.finish_file_backed()?;
-                write_native_replay_container_file_backed(
+            let replay_result = (|| -> Result<
+                (
+                    recorder_host::stream_fold::FoldStreamStats,
+                    snapshot::StreamVerifyReport,
+                ),
+                String,
+            > {
+                // Bounded streaming fold over the on-disk stream: each hour's snapshot
+                // is spilled to disk and released, so peak memory is O(world state).
+                let (world_snapshot_files, fold_stats) =
+                    recorder_host::stream_fold::fold_compact_stream_file(
+                        &raw_path,
+                        &replay_game_id,
+                        &snapshot_spill_dir,
+                    )
+                    .map_err(|e| format!("streaming fold failed: {e}"))?;
+                let verify = write_native_replay_container_streaming(
                     &cfg,
-                    &pipe_bytes,
+                    &raw_path,
+                    &capture,
                     &world_snapshot_files,
                     &manifest,
                     &manifest_path,
                     &replay_path,
-                )
+                )?;
+                Ok((fold_stats, verify))
             })();
             cleanup_snapshot_spill_dir(&snapshot_spill_dir);
-            replay_result?;
+            let (fold_stats, verify) = replay_result?;
+            fold_stats_telemetry = Some(fold_stats);
+            verify_report_telemetry = Some(verify);
         }
         StreamFormat::Json => {
             let world_snapshots = Vec::new();
             write_native_replay_container(
                 &cfg,
-                &pipe_bytes,
+                json_bytes.as_deref().unwrap_or(&[]),
                 &world_snapshots,
                 &manifest,
                 &manifest_path,
@@ -1176,6 +1217,19 @@ fn run() -> Result<(), String> {
             )?;
         }
     }
+
+    // G5 telemetry: record the host's peak private/working-set bytes plus the
+    // streaming finalize accounting into native_session_manifest.json so bounded
+    // memory is measurable from the manifest of every future run. Best-effort:
+    // a telemetry write failure never fails an otherwise-good capture.
+    write_host_finalize_telemetry(
+        &manifest_path,
+        &capture,
+        finalize_started.elapsed(),
+        fold_stats_telemetry.as_ref(),
+        verify_report_telemetry.as_ref(),
+    );
+
     if !hourly_met {
         let quarantine_detail = normal_quarantine
             .as_ref()
@@ -2689,6 +2743,10 @@ where
     result
 }
 
+// Superseded on the production path by `write_native_replay_container_streaming`
+// (which never holds the whole stream in RAM); retained as reference + test
+// coverage of the in-RAM mixed packer.
+#[allow(dead_code)]
 fn write_native_replay_container_file_backed(
     cfg: &Config,
     stream_bytes: &[u8],
@@ -2708,6 +2766,7 @@ fn write_native_replay_container_file_backed(
     )
 }
 
+#[allow(dead_code)]
 fn write_native_replay_container_file_backed_with_verifier<F>(
     cfg: &Config,
     stream_bytes: &[u8],
@@ -2867,6 +2926,257 @@ where
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// Streaming production container writer. Identical container shape to
+/// [`write_native_replay_container_file_backed`], but the raw compact stream is
+/// appended straight from disk in bounded-memory chunks (never buffered whole)
+/// and the finished container is re-verified FROM DISK, one entry at a time. The
+/// old whole-stream in-RAM byte-compare is replaced by a hash compare: the
+/// packed stream entry's decompressed sha256 (re-read from the container on disk)
+/// must equal the capture-time rolling hash. Returns the streaming-verify report
+/// for the manifest telemetry.
+fn write_native_replay_container_streaming(
+    cfg: &Config,
+    raw_path: &Path,
+    capture: &PipeCapture,
+    snapshot_files: &[FoldedSnapshotFile],
+    manifest: &Value,
+    manifest_path: &Path,
+    replay_path: &Path,
+) -> Result<snapshot::StreamVerifyReport, String> {
+    let game_id = manifest
+        .get("replay_game_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| replay_game_id(&cfg.session_id));
+    let stream_name = cfg.stream_format.stream_file_name();
+    let manifest_name = manifest_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("native_session_manifest.json");
+    let stream_payload_path = format!("collector_raw/{stream_name}");
+    let manifest_payload_path = format!("recorder/{manifest_name}");
+    let mut index_snapshots: Vec<Value> = Vec::with_capacity(snapshot_files.len());
+    for snapshot in snapshot_files {
+        let file = format!("snapshots/{:012}.snapshot.json", snapshot.hour_index);
+        index_snapshots.push(json!({
+            "hour_index": snapshot.hour_index,
+            "date": snapshot.date.as_str(),
+            "file": file,
+        }));
+    }
+
+    let mut resolved_by_name: BTreeMap<&'static str, ResolvedStaticArtifact> = BTreeMap::new();
+    for request in &cfg.static_artifacts {
+        let resolved = resolve_static_artifact(&game_id, request)?;
+        resolved_by_name.insert(request.name, resolved);
+    }
+    let mut static_artifact_index: Vec<Value> = Vec::with_capacity(KNOWN_STATIC_ARTIFACTS.len());
+    let mut static_artifact_entries: Vec<(String, Vec<u8>)> = Vec::new();
+    for name in KNOWN_STATIC_ARTIFACTS {
+        if let Some(resolved) = resolved_by_name.get(name) {
+            static_artifact_index.push(resolved.index_descriptor.clone());
+            static_artifact_entries.push((
+                format!("{game_id}/{}", resolved.payload_path),
+                resolved.bytes.clone(),
+            ));
+        } else {
+            static_artifact_index.push(json!({
+                "name": name,
+                "present": false,
+                "role": "static_artifact",
+                "absence_reason": "not supplied to the recorder for this recording",
+            }));
+        }
+    }
+
+    let index_bytes = serde_json::to_vec_pretty(&json!({
+        "game_id": game_id.clone(),
+        "schema_version": "1",
+        "snapshots": index_snapshots,
+        "static_artifacts": static_artifact_index,
+    }))
+    .map_err(|e| format!("serialize replay index failed: {e}"))?;
+    let timeline_bytes = serde_json::to_vec_pretty(&json!({
+        "format": "hoi4_compact_stream_timeline_v1",
+        "stream_format": cfg.stream_format.as_str(),
+        "stream": stream_payload_path.clone(),
+        "session_manifest": manifest_payload_path.clone(),
+        "raw_stream_role": "collector_compact_stream",
+        "session_manifest_role": "recorder_manifest",
+    }))
+    .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
+    let manifest_bytes =
+        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+    let mut borrowed_entries = vec![
+        BorrowedPackEntry {
+            path: format!("payload/{game_id}/index.json"),
+            bytes: &index_bytes,
+            role: "index",
+            hour_index: None,
+        },
+        BorrowedPackEntry {
+            path: format!("payload/{game_id}/timeline.json"),
+            bytes: &timeline_bytes,
+            role: "timeline",
+            hour_index: None,
+        },
+        BorrowedPackEntry {
+            path: format!("payload/{game_id}/{manifest_payload_path}"),
+            bytes: &manifest_bytes,
+            role: "recorder_manifest",
+            hour_index: None,
+        },
+    ];
+    for (path, bytes) in &static_artifact_entries {
+        borrowed_entries.push(BorrowedPackEntry {
+            path: format!("payload/{path}"),
+            bytes,
+            role: "static_artifact",
+            hour_index: None,
+        });
+    }
+    let file_entries = snapshot_files
+        .iter()
+        .map(|snapshot| FileBackedPackEntry {
+            path: format!(
+                "payload/{game_id}/snapshots/{:012}.snapshot.json",
+                snapshot.hour_index
+            ),
+            file_path: snapshot.path.as_path(),
+            role: "snapshot",
+            hour_index: Some(snapshot.hour_index),
+        })
+        .collect::<Vec<_>>();
+    // The raw compact stream is the ONLY large entry; it streams from disk. Its
+    // manifest sha256 is the capture-time rolling hash (no re-read to hash it).
+    let stream_entry_path = format!("payload/{game_id}/{stream_payload_path}");
+    let streaming_entries = vec![StreamingFileEntry {
+        path: stream_entry_path.clone(),
+        file_path: raw_path,
+        role: "collector_compact_stream",
+        hour_index: None,
+        sha256: Some(capture.sha256.clone()),
+    }];
+
+    let identity = PackIdentity {
+        schema_version: Some("native_collector_session_v1".to_string()),
+        created_utc: Some(created_utc_label()),
+        ..Default::default()
+    };
+    let (tmp, mut tmp_file) = create_unique_replay_temp(replay_path)?;
+    if let Err(err) = pack_streaming_to_writer(
+        &game_id,
+        &borrowed_entries,
+        &file_entries,
+        &streaming_entries,
+        &identity,
+        true,
+        &mut tmp_file,
+    )
+    .map_err(|e| format!("pack replay container failed: {e}"))
+    .and_then(|()| {
+        tmp_file
+            .flush()
+            .map_err(|e| format!("flush replay temp failed: {e}"))
+    }) {
+        drop(tmp_file);
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    drop(tmp_file);
+
+    // Streaming re-verify FROM DISK: every entry hashed against the manifest, and
+    // the stream entry's decompressed hash compared to the capture hash.
+    let verify = (|| -> Result<snapshot::StreamVerifyReport, String> {
+        let report = verify_replay_container_streaming(&tmp, &game_id, "collector_compact_stream")
+            .map_err(|e| format!("verify replay entries failed: {e}"))?;
+        match &report.stream_entry_sha256 {
+            Some(sha) if *sha == capture.sha256 => Ok(report),
+            Some(sha) => Err(format!(
+                "verify replay stream entry failed: packed stream sha256 {sha} != capture {}",
+                capture.sha256
+            )),
+            None => Err("verify replay stream entry failed: stream entry not found".to_string()),
+        }
+    })();
+    let verify = match verify.and_then(|report| {
+        finalize_verified_replay(&tmp, replay_path)?;
+        Ok(report)
+    }) {
+        Ok(report) => report,
+        Err(err) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(err);
+        }
+    };
+    Ok(verify)
+}
+
+/// Append the G5 memory + streaming-finalize telemetry to
+/// `native_session_manifest.json`. Best-effort: a failure here is logged to
+/// stderr and never turns an otherwise-successful capture into a failure.
+fn write_host_finalize_telemetry(
+    manifest_path: &Path,
+    capture: &PipeCapture,
+    finalize_elapsed: Duration,
+    fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
+    verify: Option<&snapshot::StreamVerifyReport>,
+) {
+    let peak = recorder_host::proc_mem::peak_memory();
+    let mut block = json!({
+        "streaming": true,
+        "peak_private_bytes": peak.map(|p| p.peak_private_bytes),
+        "peak_working_set_bytes": peak.map(|p| p.peak_working_set_bytes),
+        "stream_bytes": capture.byte_count,
+        "stream_sha256": capture.sha256,
+        "finalize_seconds": finalize_elapsed.as_secs_f64(),
+    });
+    let obj = block.as_object_mut().unwrap();
+    if let Some(fs) = fold_stats {
+        obj.insert(
+            "fold".into(),
+            json!({
+                "hours_emitted": fs.hours_emitted,
+                "records_total": fs.records_total,
+                "data_records": fs.data_records,
+                "frame_end_records": fs.frame_end_records,
+                "perf_records_ignored": fs.perf_records,
+                "bytes_folded": fs.bytes_folded,
+                "truncated_tail_bytes": fs.truncated_tail_bytes,
+                "framing_stopped": fs.stop_reason,
+            }),
+        );
+    }
+    if let Some(v) = verify {
+        obj.insert(
+            "verify".into(),
+            json!({
+                "entries_verified": v.entries_verified,
+                "stream_entry_bytes": v.stream_entry_bytes,
+                "total_uncompressed": v.total_uncompressed,
+                "stream_sha256_matches_capture": v.stream_entry_sha256.as_deref()
+                    == Some(capture.sha256.as_str()),
+            }),
+        );
+    }
+
+    let updated = (|| -> Result<(), String> {
+        let bytes = fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
+        let mut manifest: Value =
+            serde_json::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
+        manifest
+            .as_object_mut()
+            .ok_or_else(|| "manifest is not an object".to_string())?
+            .insert("host_finalize".to_string(), block);
+        let pretty = serde_json::to_vec_pretty(&manifest).map_err(|e| format!("serialize: {e}"))?;
+        fs::write(manifest_path, pretty).map_err(|e| format!("write manifest: {e}"))?;
+        Ok(())
+    })();
+    if let Err(e) = updated {
+        eprintln!("recorder warning: could not record host_finalize telemetry: {e}");
+    }
 }
 
 fn verify_native_replay_container(
@@ -3299,7 +3609,26 @@ fn target_thread_ids(pid: Dword, primary_thread_id: Dword) -> Vec<Dword> {
     out
 }
 
-fn read_pipe_bytes(pipe_name: &str, timeout_ms: u64) -> Result<Vec<u8>, String> {
+/// The outcome of a bounded-memory pipe capture: the stream was written straight
+/// to `raw_path` (never buffered whole in RAM), with a rolling SHA-256 and byte
+/// count computed on the way through. The sha256 is the streaming replacement for
+/// the old "packed stream bytes == pipe bytes" in-RAM compare — the container's
+/// packed stream entry is later verified (by re-reading from disk) to hash to
+/// exactly this value.
+struct PipeCapture {
+    byte_count: u64,
+    sha256: String,
+}
+
+/// Read the collector pipe and stream every byte directly to `out_path` in bounded
+/// memory (one 64 KiB read buffer + a BufWriter), hashing as we go. Peak memory is
+/// O(1) regardless of how long the capture runs — the defect this replaces held
+/// the entire multi-GB stream in a `Vec<u8>`.
+fn capture_pipe_to_file(
+    pipe_name: &str,
+    timeout_ms: u64,
+    out_path: &Path,
+) -> Result<PipeCapture, String> {
     let pipe_wide = wide(OsStr::new(pipe_name));
     let handle = unsafe {
         CreateNamedPipeW(
@@ -3337,8 +3666,21 @@ fn read_pipe_bytes(pipe_name: &str, timeout_ms: u64) -> Result<Vec<u8>, String> 
         }
         thread::sleep(Duration::from_millis(25));
     }
-    let mut out = Vec::new();
+
+    let file = match fs::File::create(out_path) {
+        Ok(f) => f,
+        Err(e) => {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(format!("create raw stream file failed: {e}"));
+        }
+    };
+    let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
+    let mut hasher = Sha256::new();
+    let mut total: u64 = 0;
     let read_deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut write_err: Option<String> = None;
     loop {
         let mut buf = [0u8; GENERIC_READ_BUFFER];
         let mut got = 0u32;
@@ -3355,7 +3697,13 @@ fn read_pipe_bytes(pipe_name: &str, timeout_ms: u64) -> Result<Vec<u8>, String> 
             if got == 0 {
                 break;
             }
-            out.extend_from_slice(&buf[..got as usize]);
+            let chunk = &buf[..got as usize];
+            hasher.update(chunk);
+            if let Err(e) = writer.write_all(chunk) {
+                write_err = Some(format!("write raw stream failed: {e}"));
+                break;
+            }
+            total = total.saturating_add(got as u64);
             continue;
         }
         let err = last_error();
@@ -3374,10 +3722,20 @@ fn read_pipe_bytes(pipe_name: &str, timeout_ms: u64) -> Result<Vec<u8>, String> 
     unsafe {
         CloseHandle(handle);
     }
-    if out.is_empty() {
+    if let Err(e) = writer.flush() {
+        return Err(format!("flush raw stream failed: {e}"));
+    }
+    drop(writer);
+    if let Some(e) = write_err {
+        return Err(e);
+    }
+    if total == 0 {
         Err("collector pipe returned no bytes".to_string())
     } else {
-        Ok(out)
+        Ok(PipeCapture {
+            byte_count: total,
+            sha256: to_hex(&hasher.finalize()),
+        })
     }
 }
 
@@ -15626,6 +15984,7 @@ fn last_error() -> Dword {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use recorder_host::world_fold::WorldFold;
 
     fn country_identity_payload_with_cosmetic(rows: &[(u32, &str, u8, Option<&str>)]) -> Vec<u8> {
         let mut p = Vec::new();
@@ -22153,6 +22512,98 @@ mod tests {
                 .and_then(Value::as_i64),
             Some(4_046_848)
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streaming_container_roundtrips_and_hash_matches_capture() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan_streaming_pack_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let spill_dir = dir.join("spill");
+        fs::create_dir_all(&spill_dir).unwrap();
+        let manifest_path = dir.join("native_session_manifest.json");
+        let replay_path = dir.join("native_session.battleplan");
+        let raw_path = dir.join("collector_stream.bin");
+        let session_id = "streaming pack test/session";
+        let game_id = replay_game_id(session_id);
+        let hour_index = 16_959_360i64;
+
+        // A raw stream large enough to span several streaming chunks.
+        let mut raw = Vec::new();
+        for i in 0..(6 * 1024 * 1024u32) {
+            raw.push((i.wrapping_mul(2246822519) >> 11) as u8);
+        }
+        fs::write(&raw_path, &raw).unwrap();
+        let capture = PipeCapture {
+            byte_count: raw.len() as u64,
+            sha256: to_hex(&Sha256::digest(&raw)),
+        };
+
+        let snapshot_path = spill_dir.join("000016959360.snapshot.json");
+        let snapshot_bytes = format!(
+            r#"{{"schema_version":"1","game_id":"{game_id}","date":"1936.1.1.0","hour_index":{hour_index},"countries":{{"47":{{"fuel":{{"current":4046848}}}}}},"states":{{}}}}"#
+        )
+        .into_bytes();
+        fs::write(&snapshot_path, &snapshot_bytes).unwrap();
+        let snapshots = vec![FoldedSnapshotFile {
+            hour_index,
+            date: "1936.1.1.0".to_string(),
+            path: snapshot_path,
+            byte_len: snapshot_bytes.len(),
+        }];
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "session_id": session_id,
+            "replay_game_id": game_id,
+            "stream_format": "compact",
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut cfg = test_config(vec![], None);
+        cfg.out_dir = dir.clone();
+        cfg.session_id = session_id.to_string();
+
+        let report = write_native_replay_container_streaming(
+            &cfg,
+            &raw_path,
+            &capture,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .unwrap();
+        // The streaming verifier re-read the packed stream from disk and its hash
+        // matches the capture hash (the streaming byte-compare replacement).
+        assert_eq!(
+            report.stream_entry_sha256.as_deref(),
+            Some(capture.sha256.as_str())
+        );
+        assert_eq!(report.stream_entry_bytes, raw.len() as u64);
+
+        // The finished container also opens with the normal in-RAM reader and each
+        // entry (incl. the streamed stream entry) reads back byte-identically.
+        let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        let stored_stream = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/collector_raw/collector_stream.bin"
+            ))
+            .unwrap();
+        assert_eq!(stored_stream, raw);
+        let snap = container.load(hour_index).unwrap();
+        assert_eq!(snap.hour_index, Some(hour_index));
         let _ = fs::remove_dir_all(&dir);
     }
 
