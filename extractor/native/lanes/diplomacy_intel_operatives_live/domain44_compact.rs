@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub const DOMAIN_ID_PROPOSED: u16 = 53;
 pub const DOMAIN_NAME: &str = "diplomacy_intel_operatives_live";
@@ -119,6 +119,7 @@ pub const STATE_EVENT_SOURCE_AGENCY_CAPACITY: u16 = 5;
 pub const STATE_EVENT_SOURCE_CRYPTOLOGY: u16 = 6;
 pub const STATE_EVENT_SOURCE_RELATION_OPINION: u16 = 7;
 pub const STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP: u16 = 8;
+const STATE_EVENT_OBJECT_RELATION_OPINION_HASH: u32 = 0x570E_9D68;
 
 pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_CASUALTIES: i64 = 50_000_000;
@@ -236,6 +237,97 @@ impl DiplomacyIntelSnapshot {
         .iter()
         .fold(0u32, |acc, count| {
             acc.saturating_add((*count).min(u32::MAX as usize) as u32)
+        })
+    }
+}
+
+fn encoded_payload_capacity(snapshot: &DiplomacyIntelSnapshot) -> usize {
+    let base = HEADER_LEN
+        .saturating_add(snapshot.countries.len().saturating_mul(ROW_COUNTRY_LEN))
+        .saturating_add(snapshot.wars.len().saturating_mul(ROW_WAR_LEN))
+        .saturating_add(snapshot.opinions.len().saturating_mul(ROW_OPINION_LEN))
+        .saturating_add(
+            snapshot
+                .relation_flags
+                .len()
+                .saturating_mul(ROW_RELATION_FLAG_LEN),
+        )
+        .saturating_add(snapshot.subjects.len().saturating_mul(ROW_SUBJECT_LEN))
+        .saturating_add(snapshot.agencies.len().saturating_mul(ROW_AGENCY_LEN))
+        .saturating_add(
+            snapshot
+                .agency_capacity_clusters
+                .len()
+                .saturating_mul(ROW_AGENCY_CAPACITY_CLUSTER_LEN),
+        )
+        .saturating_add(snapshot.operatives.len().saturating_mul(ROW_OPERATIVE_LEN))
+        .saturating_add(snapshot.cryptology.len().saturating_mul(ROW_CRYPTOLOGY_LEN))
+        .saturating_add(
+            snapshot
+                .operation_anchors
+                .len()
+                .saturating_mul(ROW_OPERATION_ANCHOR_LEN),
+        )
+        .saturating_add(snapshot.intel_map.len().saturating_mul(ROW_INTEL_MAP_LEN))
+        .saturating_add(
+            snapshot
+                .state_events
+                .len()
+                .saturating_mul(ROW_COMPACT_STATE_EVENT_LEN),
+        );
+    base.saturating_add(operation_instance_trailer_capacity(
+        &snapshot.operation_instances,
+    ))
+    .saturating_add(incoming_action_queue_trailer_capacity(
+        &snapshot.incoming_actions,
+    ))
+    .saturating_add(intel_network_graph_trailer_capacity(
+        &snapshot.intel_network_graphs,
+    ))
+    .saturating_add(faction_trailer_capacity(&snapshot.factions))
+}
+
+fn operation_instance_trailer_capacity(rows: &[OperationInstanceRow]) -> usize {
+    if rows.is_empty() {
+        0
+    } else {
+        OPERATION_INSTANCE_TRAILER_HEADER_LEN.saturating_add(
+            rows.len()
+                .saturating_mul(OPERATION_INSTANCE_TRAILER_ROW_LEN),
+        )
+    }
+}
+
+fn incoming_action_queue_trailer_capacity(rows: &[IncomingActionQueueRow]) -> usize {
+    if rows.is_empty() {
+        0
+    } else {
+        INCOMING_ACTION_QUEUE_TRAILER_HEADER_LEN.saturating_add(
+            rows.len()
+                .saturating_mul(INCOMING_ACTION_QUEUE_TRAILER_ROW_LEN),
+        )
+    }
+}
+
+fn intel_network_graph_trailer_capacity(rows: &[IntelNetworkGraphRow]) -> usize {
+    if rows.is_empty() {
+        0
+    } else {
+        rows.iter()
+            .fold(INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN, |acc, row| {
+                acc.saturating_add(INTEL_NETWORK_GRAPH_ROW_HEADER_LEN)
+                    .saturating_add(row.state_ids.len().saturating_mul(4))
+            })
+    }
+}
+
+fn faction_trailer_capacity(rows: &[FactionRow]) -> usize {
+    if rows.is_empty() {
+        0
+    } else {
+        rows.iter().fold(FACTION_TRAILER_HEADER_LEN, |acc, row| {
+            acc.saturating_add(FACTION_ROW_HEADER_LEN)
+                .saturating_add(row.member_tag_db_ids.len().saturating_mul(4))
         })
     }
 }
@@ -435,7 +527,7 @@ pub struct Domain53GateSummary {
 pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
     let row_count = snapshot.row_count();
     let changed_rows = snapshot.changed_rows.unwrap_or(row_count);
-    let mut payload = Vec::new();
+    let mut payload = Vec::with_capacity(encoded_payload_capacity(snapshot));
     payload.extend_from_slice(&snapshot.elapsed_wall_ms.to_le_bytes());
     payload.extend_from_slice(&row_count.to_le_bytes());
     payload.extend_from_slice(&changed_rows.to_le_bytes());
@@ -717,7 +809,7 @@ pub fn summarize_snapshot_instrumented(
     // Per-kind duplicate/seen sets (decode_payload:1313..).
     let mut seen_countries = BTreeSet::new();
     let mut seen_wars = BTreeSet::new();
-    let mut seen_opinions = BTreeSet::new();
+    let mut seen_opinions = PairSeenSet::default();
     let mut seen_flags = BTreeSet::new();
     let mut seen_subjects = BTreeSet::new();
     let mut seen_agencies = BTreeSet::new();
@@ -726,7 +818,7 @@ pub fn summarize_snapshot_instrumented(
     let mut seen_crypto = BTreeSet::new();
     let mut seen_operations = BTreeSet::new();
     let mut seen_intel_map = BTreeSet::new();
-    let mut seen_state_events = BTreeSet::new();
+    let mut seen_state_events = StateEventSeenSet::default();
 
     // Unknown status bits (decode_payload:1331, BEFORE the row loop).
     if status_flags & !KNOWN_STATUS_FLAGS != 0 {
@@ -1697,7 +1789,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut decoded_counts = ExpectedCounts::default();
     let mut seen_countries = BTreeSet::new();
     let mut seen_wars = BTreeSet::new();
-    let mut seen_opinions = BTreeSet::new();
+    let mut seen_opinions = PairSeenSet::default();
     let mut seen_flags = BTreeSet::new();
     let mut seen_subjects = BTreeSet::new();
     let mut seen_agencies = BTreeSet::new();
@@ -1706,7 +1798,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut seen_crypto = BTreeSet::new();
     let mut seen_operations = BTreeSet::new();
     let mut seen_intel_map = BTreeSet::new();
-    let mut seen_state_events = BTreeSet::new();
+    let mut seen_state_events = StateEventSeenSet::default();
     let mut country_war_projection_rows = 0usize;
     let mut operation_detail_resisted_rows = 0usize;
     let mut intel_map_resisted_rows = 0usize;
@@ -2494,7 +2586,7 @@ fn validate_opinion_row(
     row_index: usize,
     payload: &[u8],
     cursor: usize,
-    seen: &mut BTreeSet<(u32, u32)>,
+    seen: &mut PairSeenSet,
     summary: &mut Domain53GateSummary,
 ) {
     let flags = read_u16_le(payload, cursor + 2);
@@ -2507,7 +2599,7 @@ fn validate_opinion_row(
         ));
     }
     validate_pair(offset, "opinion", row_index, src, target, summary);
-    if valid_tag(src) && valid_tag(target) && !seen.insert((src, target)) {
+    if valid_tag(src) && valid_tag(target) && !seen.insert(src, target) {
         summary.parse_errors.push(format!(
             "offset {offset}: opinion row {row_index} duplicates ordered pair {src}/{target}"
         ));
@@ -2972,7 +3064,7 @@ fn validate_state_event_row(
     row_index: usize,
     payload: &[u8],
     cursor: usize,
-    seen: &mut BTreeSet<(u16, u16, u32, u32, u32)>,
+    seen: &mut StateEventSeenSet,
     summary: &mut Domain53GateSummary,
 ) {
     let flags = read_u16_le(payload, cursor + 2);
@@ -3031,8 +3123,7 @@ fn validate_state_event_row(
         ));
     }
 
-    let key = (event_kind, source_kind, owner, target, object_hash);
-    if object_hash != 0 && !seen.insert(key) {
+    if object_hash != 0 && !seen.insert(event_kind, source_kind, owner, target, object_hash) {
         summary.parse_errors.push(format!(
             "offset {offset}: compact state event row {row_index} duplicates state event key"
         ));
@@ -3145,7 +3236,7 @@ fn summarize_opinion_row(
     offset: usize,
     row_index: usize,
     row: &OpinionRow,
-    seen: &mut BTreeSet<(u32, u32)>,
+    seen: &mut PairSeenSet,
     summary: &mut Domain53GateSummary,
 ) {
     let flags = 0u16; // encode_payload:483
@@ -3157,7 +3248,7 @@ fn summarize_opinion_row(
         ));
     }
     validate_pair(offset, "opinion", row_index, src, target, summary);
-    if valid_tag(src) && valid_tag(target) && !seen.insert((src, target)) {
+    if valid_tag(src) && valid_tag(target) && !seen.insert(src, target) {
         summary.parse_errors.push(format!(
             "offset {offset}: opinion row {row_index} duplicates ordered pair {src}/{target}"
         ));
@@ -3631,7 +3722,7 @@ fn summarize_state_event_row(
     offset: usize,
     row_index: usize,
     row: &StateEventRow,
-    seen: &mut BTreeSet<(u16, u16, u32, u32, u32)>,
+    seen: &mut StateEventSeenSet,
     summary: &mut Domain53GateSummary,
 ) {
     // Encoder flags (encode_payload:614): TARGET_PRESENT iff target is Some;
@@ -3694,11 +3785,67 @@ fn summarize_state_event_row(
             "offset {offset}: compact state event row {row_index} has invalid value_raw {value_raw}"
         ));
     }
-    let key = (event_kind, source_kind, owner, target, object_hash);
-    if object_hash != 0 && !seen.insert(key) {
+    if object_hash != 0 && !seen.insert(event_kind, source_kind, owner, target, object_hash) {
         summary.parse_errors.push(format!(
             "offset {offset}: compact state event row {row_index} duplicates state event key"
         ));
+    }
+}
+
+#[derive(Debug, Default)]
+struct PairSeenSet {
+    words: Option<Vec<u64>>,
+}
+
+impl PairSeenSet {
+    fn insert(&mut self, src: u32, target: u32) -> bool {
+        debug_assert!(valid_tag(src));
+        debug_assert!(valid_tag(target));
+        let stride = MAX_TAG_DB_ID as usize + 1;
+        let bit = src as usize * stride + target as usize;
+        let word_index = bit / 64;
+        let mask = 1u64 << (bit % 64);
+        let words = self.words.get_or_insert_with(|| {
+            let bit_count = stride * stride;
+            vec![0u64; (bit_count + 63) / 64]
+        });
+        let word = &mut words[word_index];
+        let fresh = *word & mask == 0;
+        *word |= mask;
+        fresh
+    }
+}
+
+#[derive(Debug, Default)]
+struct StateEventSeenSet {
+    relation_opinion_pairs: PairSeenSet,
+    other: HashSet<u128>,
+}
+
+impl StateEventSeenSet {
+    fn insert(
+        &mut self,
+        event_kind: u16,
+        source_kind: u16,
+        owner: u32,
+        target: u32,
+        object_hash: u32,
+    ) -> bool {
+        if event_kind == STATE_EVENT_KIND_OBSERVED
+            && source_kind == STATE_EVENT_SOURCE_RELATION_OPINION
+            && object_hash == STATE_EVENT_OBJECT_RELATION_OPINION_HASH
+            && valid_tag(owner)
+            && valid_tag(target)
+            && owner != target
+        {
+            return self.relation_opinion_pairs.insert(owner, target);
+        }
+        let key = (u128::from(event_kind) << 112)
+            | (u128::from(source_kind) << 96)
+            | (u128::from(owner) << 64)
+            | (u128::from(target) << 32)
+            | u128::from(object_hash);
+        self.other.insert(key)
     }
 }
 
@@ -3791,6 +3938,41 @@ mod tests {
     fn production_domain_id_is_53() {
         assert_eq!(DOMAIN_ID_PROPOSED, 53);
         assert_eq!(domain_id_rejection_reason(DOMAIN_ID_PROPOSED), None);
+    }
+
+    #[test]
+    fn relation_opinion_hot_hash_constant_matches_stable_hash() {
+        assert_eq!(
+            STATE_EVENT_OBJECT_RELATION_OPINION_HASH,
+            stable_hash32("relation_opinion")
+        );
+        let mut pairs = PairSeenSet::default();
+        assert!(pairs.insert(1, 3));
+        assert!(!pairs.insert(1, 3));
+        assert!(pairs.insert(3, 1));
+
+        let mut events = StateEventSeenSet::default();
+        assert!(events.insert(
+            STATE_EVENT_KIND_OBSERVED,
+            STATE_EVENT_SOURCE_RELATION_OPINION,
+            1,
+            3,
+            STATE_EVENT_OBJECT_RELATION_OPINION_HASH
+        ));
+        assert!(!events.insert(
+            STATE_EVENT_KIND_OBSERVED,
+            STATE_EVENT_SOURCE_RELATION_OPINION,
+            1,
+            3,
+            STATE_EVENT_OBJECT_RELATION_OPINION_HASH
+        ));
+        assert!(events.insert(
+            STATE_EVENT_KIND_OBSERVED,
+            STATE_EVENT_SOURCE_RELATION_OPINION,
+            3,
+            1,
+            STATE_EVENT_OBJECT_RELATION_OPINION_HASH
+        ));
     }
 
     #[test]

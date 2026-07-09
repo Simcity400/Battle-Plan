@@ -65,6 +65,20 @@ Current scope:
   is not production-complete until this native path passes hourly-or-better
   speed-five proof.
 
+Production speed-five launcher:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Start-Hoi4ProductionSpeed5Capture.ps1 -Mode ShortSpeed5
+```
+
+The launcher rebuilds the release collector/host unless `-SkipBuild` is passed,
+auto-detects the single live `hoi4.exe` PID, uses the compact stream production
+profile, enables the extraction perf gate, includes `--compact-country-frame`,
+sets the tuned production reader concurrency, and passes every required static
+artifact from `extractor/game_defs/out`. `-Mode FullGame` defaults to a long run
+and performs a conservative disk-space estimate; use `-OutDir` on a large drive
+for full-game speed-five capture.
+
 Example:
 
 ```powershell

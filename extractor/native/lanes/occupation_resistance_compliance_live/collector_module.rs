@@ -626,8 +626,7 @@ pub fn read_state_garrison_scalars<M: OccupationMemory>(
                 // Back-ref + state join and the scalars all come from the same
                 // single blob read, so a row can never mix data from two
                 // different object generations.
-                if u64_from(&blob, STATE_GARRISON_DATA_OCCUPATION_DATA_OFF) != occupation_data_ptr
-                {
+                if u64_from(&blob, STATE_GARRISON_DATA_OCCUPATION_DATA_OFF) != occupation_data_ptr {
                     continue;
                 }
                 let state_ptr = u64_from(&blob, STATE_GARRISON_DATA_STATE_OFF);
@@ -635,7 +634,8 @@ pub fn read_state_garrison_scalars<M: OccupationMemory>(
                     anomaly_rows = anomaly_rows.saturating_add(1);
                     continue;
                 };
-                let army_manpower_need = i32_from(&blob, STATE_GARRISON_DATA_ARMY_MANPOWER_NEED_OFF);
+                let army_manpower_need =
+                    i32_from(&blob, STATE_GARRISON_DATA_ARMY_MANPOWER_NEED_OFF);
                 let strength_ratio_raw = i32_from(&blob, STATE_GARRISON_DATA_STRENGTH_RATIO_OFF);
                 let garrison_required_raw =
                     i32_from(&blob, STATE_GARRISON_DATA_GARRISON_REQUIRED_OFF);
@@ -1145,10 +1145,7 @@ mod tests {
         garrison_required_raw: i32,
     ) {
         mem.write_zeroes(row_ptr, STATE_GARRISON_READ_LEN);
-        mem.write_u64(
-            row_ptr,
-            MODULE_BASE + STATE_GARRISON_DATA_VTABLE_RVA as u64,
-        );
+        mem.write_u64(row_ptr, MODULE_BASE + STATE_GARRISON_DATA_VTABLE_RVA as u64);
         mem.write_u64(row_ptr + STATE_GARRISON_DATA_STATE_OFF as u64, state_ptr);
         mem.write_u64(
             row_ptr + STATE_GARRISON_DATA_OCCUPATION_DATA_OFF as u64,
@@ -1198,7 +1195,15 @@ mod tests {
         );
         mem.write_zeroes(GARRISON_CONTAINER, GARRISON_CONTAINER_SCAN_LEN);
         mem.write_u64(GARRISON_CONTAINER + 0x08, GARRISON_ROW);
-        write_garrison_row(&mut mem, GARRISON_ROW, OCC_DATA, STATE_10, 14_000, 87_500, 250_000);
+        write_garrison_row(
+            &mut mem,
+            GARRISON_ROW,
+            OCC_DATA,
+            STATE_10,
+            14_000,
+            87_500,
+            250_000,
+        );
         mem
     }
 

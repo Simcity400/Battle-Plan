@@ -334,9 +334,22 @@ pub fn read_country_construction_queue_with_target_states<M: LaneMemory>(
     state_roots: &[StateRoot],
     province_roots: &[ProvinceRoot],
 ) -> Option<RowRead<ConstructionQueueRow>> {
-    let manager = production_manager_from_country(mem, root.country_ptr)?;
     let lookup = TargetStateLookup::new(state_roots, province_roots);
-    read_construction_queue_from_manager_with_targets(mem, manager, root.tag_db_id, Some(&lookup))
+    read_country_construction_queue_with_target_lookup(mem, root, &lookup)
+}
+
+pub fn read_country_construction_queue_with_target_lookup<M: LaneMemory>(
+    mem: &M,
+    root: CountryConstructionRoot,
+    target_lookup: &TargetStateLookup,
+) -> Option<RowRead<ConstructionQueueRow>> {
+    let manager = production_manager_from_country(mem, root.country_ptr)?;
+    read_construction_queue_from_manager_with_targets(
+        mem,
+        manager,
+        root.tag_db_id,
+        Some(target_lookup),
+    )
 }
 
 fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(

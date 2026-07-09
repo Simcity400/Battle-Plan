@@ -630,7 +630,10 @@ pub fn read_active_ruler_from_country<M: LaneMemory>(
         CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF,
         "CPoliticalParty.country_leaders.capacity",
     )?;
-    if size == 0 || size > capacity || size > MAX_PARTY_LEADER_VEC || capacity > MAX_PARTY_LEADER_VEC
+    if size == 0
+        || size > capacity
+        || size > MAX_PARTY_LEADER_VEC
+        || capacity > MAX_PARTY_LEADER_VEC
     {
         return Err(ExtractError::BadVector {
             field: "CPoliticalParty.country_leaders",

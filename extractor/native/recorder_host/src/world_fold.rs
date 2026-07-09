@@ -19,6 +19,8 @@
 //! guessed strings.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::PathBuf;
 
 use air_loss_stats_live_lane as airloss61;
 use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as ace46;
@@ -661,6 +663,19 @@ pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     62, 63, 64, 65, 66, 67, 68, 69,
 ];
 
+/// Metadata for a folded snapshot spilled to disk by [`WorldFold::new_file_backed`].
+pub struct FoldedSnapshotFile {
+    pub hour_index: i64,
+    pub date: String,
+    pub path: PathBuf,
+    pub byte_len: usize,
+}
+
+struct SnapshotFileSink {
+    dir: PathBuf,
+    files: Vec<FoldedSnapshotFile>,
+}
+
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
 /// captured on FRAME_END and returned by [`WorldFold::finish`].
 pub struct WorldFold {
@@ -888,6 +903,10 @@ pub struct WorldFold {
     late_records_dropped_since_last_snapshot: BTreeMap<i64, usize>,
     /// finished snapshots: (hour_index, date, json_bytes)
     out: Vec<(i64, String, Vec<u8>)>,
+    /// Optional production sink for large snapshot JSON bytes. When present,
+    /// snapshots are written to disk at hour close and `out` stays empty.
+    file_sink: Option<SnapshotFileSink>,
+    file_sink_error: Option<String>,
     /// hours already emitted, to reject a duplicate FRAME_END for a game hour
     /// (the game campaign hour counts are small enough that this remains bounded).
     emitted_hours: BTreeSet<i64>,
@@ -1054,8 +1073,26 @@ impl WorldFold {
             market_trade_unknown_this_hour: false,
             late_records_dropped_since_last_snapshot: BTreeMap::new(),
             out: Vec::new(),
+            file_sink: None,
+            file_sink_error: None,
             emitted_hours: BTreeSet::new(),
         }
+    }
+
+    /// Construct a fold that spills each produced snapshot to `snapshot_dir`
+    /// immediately instead of retaining every snapshot JSON byte in memory.
+    pub fn new_file_backed(
+        game_id: impl Into<String>,
+        snapshot_dir: impl Into<PathBuf>,
+    ) -> std::io::Result<Self> {
+        let dir = snapshot_dir.into();
+        fs::create_dir_all(&dir)?;
+        let mut fold = Self::new(game_id);
+        fold.file_sink = Some(SnapshotFileSink {
+            dir,
+            files: Vec::new(),
+        });
+        Ok(fold)
     }
 
     /// Walk a whole compact stream, folding every DOMAIN_DATA record and
@@ -1940,7 +1977,27 @@ impl WorldFold {
         self.prepare_domain48_for_snapshot();
         let snapshot = self.build_snapshot(hour_index, &date);
         let bytes = serde_json::to_vec(&snapshot).expect("snapshot serializes");
-        self.out.push((hour_index, date, bytes));
+        if let Some(sink) = &mut self.file_sink {
+            let path = sink.dir.join(format!("{hour_index:012}.snapshot.json"));
+            match fs::write(&path, &bytes) {
+                Ok(()) => {
+                    let byte_len = bytes.len();
+                    sink.files.push(FoldedSnapshotFile {
+                        hour_index,
+                        date,
+                        path,
+                        byte_len,
+                    });
+                }
+                Err(err) => {
+                    self.file_sink_error = Some(format!(
+                        "write folded snapshot hour_index {hour_index} failed: {err}"
+                    ));
+                }
+            }
+        } else {
+            self.out.push((hour_index, date, bytes));
+        }
         self.emitted_hours.insert(hour_index);
         self.late_records_dropped_since_last_snapshot.clear();
         self.reset_hour_state();
@@ -11425,6 +11482,16 @@ impl WorldFold {
     /// Consume the fold and return every captured snapshot in emit order.
     pub fn finish(self) -> Vec<(i64, String, Vec<u8>)> {
         self.out
+    }
+
+    /// Consume a file-backed fold and return every spilled snapshot in emit order.
+    pub fn finish_file_backed(self) -> Result<Vec<FoldedSnapshotFile>, String> {
+        if let Some(err) = self.file_sink_error {
+            return Err(err);
+        }
+        self.file_sink
+            .map(|sink| sink.files)
+            .ok_or_else(|| "world fold was not file-backed".to_string())
     }
 }
 

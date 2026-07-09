@@ -8,7 +8,10 @@
 
 use serde_json::{json, Value};
 use snapshot::container::{Container, ContainerError, ExpectedIdentity};
-use snapshot::{pack, pack_with, PackEntry, PackIdentity, PackOptions, Store};
+use snapshot::{
+    pack, pack_borrowed, pack_borrowed_to_writer, pack_mixed_to_writer, pack_with,
+    BorrowedPackEntry, FileBackedPackEntry, PackEntry, PackIdentity, PackOptions, Store,
+};
 
 const GAME: &str = "campaign";
 const BUILD: &str = "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120";
@@ -82,6 +85,97 @@ fn fixture_identity() -> PackIdentity {
 
 fn build_container(deflate: bool) -> Vec<u8> {
     pack(GAME, &fixture_entries(), &fixture_identity(), deflate).expect("pack")
+}
+
+#[test]
+fn borrowed_pack_matches_owned_pack_bytes() {
+    let entries = fixture_entries();
+    let borrowed = entries
+        .iter()
+        .map(|entry| BorrowedPackEntry {
+            path: entry.path.clone(),
+            bytes: &entry.bytes,
+            role: entry.role,
+            hour_index: entry.hour_index,
+        })
+        .collect::<Vec<_>>();
+    let identity = fixture_identity();
+
+    assert_eq!(
+        pack(GAME, &entries, &identity, true).expect("owned pack"),
+        pack_borrowed(GAME, &borrowed, &identity, true).expect("borrowed pack")
+    );
+}
+
+#[test]
+fn borrowed_writer_pack_matches_borrowed_pack_bytes() {
+    let entries = fixture_entries();
+    let borrowed = entries
+        .iter()
+        .map(|entry| BorrowedPackEntry {
+            path: entry.path.clone(),
+            bytes: &entry.bytes,
+            role: entry.role,
+            hour_index: entry.hour_index,
+        })
+        .collect::<Vec<_>>();
+    let identity = fixture_identity();
+    let mut streamed = Vec::new();
+    pack_borrowed_to_writer(GAME, &borrowed, &identity, true, &mut streamed)
+        .expect("streaming borrowed pack");
+
+    assert_eq!(
+        pack_borrowed(GAME, &borrowed, &identity, true).expect("borrowed pack"),
+        streamed
+    );
+}
+
+#[test]
+fn mixed_pack_file_backed_entry_roundtrips_exact_bytes() {
+    let entries = fixture_entries();
+    let file_backed = entries
+        .iter()
+        .find(|entry| entry.path.ends_with("000017000461.snapshot.json"))
+        .expect("file-backed fixture snapshot");
+    let dir = std::env::temp_dir().join(format!("hoi4replay_mixed_pack_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create mixed pack temp dir");
+    let file_path = dir.join("snapshot.json");
+    std::fs::write(&file_path, &file_backed.bytes).expect("write file-backed snapshot");
+    let borrowed = entries
+        .iter()
+        .filter(|entry| entry.path != file_backed.path)
+        .map(|entry| BorrowedPackEntry {
+            path: entry.path.clone(),
+            bytes: &entry.bytes,
+            role: entry.role,
+            hour_index: entry.hour_index,
+        })
+        .collect::<Vec<_>>();
+    let file_entries = vec![FileBackedPackEntry {
+        path: file_backed.path.clone(),
+        file_path: file_path.as_path(),
+        role: file_backed.role,
+        hour_index: file_backed.hour_index,
+    }];
+    let mut packed = Vec::new();
+    pack_mixed_to_writer(
+        GAME,
+        &borrowed,
+        &file_entries,
+        &fixture_identity(),
+        true,
+        &mut packed,
+    )
+    .expect("mixed pack");
+
+    let container = Container::from_bytes(packed, &ExpectedIdentity::default()).expect("open");
+    container.verify_all().expect("verify");
+    assert_eq!(
+        container.read_entry_bytes(&file_backed.path).unwrap(),
+        file_backed.bytes
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

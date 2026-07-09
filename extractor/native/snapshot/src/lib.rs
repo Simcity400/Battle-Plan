@@ -28,7 +28,11 @@ pub mod sha256;
 pub mod zip;
 
 pub use container::{Container, ContainerError, ExpectedIdentity};
-pub use pack::{pack, pack_with, PackEntry, PackError, PackIdentity, PackOptions};
+pub use pack::{
+    pack, pack_borrowed, pack_borrowed_to_writer, pack_borrowed_with, pack_borrowed_with_writer,
+    pack_mixed_to_writer, pack_with, BorrowedPackEntry, FileBackedPackEntry, PackEntry, PackError,
+    PackIdentity, PackOptions,
+};
 
 /// The `index.json` manifest for one game (our stable format).
 #[derive(Debug, Clone, Deserialize)]

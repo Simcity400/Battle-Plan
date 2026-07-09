@@ -365,7 +365,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
                     "offset {offset}: scripted state row {row_index} sets due-hours flag on a non-delayed-event row"
                 ));
             }
-            if reserved_row0 > compact_contract::build_profile::DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS {
+            if reserved_row0 > compact_contract::build_profile::DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS
+            {
                 summary.parse_errors.push(format!(
                     "offset {offset}: delayed-event row {row_index} due hours {reserved_row0} out of range"
                 ));
@@ -458,8 +459,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
                     "offset {offset}: delayed-event row {row_index} must be country-scoped, got scope {scope_kind}"
                 ));
             }
-            if token_id < MIN_DELAYED_EVENT_COMBINED_ID
-                || token_id > MAX_DELAYED_EVENT_COMBINED_ID
+            if token_id < MIN_DELAYED_EVENT_COMBINED_ID || token_id > MAX_DELAYED_EVENT_COMBINED_ID
             {
                 summary.parse_errors.push(format!(
                     "offset {offset}: delayed-event row {row_index} has out-of-range event id {token_id}"

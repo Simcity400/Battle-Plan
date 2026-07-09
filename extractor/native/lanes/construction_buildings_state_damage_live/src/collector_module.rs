@@ -1,8 +1,8 @@
 use crate::{
-    encode_lane_frame, gate_lane_frame, read_country_construction_queue_with_target_states,
+    encode_lane_frame, gate_lane_frame, read_country_construction_queue_with_target_lookup,
     read_province_building_rows, read_state_building_rows, read_state_resource_rows,
     CountryConstructionRoot, GateReport, LaneFrame, LaneMemory, ProvinceRoot, StateRoot,
-    SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE, SOURCE_FLAG_DLL_NATIVE,
+    TargetStateLookup, SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE, SOURCE_FLAG_DLL_NATIVE,
     SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE, SOURCE_FLAG_SHARED_COUNTRY_ROOTS,
     SOURCE_FLAG_SHARED_MAP_TOPOLOGY, STATUS_PARTIAL_DATA,
 };
@@ -64,13 +64,10 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
     let mut building_rows = Vec::new();
     let mut resource_rows = Vec::new();
 
+    let target_lookup = TargetStateLookup::new(&roots.state_roots, &roots.province_roots);
     for root in &roots.country_roots {
-        match read_country_construction_queue_with_target_states(
-            mem,
-            root.clone(),
-            &roots.state_roots,
-            &roots.province_roots,
-        ) {
+        match read_country_construction_queue_with_target_lookup(mem, root.clone(), &target_lookup)
+        {
             Some(mut read) => {
                 stats.skipped_construction_rows = stats
                     .skipped_construction_rows

@@ -12,11 +12,14 @@ use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
 use occupation_resistance_compliance_live_lane as occupation52;
 use recorder_host::compact_domain_registry;
-use recorder_host::world_fold::{WorldFold, FOLDED_DOMAIN_IDS};
+use recorder_host::world_fold::{FoldedSnapshotFile, WorldFold, FOLDED_DOMAIN_IDS};
 use serde_json::{json, Value};
 use session_multiplayer_metadata_live as session57;
 use snapshot::sha256::{to_hex, Sha256};
-use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
+use snapshot::{
+    pack_borrowed_to_writer, pack_mixed_to_writer, BorrowedPackEntry, Container, ExpectedIdentity,
+    FileBackedPackEntry, PackIdentity,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{c_char, c_void, OsStr};
@@ -1131,22 +1134,39 @@ fn run() -> Result<(), String> {
     // Fold the decoded compact records into per-game-hour world-state snapshots.
     // Only the compact stream carries H4CR records; the JSON debug stream has no
     // fold and packs an empty snapshots array.
-    let world_snapshots = match cfg.stream_format {
+    match cfg.stream_format {
         StreamFormat::Compact => {
-            let mut fold = WorldFold::new(replay_game_id.clone());
-            fold.ingest_stream(&pipe_bytes);
-            fold.finish()
+            let snapshot_spill_dir = create_unique_snapshot_spill_dir(&cfg.out_dir)?;
+            let replay_result = (|| -> Result<(), String> {
+                let mut fold =
+                    WorldFold::new_file_backed(replay_game_id.clone(), &snapshot_spill_dir)
+                        .map_err(|e| format!("create folded snapshot spill failed: {e}"))?;
+                fold.ingest_stream(&pipe_bytes);
+                let world_snapshot_files = fold.finish_file_backed()?;
+                write_native_replay_container_file_backed(
+                    &cfg,
+                    &pipe_bytes,
+                    &world_snapshot_files,
+                    &manifest,
+                    &manifest_path,
+                    &replay_path,
+                )
+            })();
+            cleanup_snapshot_spill_dir(&snapshot_spill_dir);
+            replay_result?;
         }
-        StreamFormat::Json => Vec::new(),
-    };
-    write_native_replay_container(
-        &cfg,
-        &pipe_bytes,
-        &world_snapshots,
-        &manifest,
-        &manifest_path,
-        &replay_path,
-    )?;
+        StreamFormat::Json => {
+            let world_snapshots = Vec::new();
+            write_native_replay_container(
+                &cfg,
+                &pipe_bytes,
+                &world_snapshots,
+                &manifest,
+                &manifest_path,
+                &replay_path,
+            )?;
+        }
+    }
     if !hourly_met {
         let quarantine_detail = normal_quarantine
             .as_ref()
@@ -1196,7 +1216,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut session_id = None;
     let mut stream_format = StreamFormat::Json;
     let mut extraction_perf_gate = false;
-    let mut reader_concurrency = 0u32;
+    let mut reader_concurrency = None;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
     let mut static_decisions_definitions: Option<PathBuf> = None;
@@ -1291,7 +1311,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--extraction-perf-gate" => extraction_perf_gate = true,
             "--reader-concurrency" => {
                 i += 1;
-                reader_concurrency = parse_u32(args.get(i), "--reader-concurrency")?;
+                reader_concurrency = Some(parse_u32(args.get(i), "--reader-concurrency")?);
             }
             "--static-templates-equipment-catalog" => {
                 if static_templates_equipment_catalog.is_some() {
@@ -1369,6 +1389,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
         }
     }
+    let reader_concurrency = reader_concurrency.unwrap_or(if production { 12 } else { 0 });
     let dll = dll.ok_or_else(usage)?;
     let dll = fs::canonicalize(&dll).map_err(|e| format!("dll not found: {e}"))?;
     Ok(Config {
@@ -1565,7 +1586,9 @@ fn usage() -> String {
       \n\
       Production profile: --production expands to every schedulable compact domain\n\
       whose descriptor status belongs to the shared compact_contract production\n\
-      profile, unioned with explicit --scheduled-domain values.\n\
+      profile, unioned with explicit --scheduled-domain values. When omitted,\n\
+      --reader-concurrency defaults to 12 for --production and 0 (unbounded) for\n\
+      non-production probes; explicit --reader-concurrency always wins.\n\
       \n\
         --static-templates-equipment-catalog path   domain-59 templates/equipment catalog JSON\n\
                                                     (templates_equipment_catalog_gate.py out/ dir:\n\
@@ -2442,16 +2465,14 @@ where
     // Each folded world-state snapshot becomes a role:"snapshot" entry; the
     // index lists them by hour_index (the canonical key). The snapshots array is
     // empty only when the fold produced no game hours (e.g. JSON debug stream).
-    let mut snapshot_entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(snapshots.len());
     let mut index_snapshots: Vec<Value> = Vec::with_capacity(snapshots.len());
-    for (hour_index, date, bytes) in snapshots {
+    for (hour_index, date, _) in snapshots {
         let file = format!("snapshots/{hour_index:012}.snapshot.json");
         index_snapshots.push(json!({
             "hour_index": hour_index,
             "date": date,
             "file": file.clone(),
         }));
-        snapshot_entries.push((format!("{game_id}/{file}"), bytes.clone()));
     }
 
     // Resolve requested static artifacts. A requested-but-unreadable/corrupt path
@@ -2504,35 +2525,35 @@ where
     let manifest_bytes =
         fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
     let mut entries = vec![
-        PackEntry {
+        BorrowedPackEntry {
             path: format!("payload/{game_id}/index.json"),
-            bytes: index_bytes,
+            bytes: &index_bytes,
             role: "index",
             hour_index: None,
         },
-        PackEntry {
+        BorrowedPackEntry {
             path: format!("payload/{game_id}/timeline.json"),
-            bytes: timeline_bytes,
+            bytes: &timeline_bytes,
             role: "timeline",
             hour_index: None,
         },
-        PackEntry {
+        BorrowedPackEntry {
             path: format!("payload/{game_id}/{stream_payload_path}"),
-            bytes: stream_bytes.to_vec(),
+            bytes: stream_bytes,
             role: "collector_compact_stream",
             hour_index: None,
         },
-        PackEntry {
+        BorrowedPackEntry {
             path: format!("payload/{game_id}/{manifest_payload_path}"),
-            bytes: manifest_bytes,
+            bytes: &manifest_bytes,
             role: "recorder_manifest",
             hour_index: None,
         },
     ];
-    for ((path, bytes), (hour_index, _, _)) in snapshot_entries.iter().zip(snapshots.iter()) {
-        entries.push(PackEntry {
-            path: format!("payload/{path}"),
-            bytes: bytes.clone(),
+    for (hour_index, _, bytes) in snapshots {
+        entries.push(BorrowedPackEntry {
+            path: format!("payload/{game_id}/snapshots/{hour_index:012}.snapshot.json"),
+            bytes,
             role: "snapshot",
             hour_index: Some(*hour_index),
         });
@@ -2541,9 +2562,9 @@ where
     // pack() computes their sha256 into the manifest; the index descriptor carries
     // the same sha256 plus provenance, so both layers agree.
     for (path, bytes) in &static_artifact_entries {
-        entries.push(PackEntry {
+        entries.push(BorrowedPackEntry {
             path: format!("payload/{path}"),
-            bytes: bytes.clone(),
+            bytes,
             role: "static_artifact",
             hour_index: None,
         });
@@ -2553,9 +2574,200 @@ where
         created_utc: Some(created_utc_label()),
         ..Default::default()
     };
-    let packed = pack(&game_id, &entries, &identity, true)
-        .map_err(|e| format!("pack replay container failed: {e}"))?;
-    let tmp = write_unique_replay_temp(replay_path, &packed)?;
+    let (tmp, mut tmp_file) = create_unique_replay_temp(replay_path)?;
+    if let Err(err) = pack_borrowed_to_writer(&game_id, &entries, &identity, true, &mut tmp_file)
+        .map_err(|e| format!("pack replay container failed: {e}"))
+        .and_then(|()| {
+            tmp_file
+                .flush()
+                .map_err(|e| format!("flush replay temp failed: {e}"))
+        })
+    {
+        drop(tmp_file);
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    drop(tmp_file);
+    let result = verifier(
+        &tmp,
+        &game_id,
+        &stream_payload_path,
+        stream_bytes,
+        &static_artifact_entries,
+    )
+    .and_then(|()| finalize_verified_replay(&tmp, replay_path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn write_native_replay_container_file_backed(
+    cfg: &Config,
+    stream_bytes: &[u8],
+    snapshot_files: &[FoldedSnapshotFile],
+    manifest: &Value,
+    manifest_path: &Path,
+    replay_path: &Path,
+) -> Result<(), String> {
+    write_native_replay_container_file_backed_with_verifier(
+        cfg,
+        stream_bytes,
+        snapshot_files,
+        manifest,
+        manifest_path,
+        replay_path,
+        verify_native_replay_container,
+    )
+}
+
+fn write_native_replay_container_file_backed_with_verifier<F>(
+    cfg: &Config,
+    stream_bytes: &[u8],
+    snapshot_files: &[FoldedSnapshotFile],
+    manifest: &Value,
+    manifest_path: &Path,
+    replay_path: &Path,
+    verifier: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path, &str, &str, &[u8], &[(String, Vec<u8>)]) -> Result<(), String>,
+{
+    let game_id = manifest
+        .get("replay_game_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| replay_game_id(&cfg.session_id));
+    let stream_name = cfg.stream_format.stream_file_name();
+    let manifest_name = manifest_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("native_session_manifest.json");
+    let stream_payload_path = format!("collector_raw/{stream_name}");
+    let manifest_payload_path = format!("recorder/{manifest_name}");
+    let mut index_snapshots: Vec<Value> = Vec::with_capacity(snapshot_files.len());
+    for snapshot in snapshot_files {
+        let file = format!("snapshots/{:012}.snapshot.json", snapshot.hour_index);
+        index_snapshots.push(json!({
+            "hour_index": snapshot.hour_index,
+            "date": snapshot.date.as_str(),
+            "file": file,
+        }));
+    }
+
+    let mut resolved_by_name: BTreeMap<&'static str, ResolvedStaticArtifact> = BTreeMap::new();
+    for request in &cfg.static_artifacts {
+        let resolved = resolve_static_artifact(&game_id, request)?;
+        resolved_by_name.insert(request.name, resolved);
+    }
+    let mut static_artifact_index: Vec<Value> = Vec::with_capacity(KNOWN_STATIC_ARTIFACTS.len());
+    let mut static_artifact_entries: Vec<(String, Vec<u8>)> = Vec::new();
+    for name in KNOWN_STATIC_ARTIFACTS {
+        if let Some(resolved) = resolved_by_name.get(name) {
+            static_artifact_index.push(resolved.index_descriptor.clone());
+            static_artifact_entries.push((
+                format!("{game_id}/{}", resolved.payload_path),
+                resolved.bytes.clone(),
+            ));
+        } else {
+            static_artifact_index.push(json!({
+                "name": name,
+                "present": false,
+                "role": "static_artifact",
+                "absence_reason": "not supplied to the recorder for this recording",
+            }));
+        }
+    }
+
+    let index_bytes = serde_json::to_vec_pretty(&json!({
+        "game_id": game_id.clone(),
+        "schema_version": "1",
+        "snapshots": index_snapshots,
+        "static_artifacts": static_artifact_index,
+    }))
+    .map_err(|e| format!("serialize replay index failed: {e}"))?;
+    let timeline_bytes = serde_json::to_vec_pretty(&json!({
+        "format": "hoi4_compact_stream_timeline_v1",
+        "stream_format": cfg.stream_format.as_str(),
+        "stream": stream_payload_path.clone(),
+        "session_manifest": manifest_payload_path.clone(),
+        "raw_stream_role": "collector_compact_stream",
+        "session_manifest_role": "recorder_manifest",
+    }))
+    .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
+    let manifest_bytes =
+        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+    let mut borrowed_entries = vec![
+        BorrowedPackEntry {
+            path: format!("payload/{game_id}/index.json"),
+            bytes: &index_bytes,
+            role: "index",
+            hour_index: None,
+        },
+        BorrowedPackEntry {
+            path: format!("payload/{game_id}/timeline.json"),
+            bytes: &timeline_bytes,
+            role: "timeline",
+            hour_index: None,
+        },
+        BorrowedPackEntry {
+            path: format!("payload/{game_id}/{stream_payload_path}"),
+            bytes: stream_bytes,
+            role: "collector_compact_stream",
+            hour_index: None,
+        },
+        BorrowedPackEntry {
+            path: format!("payload/{game_id}/{manifest_payload_path}"),
+            bytes: &manifest_bytes,
+            role: "recorder_manifest",
+            hour_index: None,
+        },
+    ];
+    for (path, bytes) in &static_artifact_entries {
+        borrowed_entries.push(BorrowedPackEntry {
+            path: format!("payload/{path}"),
+            bytes,
+            role: "static_artifact",
+            hour_index: None,
+        });
+    }
+    let file_entries = snapshot_files
+        .iter()
+        .map(|snapshot| FileBackedPackEntry {
+            path: format!(
+                "payload/{game_id}/snapshots/{:012}.snapshot.json",
+                snapshot.hour_index
+            ),
+            file_path: snapshot.path.as_path(),
+            role: "snapshot",
+            hour_index: Some(snapshot.hour_index),
+        })
+        .collect::<Vec<_>>();
+    let identity = PackIdentity {
+        schema_version: Some("native_collector_session_v1".to_string()),
+        created_utc: Some(created_utc_label()),
+        ..Default::default()
+    };
+    let (tmp, mut tmp_file) = create_unique_replay_temp(replay_path)?;
+    if let Err(err) = pack_mixed_to_writer(
+        &game_id,
+        &borrowed_entries,
+        &file_entries,
+        &identity,
+        true,
+        &mut tmp_file,
+    )
+    .map_err(|e| format!("pack replay container failed: {e}"))
+    .and_then(|()| {
+        tmp_file
+            .flush()
+            .map_err(|e| format!("flush replay temp failed: {e}"))
+    }) {
+        drop(tmp_file);
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    drop(tmp_file);
     let result = verifier(
         &tmp,
         &game_id,
@@ -2783,7 +2995,7 @@ fn replay_temp_candidate(replay_path: &Path, attempt: usize) -> PathBuf {
     replay_path.with_file_name(format!("{file_name}.tmp-{}-{attempt}", pipe_token()))
 }
 
-fn write_unique_replay_temp(replay_path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+fn create_unique_replay_temp(replay_path: &Path) -> Result<(PathBuf, fs::File), String> {
     for attempt in 0..32 {
         let tmp = replay_temp_candidate(replay_path, attempt);
         match fs::OpenOptions::new()
@@ -2791,21 +3003,40 @@ fn write_unique_replay_temp(replay_path: &Path, bytes: &[u8]) -> Result<PathBuf,
             .create_new(true)
             .open(&tmp)
         {
-            Ok(mut file) => {
-                if let Err(err) = file.write_all(bytes) {
-                    let _ = fs::remove_file(&tmp);
-                    return Err(format!("write replay temp failed: {err}"));
-                }
-                return Ok(tmp);
-            }
+            Ok(file) => return Ok((tmp, file)),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(format!("write replay temp failed: {err}")),
+            Err(err) => return Err(format!("create replay temp failed: {err}")),
         }
     }
     Err(format!(
-        "write replay temp failed: could not allocate a unique temp path for {}",
+        "create replay temp failed: could not allocate a unique temp path for {}",
         replay_path.display()
     ))
+}
+
+fn create_unique_snapshot_spill_dir(out_dir: &Path) -> Result<PathBuf, String> {
+    let token = pipe_token();
+    for attempt in 0..64 {
+        let dir = out_dir.join(format!(".native_session_snapshots-{token}-{attempt}"));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(format!("create folded snapshot spill dir failed: {err}")),
+        }
+    }
+    Err(format!(
+        "create folded snapshot spill dir failed: could not allocate a unique spill path under {}",
+        out_dir.display()
+    ))
+}
+
+fn cleanup_snapshot_spill_dir(path: &Path) {
+    if let Err(err) = fs::remove_dir_all(path) {
+        eprintln!(
+            "recorder warning: could not remove folded snapshot spill dir {}: {err}",
+            path.display()
+        );
+    }
 }
 
 fn finalize_verified_replay(tmp: &Path, replay_path: &Path) -> Result<(), String> {
@@ -21595,6 +21826,83 @@ mod tests {
     }
 
     #[test]
+    fn replay_container_file_backed_snapshots_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan_file_backed_pack_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let spill_dir = dir.join("spill");
+        fs::create_dir_all(&spill_dir).unwrap();
+        let manifest_path = dir.join("native_session_manifest.json");
+        let replay_path = dir.join("native_session.battleplan");
+        let session_id = "file-backed pack test/session";
+        let game_id = replay_game_id(session_id);
+        let hour_index = 16_959_360i64;
+        let snapshot_path = spill_dir.join("000016959360.snapshot.json");
+        let snapshot_bytes = format!(
+            r#"{{"schema_version":"1","game_id":"{game_id}","date":"1936.1.1.0","hour_index":{hour_index},"countries":{{"47":{{"fuel":{{"current":4046848}}}}}},"states":{{}}}}"#
+        )
+        .into_bytes();
+        fs::write(&snapshot_path, &snapshot_bytes).unwrap();
+        let snapshots = vec![FoldedSnapshotFile {
+            hour_index,
+            date: "1936.1.1.0".to_string(),
+            path: snapshot_path,
+            byte_len: snapshot_bytes.len(),
+        }];
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "session_id": session_id,
+            "replay_game_id": game_id,
+            "stream_format": "compact",
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut cfg = test_config(vec![], None);
+        cfg.out_dir = dir.clone();
+        cfg.session_id = session_id.to_string();
+        let raw = b"H4CR compact stream bytes".to_vec();
+
+        write_native_replay_container_file_backed(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .unwrap();
+
+        let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        let stored_stream = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/collector_raw/collector_stream.bin"
+            ))
+            .unwrap();
+        assert_eq!(stored_stream, raw);
+        let stored_snapshot = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/snapshots/000016959360.snapshot.json"
+            ))
+            .unwrap();
+        assert_eq!(stored_snapshot, snapshot_bytes);
+        let snap = container.load(hour_index).unwrap();
+        assert_eq!(snap.hour_index, Some(hour_index));
+        assert_eq!(
+            snap.country_path("47", "fuel.current")
+                .and_then(Value::as_i64),
+            Some(4_046_848)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn parse_args_accepts_special_projects_scan() {
         let dir =
             std::env::temp_dir().join(format!("battle-plan-recorder_host_args_{}", std::process::id()));
@@ -21663,7 +21971,7 @@ mod tests {
             cfg.advisor_token_filter.as_deref(),
             Some("POR_salazar=political_advisor|political|POR_salazar")
         );
-        // Omitting --reader-concurrency leaves the fan-out unbounded (legacy).
+        // Omitting --reader-concurrency leaves non-production probes unbounded.
         assert_eq!(cfg.reader_concurrency, 0);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -21688,6 +21996,43 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cfg.reader_concurrency, 6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_production_defaults_reader_concurrency_to_live_tuned_value() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_rc_default_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dll = dir.join("collector.dll");
+        fs::write(&dll, b"").unwrap();
+        let cfg = parse_args(vec![
+            "--pid".to_string(),
+            "1234".to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("out").display().to_string(),
+            "--production".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(cfg.reader_concurrency, 12);
+        let explicit = parse_args(vec![
+            "--pid".to_string(),
+            "1234".to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("out2").display().to_string(),
+            "--production".to_string(),
+            "--reader-concurrency".to_string(),
+            "0".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(explicit.reader_concurrency, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -21718,6 +22063,7 @@ mod tests {
         .unwrap();
 
         assert!(cfg.production);
+        assert_eq!(cfg.reader_concurrency, 12);
         assert_eq!(cfg.scheduled_domains[0], "country_identity");
         assert_eq!(cfg.scheduled_domains[1], "fuel_live");
         assert_eq!(

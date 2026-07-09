@@ -17,23 +17,38 @@ pub const MODULE_SPAN_MAX: u64 = 0x10000000;
 pub const MAX_SIZE: u64 = 200_000;
 pub const MAX_BUCKETS: u64 = 1 << 21;
 pub const MAX_KEYLEN: usize = 256;
+const VARIABLE_TABLE_SNAPSHOT_MAX_BYTES: usize = 512 * 1024;
+const NODE_STRIDE_USIZE: usize = NODE_STRIDE as usize;
+const NODE_VALUE_USIZE: usize = NODE_VALUE as usize;
 
 pub trait MemoryRead {
     fn read_exact(&self, addr: u64, len: usize) -> Option<Vec<u8>>;
 
+    fn read_into(&self, addr: u64, buf: &mut [u8]) -> Option<()> {
+        let bytes = self.read_exact(addr, buf.len())?;
+        if bytes.len() != buf.len() {
+            return None;
+        }
+        buf.copy_from_slice(&bytes);
+        Some(())
+    }
+
     fn read_u64(&self, addr: u64) -> Option<u64> {
-        let bytes = self.read_exact(addr, 8)?;
-        Some(u64::from_le_bytes(to_arr8(&bytes)))
+        let mut bytes = [0u8; 8];
+        self.read_into(addr, &mut bytes)?;
+        Some(u64::from_le_bytes(bytes))
     }
 
     fn read_i64(&self, addr: u64) -> Option<i64> {
-        let bytes = self.read_exact(addr, 8)?;
-        Some(i64::from_le_bytes(to_arr8(&bytes)))
+        let mut bytes = [0u8; 8];
+        self.read_into(addr, &mut bytes)?;
+        Some(i64::from_le_bytes(bytes))
     }
 
     fn read_u32(&self, addr: u64) -> Option<u32> {
-        let bytes = self.read_exact(addr, 4)?;
-        Some(u32::from_le_bytes(to_arr4(&bytes)))
+        let mut bytes = [0u8; 4];
+        self.read_into(addr, &mut bytes)?;
+        Some(u32::from_le_bytes(bytes))
     }
 }
 
@@ -135,6 +150,19 @@ pub fn read_variables_container<R: MemoryRead>(
     }
 
     let span = nb.saturating_add(4).saturating_mul(NODE_STRIDE);
+    if let Some(entries) = read_variables_container_snapshot(mem, base, span, size) {
+        return CountryVariableRead {
+            status: VariableReadStatus::Measured,
+            country_obj,
+            container_addr: Some(container),
+            node_base: Some(base),
+            declared_size: size,
+            bucket_mask: mask,
+            entries,
+            failure_reason: None,
+        };
+    }
+
     let end = base.saturating_add(span);
     let mut exact: Option<BTreeMap<String, i64>> = None;
     let mut phase = 0u64;
@@ -212,27 +240,120 @@ pub fn read_msvc_string<R: MemoryRead>(mem: &R, addr: u64) -> Option<String> {
         return None;
     }
     let chars = if inline { addr } else { mem.read_u64(addr)? };
-    let data = mem.read_exact(chars, size.saturating_add(1))?;
-    if data.get(size).copied() != Some(0) {
-        return None;
-    }
-    let key = String::from_utf8(data[..size].to_vec()).ok()?;
-    if key.bytes().all(|b| (32..=126).contains(&b)) {
-        Some(key)
-    } else {
-        None
-    }
+    read_msvc_string_bytes(mem, chars, size)
 }
 
 fn stable_header<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u32, u32)> {
-    let b1 = mem.read_u64(container.saturating_add(CV_BASE))?;
-    let w1 = mem.read_u64(container.saturating_add(CV_SIZE_MASK))?;
-    let b2 = mem.read_u64(container.saturating_add(CV_BASE))?;
-    let w2 = mem.read_u64(container.saturating_add(CV_SIZE_MASK))?;
+    let (b1, w1) = stable_header_pair(mem, container)?;
+    let (b2, w2) = stable_header_pair(mem, container)?;
     if b1 != b2 || w1 != w2 {
         return None;
     }
     Some((b1, (w1 & 0xFFFF_FFFF) as u32, (w1 >> 32) as u32))
+}
+
+fn stable_header_pair<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u64)> {
+    let addr = container.saturating_add(CV_BASE);
+    let mut bytes = [0u8; 16];
+    if mem.read_into(addr, &mut bytes).is_some() {
+        return Some((read_u64_le(&bytes, 0)?, read_u64_le(&bytes, 8)?));
+    }
+    Some((
+        mem.read_u64(container.saturating_add(CV_BASE))?,
+        mem.read_u64(container.saturating_add(CV_SIZE_MASK))?,
+    ))
+}
+
+fn read_variables_container_snapshot<R: MemoryRead>(
+    mem: &R,
+    base: u64,
+    span: u64,
+    size: u32,
+) -> Option<BTreeMap<String, i64>> {
+    let span_len = usize::try_from(span).ok()?;
+    if span_len == 0 || span_len > VARIABLE_TABLE_SNAPSHOT_MAX_BYTES {
+        return None;
+    }
+    let bytes = mem.read_exact(base, span_len)?;
+    if bytes.len() != span_len {
+        return None;
+    }
+    scan_variables_snapshot(mem, &bytes, size)
+}
+
+fn scan_variables_snapshot<R: MemoryRead>(
+    mem: &R,
+    bytes: &[u8],
+    size: u32,
+) -> Option<BTreeMap<String, i64>> {
+    let target_len = size as usize;
+    let mut exact: Option<Vec<(String, i64)>> = None;
+    let mut phase = 0usize;
+    while phase < NODE_STRIDE_USIZE {
+        let mut entries = Vec::new();
+        let mut offset = phase;
+        while offset.checked_add(NODE_STRIDE_USIZE)? <= bytes.len() {
+            let node = &bytes[offset..offset + NODE_STRIDE_USIZE];
+            if let Some(key) = read_msvc_string_from_node_snapshot(mem, node) {
+                let raw = read_i64_le(node, NODE_VALUE_USIZE)?;
+                entries.push((key, raw));
+            }
+            offset = offset.checked_add(NODE_STRIDE_USIZE)?;
+        }
+        if entries.len() == target_len {
+            entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+            if !entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                if let Some(existing) = exact.as_ref() {
+                    if existing != &entries {
+                        return None;
+                    }
+                }
+                exact = Some(entries);
+            }
+        }
+        phase = phase.checked_add(8)?;
+    }
+    exact.map(|entries| entries.into_iter().collect())
+}
+
+fn read_msvc_string_from_node_snapshot<R: MemoryRead>(mem: &R, node: &[u8]) -> Option<String> {
+    let size = read_u64_le(node, 0x10)? as usize;
+    let cap = read_u64_le(node, 0x18)? as usize;
+    if size == 0 || size > MAX_KEYLEN || size > cap || cap >= (1 << 20) {
+        return None;
+    }
+    let inline = cap == 15;
+    if !inline && cap < 16 {
+        return None;
+    }
+    if inline {
+        let data = node.get(..size.checked_add(1)?)?;
+        read_msvc_string_from_bytes(data, size)
+    } else {
+        read_msvc_string_bytes(mem, read_u64_le(node, 0)?, size)
+    }
+}
+
+fn read_msvc_string_bytes<R: MemoryRead>(mem: &R, addr: u64, size: usize) -> Option<String> {
+    let len = size.checked_add(1)?;
+    if len > MAX_KEYLEN + 1 {
+        return None;
+    }
+    let mut data = [0u8; MAX_KEYLEN + 1];
+    mem.read_into(addr, &mut data[..len])?;
+    read_msvc_string_from_bytes(&data[..len], size)
+}
+
+fn read_msvc_string_from_bytes(data: &[u8], size: usize) -> Option<String> {
+    if data.get(size).copied() != Some(0) {
+        return None;
+    }
+    let key = std::str::from_utf8(data.get(..size)?).ok()?;
+    if key.bytes().all(|b| (32..=126).contains(&b)) {
+        Some(key.to_owned())
+    } else {
+        None
+    }
 }
 
 fn read_cstr<R: MemoryRead>(mem: &R, addr: u64, max_len: usize) -> Option<String> {
@@ -259,16 +380,16 @@ fn in_module(module_base: u64, value: u64) -> bool {
     (module_base..module_base.saturating_add(MODULE_SPAN_MAX)).contains(&value)
 }
 
-fn to_arr8(bytes: &[u8]) -> [u8; 8] {
+fn read_u64_le(bytes: &[u8], offset: usize) -> Option<u64> {
     let mut out = [0u8; 8];
-    out.copy_from_slice(&bytes[..8]);
-    out
+    out.copy_from_slice(bytes.get(offset..offset.checked_add(8)?)?);
+    Some(u64::from_le_bytes(out))
 }
 
-fn to_arr4(bytes: &[u8]) -> [u8; 4] {
-    let mut out = [0u8; 4];
-    out.copy_from_slice(&bytes[..4]);
-    out
+fn read_i64_le(bytes: &[u8], offset: usize) -> Option<i64> {
+    let mut out = [0u8; 8];
+    out.copy_from_slice(bytes.get(offset..offset.checked_add(8)?)?);
+    Some(i64::from_le_bytes(out))
 }
 
 #[cfg(test)]

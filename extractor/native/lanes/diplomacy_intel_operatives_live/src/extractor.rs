@@ -226,6 +226,42 @@ pub trait Domain53Memory {
     }
 }
 
+const RELATION_HOT_FIELD_START: usize = profile::DOMAIN53_RELATION_SUBREL_COUNT;
+const RELATION_HOT_FIELD_LEN: usize =
+    profile::DOMAIN53_RELATION_OPINION + std::mem::size_of::<i32>() - RELATION_HOT_FIELD_START;
+const RELATION_HOT_SUBJECT_PTR_OFFSET: usize =
+    profile::DOMAIN53_RELATION_SUBJECT_PTR - RELATION_HOT_FIELD_START;
+const RELATION_HOT_OPINION_OFFSET: usize =
+    profile::DOMAIN53_RELATION_OPINION - RELATION_HOT_FIELD_START;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RelationHotFields {
+    opinion: i32,
+    subject_ptr: u64,
+    subrel_count: i32,
+}
+
+fn read_relation_hot_fields<M: Domain53Memory>(
+    mem: &M,
+    relation_entry: u64,
+    buf: &mut [u8; RELATION_HOT_FIELD_LEN],
+) -> Result<RelationHotFields, ExtractError> {
+    mem.read_into(add_addr(relation_entry, RELATION_HOT_FIELD_START)?, buf)?;
+    Ok(RelationHotFields {
+        subrel_count: i32::from_le_bytes(buf[0..4].try_into().expect("relation hot count bytes")),
+        subject_ptr: u64::from_le_bytes(
+            buf[RELATION_HOT_SUBJECT_PTR_OFFSET..RELATION_HOT_SUBJECT_PTR_OFFSET + 8]
+                .try_into()
+                .expect("relation hot subject pointer bytes"),
+        ),
+        opinion: i32::from_le_bytes(
+            buf[RELATION_HOT_OPINION_OFFSET..RELATION_HOT_OPINION_OFFSET + 4]
+                .try_into()
+                .expect("relation hot opinion bytes"),
+        ),
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Domain53FamilyCounts {
     pub country_roots: u32,
@@ -1544,27 +1580,26 @@ fn read_relation_rows<M: Domain53Memory>(
     // — so `seen_opinions.insert((src.tag, target.tag))` ALWAYS returned `true`
     // and never deduplicated anything. Dropping it is behavior-identical. (`self`
     // pairs are skipped by the `src.tag == target.tag` guard, unchanged.)
-    // T2 deliverable (d): precompute the closed opinion-string domain once per
-    // call. `opinion` is validated into `-MAX_OPINION_ABS..=MAX_OPINION_ABS`
-    // (±200 => 401 values) before use, so the `format!("opinion_{opinion}")`
-    // string state_event argument comes from a tiny fixed set. Build all 401
-    // strings once here and index them by `(opinion + MAX_OPINION_ABS) as usize`
-    // in the pair loop instead of allocating a fresh `String` per pair. The
-    // indexed string is byte-for-byte what `format!("opinion_{opinion}")`
-    // produced (same signed decimal formatting), so `stable_hash32` of it —
-    // the only thing `state_event` keeps — is identical.
-    let opinion_labels: Vec<String> = (-MAX_OPINION_ABS..=MAX_OPINION_ABS)
-        .map(|opinion| format!("opinion_{opinion}"))
+    // T2/T4: the state-event row stores only hashes, so precompute the exact
+    // 401 value hashes instead of hashing `format!("opinion_{opinion}")` for
+    // every ordered country pair. The formatted label bytes are unchanged from
+    // the old path; only the repeated per-pair FNV work is removed.
+    let relation_opinion_object_hash = crate::compact::stable_hash32("relation_opinion");
+    let opinion_value_hashes: Vec<u32> = (-MAX_OPINION_ABS..=MAX_OPINION_ABS)
+        .map(|opinion| crate::compact::stable_hash32(&format!("opinion_{opinion}")))
         .collect();
     let mut seen_flags = BTreeSet::new();
     let mut seen_subjects = BTreeSet::new();
 
-    // T2 deliverable (e): reserve the row vectors before the pair loop. Most
-    // (src,target) pairs carry a non-default opinion, so the opinion / matching
-    // state_event vectors grow to ~country_count^2 in the dense case; a modest
-    // up-front reserve avoids repeated reallocation without over-committing.
-    // Bounded so a large country table cannot request an absurd allocation.
-    let pair_estimate = countries.len().saturating_mul(countries.len()).min(1 << 16);
+    // T2/T4: reserve the exact ordered-pair upper bound before the pair loop.
+    // The relation matrix is dense in live captures, so the old 65k cap forced
+    // multiple realloc/copy steps before reaching ~190k opinion + state-event
+    // rows. Reserving `n * (n - 1)` is still bounded defensively, and is no
+    // larger than the rows this loop can actually emit.
+    let pair_estimate = countries
+        .len()
+        .saturating_mul(countries.len().saturating_sub(1))
+        .min(1 << 20);
     acc.rows.opinions.reserve(pair_estimate);
     // Each emitted opinion also pushes one state_event; flag state_events are
     // rare on top. Reserve the same modest headroom for the shared vector.
@@ -1593,6 +1628,7 @@ fn read_relation_rows<M: Domain53Memory>(
     // this loop (the per-target lookahead block below is skipped entirely, so no
     // `prefetch_read` is issued). Default (no env) == 16, identical to before.
     let prefetch_dist_relation = prefetch_dist_relation();
+    let mut relation_hot_buf = [0u8; RELATION_HOT_FIELD_LEN];
 
     for src in countries {
         let manager_addr = add_addr(src.country_ptr, profile::DOMAIN53_RELATION_MANAGER)?;
@@ -1719,10 +1755,16 @@ fn read_relation_rows<M: Domain53Memory>(
                     continue;
                 }
             };
-            match mem.read_i32(add_addr(
-                relation_entry,
-                profile::DOMAIN53_RELATION_OPINION,
-            )?) {
+            let relation_hot =
+                read_relation_hot_fields(mem, relation_entry, &mut relation_hot_buf).ok();
+            let opinion = match relation_hot {
+                Some(fields) => Ok(fields.opinion),
+                None => mem.read_i32(add_addr(
+                    relation_entry,
+                    profile::DOMAIN53_RELATION_OPINION,
+                )?),
+            };
+            match opinion {
                 Ok(opinion) if (-MAX_OPINION_ABS..=MAX_OPINION_ABS).contains(&opinion) => {
                     // T2 (c): the removed `seen_opinions` guard always fired
                     // exactly once per (src,target) pair (unique tags => unique
@@ -1732,22 +1774,22 @@ fn read_relation_rows<M: Domain53Memory>(
                         target_tag_db_id: target.tag_db_id,
                         opinion,
                     });
-                    // T2 (d): index the precomputed label instead of
-                    // `format!("opinion_{opinion}")`. `opinion` is in
-                    // `-MAX_OPINION_ABS..=MAX_OPINION_ABS` (match guard), so
-                    // `(opinion + MAX_OPINION_ABS)` is in `0..=2*MAX_OPINION_ABS`,
-                    // a valid index into the 401-entry `opinion_labels`; the label
-                    // is byte-for-byte the old `format!` output, so `stable_hash32`
-                    // (the only value `state_event` retains) is identical.
-                    let opinion_label = &opinion_labels[(opinion + MAX_OPINION_ABS) as usize];
-                    acc.rows.state_events.push(state_event(
-                        src.tag_db_id,
-                        Some(target.tag_db_id),
-                        STATE_EVENT_SOURCE_RELATION_OPINION,
-                        "relation_opinion",
-                        opinion_label,
-                        i64::from(opinion),
-                    ));
+                    // T4: index the precomputed value hash instead of routing
+                    // through `state_event`, which would re-hash both constant
+                    // labels for every pair. `opinion` is in the guarded closed
+                    // range, so the index is valid and byte-identical to the old
+                    // `state_event(..., "relation_opinion", &format!(...))`.
+                    let opinion_value_hash =
+                        opinion_value_hashes[(opinion + MAX_OPINION_ABS) as usize];
+                    acc.rows.state_events.push(StateEventRow {
+                        owner_tag_db_id: src.tag_db_id,
+                        target_tag_db_id: Some(target.tag_db_id),
+                        event_kind: STATE_EVENT_KIND_OBSERVED,
+                        source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
+                        object_hash: relation_opinion_object_hash,
+                        value_hash: opinion_value_hash,
+                        value_raw: i64::from(opinion),
+                    });
                     acc.observe();
                 }
                 Ok(_) | Err(_) => {
@@ -1764,17 +1806,28 @@ fn read_relation_rows<M: Domain53Memory>(
             // agrees with the current relation-table direction; emit exactly once
             // from the overlord's own table entry (the subject's mirrored entry
             // shares the same object and is skipped).
-            read_subject_relation(
-                mem,
-                module_base,
-                relation_entry,
-                src.tag_db_id,
-                target.tag_db_id,
-                current_game_hour,
-                acc,
-                &mut seen_subjects,
-                &mut seen_flags,
-            );
+            let subject_ptr_read = match relation_hot {
+                Some(fields) => Ok(fields.subject_ptr),
+                None => add_addr(relation_entry, profile::DOMAIN53_RELATION_SUBJECT_PTR)
+                    .and_then(|addr| mem.read_u64(addr)),
+            };
+            match subject_ptr_read {
+                Ok(subject_ptr) if is_heap_ptr(subject_ptr) => {
+                    read_subject_relation_from_ptr(
+                        mem,
+                        module_base,
+                        subject_ptr,
+                        src.tag_db_id,
+                        target.tag_db_id,
+                        current_game_hour,
+                        acc,
+                        &mut seen_subjects,
+                        &mut seen_flags,
+                    );
+                }
+                Ok(_) => {}
+                Err(_) => acc.skip(),
+            }
 
             // Relation-flag sub-objects (non_aggression_pact, military_access,
             // docking_rights, guarantee, embargo, ...) are NOT inline in the `rel`
@@ -1786,34 +1839,42 @@ fn read_relation_rows<M: Domain53Memory>(
             // CLOSES that data gap AND retires the ~53 MB/frame + ~6.7M-qword/frame dead
             // scan. See runs/perf_rearch_20260706/RELATION_CONTAINER_RE.md (RE, Codex-
             // endorsed) + RELATION_FLAG_GAP_LEDGER.md (no-duplication ledger).
-            read_relation_container(
-                mem,
-                relation_entry,
-                &relation_vtables,
-                src.tag_db_id,
-                target.tag_db_id,
-                current_game_hour,
-                acc,
-                &mut seen_flags,
-            );
+            let subrel_count_read = match relation_hot {
+                Some(fields) => Ok(fields.subrel_count),
+                None => add_addr(relation_entry, profile::DOMAIN53_RELATION_SUBREL_COUNT)
+                    .and_then(|addr| mem.read_i32(addr)),
+            };
+            match subrel_count_read {
+                Ok(count) => read_relation_container_with_count(
+                    mem,
+                    relation_entry,
+                    count,
+                    &relation_vtables,
+                    src.tag_db_id,
+                    target.tag_db_id,
+                    current_game_hour,
+                    acc,
+                    &mut seen_flags,
+                ),
+                Err(_) => acc.skip(),
+            }
         }
     }
     Ok(())
 }
 
-/// Read a subject (puppet) relation through the `CRelationStatus+0x288` pointer
-/// hop and emit a subject row + its puppet relation flag. Called once per
-/// relation-table entry `(src, target)`. The `CSubjectRelation` object is shared
+/// Validate a non-null `CRelationStatus+0x288` subject pointer and emit a subject
+/// row + its puppet relation flag. The `CSubjectRelation` object is shared
 /// between the overlord's and the subject's mirrored table entries, so we emit
 /// ONLY from the overlord's own entry (`src == overlord && target == subject`);
-/// the mirror direction is silently ignored. Fail-closed: absent pointer →
-/// nothing; torn/short read or an object whose fields disagree with the
-/// relation-table direction → skip (never fabricate).
+/// the mirror direction is silently ignored. Fail-closed: torn/short read or an
+/// object whose fields disagree with the relation-table direction → skip (never
+/// fabricate).
 #[allow(clippy::too_many_arguments)]
-fn read_subject_relation<M: Domain53Memory>(
+fn read_subject_relation_from_ptr<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
-    relation_entry: u64,
+    subject_ptr: u64,
     src_tag_db_id: u32,
     target_tag_db_id: u32,
     current_game_hour: u32,
@@ -1821,30 +1882,6 @@ fn read_subject_relation<M: Domain53Memory>(
     seen_subjects: &mut BTreeSet<(u32, u32)>,
     seen_flags: &mut BTreeSet<(u32, u32, u16)>,
 ) {
-    // The subject pointer at +0x288 is absent for the vast majority of relation
-    // entries (only actual overlord/subject pairs carry one). Resolve the field
-    // address fail-closed (an overflow here would be a corrupt relation_entry).
-    let subject_ptr_addr = match add_addr(relation_entry, profile::DOMAIN53_RELATION_SUBJECT_PTR) {
-        Ok(value) => value,
-        Err(_) => {
-            acc.skip();
-            return;
-        }
-    };
-    let subject_ptr = match mem.read_u64(subject_ptr_addr) {
-        Ok(value) => value,
-        // A torn/short read of the pointer field is a real failure — count it so
-        // the fail-closed majority gate can react (do NOT silently omit).
-        Err(_) => {
-            acc.skip();
-            return;
-        }
-    };
-    // A null / non-heap pointer is the normal non-puppet case — return quietly
-    // WITHOUT a skip so every non-puppet relation does not perturb the gate.
-    if !is_heap_ptr(subject_ptr) {
-        return;
-    }
     // Primary type guard: the pointed object must be a CSubjectRelation.
     let expected_vtable = match add_addr(module_base, profile::DOMAIN53_REL_SUBJECT_VTABLE_RVA) {
         Ok(value) => value,
@@ -2002,7 +2039,7 @@ fn relation_kind_emitted_by_d53(kind: u16) -> bool {
 /// licence_production, embargo). Kinds owned by other domains (puppet/+0x288, market/d43,
 /// air-base/d30) are COUNTED in the diagnostic but NOT emitted here.
 ///
-/// Fail-closed like [`read_subject_relation`]: a torn read of a header field or of a
+/// Fail-closed like [`read_subject_relation_from_ptr`]: a torn read of a header field or of a
 /// matched sub-object's fields counts a skip (so the majority gate can react); an
 /// empty container (`count == 0`), a null element, or a non-relation (unknown-vtable)
 /// sibling returns quietly WITHOUT a skip — the ~64k pairs with no sub-relations must not
@@ -2018,6 +2055,7 @@ fn relation_kind_emitted_by_d53(kind: u16) -> bool {
 /// a torn/invalid entry never poisons the key for a valid mirror.
 /// See runs/perf_rearch_20260706/RELATION_CONTAINER_RE.md.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn read_relation_container<M: Domain53Memory>(
     mem: &M,
     relation_entry: u64,
@@ -2028,9 +2066,6 @@ fn read_relation_container<M: Domain53Memory>(
     acc: &mut RowAccumulator,
     seen_flags: &mut BTreeSet<(u32, u32, u16)>,
 ) {
-    // Vector header {begin @+0xD0, cap @+0xD8, count @+0xDC}. Read COUNT first so the
-    // empty vs corrupt distinction is exact. A torn read of a header field on this heap
-    // object (whose opinion @+0x300 already read cleanly) is a real failure -> skip.
     let count = match add_addr(relation_entry, profile::DOMAIN53_RELATION_SUBREL_COUNT)
         .and_then(|addr| mem.read_i32(addr))
     {
@@ -2040,6 +2075,31 @@ fn read_relation_container<M: Domain53Memory>(
             return;
         }
     };
+    read_relation_container_with_count(
+        mem,
+        relation_entry,
+        count,
+        relation_vtables,
+        src_tag_db_id,
+        target_tag_db_id,
+        current_game_hour,
+        acc,
+        seen_flags,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_relation_container_with_count<M: Domain53Memory>(
+    mem: &M,
+    relation_entry: u64,
+    count: i32,
+    relation_vtables: &BTreeMap<u64, u16>,
+    src_tag_db_id: u32,
+    target_tag_db_id: u32,
+    current_game_hour: u32,
+    acc: &mut RowAccumulator,
+    seen_flags: &mut BTreeSet<(u32, u32, u16)>,
+) {
     // Empty vector: the COMMON case for the vast majority of pairs. Quiet, NO skip.
     if count == 0 {
         return;
@@ -7054,40 +7114,37 @@ mod tests {
         }
     }
 
-    // T2 deliverable (d): the precomputed opinion-label cache indexed by
-    // `(opinion + MAX_OPINION_ABS)` must be byte-for-byte identical to the
-    // original `format!("opinion_{opinion}")` for every opinion in the validated
-    // domain — hashes included (the state_event only stores `stable_hash32`).
+    // T4: the precomputed opinion-value hash cache indexed by
+    // `(opinion + MAX_OPINION_ABS)` must equal hashing the old formatted label
+    // for every opinion in the validated domain.
     #[test]
-    fn opinion_labels_match_format_over_full_domain() {
-        let opinion_labels: Vec<String> = (-MAX_OPINION_ABS..=MAX_OPINION_ABS)
-            .map(|opinion| format!("opinion_{opinion}"))
+    fn opinion_value_hashes_match_formatted_labels_over_full_domain() {
+        let opinion_value_hashes: Vec<u32> = (-MAX_OPINION_ABS..=MAX_OPINION_ABS)
+            .map(|opinion| crate::compact::stable_hash32(&format!("opinion_{opinion}")))
             .collect();
-        assert_eq!(opinion_labels.len(), (2 * MAX_OPINION_ABS + 1) as usize);
+        assert_eq!(
+            opinion_value_hashes.len(),
+            (2 * MAX_OPINION_ABS + 1) as usize
+        );
 
-        // Full domain byte-identity + hash-identity.
+        // Full-domain hash identity.
         for opinion in -MAX_OPINION_ABS..=MAX_OPINION_ABS {
             let idx = (opinion + MAX_OPINION_ABS) as usize;
             let expected = format!("opinion_{opinion}");
-            assert_eq!(opinion_labels[idx], expected, "label bytes for {opinion}");
             assert_eq!(
-                crate::compact::stable_hash32(&opinion_labels[idx]),
+                opinion_value_hashes[idx],
                 crate::compact::stable_hash32(&expected),
-                "label hash for {opinion}"
+                "value hash for {opinion}"
             );
         }
 
         // Explicit boundary values called out by the spec.
         for opinion in [-MAX_OPINION_ABS, -1, 0, 1, MAX_OPINION_ABS] {
             let idx = (opinion + MAX_OPINION_ABS) as usize;
-            assert_eq!(opinion_labels[idx], format!("opinion_{opinion}"));
+            assert_eq!(
+                opinion_value_hashes[idx],
+                crate::compact::stable_hash32(&format!("opinion_{opinion}"))
+            );
         }
-        // Spot-check the exact spelling of the extremes.
-        assert_eq!(opinion_labels[0], "opinion_-200");
-        assert_eq!(opinion_labels[MAX_OPINION_ABS as usize], "opinion_0");
-        assert_eq!(
-            opinion_labels[(2 * MAX_OPINION_ABS) as usize],
-            "opinion_200"
-        );
     }
 }
