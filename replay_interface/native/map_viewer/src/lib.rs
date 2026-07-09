@@ -34,6 +34,7 @@ mod naval_supremacy_tint;
 mod pass_graph;
 mod pdx_mesh;
 mod political_color_synthesis;
+mod rail_files;
 mod reflection_cube_law;
 mod restore_evidence;
 mod river_mesh_synthesis;
@@ -124,13 +125,12 @@ pub use building_files::{
     building_mesh_vertex_buffer_from_model, building_pdxmesh_bindings_from_resolver,
     building_preview_instances, parse_building_entity_bindings, parse_building_pdxmesh_bindings,
     resolve_building_material_textures, resolve_show_on_map_building_bindings,
-    BuildingBindingCoverageRow, BuildingEntityBinding, BuildingMaterialTextureRef,
-    BuildingMaterialTextureReport, BuildingFileDerivedLayer, BuildingFileDerivedLayerStats,
-    BuildingMeshVertexBuffer, MeshSettingTexture,
-    BuildingPdxmeshBinding, BuildingPreviewInstance, BuildingShaderCBufferMapping,
-    BuildingShaderPreparation, ResolvedBuildingEntity, BUILDINGS_ENTITY_ASSET_SOURCE,
-    BUILDINGS_GFX_SOURCE, BUILDING_MESH_VERTEX_STRIDE_BYTES, BUILDING_SHADER_EFFECT,
-    BUILDING_SHADER_SOURCE,
+    BuildingBindingCoverageRow, BuildingEntityBinding, BuildingFileDerivedLayer,
+    BuildingFileDerivedLayerStats, BuildingMaterialTextureRef, BuildingMaterialTextureReport,
+    BuildingMeshVertexBuffer, BuildingPdxmeshBinding, BuildingPreviewInstance,
+    BuildingShaderCBufferMapping, BuildingShaderPreparation, MeshSettingTexture,
+    ResolvedBuildingEntity, BUILDINGS_ENTITY_ASSET_SOURCE, BUILDINGS_GFX_SOURCE,
+    BUILDING_MESH_VERTEX_STRIDE_BYTES, BUILDING_SHADER_EFFECT, BUILDING_SHADER_SOURCE,
 };
 pub use camera::{
     hoi4_map_camera_defines_from_bundle, map_wrap_offsets, Hoi4MapCameraDefines,
@@ -268,6 +268,16 @@ pub use political_color_synthesis::{
     PoliticalColorSamplerDescriptor, PoliticalColorSynthesis, PoliticalColorSynthesisSource,
     PoliticalColorTextureDescriptor, PROVINCE_COLOR_MAP_DXGI_FORMAT, PROVINCE_COLOR_MAP_HEIGHT,
     PROVINCE_COLOR_MAP_WIDTH, PROVINCE_SECONDARY_COLOR_MAP_SHADER_SLOT,
+};
+pub use rail_files::{
+    compute_province_centroids, parse_rail_geometry_defines, rail_file_derived_layer_from_resolver,
+    rail_geometry_defines_from_resolver, rail_polylines, rail_render_law, supply_hub_markers,
+    ProvinceCentroid, RailFileDerivedLayer, RailFileDerivedStats, RailGeometryDefines, RailLawRow,
+    RailPolyline, SupplyHubMarker, DEFINITION_CSV_SOURCE as RAIL_DEFINITION_CSV_SOURCE,
+    GRAPHICS_DEFINES_SOURCE as RAIL_GRAPHICS_DEFINES_SOURCE, MAP_HEIGHT as RAIL_MAP_HEIGHT,
+    MAP_WIDTH as RAIL_MAP_WIDTH, PROVINCES_BMP_SOURCE as RAIL_PROVINCES_BMP_SOURCE, RAIL_LEVEL_MAX,
+    RAIL_SHADER_EFFECT, RAIL_SHADER_SOURCE, RAIL_TEXTURE_DAMAGED_SOURCE, RAIL_TEXTURE_SOURCE,
+    SUPPLY_GFX_SOURCE, SUPPLY_HUB_ICON_FRAMES, SUPPLY_HUB_ICON_SPRITE, SUPPLY_HUB_ICON_TEXTURE,
 };
 pub use restore_evidence::{
     load_restore_scene_bundle, load_restore_scene_bundle_session_dir,
