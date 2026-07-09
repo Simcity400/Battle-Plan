@@ -133,7 +133,23 @@ production readers) and must never be a debug profile.
 Expected: a few ms/frame (3.17 M rc_bump calls + perf-record building), container ~2×
 smaller immediately (single representation), clean profile surface for everything after.
 
-## Phase 1b — Bounded-memory streaming fold/pack (recorder host) — PROMOTED 2026-07-09
+## Phase 1b — Bounded-memory streaming fold/pack (recorder host) — **DONE 2026-07-09**
+
+Landed (merge f8cc48d6f): streaming capture→disk with rolling SHA-256, mmap manifest gate,
+file-backed incremental fold (hour spilled + released at FRAME_END), streaming zip pack with
+per-chunk compression, streaming re-read verification, G5 telemetry (`host_finalize.*`) in
+every manifest. Proof: streaming fold chain-hash == batch fold_check chain-hash on the real
+216 MB stream (`be3d4994…`, independently reproduced by the orchestrator); peak private
+1.13 GB and FLAT across 4× stream size (867 MB → +3 MB). Hardening round (Codex review →
+Codex fix → re-review → orchestrator direct fixes): shared 2 GiB writer/reader entry cap
+enforced mid-stream; zip32 checked casts + entry-count preflight (cap 65,534 — 0xFFFF is the
+zip64 sentinel); unexpected pipe read errors now hard-fail instead of publishing a prefix
+stream; verifier checks CRC-32/flags/local headers/data descriptors; fail-closed manifest
+rewrite when the pack fails (no stale replay advertised). Known deferred: zip64 (needed for
+>65,534 entries — a full-game run — goes with the Phase 3 container overhaul); verifier
+accepts only our writer's signed-descriptor form (INFO).
+
+### Original defect record (for history)
 
 Defect (see G5): the host's post-capture replay build batch-folds the entire session in RAM
 (27–34 GB for a 300 s speed-5 mid-war run) and takes >3× the capture time. Required rewrite:
@@ -154,6 +170,20 @@ Defect (see G5): the host's post-capture replay build batch-folds the entire ses
 This phase is independent of the DLL hot loop and can proceed in parallel with Phase 2.
 
 ## Phase 2 — The Big Five: bulk-read collapse (time) + delta emission (bytes)
+
+**Status 2026-07-09:** read-side collapse LANDED for d48 (4-6x fewer reads/object,
+byte-identical, all-window-or-all-live fallback), d44 (already collapsed earlier; residual
+~22k allocs/frame removed), d41 (pool/lifecycle bulk reads + scalar fallback, payload-equal
+fixtures), and d53 W3a (exact-offset relation reader d1f0a5722: the 104-qword/832-byte blob
+scan contributed ZERO live emitted facts — real flags are the rel+0xD0 vector — so offsets
+mode eliminates ~53 MB/frame memcpy + 6.7M lookups; runtime `d53_relation_read_mode`
+offsets|scan|shadow, shadow mismatches fail-close the frame as partial).
+**PENDING before next production capture: live shadow A/B for d53** (protocol: one capture
+with `"d53_relation_read_mode":"shadow"`, require domain53_relation_shadow_mismatches == 0
+on every d53 frame; any mismatch is a blocker; only then consider deleting the scan path).
+Remaining in Phase 2: d51 (frozen-lane waiver granted), delta emission for
+d53/d41/d44/d48/d51 (the 10-15x stream-size lever), then live paired A/B vs the 07-09
+baseline.
 
 Per lane (order: d48 → d44 → d41 → d53 → d51), two changes, each gated by G1:
 
