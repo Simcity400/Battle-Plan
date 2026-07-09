@@ -390,6 +390,108 @@ pub fn production_profile_scheduled_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// Capture profile: one coherent preset cluster selected with a single
+/// `--profile production|debug` switch instead of hand-assembling the individual
+/// collector flags.
+///
+/// Both profiles run the IDENTICAL compact domain readers, the IDENTICAL
+/// DOMAIN_DATA schemas, and the IDENTICAL fold. Only emission/diagnostics
+/// verbosity differs. `stream_format=compact` in BOTH — the JSON stream format
+/// is a divergent dead path that bypasses production readers and must never be a
+/// profile.
+///
+/// This preset is the SINGLE SOURCE OF TRUTH shared by the recorder host (which
+/// resolves it into the individual `collector_control.json` fields) and the
+/// collector DLL (which re-applies it as a fallback for any preset field a
+/// control file leaves unset — e.g. the Python dev harness). In BOTH hosts an
+/// explicitly-set field always wins over the preset value.
+///
+/// Fail-closed data-loss detection is NOT a profile choice and is therefore not
+/// represented here: skipped-hour accounting, per-domain SOURCE_UNAVAILABLE /
+/// partial-data signaling, and the per-hour DOMAIN_PERF coverage heartbeat are
+/// identical and always-on in both profiles. Only instrumentation COST (per-read
+/// RC counters, phase-timing sidecar logs, full country-frame provenance) is
+/// toggled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureProfile {
+    /// Lean production capture: instrumentation cost stripped, data-loss
+    /// detection fully preserved, strict acceptance gate.
+    Production,
+    /// Full-diagnostics capture: per-read RC counters, phase-timing sidecar logs,
+    /// and full per-country provenance on; relaxed acceptance gate.
+    Debug,
+}
+
+/// The resolved preset field cluster for a [`CaptureProfile`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureProfilePreset {
+    /// Compact typed stream in both profiles (never JSON).
+    pub stream_format_compact: bool,
+    /// Expand the scheduled set to the production domain profile.
+    pub use_production_domains: bool,
+    /// Compact country frame (true) vs full per-country provenance (false).
+    pub compact_country_frame: bool,
+    /// Bounded per-frame reader fan-out (0 = unbounded / legacy).
+    pub reader_concurrency: u32,
+    /// Per-read RC counters + the `EXTRACTION_PERF_GATE` status marker. This is
+    /// pure instrumentation cost; the DOMAIN_PERF coverage records that carry the
+    /// fail-closed per-domain status flags are emitted regardless of this bit.
+    pub extraction_perf_gate: bool,
+    /// Phase-timing sidecar logs (`collector_attach.jsonl`,
+    /// `collector_compact_phase_timing.jsonl`).
+    pub sidecar_log: bool,
+    /// Skip the root-frame country-identity scan. INERT for the production domain
+    /// set — the scheduled country domains (fuel/production/focus/tech/politics/
+    /// decisions/diplomacy/construction/supply/...) force the scan via
+    /// `lightweight_root_needs_country_identity`, and the identity rows re-key
+    /// downstream DOMAIN_DATA by TAG — so it is OFF in both profiles.
+    pub lightweight_root_frame: bool,
+    /// Acceptance minimum of advanced game-hours.
+    pub min_game_hours: i32,
+}
+
+impl CaptureProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureProfile::Production => "production",
+            CaptureProfile::Debug => "debug",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<CaptureProfile> {
+        match value {
+            "production" => Some(CaptureProfile::Production),
+            "debug" => Some(CaptureProfile::Debug),
+            _ => None,
+        }
+    }
+
+    pub fn preset(self) -> CaptureProfilePreset {
+        match self {
+            CaptureProfile::Production => CaptureProfilePreset {
+                stream_format_compact: true,
+                use_production_domains: true,
+                compact_country_frame: true,
+                reader_concurrency: 12,
+                extraction_perf_gate: false,
+                sidecar_log: false,
+                lightweight_root_frame: false,
+                min_game_hours: 48,
+            },
+            CaptureProfile::Debug => CaptureProfilePreset {
+                stream_format_compact: true,
+                use_production_domains: true,
+                compact_country_frame: false,
+                reader_concurrency: 0,
+                extraction_perf_gate: true,
+                sidecar_log: true,
+                lightweight_root_frame: false,
+                min_game_hours: 12,
+            },
+        }
+    }
+}
+
 pub const fn domain(
     id: CompactDomainId,
     canonical_name: &'static str,
@@ -1073,6 +1175,35 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_profile_round_trips_and_presets_are_coherent() {
+        for profile in [CaptureProfile::Production, CaptureProfile::Debug] {
+            assert_eq!(CaptureProfile::parse(profile.as_str()), Some(profile));
+            let preset = profile.preset();
+            // Both profiles stay compact and run the production domain set.
+            assert!(preset.stream_format_compact);
+            assert!(preset.use_production_domains);
+            // lightweight_root_frame is inert for the production domain set: off in both.
+            assert!(!preset.lightweight_root_frame);
+        }
+        assert_eq!(CaptureProfile::parse("json"), None);
+        assert_eq!(CaptureProfile::parse(""), None);
+
+        let production = CaptureProfile::Production.preset();
+        assert!(production.compact_country_frame);
+        assert_eq!(production.reader_concurrency, 12);
+        assert!(!production.extraction_perf_gate);
+        assert!(!production.sidecar_log);
+        assert_eq!(production.min_game_hours, 48);
+
+        let debug = CaptureProfile::Debug.preset();
+        assert!(!debug.compact_country_frame);
+        assert_eq!(debug.reader_concurrency, 0);
+        assert!(debug.extraction_perf_gate);
+        assert!(debug.sidecar_log);
+        assert_eq!(debug.min_game_hours, 12);
+    }
 
     #[test]
     fn table_has_no_duplicate_ids_or_names() {

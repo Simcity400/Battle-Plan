@@ -1,5 +1,9 @@
 param(
-    [ValidateSet("Smoke", "ShortSpeed5", "FullGame")]
+    # Smoke/ShortSpeed5/FullGame run the lean `--profile production` preset
+    # (RC per-read counters OFF, sidecar logs OFF, compact country frame ON).
+    # Debug runs `--profile debug` (full diagnostics: RC counters ON, sidecar
+    # logs ON, full per-country provenance, relaxed min-game-hours).
+    [ValidateSet("Smoke", "ShortSpeed5", "FullGame", "Debug")]
     [string]$Mode = "FullGame",
 
     [int]$Hoi4Pid = 0,
@@ -155,6 +159,7 @@ if ($DurationSeconds -le 0) {
         "Smoke" { $DurationSeconds = 90 }
         "ShortSpeed5" { $DurationSeconds = 300 }
         "FullGame" { $DurationSeconds = 21600 }
+        "Debug" { $DurationSeconds = 300 }
     }
 }
 
@@ -163,7 +168,15 @@ if ($MinGameHours -lt 0) {
         "Smoke" { $MinGameHours = 0 }
         "ShortSpeed5" { $MinGameHours = 48 }
         "FullGame" { $MinGameHours = 48 }
+        "Debug" { $MinGameHours = 12 }
     }
+}
+
+# Debug mode captures the same production domain set with full diagnostics.
+if ($Mode -eq "Debug") {
+    $CaptureProfile = "debug"
+} else {
+    $CaptureProfile = "production"
 }
 
 if ($SampleMs -lt 0) {
@@ -239,10 +252,7 @@ $runArgs = @(
     "--duration-s", $durationArg,
     "--sample-ms", "$SampleMs",
     "--min-game-hours", "$MinGameHours",
-    "--stream-format", "compact",
-    "--extraction-perf-gate",
-    "--production",
-    "--compact-country-frame",
+    "--profile", $CaptureProfile,
     "--reader-concurrency", "$ReaderConcurrency",
     "--session-id", $SessionId,
     "--static-templates-equipment-catalog", $staticTemplatesEquipmentCatalog,
@@ -260,7 +270,7 @@ $commandLine = "& `"$collectorRecord`" " + ($runArgs | ForEach-Object {
 $commandPath = Join-Path $OutDir "production_command.ps1"
 Set-Content -LiteralPath $commandPath -Value $commandLine -Encoding UTF8
 
-Write-Host "mode=$Mode pid=$Hoi4Pid duration_s=$durationArg min_game_hours=$MinGameHours sample_ms=$SampleMs reader_concurrency=$ReaderConcurrency"
+Write-Host "mode=$Mode profile=$CaptureProfile pid=$Hoi4Pid duration_s=$durationArg min_game_hours=$MinGameHours sample_ms=$SampleMs reader_concurrency=$ReaderConcurrency"
 Write-Host "out_dir=$OutDir"
 Write-Host "command_file=$commandPath"
 

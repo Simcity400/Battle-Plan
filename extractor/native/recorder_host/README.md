@@ -9,6 +9,57 @@ hook alive for the worker duration, reads the DLL named-pipe stream, writes
 either debug `collector_frames.jsonl` or compact `collector_stream.bin`, and
 emits `native_session_manifest.json` with cadence and skipped-hour diagnostics.
 
+## Capture profiles (`--profile production|debug`)
+
+`--profile` selects one coherent preset cluster instead of hand-assembling the
+individual flags. It is defined once in `compact_contract::CaptureProfile`
+(single source of truth shared with the collector DLL) and written verbatim as
+the `profile` field of `collector_control.json`.
+
+**Both profiles are identical where it matters:** the same compact stream, the
+same compact domain reader code, the same `DOMAIN_DATA` schemas, and the same
+fold. Only emission/diagnostics verbosity differs. `--stream-format json` is a
+divergent dead path that bypasses the production readers and is **never** a
+profile — both profiles are compact.
+
+**Both profiles preserve every fail-closed data-loss guarantee**, always-on and
+never a preset choice: hourly cadence (`scheduled_snapshot_step_hours=1`),
+skipped-hour accounting, per-domain `SOURCE_UNAVAILABLE` / partial-data
+signaling, and the per-hour `DOMAIN_PERF` coverage heartbeat that the host's
+coverage gate consumes. Only instrumentation **cost** is toggled.
+
+| Knob | `production` | `debug` | Legacy (no `--profile`) |
+|---|---|---|---|
+| `stream_format` | compact | compact | json |
+| production domain set | scheduled | scheduled | only if `--production` |
+| `compact_country_frame` | on | off (full provenance) | off |
+| `reader_concurrency` | 12 | 0 (unbounded) | 0 (`--production` -> 12) |
+| `extraction_perf_gate` (RC per-read counters) | **off** | on | off |
+| `sidecar_log` (phase-timing logs) | off | on | off |
+| `lightweight_root_frame` | off | off | off |
+| `min_game_hours` | 48 | 12 | 12 |
+
+- **Override semantics:** any explicitly-passed individual flag wins over its
+  preset value (`--extraction-perf-gate`, `--sidecar-log`, `--compact-country-frame`,
+  `--lightweight-root-frame`, `--reader-concurrency N`, `--min-game-hours N`,
+  `--stream-format ...`). The collector DLL applies the same fallback for any
+  preset field a control file leaves unset (e.g. the Python dev harness).
+- **Omitting `--profile` is exact legacy behavior** — no preset is applied.
+- **`DOMAIN_PERF` records are emitted in BOTH profiles** (they are NOT gated on
+  `extraction_perf_gate`). They are ~0.1 % of stream bytes but are load-bearing:
+  the host coverage gate (`compact_domain_coverage_errors`) requires exactly one
+  `DOMAIN_PERF` record per scheduled domain per frame hour and reads its
+  per-domain `status_flags` for `SOURCE_UNAVAILABLE`/partial-data detection. Only
+  the per-read RC counters (`rc_bump`, ~3.17 M calls/frame) and the perf
+  diagnostic-unit trailer are instrumentation cost, and those are what
+  `extraction_perf_gate=false` turns off.
+- **`lightweight_root_frame` stays off in both profiles.** For the production
+  domain set it is inert: the scheduled country-identity-dependent domains
+  (fuel/production/focus/tech/politics/decisions/diplomacy/construction/supply/…)
+  force the country-identity scan via `lightweight_root_needs_country_identity`,
+  and the identity rows (tag <-> tag_db_id) re-key downstream `DOMAIN_DATA` by
+  TAG. Setting the flag would buy nothing and risk dropping replay-consumed data.
+
 Current scope:
 
 - Production-shaped transport: `hoi4.exe` -> DLL collector -> compact binary

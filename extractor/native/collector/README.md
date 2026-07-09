@@ -55,6 +55,42 @@ file writes by default; the pipe is the authoritative transport. This does not
 patch HOI4 code. Worker mode is honored only inside `hoi4.exe`; the
 controller-side DLL load remains a one-shot attach heartbeat.
 
+## Capture profile (`profile` control key)
+
+The recorder host's `--profile production|debug` switch writes a `profile` field
+into `collector_control.json`. The DLL parses it and, for any preset-affected
+field a control file leaves **unset**, applies the shared
+`compact_contract::CaptureProfile` preset (single source of truth with the host).
+An explicitly-present JSON field always wins over the preset — the same override
+semantics as the host. The host writes every field explicitly, so this fallback
+only matters when a different writer (the Python dev harness) sets `profile`
+without every field.
+
+| control key | `production` | `debug` |
+|---|---|---|
+| `stream_format` | compact | compact |
+| `compact_country_frame` | true | false |
+| `reader_concurrency` | 12 | 0 |
+| `extraction_perf_gate` (RC per-read counters) | false | true |
+| `sidecar_log` | false | true |
+| `lightweight_root_frame` | false | false |
+
+Both profiles run the identical compact readers, schemas, and fold, and both
+preserve every fail-closed data-loss signal (hourly cadence, per-domain
+`SOURCE_UNAVAILABLE`/partial-data flags, and the per-hour `DOMAIN_PERF` coverage
+records — which are emitted regardless of `extraction_perf_gate`). Only
+instrumentation cost differs: `extraction_perf_gate=false` skips the per-read
+`rc_bump` counters, and `sidecar_log=false` skips the phase-timing sidecar files.
+
+**Python-dev-harness control keys.** The `*_bridge` / `*_filter` / `map_control_*`
+keys the DLL parses (`country_object_bridge`, `country_record_bridge`,
+`army_body_bridge`, `naval_combat_body_bridge`, `air_wing_body_bridge`,
+`ship_body_bridge`, `oob_command_bridge`, `war_relation_bridge`, `tech_def_filter`,
+`map_control_*`) are **not** written by the Rust `recorder_host`. They are written
+by the Python dev harness (`extractor/live_capture/collector_session.py` via the
+`collector_*_bridge.py` preflight modules) for bridge/RE workflows, so they are
+live (not dead) and are intentionally retained.
+
 The legacy Python session wrapper can reassemble pipe frames into a validated
 `collector_frames.jsonl` stream inside a development run directory. The
 production replacement is the Rust/native recorder that consumes compact

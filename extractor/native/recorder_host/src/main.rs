@@ -684,6 +684,15 @@ struct Config {
     advisor_token_filter: Option<String>,
     session_id: String,
     stream_format: StreamFormat,
+    /// The coherent capture profile this run resolved to, if `--profile` was
+    /// passed. `None` = legacy behavior (no preset applied). Surfaced verbatim in
+    /// `collector_control.json` so the DLL can re-apply preset fallbacks for any
+    /// field a control file leaves unset (same override semantics as the host).
+    profile: Option<compact_contract::CaptureProfile>,
+    /// Phase-timing sidecar logs (`collector_attach.jsonl`,
+    /// `collector_compact_phase_timing.jsonl`). Pure instrumentation; profile-
+    /// driven (debug on, production off). Never gates data-loss detection.
+    sidecar_log: bool,
     extraction_perf_gate: bool,
     /// Plan-v2 P2b lever A: bound the collector's per-frame reader fan-out to at
     /// most this many concurrently-running domain workers (0 = unbounded = legacy).
@@ -1203,19 +1212,25 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut duration_ms = 180_000u32;
     let mut sample_ms = 10u32;
     let mut dwell_ms = 250u64;
-    let mut min_game_hours = 12i32;
+    // Preset-affected knobs are tracked as `Option` so an explicitly-passed flag
+    // can be distinguished from "not passed" and thus OVERRIDE its profile preset
+    // value. `None` after parsing means: use the preset (if `--profile` given)
+    // else the legacy default.
+    let mut min_game_hours: Option<i32> = None;
     let mut scheduled_domains = Vec::new();
     let mut production = false;
-    let mut lightweight_root_frame = false;
+    let mut profile: Option<compact_contract::CaptureProfile> = None;
+    let mut lightweight_root_frame: Option<bool> = None;
     let mut special_projects_scan = false;
-    let mut compact_country_frame = false;
+    let mut compact_country_frame: Option<bool> = None;
     let mut division_body_bridge = None;
     let mut special_projects_bridge = None;
     let mut idea_group_filter = None;
     let mut advisor_token_filter = None;
     let mut session_id = None;
-    let mut stream_format = StreamFormat::Json;
-    let mut extraction_perf_gate = false;
+    let mut stream_format: Option<StreamFormat> = None;
+    let mut sidecar_log: Option<bool> = None;
+    let mut extraction_perf_gate: Option<bool> = None;
     let mut reader_concurrency = None;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
@@ -1252,7 +1267,11 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--min-game-hours" => {
                 i += 1;
-                min_game_hours = parse_i32(args.get(i), "--min-game-hours")?;
+                min_game_hours = Some(parse_i32(args.get(i), "--min-game-hours")?);
+            }
+            "--profile" => {
+                i += 1;
+                profile = Some(parse_profile(args.get(i), "--profile")?);
             }
             "--scheduled-domain" => {
                 i += 1;
@@ -1263,9 +1282,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 }
             }
             "--production" => production = true,
-            "--lightweight-root-frame" => lightweight_root_frame = true,
+            "--lightweight-root-frame" => lightweight_root_frame = Some(true),
             "--special-projects-scan" => special_projects_scan = true,
-            "--compact-country-frame" => compact_country_frame = true,
+            "--compact-country-frame" => compact_country_frame = Some(true),
+            "--sidecar-log" => sidecar_log = Some(true),
             "--division-body-bridge" => {
                 i += 1;
                 division_body_bridge = Some(required(args.get(i), "--division-body-bridge")?);
@@ -1306,9 +1326,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--stream-format" => {
                 i += 1;
-                stream_format = parse_stream_format(args.get(i), "--stream-format")?;
+                stream_format = Some(parse_stream_format(args.get(i), "--stream-format")?);
             }
-            "--extraction-perf-gate" => extraction_perf_gate = true,
+            "--extraction-perf-gate" => extraction_perf_gate = Some(true),
             "--reader-concurrency" => {
                 i += 1;
                 reader_concurrency = Some(parse_u32(args.get(i), "--reader-concurrency")?);
@@ -1382,6 +1402,46 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         }
         i += 1;
     }
+    // Resolve the `--profile` preset with per-field override semantics: an
+    // explicitly-passed flag (`Some(..)`) always wins; otherwise the preset
+    // value is used (if a profile was given); otherwise the legacy default. Both
+    // profiles run the identical compact readers/schemas/fold — only emission and
+    // diagnostics verbosity differ. Data-loss detection is never a preset choice.
+    let preset = profile.map(compact_contract::CaptureProfile::preset);
+    let stream_format = stream_format
+        .or_else(|| {
+            preset.map(|preset| {
+                if preset.stream_format_compact {
+                    StreamFormat::Compact
+                } else {
+                    StreamFormat::Json
+                }
+            })
+        })
+        .unwrap_or(StreamFormat::Json);
+    // `--production` (legacy) and either profile both expand the production
+    // domain set. `production` here means "capture the production domain profile
+    // + its required static-artifact accounting", which the debug profile also
+    // wants.
+    let production = production
+        || preset
+            .map(|preset| preset.use_production_domains)
+            .unwrap_or(false);
+    let compact_country_frame = compact_country_frame
+        .or_else(|| preset.map(|preset| preset.compact_country_frame))
+        .unwrap_or(false);
+    let lightweight_root_frame = lightweight_root_frame
+        .or_else(|| preset.map(|preset| preset.lightweight_root_frame))
+        .unwrap_or(false);
+    let extraction_perf_gate = extraction_perf_gate
+        .or_else(|| preset.map(|preset| preset.extraction_perf_gate))
+        .unwrap_or(false);
+    let sidecar_log = sidecar_log
+        .or_else(|| preset.map(|preset| preset.sidecar_log))
+        .unwrap_or(false);
+    let min_game_hours = min_game_hours
+        .or_else(|| preset.map(|preset| preset.min_game_hours))
+        .unwrap_or(12);
     if production {
         for domain in compact_contract::production_profile_scheduled_names() {
             if !scheduled_domains.iter().any(|existing| existing == domain) {
@@ -1389,7 +1449,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
         }
     }
-    let reader_concurrency = reader_concurrency.unwrap_or(if production { 12 } else { 0 });
+    let reader_concurrency = reader_concurrency
+        .or_else(|| preset.map(|preset| preset.reader_concurrency))
+        .unwrap_or(if production { 12 } else { 0 });
     let dll = dll.ok_or_else(usage)?;
     let dll = fs::canonicalize(&dll).map_err(|e| format!("dll not found: {e}"))?;
     Ok(Config {
@@ -1411,6 +1473,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         advisor_token_filter,
         session_id: session_id.unwrap_or_else(|| format!("native_{}", pipe_token())),
         stream_format,
+        profile,
+        sidecar_log,
         extraction_perf_gate,
         reader_concurrency,
         static_artifacts: {
@@ -1573,7 +1637,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -1589,6 +1653,20 @@ fn usage() -> String {
       profile, unioned with explicit --scheduled-domain values. When omitted,\n\
       --reader-concurrency defaults to 12 for --production and 0 (unbounded) for\n\
       non-production probes; explicit --reader-concurrency always wins.\n\
+      \n\
+      --profile production|debug selects one coherent preset cluster instead of\n\
+      hand-assembling flags. BOTH profiles run the identical compact domain\n\
+      readers, schemas, and fold, and BOTH preserve every fail-closed data-loss\n\
+      guarantee (hourly cadence, skipped-hour accounting, per-domain\n\
+      SOURCE_UNAVAILABLE / partial-data signaling, per-hour DOMAIN_PERF coverage);\n\
+      only instrumentation/diagnostics verbosity differs. production =>\n\
+      compact stream, production domain set, compact_country_frame=on,\n\
+      reader_concurrency=12, RC per-read counters OFF, sidecar logs OFF,\n\
+      min_game_hours=48. debug => compact stream, production domain set,\n\
+      compact_country_frame=off (full provenance), RC counters ON, sidecar logs\n\
+      ON, min_game_hours=12. Any explicit individual flag OVERRIDES its preset\n\
+      value. Omitting --profile is exact legacy behavior (no preset applied).\n\
+      (--stream-format json is a divergent dead path and is never a profile.)\n\
       \n\
         --static-templates-equipment-catalog path   domain-59 templates/equipment catalog JSON\n\
                                                     (templates_equipment_catalog_gate.py out/ dir:\n\
@@ -1649,6 +1727,15 @@ fn parse_stream_format(value: Option<&String>, flag: &str) -> Result<StreamForma
             "invalid {flag}: expected json or compact, got {other:?}"
         )),
     }
+}
+
+fn parse_profile(
+    value: Option<&String>,
+    flag: &str,
+) -> Result<compact_contract::CaptureProfile, String> {
+    let raw = required(value, flag)?;
+    compact_contract::CaptureProfile::parse(&raw)
+        .ok_or_else(|| format!("invalid {flag}: expected production or debug, got {raw:?}"))
 }
 
 fn validate_domain(domain: &str) -> Result<(), String> {
@@ -3080,6 +3167,12 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "duration_ms": cfg.duration_ms,
         "pipe_token": pipe_token,
         "sample_ms": cfg.sample_ms,
+        // The host resolves the `--profile` preset into every individual field
+        // below (with per-field override semantics), so a Rust-host-written
+        // control file is fully explicit. `profile` is written verbatim so the
+        // DLL can re-apply the preset as a fallback for any field a *different*
+        // writer (e.g. the Python dev harness) leaves unset. `null` = legacy.
+        "profile": cfg.profile.map(|profile| profile.as_str()),
         "country_object_scan": false,
         "special_projects_scan": cfg.special_projects_scan,
         "lightweight_root_frame": cfg.lightweight_root_frame,
@@ -3087,8 +3180,10 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "stream_format": cfg.stream_format.as_str(),
         "extraction_perf_gate": cfg.extraction_perf_gate,
         "reader_concurrency": cfg.reader_concurrency,
+        // Cadence thinning is FORBIDDEN (zero-data-loss): every scheduled domain
+        // is captured hourly. This is always 1 and never a profile choice.
         "scheduled_snapshot_step_hours": 1,
-        "sidecar_log": false,
+        "sidecar_log": cfg.sidecar_log,
         "session_id": cfg.session_id,
         "scheduled_domains": scheduled_domains,
         "division_body_bridge": cfg.division_body_bridge.as_deref(),
@@ -21777,6 +21872,8 @@ mod tests {
             advisor_token_filter: None,
             session_id: "pack test/session".to_string(),
             stream_format: StreamFormat::Compact,
+            profile: None,
+            sidecar_log: false,
             extraction_perf_gate: true,
             reader_concurrency: 0,
             static_artifacts: Vec::new(),
@@ -22092,6 +22189,195 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    fn profile_test_args(dir: &Path, extra: &[&str]) -> Vec<String> {
+        let dll = dir.join("collector.dll");
+        fs::write(&dll, b"").unwrap();
+        let mut args = vec![
+            "--pid".to_string(),
+            "1234".to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("out").display().to_string(),
+        ];
+        args.extend(extra.iter().map(|value| value.to_string()));
+        args
+    }
+
+    #[test]
+    fn parse_args_profile_production_preset_cluster() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_profile_prod_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = parse_args(profile_test_args(&dir, &["--profile", "production"])).unwrap();
+
+        assert_eq!(
+            cfg.profile,
+            Some(compact_contract::CaptureProfile::Production)
+        );
+        assert_eq!(cfg.stream_format, StreamFormat::Compact);
+        assert!(
+            cfg.production,
+            "production profile uses the production domain set"
+        );
+        assert!(cfg.compact_country_frame);
+        assert_eq!(cfg.reader_concurrency, 12);
+        assert!(!cfg.extraction_perf_gate, "RC counters off in production");
+        assert!(!cfg.sidecar_log, "sidecar logs off in production");
+        assert!(
+            !cfg.lightweight_root_frame,
+            "inert for the production domain set"
+        );
+        assert_eq!(cfg.min_game_hours, 48);
+        // The production domain set is scheduled.
+        for profile_domain in compact_contract::production_profile_scheduled_names() {
+            assert!(
+                cfg.scheduled_domains.iter().any(|d| d == profile_domain),
+                "{profile_domain} missing from --profile production"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_profile_debug_preset_cluster() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_profile_debug_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = parse_args(profile_test_args(&dir, &["--profile", "debug"])).unwrap();
+
+        assert_eq!(cfg.profile, Some(compact_contract::CaptureProfile::Debug));
+        assert_eq!(cfg.stream_format, StreamFormat::Compact);
+        assert!(
+            cfg.production,
+            "debug profile still uses the production domain set"
+        );
+        assert!(!cfg.compact_country_frame, "full provenance in debug");
+        assert_eq!(cfg.reader_concurrency, 0);
+        assert!(cfg.extraction_perf_gate, "RC counters on in debug");
+        assert!(cfg.sidecar_log, "sidecar logs on in debug");
+        assert!(!cfg.lightweight_root_frame);
+        assert_eq!(cfg.min_game_hours, 12);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_explicit_flags_override_profile_preset() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_profile_override_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Production preset would give compact_country_frame=on, perf-gate off,
+        // sidecar off, rc=12, min_game_hours=48; every one is overridden here.
+        let cfg = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--extraction-perf-gate",
+                "--sidecar-log",
+                "--reader-concurrency",
+                "4",
+                "--min-game-hours",
+                "9",
+                "--lightweight-root-frame",
+            ],
+        ))
+        .unwrap();
+
+        assert_eq!(
+            cfg.profile,
+            Some(compact_contract::CaptureProfile::Production)
+        );
+        assert!(
+            cfg.extraction_perf_gate,
+            "explicit flag overrides preset off"
+        );
+        assert!(cfg.sidecar_log, "explicit flag overrides preset off");
+        assert_eq!(cfg.reader_concurrency, 4);
+        assert_eq!(cfg.min_game_hours, 9);
+        assert!(cfg.lightweight_root_frame);
+        // Not overridden -> preset value retained.
+        assert!(cfg.compact_country_frame);
+        assert_eq!(cfg.stream_format, StreamFormat::Compact);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_no_profile_is_exact_legacy_behavior() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_profile_legacy_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = parse_args(profile_test_args(&dir, &[])).unwrap();
+
+        assert_eq!(cfg.profile, None);
+        assert_eq!(cfg.stream_format, StreamFormat::Json);
+        assert!(!cfg.production);
+        assert!(!cfg.compact_country_frame);
+        assert!(!cfg.extraction_perf_gate);
+        assert!(!cfg.sidecar_log);
+        assert!(!cfg.lightweight_root_frame);
+        assert_eq!(cfg.min_game_hours, 12);
+        assert_eq!(cfg.reader_concurrency, 0);
+        assert!(cfg.scheduled_domains.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_profile() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_profile_bad_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let err = parse_args(profile_test_args(&dir, &["--profile", "json"])).unwrap_err();
+        assert!(err.contains("invalid --profile"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_control_file_round_trips_profile_and_sidecar() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_control_rt_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = parse_args(profile_test_args(&dir, &["--profile", "debug"])).unwrap();
+        write_control_file(&cfg, "tok").unwrap();
+        let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
+
+        assert!(
+            control.contains("\"profile\":\"debug\""),
+            "control: {control}"
+        );
+        assert!(control.contains("\"sidecar_log\":true"));
+        assert!(control.contains("\"extraction_perf_gate\":true"));
+        assert!(control.contains("\"compact_country_frame\":false"));
+        assert!(control.contains("\"stream_format\":\"compact\""));
+        assert!(control.contains("\"scheduled_snapshot_step_hours\":1"));
+
+        // No profile -> null, legacy defaults preserved in the control file.
+        let cfg_legacy = parse_args(profile_test_args(&dir, &[])).unwrap();
+        write_control_file(&cfg_legacy, "tok").unwrap();
+        let legacy = fs::read_to_string(dir.join("collector_control.json")).unwrap();
+        assert!(legacy.contains("\"profile\":null"), "legacy: {legacy}");
+        assert!(legacy.contains("\"sidecar_log\":false"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn production_profile_summary_populates_mismatch_lists() {
         let cfg = test_config(
@@ -22212,6 +22498,8 @@ mod tests {
             advisor_token_filter: None,
             session_id: "test-session".to_string(),
             stream_format: StreamFormat::Compact,
+            profile: None,
+            sidecar_log: false,
             extraction_perf_gate: true,
             reader_concurrency: 0,
             static_artifacts: Vec::new(),
