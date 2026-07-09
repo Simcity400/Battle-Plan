@@ -22,7 +22,7 @@ use crate::compact::{
 };
 use compact_contract::build_profile as profile;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::Instant;
 
 pub const EXPECTED_HOI4_SHA256_870EBF: &str =
@@ -235,6 +235,55 @@ const RELATION_HOT_OPINION_OFFSET: usize =
     profile::DOMAIN53_RELATION_OPINION - RELATION_HOT_FIELD_START;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Domain53RelationReadMode {
+    Scan,
+    Offsets,
+    Shadow,
+}
+
+impl Domain53RelationReadMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Scan => "scan",
+            Self::Offsets => "offsets",
+            Self::Shadow => "shadow",
+        }
+    }
+}
+
+const DOMAIN53_RELATION_READ_MODE_SCAN: u8 = 0;
+const DOMAIN53_RELATION_READ_MODE_OFFSETS: u8 = 1;
+const DOMAIN53_RELATION_READ_MODE_SHADOW: u8 = 2;
+
+static DOMAIN53_RELATION_READ_MODE: AtomicU8 = AtomicU8::new(DOMAIN53_RELATION_READ_MODE_OFFSETS);
+
+pub fn parse_relation_read_mode(raw: Option<&str>) -> Domain53RelationReadMode {
+    match raw.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("scan") => Domain53RelationReadMode::Scan,
+        Some(value) if value.eq_ignore_ascii_case("shadow") => Domain53RelationReadMode::Shadow,
+        Some(value) if value.eq_ignore_ascii_case("offsets") => Domain53RelationReadMode::Offsets,
+        _ => Domain53RelationReadMode::Offsets,
+    }
+}
+
+pub fn set_relation_read_mode(mode: Domain53RelationReadMode) {
+    let raw = match mode {
+        Domain53RelationReadMode::Scan => DOMAIN53_RELATION_READ_MODE_SCAN,
+        Domain53RelationReadMode::Offsets => DOMAIN53_RELATION_READ_MODE_OFFSETS,
+        Domain53RelationReadMode::Shadow => DOMAIN53_RELATION_READ_MODE_SHADOW,
+    };
+    DOMAIN53_RELATION_READ_MODE.store(raw, Ordering::Relaxed);
+}
+
+pub fn relation_read_mode() -> Domain53RelationReadMode {
+    match DOMAIN53_RELATION_READ_MODE.load(Ordering::Relaxed) {
+        DOMAIN53_RELATION_READ_MODE_SCAN => Domain53RelationReadMode::Scan,
+        DOMAIN53_RELATION_READ_MODE_SHADOW => Domain53RelationReadMode::Shadow,
+        _ => Domain53RelationReadMode::Offsets,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RelationHotFields {
     opinion: i32,
     subject_ptr: u64,
@@ -358,6 +407,9 @@ pub struct ExtractedDomain53Frame {
     /// Observational only; see [`RelationFlagOffsetHistogram`]. Deterministic
     /// given the scanned blobs, so it does not perturb the derived `PartialEq`.
     pub relflag_offsets: RelationFlagOffsetHistogram,
+    /// W3a shadow gate: non-zero when relation offsets and legacy scan passes
+    /// emitted different relation rows or skip/observe counts.
+    pub relation_shadow_mismatches: u64,
 }
 
 pub const DOMAIN53_DISCOVERY_DEGRADED: &str = "domain53_discovery_degraded";
@@ -390,9 +442,11 @@ struct CountryRoot {
 /// the melt oracle (e.g. NAP 615, docking_rights 165, military_access 43 on D04 1944).
 ///
 /// HISTORY: this struct previously held the inline-scan match-OFFSET bitmask (the
-/// W3-a0 instrument that proved the inline scan matched 0). The inline scan is now
-/// removed; the field `per_kind[K].0` is repurposed from an offset bitmask to a plain
-/// COUNT, and `.1` is left 0. Surfaced UNCHANGED through the collector's DOMAIN_PERF
+/// W3-a0 instrument that proved the inline scan matched 0). The default offsets path
+/// does not run that scan; the retained `scan`/`shadow` debug paths count legacy scan
+/// hits in the same count-based diagnostic channel. The field `per_kind[K].0` is
+/// repurposed from an offset bitmask to a plain COUNT, and `.1` is left 0.
+/// Surfaced UNCHANGED through the collector's DOMAIN_PERF
 /// trailer as `domain53_relflag_k{K}_offlo` (= per-kind count) and
 /// `domain53_relflag_total_matches` (= total known-kind container entries). No collector
 /// change. Purely diagnostic: it never changes a row, wire byte, guarded read, status,
@@ -416,6 +470,15 @@ impl RelationFlagOffsetHistogram {
         entry.0 = entry.0.saturating_add(1);
         self.total_matches = self.total_matches.saturating_add(1);
     }
+
+    fn merge_from(&mut self, other: &Self) {
+        for (&flag_kind, &(count, high)) in &other.per_kind {
+            let entry = self.per_kind.entry(flag_kind).or_default();
+            entry.0 = entry.0.saturating_add(count);
+            entry.1 = entry.1.saturating_add(high);
+        }
+        self.total_matches = self.total_matches.saturating_add(other.total_matches);
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -427,6 +490,7 @@ struct RowAccumulator {
     /// accumulated at the relation scan's match site. Diagnostic only (see
     /// [`RelationFlagOffsetHistogram`]).
     relflag_offsets: RelationFlagOffsetHistogram,
+    relation_shadow_mismatches: u64,
 }
 
 impl RowAccumulator {
@@ -436,6 +500,21 @@ impl RowAccumulator {
 
     fn observe(&mut self) {
         self.observed_rows = self.observed_rows.saturating_add(1);
+    }
+
+    fn merge_relation_rows_from(&mut self, mut other: Self) {
+        self.rows.opinions.append(&mut other.rows.opinions);
+        self.rows
+            .relation_flags
+            .append(&mut other.rows.relation_flags);
+        self.rows.subjects.append(&mut other.rows.subjects);
+        self.rows.state_events.append(&mut other.rows.state_events);
+        self.skipped_rows = self.skipped_rows.saturating_add(other.skipped_rows);
+        self.observed_rows = self.observed_rows.saturating_add(other.observed_rows);
+        self.relflag_offsets.merge_from(&other.relflag_offsets);
+        self.relation_shadow_mismatches = self
+            .relation_shadow_mismatches
+            .saturating_add(other.relation_shadow_mismatches);
     }
 }
 
@@ -1020,6 +1099,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         // W3-a0 observational instrument: carry the relation-flag match-offset
         // histogram out to the collector's DOMAIN_PERF trailer. Diagnostic only.
         relflag_offsets: acc.relflag_offsets,
+        relation_shadow_mismatches: acc.relation_shadow_mismatches,
     })
 }
 
@@ -1567,9 +1647,111 @@ fn read_relation_rows<M: Domain53Memory>(
     countries: &[CountryRoot],
     acc: &mut RowAccumulator,
 ) -> Result<(), ExtractError> {
+    read_relation_rows_for_mode(
+        mem,
+        module_base,
+        current_game_hour,
+        countries,
+        acc,
+        relation_read_mode(),
+    )
+}
+
+fn read_relation_rows_for_mode<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    current_game_hour: u32,
+    countries: &[CountryRoot],
+    acc: &mut RowAccumulator,
+    mode: Domain53RelationReadMode,
+) -> Result<(), ExtractError> {
+    match mode {
+        Domain53RelationReadMode::Offsets => read_relation_rows_impl(
+            mem,
+            module_base,
+            current_game_hour,
+            countries,
+            acc,
+            RelationReadPass::Offsets,
+        ),
+        Domain53RelationReadMode::Scan => read_relation_rows_impl(
+            mem,
+            module_base,
+            current_game_hour,
+            countries,
+            acc,
+            RelationReadPass::Scan,
+        ),
+        Domain53RelationReadMode::Shadow => {
+            let mut offsets = RowAccumulator::default();
+            let mut scan = RowAccumulator::default();
+            read_relation_rows_impl(
+                mem,
+                module_base,
+                current_game_hour,
+                countries,
+                &mut offsets,
+                RelationReadPass::Offsets,
+            )?;
+            read_relation_rows_impl(
+                mem,
+                module_base,
+                current_game_hour,
+                countries,
+                &mut scan,
+                RelationReadPass::Scan,
+            )?;
+            let mismatches = relation_shadow_mismatch_count(&offsets, &scan);
+            acc.merge_relation_rows_from(offsets);
+            acc.relation_shadow_mismatches =
+                acc.relation_shadow_mismatches.saturating_add(mismatches);
+            Ok(())
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelationReadPass {
+    Offsets,
+    Scan,
+}
+
+fn relation_shadow_mismatch_count(offsets: &RowAccumulator, scan: &RowAccumulator) -> u64 {
+    let mut count = 0u64;
+    if offsets.rows != scan.rows {
+        count = count.saturating_add(1);
+    }
+    if offsets.skipped_rows != scan.skipped_rows {
+        count = count.saturating_add(1);
+    }
+    if offsets.observed_rows != scan.observed_rows {
+        count = count.saturating_add(1);
+    }
+    count
+}
+
+fn read_relation_rows_impl<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    current_game_hour: u32,
+    countries: &[CountryRoot],
+    acc: &mut RowAccumulator,
+    pass: RelationReadPass,
+) -> Result<(), ExtractError> {
     // The relation-flag vtables (13 kinds) used to classify each sub-object found in
     // the per-pair `pdx::vector<CRelation*>` container (see `read_relation_container`).
     let relation_vtables = relation_vtable_kinds(module_base)?;
+    let (vtable_min, vtable_max) = match (
+        relation_vtables.keys().next().copied(),
+        relation_vtables.keys().next_back().copied(),
+    ) {
+        (Some(min), Some(max)) => (min, max),
+        _ => {
+            return Err(ExtractError::InvalidRoot(
+                "domain53_relation_vtable_map_empty",
+            ));
+        }
+    };
     // T2 deliverable (c): `seen_opinions` REMOVED. `resolve_country_roots`
     // dedups countries by `tag_db_id` (its `seen.insert(tag_db_id)` gate, only
     // pushing a `CountryRoot` on first sight of a tag), so every element of
@@ -1629,6 +1811,7 @@ fn read_relation_rows<M: Domain53Memory>(
     // `prefetch_read` is issued). Default (no env) == 16, identical to before.
     let prefetch_dist_relation = prefetch_dist_relation();
     let mut relation_hot_buf = [0u8; RELATION_HOT_FIELD_LEN];
+    let mut relation_scan_buf = [0u8; profile::DOMAIN53_RELATION_SCAN_BYTES];
 
     for src in countries {
         let manager_addr = add_addr(src.country_ptr, profile::DOMAIN53_RELATION_MANAGER)?;
@@ -1858,9 +2041,79 @@ fn read_relation_rows<M: Domain53Memory>(
                 ),
                 Err(_) => acc.skip(),
             }
+            if pass == RelationReadPass::Scan {
+                legacy_scan_relation_blob(
+                    mem,
+                    relation_entry,
+                    &mut relation_scan_buf,
+                    &relation_vtables,
+                    vtable_min,
+                    vtable_max,
+                    src.tag_db_id,
+                    target.tag_db_id,
+                    acc,
+                    &mut seen_flags,
+                );
+            }
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn legacy_scan_relation_blob<M: Domain53Memory>(
+    mem: &M,
+    relation_entry: u64,
+    scan_buf: &mut [u8; profile::DOMAIN53_RELATION_SCAN_BYTES],
+    relation_vtables: &BTreeMap<u64, u16>,
+    vtable_min: u64,
+    vtable_max: u64,
+    src_tag_db_id: u32,
+    target_tag_db_id: u32,
+    acc: &mut RowAccumulator,
+    seen_flags: &mut BTreeSet<(u32, u32, u16)>,
+) {
+    if mem.read_into(relation_entry, scan_buf).is_err() {
+        acc.skip();
+        return;
+    }
+    for bytes in scan_buf.chunks_exact(8) {
+        let qword = u64::from_le_bytes(bytes.try_into().expect("qword scan slice"));
+        if qword < vtable_min || qword > vtable_max {
+            continue;
+        }
+        let Some(flag_kind) = relation_vtables.get(&qword).copied() else {
+            continue;
+        };
+        // The legacy scan recorded every known relation vtable hit, including
+        // puppet and dedup-suppressed hits. The histogram's modern collector
+        // surface is count-based, so this increments the same diagnostic volume
+        // channel used by the container walk.
+        acc.relflag_offsets.record_kind_count(flag_kind);
+        // PUPPET is handled by the +0x288 subject pointer hop. The legacy scan
+        // never emitted a separate puppet flag row from an inline match.
+        if flag_kind == REL_KIND_PUPPET {
+            continue;
+        }
+        let key = (src_tag_db_id, target_tag_db_id, flag_kind);
+        if seen_flags.insert(key) {
+            acc.rows.relation_flags.push(RelationFlagRow {
+                src_tag_db_id,
+                target_tag_db_id,
+                flag_kind,
+                directed: true,
+            });
+            acc.rows.state_events.push(state_event(
+                src_tag_db_id,
+                Some(target_tag_db_id),
+                STATE_EVENT_SOURCE_RELATION_FLAG,
+                &format!("relation_flag_kind_{flag_kind}"),
+                "directed_true",
+                i64::from(flag_kind),
+            ));
+            acc.observe();
+        }
+    }
 }
 
 /// Validate a non-null `CRelationStatus+0x288` subject pointer and emit a subject
@@ -2145,14 +2398,12 @@ fn read_relation_container_with_count<M: Domain53Memory>(
     // `is_heap_ptr(begin)` bounds `begin < 0x7FF0_0000_0000` and `array_len <= 2048`, so
     // `begin + array_len` cannot overflow; a short/unreadable span fails the read.
     let array_len = (count as usize) * 8;
-    let array = match mem.read_bytes(begin, array_len) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            acc.skip();
-            return;
-        }
-    };
-    for chunk in array.chunks_exact(8) {
+    let mut array_buf = [0u8; profile::DOMAIN53_RELATION_SUBREL_MAX_COUNT as usize * 8];
+    if mem.read_into(begin, &mut array_buf[..array_len]).is_err() {
+        acc.skip();
+        return;
+    }
+    for chunk in array_buf[..array_len].chunks_exact(8) {
         let sub = u64::from_le_bytes(chunk.try_into().expect("8-byte pointer slot"));
         // A null / non-heap element is benign padding; skip quietly.
         if !is_heap_ptr(sub) {
@@ -6857,10 +7108,194 @@ mod tests {
         assert!(mem.read_u64(torn_table + 16).is_err());
     }
 
-    // (The inline-scan qword range-check helpers + their equivalence test were removed
-    // with the inline scan itself: relation-flag sub-objects live in the `rel+0xD0`
-    // container, not inline, so there is no per-qword blob scan to fast-path any more.
-    // See `read_relation_container` and its tests below.)
+    fn relation_kind_specs() -> [(usize, u16); 13] {
+        [
+            (
+                profile::DOMAIN53_REL_NON_AGGRESSION_PACT_VTABLE_RVA,
+                REL_KIND_NON_AGGRESSION_PACT,
+            ),
+            (profile::DOMAIN53_REL_SUBJECT_VTABLE_RVA, REL_KIND_PUPPET),
+            (profile::DOMAIN53_REL_EMBARGO_VTABLE_RVA, REL_KIND_EMBARGO),
+            (
+                profile::DOMAIN53_REL_MILITARY_ACCESS_VTABLE_RVA,
+                REL_KIND_MILITARY_ACCESS,
+            ),
+            (
+                profile::DOMAIN53_REL_AIR_BASE_ACCESS_VTABLE_RVA,
+                REL_KIND_AIR_BASE_ACCESS,
+            ),
+            (
+                profile::DOMAIN53_REL_DOCKING_RIGHTS_VTABLE_RVA,
+                REL_KIND_DOCKING_RIGHTS,
+            ),
+            (
+                profile::DOMAIN53_REL_NAVAL_BLOCKADE_VTABLE_RVA,
+                REL_KIND_NAVAL_BLOCKADE,
+            ),
+            (
+                profile::DOMAIN53_REL_MARKET_ACCESS_RIGHTS_VTABLE_RVA,
+                REL_KIND_MARKET_ACCESS_RIGHTS,
+            ),
+            (
+                profile::DOMAIN53_REL_EQUIPMENT_PURCHASE_RELATION_VTABLE_RVA,
+                REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION,
+            ),
+            (
+                profile::DOMAIN53_REL_GUARANTEE_VTABLE_RVA,
+                REL_KIND_GUARANTEE,
+            ),
+            (
+                profile::DOMAIN53_REL_IMPROVE_RELATIONS_VTABLE_RVA,
+                REL_KIND_IMPROVE_RELATIONS,
+            ),
+            (profile::DOMAIN53_REL_ATTACHE_VTABLE_RVA, REL_KIND_ATTACHE),
+            (
+                profile::DOMAIN53_REL_LICENCE_PRODUCTION_VTABLE_RVA,
+                REL_KIND_LICENCE_PRODUCTION,
+            ),
+        ]
+    }
+
+    fn add_all_relation_kind_container(mem: &mut FakeMemory) {
+        let module = mem.module_base;
+        let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
+        let rel12 = heap + 0x8_0000;
+        let arr = heap + 0x40_0000;
+        let obj_base = heap + 0x41_0000;
+        let specs = relation_kind_specs();
+        mem.add_chunk(arr, specs.len() * 8);
+        mem.write_u64(rel12 + profile::DOMAIN53_RELATION_SUBREL_BEGIN as u64, arr);
+        mem.write_i32(
+            rel12 + profile::DOMAIN53_RELATION_SUBREL_CAP as u64,
+            specs.len() as i32,
+        );
+        mem.write_i32(
+            rel12 + profile::DOMAIN53_RELATION_SUBREL_COUNT as u64,
+            specs.len() as i32,
+        );
+        for (index, (vtable_rva, _kind)) in specs.iter().copied().enumerate() {
+            let obj = obj_base + (index as u64) * 0x100;
+            mem.add_chunk(obj, 0x40);
+            mem.write_u64(arr + (index as u64) * 8, obj);
+            mem.write_u64(obj, module + vtable_rva as u64);
+            mem.write_u32(obj + profile::DOMAIN53_REL_BASE_FIRST as u64, 1);
+            mem.write_u32(obj + profile::DOMAIN53_REL_BASE_SECOND as u64, 2);
+            mem.write_i32(
+                obj + profile::DOMAIN53_REL_BASE_START_DATE as u64,
+                60_000_000 + index as i32,
+            );
+            let end = if index == 0 {
+                60_900_000
+            } else {
+                profile::DOMAIN53_REL_DATE_SENTINEL
+            };
+            mem.write_i32(obj + profile::DOMAIN53_REL_BASE_END_DATE as u64, end);
+        }
+    }
+
+    fn relation_rows_for_mode(mem: &FakeMemory, mode: Domain53RelationReadMode) -> RowAccumulator {
+        let roots = resolve_domain53_frame_roots(mem).expect("roots");
+        let mut acc = RowAccumulator::default();
+        read_relation_rows_for_mode(
+            mem,
+            roots.module_base,
+            roots.current_game_hour,
+            &roots.countries,
+            &mut acc,
+            mode,
+        )
+        .expect("relation rows");
+        acc
+    }
+
+    fn encode_relation_rows(rows: &ExtractedDomain53Rows) -> Vec<u8> {
+        encode_payload(&DiplomacyIntelSnapshot {
+            opinions: rows.opinions.clone(),
+            relation_flags: rows.relation_flags.clone(),
+            subjects: rows.subjects.clone(),
+            state_events: rows.state_events.clone(),
+            ..DiplomacyIntelSnapshot::default()
+        })
+    }
+
+    #[test]
+    fn relation_offsets_mode_rows_are_byte_identical_to_scan_mode() {
+        let mut mem = fake_domain53_memory(true, true);
+        add_all_relation_kind_container(&mut mem);
+
+        let offsets = relation_rows_for_mode(&mem, Domain53RelationReadMode::Offsets);
+        let scan = relation_rows_for_mode(&mem, Domain53RelationReadMode::Scan);
+
+        assert_eq!(offsets.skipped_rows, 0);
+        assert_eq!(offsets.rows, scan.rows);
+        assert_eq!(offsets.skipped_rows, scan.skipped_rows);
+        assert_eq!(offsets.observed_rows, scan.observed_rows);
+        assert_eq!(
+            encode_relation_rows(&offsets.rows),
+            encode_relation_rows(&scan.rows),
+            "DOMAIN_DATA relation bytes differ between offsets and scan modes"
+        );
+        assert!(offsets.rows.opinions.iter().any(|row| {
+            row.src_tag_db_id == 1 && row.target_tag_db_id == 2 && row.opinion == 10
+        }));
+        assert!(offsets
+            .rows
+            .subjects
+            .iter()
+            .any(|row| { row.overlord_tag_db_id == 1 && row.subject_tag_db_id == 2 }));
+        for (_vtable_rva, kind) in relation_kind_specs() {
+            assert!(
+                offsets.relflag_offsets.per_kind.contains_key(&kind),
+                "missing relation kind {kind} from all-kind vector fixture"
+            );
+        }
+    }
+
+    #[test]
+    fn relation_shadow_mode_detects_legacy_scan_divergence() {
+        let mut mem = fake_domain53_memory(true, true);
+        add_all_relation_kind_container(&mut mem);
+        let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
+        let rel13 = heap + 0x9_0000;
+        mem.write_u64(
+            rel13 + 0x40,
+            mem.module_base + profile::DOMAIN53_REL_NON_AGGRESSION_PACT_VTABLE_RVA as u64,
+        );
+
+        let offsets = relation_rows_for_mode(&mem, Domain53RelationReadMode::Offsets);
+        let shadow = relation_rows_for_mode(&mem, Domain53RelationReadMode::Shadow);
+
+        assert_eq!(
+            shadow.rows, offsets.rows,
+            "shadow must emit offsets-mode rows while reporting the mismatch"
+        );
+        assert_eq!(shadow.skipped_rows, offsets.skipped_rows);
+        assert!(shadow.relation_shadow_mismatches > 0);
+    }
+
+    #[test]
+    fn relation_read_mode_parse_defaults_to_offsets() {
+        assert_eq!(
+            parse_relation_read_mode(None),
+            Domain53RelationReadMode::Offsets
+        );
+        assert_eq!(
+            parse_relation_read_mode(Some("scan")),
+            Domain53RelationReadMode::Scan
+        );
+        assert_eq!(
+            parse_relation_read_mode(Some("OFFSETS")),
+            Domain53RelationReadMode::Offsets
+        );
+        assert_eq!(
+            parse_relation_read_mode(Some(" shadow ")),
+            Domain53RelationReadMode::Shadow
+        );
+        assert_eq!(
+            parse_relation_read_mode(Some("bad")),
+            Domain53RelationReadMode::Offsets
+        );
+    }
 
     /// The repurposed relation-flag diagnostic counts container sub-objects PER KIND:
     /// `per_kind[K].0` is a plain COUNT (`.1` stays 0) and `total_matches` is the sum.
