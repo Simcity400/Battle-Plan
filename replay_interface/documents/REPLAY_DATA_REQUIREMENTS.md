@@ -20,15 +20,22 @@ Priority order: items 1–3 make replays function at all; 4–8 (incl. the
 **Last full review: 2026-07-09**, after the engine-extraction wave (labels /
 borders / terrain / UI-chrome / furniture / code-ports lanes). New consumers
 landed on the replay side; items 7b, 8b and 9b were added for them.
+**Reconciled 2026-07-09 against the extractor's own code + their
+`extractor/documents/REPLAY_REQUESTS_RECONCILIATION_2026-07-04.md`:** several
+items this file still called "needed" are LANDED extractor-side (statuses
+updated per item below, with code citations). Where an item says
+"extractor-side LANDED", the remaining action is replay-side: ingest a fresh
+production recording and verify the rows — flag mismatches back through
+`EXTRACTION_INTERFACE_REQUESTS.md`.
 
 ---
 
 ## 1. Hourly decoded world snapshots in the container (FOUNDATION)
 
-Today the production recorder packs only the raw compact domain stream
-(`role: collector_compact_stream`, `index.json` with `"snapshots": []`).
-Nothing outside `recorder_host` can decode that stream, so a production
-recording is not yet playable by anything.
+Originally the production recorder packed only the raw compact domain
+stream (`role: collector_compact_stream`, empty `"snapshots"` index), which
+nothing outside `recorder_host` could decode. See the status update below --
+this landed.
 
 Need: the recorder ALSO emits decoded hourly world snapshots into the
 container — `REPLAY_SCHEMA.md`-shaped JSON, one entry per canonical game
@@ -43,8 +50,13 @@ Acceptable alternative: expose the compact-stream decoders as a reusable
 library crate with a documented record→world fold contract (more coupling,
 second choice).
 
-Until it lands: the replay refuses compact-stream-only recordings with a
-precise error and develops against snapshot-flavor fixtures.
+**STATUS UPDATE (reconciled 2026-07-09): extractor-side LANDED.** The
+production recorder now folds the compact stream into per-game-hour world
+snapshots and packs them as `role: "snapshot"` entries with `hour_index`
+(`extractor/native/recorder_host/src/main.rs:2704`; their reconciliation doc
+marks R1 DONE). Replay-side action: verify a fresh production recording
+ingests through `replay_core` Backend 1 end-to-end. The compact-stream-only
+fail-closed error stays for OLD recordings.
 
 ## 2. Per-hour ownership & control (THE POLITICAL MAP)
 
@@ -75,12 +87,32 @@ Inside item 1's snapshots, per hour:
   provinces. Combat `progress` for the bubble bar is wanted but currently
   unvalidated — flag when it becomes trustworthy.
 
+Extension (2026-07-09 review): faithful COUNTER BADGES at close zoom need
+more per-division state than the row above: `supply_ratio`/`low_supply`
+(supply warning icon), `has_orders`/`current_order_kind` (plan badge),
+`dig_in` (entrenchment), `training`, and attrition-active. Wanted
+hourly/on-change alongside the base division row; each missing field
+degrades to badge-absent. Same priority as the close-zoom unit lane (A7).
+
 ## 4. Session metadata (playback pacing & player labels)
 
 Speed/pause change events with timestamps, and the player↔country mapping
 (who was human, which tag). Makes playback pacing authentic and lets the
 UI label human players. Degrades to fixed-speed playback with no player
 badges.
+
+Also once per recording (2026-07-09 review): the **active DLC list** —
+resolved DISPLAY names (plus descriptor paths if cheap) — and the
+**localisation language**. DLC gates cosmetic identities (CAN_UK vs
+CAN_ALY etc.; replay consumer `cosmetic_tags_from_resolver_with_dlc` is
+LANDED and defaults to all-DLC-present until fed the real set). Long filed
+as R-DLCLIST in `EXTRACTION_INTERFACE_REQUESTS.md`; folded here so this
+list stays the single handoff.
+
+**STATUS (reconciled 2026-07-09): partial extractor-side.** A live session
+header with player/ideology/cosmetic/DLC/start-date/save-version metadata
+exists (`world_fold.rs:1867`, domain 68 fold at `:4536`); speed/pause
+events remain OPEN per their `MASTER_EXTRACTION_CONTRACT.md:143`.
 
 ## 5. Naval supremacy per strategic region (SEA-ZONE BORDERS)
 
@@ -91,6 +123,11 @@ static map data the replay already has. Need: per-hour naval supremacy —
 or at minimum a contested/friendly/enemy tri-state — per strategic region
 id (ids join against `map/strategicregions`). Degrades to open ocean
 (what the game shows with no naval data).
+
+**STATUS (reconciled 2026-07-09): extractor-side LANDED.** Domain 56 naval
+supremacy rows fold into `map._r2_naval_supremacy`
+(`world_fold.rs:3950`, contract registers domain 56). Replay-side ingest +
+join against `map/strategicregions` pending.
 
 ## 6. Weather state per strategic region
 
@@ -118,6 +155,12 @@ blends by fade. Files-only degrade: the deterministic per-region
 visibly missing Eastern-Front accumulation, but deterministic, mod-aware,
 never crashes).
 
+**STATUS (reconciled 2026-07-09):** the per-region weather stream is
+extractor-side LANDED (`map._r2_weather_live`, `world_fold.rs:2459`, with
+region intensity/phenomenon fields) -- replay-side ingest pending. The
+ACCUMULATED snow/mud ground state (the SnowMudData ask above, incl. the
+R-SNOWMUD texture-snapshot alternative) remains OPEN.
+
 ## 7. Cosmetic-tag stream (MID-GAME COLOR/NAME/FLAG CHANGES)
 
 `cosmetic_tag` exists in the schema (§3.12) but is save-sourced today.
@@ -127,6 +170,10 @@ pre-switch colors is visibly wrong to every player. Need: on-change (or
 hourly) `{tag, cosmetic_tag}` rows from live memory. The replay resolves
 the actual colors/flags/names from shipped files — only the tag stream is
 needed. Degrades to base-tag identity.
+
+**STATUS (reconciled 2026-07-09): extractor-side LANDED** (D18;
+`countries[*].cosmetic_tag` attached at `world_fold.rs:2127`). Replay-side
+ingest pending.
 
 ## 7b. Ruling party (ideology) per country (LABEL TEXT + COLOR VARIANTS)
 
@@ -153,6 +200,11 @@ Land is covered by item 3; oceans and skies are empty without:
    airbase province, mission_kind}` — enough for region air-activity
    icons.
 Degrades to empty seas/skies.
+
+**STATUS (reconciled 2026-07-09):** AIR is extractor-side LANDED
+(`map._r2_air_region_activity` with owner/mission-mask/wing/plane counts,
+`world_fold.rs:3920`, D31) -- replay-side ingest pending. NAVAL task-force
+rows remain OPEN as specified above.
 
 ## 8b. Diplomatic pair-state, faction membership, capitals (MAP FURNITURE + WAR OVERLAYS)
 
@@ -186,6 +238,12 @@ join (effective mod-over-vanilla), either packed in the container or as a
 documented static bundle keyed by the recording's mod identity. First
 surfaces to hit this: map labels, topbar, country panels.
 
+**STATUS (reconciled 2026-07-09): partial extractor-side** -- their contract
+lists a `localisation_join` static artifact
+(`extractor/documents/MASTER_EXTRACTION_CONTRACT.md:176`,
+`compact_contract/src/lib.rs:204`). Replay-side: confirm the artifact
+actually rides in production recordings and covers the label/topbar keys.
+
 ## 9b. Topbar / panel scalar bindings (UI CHROME — first rendered set)
 
 The the game UI chrome now composes from shipped `.gui` files on the replay
@@ -202,10 +260,26 @@ POV):
 - `military.convoys[]` (count is enough for the topbar)
 - date + speed/pause (items 4 and the clock note below)
 
+Extension (2026-07-09 review, from the game_ui binding structs): the
+topbar/HUD consumes MORE than the core scalar set -- per POV country:
+`nukes_total/nukes_ready`, `supply_value/supply_ratio`, `world_tension`
+(world-scoped), the ratio bars (`industrial/convoy/fuel/xp` ratios), and
+the alert/notification counts (initiative, decisions available/timeout,
+intel, prototypes, market contracts); plus the OUTLINER rows (army/fleet
+groups with icon, text token, progress). Each degrades independently to an
+unavailable badge / empty outliner section.
+
 Degrades to an unavailable badge per missing field (never a fabricated
 number). Deeper panel content (production lines, army lists — the
 listbox/gridbox rows) stays deferred with items 10–12 until those panels
 are scheduled.
+
+Non-political MAP MODES (2026-07-09 note): the replay viewer selects the
+map mode at playback time, so the ACTIVE mode during original play is NOT
+needed (optional session trivia at most). The replay computes mode colors
+itself from recorded inputs -- do NOT record evaluated per-scope colors.
+The INPUTS for non-political modes (intel, resistance, supply detail)
+are deferred with items 10-12 until those modes are scheduled.
 
 ## 10. Building levels per state (live feed — when building rendering lands)
 
@@ -214,6 +288,20 @@ save-sourced today. The replay will render buildings on the map from
 static placement files; it needs the per-game levels (which slots are
 built, hourly or on-change) to know WHICH models to show. Not urgent until
 building rendering is scheduled — flagged now so it's on your radar.
+
+Extension (2026-07-09 review): building DAMAGE/REPAIR state too -- per
+state or province building row: `{scope, scope_id, building_type, level,
+healthy_level, damaged/damage_fraction, repair_progress,
+under_construction}` -- landmarks/dams/locks render destroyed states
+(MAP_3D_OBJECTS_PLAN). Construction-line rows `{tag, building_type,
+target_state/province, active_factories, progress}` feed the construction
+map mode later.
+
+**STATUS (reconciled 2026-07-09): largely extractor-side LANDED** -- D48
+`construction_buildings_state_damage_live` folds state/province building
+rows with `level`, `healthy_level`, `damaged` (`world_fold.rs:9957`,
+`:13049`). Some construction-line fields remain open on their side.
+Replay-side ingest deferred until building rendering is scheduled.
 
 ## 11. Rail/supply dynamic state (when the rail layer lands)
 
@@ -250,21 +338,21 @@ so the registry is complete; do not build.
 
 ## Coverage status (replay side's view, for reconciliation)
 
-| # | item | status |
+| # | item | status (reconciled 2026-07-09) |
 |---|---|---|
-| 1 | hourly snapshots in container | needed (foundation) |
+| 1 | hourly snapshots in container | extractor LANDED (R1); replay verify pending |
 | 2 | owners/controllers per hour | shape COVERED (§4/§5); rides on 1 |
-| 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; rides on 1 |
-| 4 | session metadata | needed |
-| 5 | naval supremacy | needed |
-| 6 | weather state | needed |
-| 7 | cosmetic-tag stream | schema shape exists; live feed needed |
+| 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; counter-badge extension OPEN |
+| 4 | session metadata | partial (session header LANDED; speed/pause + DLC display-names OPEN) |
+| 5 | naval supremacy | extractor LANDED (D56); replay ingest pending |
+| 6 | weather state | weather stream LANDED (D24); SnowMud accumulators OPEN |
+| 7 | cosmetic-tag stream | extractor LANDED (D18); replay ingest pending |
 | 7b | ruling party / ideology | schema shape exists (§3.3, live-collector); ride into snapshots |
-| 8 | naval/air presence | raw streams exist; consumable rows needed |
+| 8 | naval/air presence | AIR LANDED (D31); NAVAL rows OPEN |
 | 8b | pair relations + faction + capitals | relation flags already live-extracted (d53); fold into snapshots |
-| 9 | localisation joins | needed |
-| 9b | topbar scalar bindings | schema shapes exist (§3.1–3.3); ride into snapshots |
-| 10 | building levels live | schema shape exists (save-only); deferred |
+| 9 | localisation joins | partial (static artifact in their contract; verify it ships) |
+| 9b | topbar scalar bindings | schema shapes exist (§3.1–3.3); extended set + outliner OPEN |
+| 10 | building levels live | largely LANDED (D48 incl. damage); replay ingest deferred |
 | 11 | rail/supply state | deferred |
 | 12 | battle plans | deferred — do not build yet |
 
