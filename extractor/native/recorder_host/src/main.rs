@@ -739,6 +739,18 @@ struct Config {
     /// explicit `host_fold_skipped` marker (never silently absent). Default
     /// false: behavior unchanged unless `--skip-host-fold` is passed.
     skip_host_fold: bool,
+    /// lane/hour-latch: enable the zero-skip hour-boundary latch in the injected
+    /// DLL. Default false (legacy synchronous sample loop). When true, a dedicated
+    /// latch thread polls only the hour counter and the heavy sweep is
+    /// latch-triggered so no game-hour is silently skipped. Read-only, no game
+    /// patching.
+    hour_latch_enabled: bool,
+    /// Latch poll period in ms (clamped 1..=25 in the DLL). Default 2 — well under
+    /// the measured 28.2 ms min inter-hour interval.
+    hour_latch_poll_ms: u32,
+    /// Pending-hour ring capacity (clamped 1..=65535 in the DLL). Bounds latch
+    /// memory and capture lag. Default 64.
+    hour_latch_queue_cap: u32,
 }
 
 /// A request to pack one named pre-built static artifact into the container.
@@ -992,6 +1004,12 @@ struct CompactSummary {
     // domains_seen / domain_perf_record_count so the exact perf-count
     // verification gate is unaffected; surfaced as compact_stream.read_ab_probe.
     read_ab_probe: BTreeMap<String, u64>,
+    // lane/hour-latch: zero-skip hour-boundary latch accounting, carried by
+    // `hl_*` diagnostic units on the reserved probe domain (250). Counters are
+    // cumulative/monotonic; aggregated by MAX so any surviving probe record
+    // yields the final totals. Surfaced as `compact_stream.hour_latch`. Kept OUT
+    // of per_domain / domains_seen so the coverage/perf-count gates are unaffected.
+    hour_latch: BTreeMap<String, u64>,
     // Lane-wall counter (deep-war lever #5): per-frame per-lane wall +
     // critical-path aggregates carried by `lw_*` diagnostic units on the same
     // reserved probe domain. Also kept OUT of per_domain / gates; surfaced as
@@ -1538,6 +1556,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut d53_relation_read_mode = D53RelationReadMode::Offsets;
     let mut reader_concurrency = None;
     let mut skip_host_fold = false;
+    let mut hour_latch_enabled = false;
+    let mut hour_latch_poll_ms: u32 = 2;
+    let mut hour_latch_queue_cap: u32 = 64;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
     let mut static_decisions_definitions: Option<PathBuf> = None;
@@ -1685,6 +1706,18 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--reader-concurrency" => {
                 i += 1;
                 reader_concurrency = Some(parse_u32(args.get(i), "--reader-concurrency")?);
+            }
+            "--hour-latch" => hour_latch_enabled = true,
+            "--hour-latch-poll-ms" => {
+                i += 1;
+                // Clamp well under the 28.2 ms min inter-hour interval (the DLL
+                // re-clamps identically) so the poll can never miss an hour.
+                hour_latch_poll_ms = parse_u32(args.get(i), "--hour-latch-poll-ms")?.clamp(1, 25);
+            }
+            "--hour-latch-queue-cap" => {
+                i += 1;
+                hour_latch_queue_cap =
+                    parse_u32(args.get(i), "--hour-latch-queue-cap")?.clamp(1, 65_535);
             }
             "--replay-zstd-level" => {
                 i += 1;
@@ -1894,6 +1927,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             requested
         },
         skip_host_fold,
+        hour_latch_enabled,
+        hour_latch_poll_ms,
+        hour_latch_queue_cap,
     })
 }
 
@@ -2014,7 +2050,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -3942,6 +3978,13 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "d48_emit_mode": cfg.d48_emit_mode.as_str(),
         "d53_relation_read_mode": cfg.d53_relation_read_mode.as_str(),
         "reader_concurrency": cfg.reader_concurrency,
+        // lane/hour-latch: zero-skip hour-boundary latch (default OFF). When on, a
+        // dedicated thread polls only the hour counter every `hour_latch_poll_ms`
+        // and the heavy sweep is latch-triggered so no game-hour is silently
+        // skipped. Read-only, no game patching.
+        "hour_latch_enabled": cfg.hour_latch_enabled,
+        "hour_latch_poll_ms": cfg.hour_latch_poll_ms,
+        "hour_latch_queue_cap": cfg.hour_latch_queue_cap,
         // Cadence thinning is FORBIDDEN (zero-data-loss): every scheduled domain
         // is captured hourly. This is always 1 and never a profile choice.
         "scheduled_snapshot_step_hours": 1,
@@ -16400,6 +16443,62 @@ fn compact_stream_manifest_json(
         "frame_time_us": timing_summary_json(&summary.frame_times_us),
         "read_ab_probe": serde_json::to_value(&summary.read_ab_probe).unwrap_or(Value::Null),
         "lane_wall": lane_wall_summary_json(summary),
+        "hour_latch": hour_latch_summary_json(summary),
+    })
+}
+
+/// lane/hour-latch: surface the zero-SILENT-GAP latch accounting (NOT a
+/// zero-data-loss claim — a coalesced hour is explicit, reason-tagged loss of
+/// that hour's per-hour world state). Returns Null when the latch was disabled
+/// (no `hl_*` units in the stream). The coverage invariant
+/// `observed == attempts + coalesced` (after the final flush) is reconciled and
+/// reported so a violation is loud, never silent. `captured` here means
+/// CONFIRMED complete-and-written frames; `capture_failed = attempts - confirmed`
+/// is a distinct, explicitly-counted loss class. Per-hour DATA completeness is
+/// enforced SEPARATELY by the per-domain coverage gate, which this lane does not
+/// touch; these counters are diagnostic.
+fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
+    if summary.hour_latch.is_empty() {
+        return Value::Null;
+    }
+    let get = |k: &str| summary.hour_latch.get(k).copied().unwrap_or(0);
+    let observed = get("observed");
+    let attempts = get("attempts");
+    let confirmed = get("confirmed");
+    let coalesced = get("coalesced");
+    // After the final flush in_flight==0, so observed == attempts + coalesced.
+    // The last emitted probe may predate a hard kill's in-flight tail; report the
+    // reconciliation as-observed so any gap is visible, never hidden.
+    let accounted = attempts.saturating_add(coalesced);
+    let reason_sum = get("coalesced_superseded")
+        .saturating_add(get("coalesced_overflow"))
+        .saturating_add(get("coalesced_flush"))
+        .saturating_add(get("coalesced_backward"))
+        .saturating_add(get("coalesced_anomalous"));
+    let invariant_ok = observed == accounted && reason_sum == coalesced && confirmed <= attempts;
+    serde_json::json!({
+        "enabled": true,
+        "note": "zero-silent-gap accounting, not zero-data-loss; coalesced hours are explicit reason-tagged loss",
+        "hours_observed": observed,
+        "capture_attempts": attempts,
+        "hours_captured": confirmed,
+        "capture_failed": attempts.saturating_sub(confirmed),
+        "hours_coalesced": coalesced,
+        "coalesced_superseded": get("coalesced_superseded"),
+        "coalesced_overflow": get("coalesced_overflow"),
+        "coalesced_flush": get("coalesced_flush"),
+        "coalesced_backward": get("coalesced_backward"),
+        "coalesced_anomalous": get("coalesced_anomalous"),
+        "max_queue_depth": get("max_queue_depth"),
+        "queue_cap": get("queue_cap"),
+        "backward_jumps": get("backward_jumps"),
+        "anomalous_jumps": get("anomalous_jumps"),
+        "latch_polls": get("polls"),
+        "latch_read_failures": get("read_failures"),
+        // Coverage reconciliation — the load-bearing zero-silent-gap invariant.
+        "hours_accounted": accounted,
+        "coverage_invariant_ok": invariant_ok,
+        "hours_unaccounted": observed.saturating_sub(accounted),
     })
 }
 
@@ -16517,6 +16616,14 @@ fn add_compact_domain_perf_diagnostic_unit(
         // Lane-wall counter (lever #5): lw_* units get a dedicated aggregate
         // with per-frame value vectors (avg/p95/max in the manifest).
         if add_compact_lane_wall_unit(summary, name, value) {
+            return;
+        }
+        // lane/hour-latch: `hl_*` units are cumulative/monotonic accounting
+        // counters -> aggregate by MAX (not sum), so the final surviving record
+        // yields the true totals regardless of how many frames emitted them.
+        if let Some(rest) = name.strip_prefix("hl_") {
+            let entry = summary.hour_latch.entry(rest.to_string()).or_default();
+            *entry = (*entry).max(value);
             return;
         }
         // Plan-v2 read A/B probe units go to a dedicated aggregate, never
@@ -17339,6 +17446,115 @@ mod tests {
                 .copied(),
             Some(0)
         );
+    }
+
+    #[test]
+    fn hour_latch_probe_units_aggregate_by_max_and_reconcile_coverage() {
+        // lane/hour-latch: two cumulative probe records on domain 250 (as the
+        // collector emits per captured frame + a final flush record). The host
+        // must MAX-aggregate the hl_* counters and reconcile observed == attempts
+        // + coalesced with no silently-unaccounted hours.
+        let mut raw = Vec::new();
+        append_test_compact_record_with_flags(
+            &mut raw,
+            1,
+            100,
+            RC_PROBE_DOMAIN_ID,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &test_domain_payload_with_diagnostics(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &[
+                    ("hl_observed", 100),
+                    ("hl_attempts", 40),
+                    ("hl_confirmed", 38),
+                    ("hl_coalesced", 55),
+                    ("hl_coalesced_superseded", 50),
+                    ("hl_coalesced_overflow", 3),
+                    ("hl_coalesced_flush", 0),
+                    ("hl_coalesced_backward", 2),
+                    ("hl_coalesced_anomalous", 0),
+                    ("hl_max_queue_depth", 12),
+                    ("hl_queue_cap", 64),
+                    ("hl_polls", 90_000),
+                    ("hl_read_failures", 2),
+                ],
+            ),
+        );
+        // Final flush record: pending flushed to coalesced -> 100 == 40 + 60.
+        append_test_compact_record_with_flags(
+            &mut raw,
+            2,
+            100,
+            RC_PROBE_DOMAIN_ID,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &test_domain_payload_with_diagnostics(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &[
+                    ("hl_observed", 100),
+                    ("hl_attempts", 40),
+                    ("hl_confirmed", 38),
+                    ("hl_coalesced", 60),
+                    ("hl_coalesced_superseded", 50),
+                    ("hl_coalesced_overflow", 3),
+                    ("hl_coalesced_flush", 5),
+                    ("hl_coalesced_backward", 2),
+                    ("hl_coalesced_anomalous", 0),
+                    ("hl_max_queue_depth", 12),
+                    ("hl_queue_cap", 64),
+                    ("hl_polls", 100_000),
+                    ("hl_read_failures", 2),
+                ],
+            ),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        // Max-aggregation: polls 100_000 (not 90_000), coalesced 60 (not 55).
+        assert_eq!(summary.hour_latch.get("observed").copied(), Some(100));
+        assert_eq!(summary.hour_latch.get("attempts").copied(), Some(40));
+        assert_eq!(summary.hour_latch.get("confirmed").copied(), Some(38));
+        assert_eq!(summary.hour_latch.get("coalesced").copied(), Some(60));
+        assert_eq!(summary.hour_latch.get("coalesced_flush").copied(), Some(5));
+        assert_eq!(summary.hour_latch.get("polls").copied(), Some(100_000));
+        // Probe domain must NOT be counted as a scheduled domain.
+        assert!(!summary.domains_seen.contains(&RC_PROBE_DOMAIN_ID));
+
+        let json = hour_latch_summary_json(&summary);
+        assert_eq!(json["enabled"], serde_json::json!(true));
+        assert_eq!(json["hours_observed"], serde_json::json!(100));
+        assert_eq!(json["capture_attempts"], serde_json::json!(40));
+        assert_eq!(json["hours_captured"], serde_json::json!(38));
+        assert_eq!(json["capture_failed"], serde_json::json!(2));
+        assert_eq!(json["hours_coalesced"], serde_json::json!(60));
+        assert_eq!(json["hours_accounted"], serde_json::json!(100));
+        assert_eq!(json["coverage_invariant_ok"], serde_json::json!(true));
+        assert_eq!(json["hours_unaccounted"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn hour_latch_summary_is_null_when_latch_disabled() {
+        let summary = CompactSummary::default();
+        assert_eq!(hour_latch_summary_json(&summary), Value::Null);
     }
 
     #[test]
@@ -26083,6 +26299,9 @@ mod tests {
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
             skip_host_fold: false,
+            hour_latch_enabled: false,
+            hour_latch_poll_ms: 2,
+            hour_latch_queue_cap: 64,
         };
 
         let mut fold = WorldFold::new(replay_game_id("pack test/session"));
@@ -27046,6 +27265,9 @@ mod tests {
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
             skip_host_fold: false,
+            hour_latch_enabled: false,
+            hour_latch_poll_ms: 2,
+            hour_latch_queue_cap: 64,
         }
     }
 
