@@ -499,6 +499,34 @@ cadence — otherwise record at the engine's cadence (zero-data-loss rule).
 
 ---
 
+## 14. Fired-event stream (EVENT POPUP CHROME)
+
+The replay renders the events that FIRED during the recording through the
+shipped `interface/eventwindow.gui` chrome (4 window variants + option-row
+template — layout + event-def→window resolution DONE and gated replay-side,
+`game_ui::event_chrome`; **97.4% of the 6,757 visible vanilla events resolve to
+a fully renderable window** from the def + localisation + picture GFX). The one
+thing the recording must add is **which events actually fired**:
+
+- `event_id` — the fired event definition's `id` (join key into the parsed
+  `events/*.txt` def: title/desc/picture/options come from the def + item 9 loc
+  join, so only the id + context need recording, NOT the event text).
+- `target_tag` — the country the event fired to (the POV that saw the popup;
+  also resolves `[FROM]`/`[ROOT]` loc scopes).
+- `chosen_option_index` — the option the player/AI picked (highlights the taken
+  button; optional — absent → no highlight).
+- `fire_date` — recording date/hour the event fired (timeline placement).
+
+**Cadence:** on-change (events are discrete). Volume is tiny (a game fires
+hundreds of events total, not per hour). Degrades to unavailable: with no
+stream the event chrome is fail-closed "no event data" (never a fabricated
+title/option). Which `desc` branch showed is `trigger`-gated
+(computed-not-stored) — if cheap, the stream MAY carry the shown desc key /
+resolved title+desc text; else the replay takes the first loc-resolvable desc
+(documented FIT). Pairs with the localisation join (item 9).
+
+---
+
 ## Process asks (standing)
 
 - Schema deltas welcome: if the collector fold needs to deviate from a
@@ -531,6 +559,7 @@ cadence — otherwise record at the engine's cadence (zero-data-loss rule).
 | 11 | rail/supply state | deferred |
 | 12 | battle plans | deferred — do not build yet |
 | 13 | per-country FoW / visibility | **PROMOTED 2026-07-09** (observer country-POV is now core UX); per-player-country province-level-or-finer visibility/intel + spotted-units per hour; OPEN on both sides |
+| 14 | fired-event stream | **NEW (U2 2026-07-09).** Event popup chrome layout + def→window resolution DONE replay-side (`game_ui::event_chrome`, 97.4% of visible vanilla events renderable); needs `{event_id, target_tag, chosen_option_index, fire_date}` per fired event (on-change, tiny volume). Content fail-closed until it lands. OPEN extractor-side (EXTRACTION_NEEDS A18) |
 
 The replay layer keeps this file current; anything new the replay needs
 from memory gets added HERE (nowhere else).

@@ -126,8 +126,8 @@ Fired during a war replay; high value (Phase D wave 2). All chrome-composable.
 
 | Panel | source .gui | status | data dependency | note |
 |---|---|---|---|---|
-| Event window | eventwindow.gui | chrome-composable | 9 (event id→loc) + **NEW: fired-event stream** | data-driven content; renders hundreds of events |
-| Generic popup | popupwindow.gui | chrome-composable | 9 + event stream | shared popup chrome |
+| Event window | eventwindow.gui | **chrome-DERIVED (U2 2026-07-09)** | 9 (event id→loc) + **NEW: fired-event stream (item 14 / A18, FILED)** | 4 window variants + option-row template layout-gated; **6580/6757 visible events (97.4%) resolve to a fully renderable window** (title+desc+picture+option loc/gfx joined); content fail-closed until the fired-event stream lands |
+| Generic popup | popupwindow.gui | chrome-composable | 9 + event stream | shared popup chrome (diplomacy-request/lend-lease popups — distinct binding surface from the fired-event window, not U2) |
 | World-tension popup | worldtensionwindowpopup.gui | chrome-composable | 9b (world_tension) | binding |
 | Land combat | landcombat.gui | **POPULATED (U1)** | 3 (combats) + **A16 (display detail, OPEN)** | `combat_binding.rs`: identity + participant division counts bound from `replay_core::CombatRow`; progress/bombardment/air-superiority/combat-width/leaders are recording-Absent (A16) → fail-closed |
 | Naval combat | navalcombat.gui | chrome-composable | 8 + **NEW: naval combat detail** | binding |
@@ -322,7 +322,11 @@ are country-scoped, hourly/on-change, and degrade to unavailable badges:
     lost (navalcombat, navalcombatresultswindow, naval_losses, destroyedshipswindow,
     combatlogview).
 13. **Fired-event stream** — which events fired, to whom, when + chosen option
-    (eventwindow, popupwindow); pairs with localisation join (item 9).
+    (eventwindow, popupwindow); pairs with localisation join (item 9). **FILED
+    (U2 2026-07-09): REPLAY_DATA_REQUIREMENTS §14 + EXTRACTION_NEEDS §A A20.**
+    Chrome layout + the event-def→window mapping are DONE and gated
+    (`game_ui::event_chrome`); only the per-moment fired content waits on this
+    stream.
 14. **Scripted-GUI variable state** — per-country scripted dynamic variables the 23
     national-mechanic panels display; must be a GENERIC recorded var map (mod-extensible),
     not 23 bespoke fields.
