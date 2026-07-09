@@ -6,7 +6,14 @@
 > point at the path and add only the lane-specific mission.
 >
 > Path: `extractor/documents/CODEX_LANE_BRIEF.md`
-> Machine-wide Codex standard: `C:\Users\Example\.claude\CODEX_PROTOCOL.md`
+>
+> **Read `documents/LANE_WORKFLOW.md` first** — the repo-wide *method* (measure before
+> optimizing, refute your own brief, prove don't assert, correctness gates before performance,
+> the implementer never reviews its own diff, lane isolation, the verification battery). This
+> file adds only what is specific to the **extraction layer**: its hard requirements, facts,
+> proven NULLs, and gates.
+>
+> Machine-wide Codex mechanics: `C:\Users\Example\.claude\CODEX_PROTOCOL.md`
 
 ---
 

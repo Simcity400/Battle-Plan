@@ -19,4 +19,6 @@ A lane report states, with numbers:
 - **NULL results** — a lever that did not help, measured and reverted, documented honestly.
 - **What must still be validated live**, and how.
 
-Context every lane needs first: [`../CODEX_LANE_BRIEF.md`](../CODEX_LANE_BRIEF.md).
+Context every lane needs first: the repo-wide method in
+[`documents/LANE_WORKFLOW.md`](../../../documents/LANE_WORKFLOW.md), then the extraction-layer
+facts and gates in [`../CODEX_LANE_BRIEF.md`](../CODEX_LANE_BRIEF.md).
