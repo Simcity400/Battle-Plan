@@ -52,6 +52,7 @@ replay_interface/native/**/proof_out/
 # --- Scratch / RE scan working dir (incl. crack_archive/: archived one-shot RE
 #     scratch scripts; may contain local machine/Ghidra paths -> never commit) ---
 re_scratch/
+/.re_scratch/
 re_scratch/crack_archive/
 .re_scratch/
 
