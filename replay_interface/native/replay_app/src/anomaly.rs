@@ -274,17 +274,16 @@ impl AnomalyPolicy {
     }
 
     /// The marked holds active as of `hour` (the frame at-or-before it). Empty
-    /// before the first observed frame.
+    /// before the first observed frame. `hold_timeline` stores change-points
+    /// in ascending hour order, so the last entry at-or-before `hour` is the
+    /// active snapshot (binary search; one clone of the answer only).
     pub fn active_holds_at(&self, hour: i64) -> Vec<Hold> {
-        let mut result: Vec<Hold> = Vec::new();
-        for (h, holds) in &self.hold_timeline {
-            if *h <= hour {
-                result = holds.clone();
-            } else {
-                break;
-            }
+        let idx = self.hold_timeline.partition_point(|(h, _)| *h <= hour);
+        if idx == 0 {
+            Vec::new()
+        } else {
+            self.hold_timeline[idx - 1].1.clone()
         }
-        result
     }
 
     /// Observe one recorded frame (call in ascending recorded-hour order).
@@ -298,17 +297,23 @@ impl AnomalyPolicy {
         self.check_out_of_range(frame, hour);
         self.check_identity(frame, hour);
 
-        // Record the active-hold snapshot for scrub queries.
+        // Record the active-hold snapshot for scrub queries — CHANGE-POINTS
+        // only (F2 memory audit): the old code appended one entry per
+        // observed hour, an O(recorded-hours) growth even on a clean
+        // multi-year recording (~26k entries for 3 years). An entry is now
+        // appended only when the snapshot differs from the previous
+        // change-point (re-observation of the same hour still overwrites).
+        // `active_holds_at` answers by last-entry-at-or-before, so skipping
+        // an identical snapshot is query-equivalent.
         let holds: Vec<Hold> = self.active.values().cloned().collect();
-        // Keep a single entry per hour (idempotent re-observation overwrites).
-        if let Some(last) = self.hold_timeline.last_mut() {
-            if last.0 == hour {
-                last.1 = holds.clone();
-            } else {
-                self.hold_timeline.push((hour, holds.clone()));
-            }
-        } else {
-            self.hold_timeline.push((hour, holds.clone()));
+        match self.hold_timeline.last_mut() {
+            Some(last) if last.0 == hour => last.1 = holds,
+            Some(last) if last.1 == holds => {}
+            Some(_) => self.hold_timeline.push((hour, holds)),
+            // An initial all-clear snapshot is the same as no entry at all
+            // (`active_holds_at` returns empty before the first entry).
+            None if holds.is_empty() => {}
+            None => self.hold_timeline.push((hour, holds)),
         }
 
         self.diagnostics[before..].to_vec()

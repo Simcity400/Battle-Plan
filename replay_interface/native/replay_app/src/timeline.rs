@@ -26,10 +26,15 @@ pub fn build_provider(
     mode: &TimelineMode,
 ) -> Result<(Box<dyn OwnerProvider>, String)> {
     match mode {
-        TimelineMode::Recording(path) => {
+        TimelineMode::Recording {
+            path,
+            timeline: config,
+        } => {
             let source = replay_core::open_recording(path)
                 .map_err(|err| format!("open recording {}: {err}", path.display()))?;
-            let timeline = replay_core::WorldTimeline::open(source)
+            // F2: the decoded-frame LRU budget rides the mode (default 16;
+            // `--frame-cache` shrinks it for weak-PC profiles).
+            let timeline = replay_core::WorldTimeline::open_with_config(source, *config)
                 .map_err(|err| format!("open timeline {}: {err}", path.display()))?;
             for warning in timeline.warnings() {
                 eprintln!("replay_app: recording warning: {warning}");
@@ -37,9 +42,12 @@ pub fn build_provider(
             // F4 mid-playback anomaly policy: scan the recording at open, log
             // every mid-stream anomaly once (log + hold-last-good, never
             // invent). The known-province set (for out-of-range province ids)
-            // comes from the bundle's province->state map. Full-scan-at-open is
-            // fine for the synthetic fixtures; Phase F2 (bounded working set)
-            // revisits it for multi-year recordings.
+            // comes from the bundle's province->state map.
+            // F2 (2026-07-10) audited this scan: MEMORY is bounded (frames go
+            // through the LRU-capped cache; the policy stores change-points,
+            // not per-hour snapshots) — but it still DECODES every frame once
+            // at open, an O(hours) LATENCY residual on multi-year recordings
+            // (plan F2 row). An incremental/lazy scan is future work.
             let known_provinces: BTreeSet<u32> =
                 bundle.province_to_state.keys().copied().collect();
             let policy = scan_timeline(&timeline, Some(known_provinces));

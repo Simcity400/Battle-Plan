@@ -76,9 +76,10 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const USAGE: &str = "usage: replay_app [--list-blockers] [--validate-recording <path>] [--bundle <dir>] [--game <the game install dir>] \
-[--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path>] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <N>] \
+[--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <N>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
+--frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
 --game falls back to the BATTLE_PLAN_VANILLA environment variable; \
 --mod is repeatable and --use-dlc-load mirrors map_viewer bundle semantics with --userdata; \
 --capture loads map_viewer/out/captures session bundles and is required for map rendering; the removed CPU map_visual.rgbx scaffold is blocked from product output; \
@@ -111,7 +112,12 @@ const SENSITIVE_GAME_FILE_PATHS: &[&str] = &[
 #[derive(Debug, PartialEq)]
 enum TimelineMode {
     Static1936,
-    Recording(PathBuf),
+    Recording {
+        path: PathBuf,
+        /// F2 memory budget for the decoded-frame LRU (default 16 entries;
+        /// `--frame-cache <entries>` shrinks it for weak-PC profiles).
+        timeline: replay_core::TimelineConfig,
+    },
 }
 
 #[derive(Debug)]
@@ -150,6 +156,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
     let mut bundle_dir = None;
     let mut game_dir = None;
     let mut recording = None;
+    let mut frame_cache: Option<usize> = None;
     let mut mod_paths = Vec::new();
     let mut use_dlc_load = false;
     let mut userdata = None;
@@ -211,6 +218,23 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                     .get(index)
                     .ok_or_else(|| format!("--recording requires a path\n{USAGE}"))?;
                 recording = Some(PathBuf::from(value));
+            }
+            "--frame-cache" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| format!("--frame-cache requires an entry count\n{USAGE}"))?;
+                let entries = value.parse::<usize>().map_err(|err| {
+                    format!("--frame-cache: invalid entry count {value:?}: {err}\n{USAGE}")
+                })?;
+                if entries == 0 {
+                    return Err(format!(
+                        "--frame-cache must be >= 1 (0 would disable frame caching entirely; \
+                         the smallest supported product budget is 1 hot frame)\n{USAGE}"
+                    )
+                    .into());
+                }
+                frame_cache = Some(entries);
             }
             "--demo-scrub" => {
                 return Err(blockers::reason(BlockerId::DemoScrub).into());
@@ -391,8 +415,27 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
         );
     }
     let mode = match recording {
-        Some(path) => TimelineMode::Recording(path),
-        None => TimelineMode::Static1936,
+        Some(path) => TimelineMode::Recording {
+            path,
+            timeline: match frame_cache {
+                Some(entries) => replay_core::TimelineConfig {
+                    frame_cache_entries: entries,
+                },
+                None => replay_core::TimelineConfig::default(),
+            },
+        },
+        None => {
+            // Fail closed: a memory budget that silently applies to nothing
+            // would let a weak-PC profile believe it took effect.
+            if frame_cache.is_some() {
+                return Err(format!(
+                    "--frame-cache requires --recording (the static 1936 baseline has no \
+                     frame cache)\n{USAGE}"
+                )
+                .into());
+            }
+            TimelineMode::Static1936
+        }
     };
     Ok(CliOptions {
         bundle_dir: bundle_dir.ok_or_else(|| {
@@ -777,8 +820,69 @@ mod tests {
         .expect("args parse");
         assert_eq!(
             options.mode,
-            TimelineMode::Recording(PathBuf::from("some/session.battleplan"))
+            TimelineMode::Recording {
+                path: PathBuf::from("some/session.battleplan"),
+                timeline: replay_core::TimelineConfig::default(),
+            }
         );
+    }
+
+    #[test]
+    fn cli_frame_cache_shrinks_recording_budget() {
+        // F2: the weak-PC knob threads through the existing mode/config path.
+        let options = parse_cli(&args_with_bundle(&[
+            "--recording",
+            "some/session.battleplan",
+            "--frame-cache",
+            "4",
+        ]))
+        .expect("args parse");
+        assert_eq!(
+            options.mode,
+            TimelineMode::Recording {
+                path: PathBuf::from("some/session.battleplan"),
+                timeline: replay_core::TimelineConfig {
+                    frame_cache_entries: 4
+                },
+            }
+        );
+        // Default stays 16 when the flag is absent (no silent global).
+        assert_eq!(
+            replay_core::TimelineConfig::default().frame_cache_entries,
+            16
+        );
+    }
+
+    #[test]
+    fn cli_frame_cache_fails_closed() {
+        // Zero would silently disable caching in the product; rejected.
+        let err = parse_cli(&args_with_bundle(&[
+            "--recording",
+            "r.battleplan",
+            "--frame-cache",
+            "0",
+        ]))
+        .expect_err("must fail");
+        assert!(
+            err.to_string().contains("--frame-cache must be >= 1"),
+            "{err}"
+        );
+        // A budget with nothing to budget is an error, not a no-op.
+        let err = parse_cli(&args_with_bundle(&["--frame-cache", "4"])).expect_err("must fail");
+        assert!(
+            err.to_string()
+                .contains("--frame-cache requires --recording"),
+            "{err}"
+        );
+        // Non-numeric budgets are rejected with the offending value named.
+        let err = parse_cli(&args_with_bundle(&[
+            "--recording",
+            "r.battleplan",
+            "--frame-cache",
+            "many",
+        ]))
+        .expect_err("must fail");
+        assert!(err.to_string().contains("invalid entry count"), "{err}");
     }
 
     #[test]

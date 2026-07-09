@@ -253,6 +253,14 @@ fn timeline_compact_evidence(timeline: &Value) -> Option<String> {
 
 /// Backend 1: a snapshot-flavor container or directory store, read through
 /// the verified `snapshot` crate. Never leaks `snapshot` types.
+///
+/// F2 audit note (justified O(recorded-hours) floor): `hours` (8 B/hour) and
+/// `files_by_hour` (one recorded file name per hour) are the random-access
+/// index of the recording — built once at open, never growing with scrub
+/// count. They are required to serve `frame(hour)` without re-reading the
+/// store index and are the documented per-open floor of the source's working
+/// set (~210 KB + file-name strings for a 3-year hourly recording).
+/// `warnings` is bounded by the number of malformed index entries.
 struct StoreSource {
     store: Store,
     game_id: String,

@@ -139,7 +139,7 @@ fn effective_spotted_encoding(frame: &WorldFrame, pov: &PovState) -> String {
     match pov.active_pov() {
         None => "ALL".to_string(),
         Some(tag) => {
-            let s = frame.visibility_for(tag).spotted_units;
+            let s = frame.spotted_units_for(tag);
             format!(
                 "div={};fleets={};wings={}",
                 leaf_list_encoding(&s.divisions),
@@ -378,12 +378,12 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     //    GER spots nothing, yet the omniscient world still carries that division
     //    — a unit the POV hides but the world view shows.
     let frame0 = timeline.state_at(hours[0]).expect("frame0");
-    let ger0 = frame0.visibility_for("GER").spotted_units;
+    let ger0 = frame0.spotted_units_for("GER");
     assert_eq!(ger0.divisions, Leaf::Measured(vec!["201:1".to_string()]));
     assert_eq!(ger0.fleets, Leaf::Measured(vec!["501:1".to_string()]));
 
     let frame5 = timeline.state_at(hours[5]).expect("frame5");
-    let ger5 = frame5.visibility_for("GER").spotted_units;
+    let ger5 = frame5.spotted_units_for("GER");
     assert_eq!(ger5.divisions, Leaf::Measured(Vec::new()), "GER spots nothing @tick 5");
     let world_still_has_sov_div = frame5
         .divisions()

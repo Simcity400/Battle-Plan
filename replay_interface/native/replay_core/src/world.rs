@@ -9,11 +9,14 @@
 
 use crate::source::{RawFrame, ReplaySource, SourceError};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-/// Frames kept hot for scrubbing. Small on purpose: a frame is rebuilt from
-/// the verified source on miss, so eviction only costs a re-read.
+/// Default frames kept hot for scrubbing (see [`TimelineConfig`]). Small on
+/// purpose: a frame is rebuilt from the verified source on miss, so eviction
+/// only costs a re-read. DERIVED: the pre-F2 fixed cap, proven bounded by the
+/// F3 soak harness (`replay_app/tests/soak.rs`).
 const FRAME_CACHE_CAP: usize = 16;
 
 /// The no-fabrication trichotomy, preserved end to end:
@@ -892,20 +895,28 @@ impl WorldFrame {
     pub fn buildings_status(&self) -> ViewStatus {
         self.buildings_status
     }
-    pub fn visibility_for(&self, pov_tag: &str) -> PovVisibilityView {
-        self.visibility_by_pov
-            .get(pov_tag)
-            .cloned()
-            .unwrap_or_else(|| {
+    /// Per-POV visibility. Borrows the frame's view when the POV exists
+    /// (F2: the province map can be large and cloning it per call was
+    /// per-seek garbage); a POV the frame does not carry synthesizes an
+    /// allocation-free fail-closed view (empty map, Absent/Unobtained leaves
+    /// — never fabricated visibility).
+    pub fn visibility_for(&self, pov_tag: &str) -> Cow<'_, PovVisibilityView> {
+        match self.visibility_by_pov.get(pov_tag) {
+            Some(view) => Cow::Borrowed(view),
+            None => {
                 let status = match self.visibility_status {
                     ViewStatus::Present => ViewStatus::DomainAbsent,
                     other => other,
                 };
-                PovVisibilityView::with_status(status)
-            })
+                Cow::Owned(PovVisibilityView::with_status(status))
+            }
+        }
     }
     pub fn spotted_units_for(&self, pov_tag: &str) -> SpottedUnitsView {
-        self.visibility_for(pov_tag).spotted_units
+        match self.visibility_for(pov_tag) {
+            Cow::Borrowed(view) => view.spotted_units.clone(),
+            Cow::Owned(view) => view.spotted_units,
+        }
     }
     pub fn visibility_status(&self) -> ViewStatus {
         self.visibility_status
@@ -1055,10 +1066,40 @@ impl WorldFrame {
     }
 }
 
+/// Open-time memory budget for a [`WorldTimeline`] (plan F2: the replay must
+/// play multi-year recordings on weak PCs).
+///
+/// The decoded-frame LRU cache is the only tunable O(1)-per-timeline
+/// structure whose size is a budget; everything else the timeline retains is
+/// either the per-open hour-index spine (8 B per recorded hour — see
+/// [`WorldTimeline::open`]) or the frames the cache itself owns. The budget
+/// is expressed in ENTRIES, not bytes: a decoded frame's heap size depends on
+/// recording content and `replay_core` will not estimate it (an estimated
+/// byte figure would be a fabricated value). The operator-facing byte budget
+/// is `entries x observed frame size`, measured by the soak harnesses
+/// (`replay_app/tests/soak.rs`, `soak_f2.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineConfig {
+    /// Maximum decoded frames kept hot (LRU). Default [`FRAME_CACHE_CAP`]
+    /// (16, DERIVED: the pre-F2 fixed cap, soak-proven bounded). `0` disables
+    /// caching entirely: every access re-decodes from the verified source —
+    /// still correct (`seek == play_to` holds), minimum working set.
+    pub frame_cache_entries: usize,
+}
+
+impl Default for TimelineConfig {
+    fn default() -> TimelineConfig {
+        TimelineConfig {
+            frame_cache_entries: FRAME_CACHE_CAP,
+        }
+    }
+}
+
 /// Ordered, scrubbable series of world frames over one recording.
 pub struct WorldTimeline {
     source: Box<dyn ReplaySource>,
     hours: Vec<i64>,
+    config: TimelineConfig,
     cache: Mutex<FrameCache>,
 }
 
@@ -1079,8 +1120,25 @@ pub struct TimelineLookup {
 impl WorldTimeline {
     /// Wrap a source, validating its hour series (non-empty, strictly
     /// increasing — the source contract, revalidated here because everything
-    /// downstream scrubs by binary search over it).
+    /// downstream scrubs by binary search over it). Uses the default memory
+    /// budget ([`TimelineConfig::default`], 16 cached frames).
     pub fn open(source: Box<dyn ReplaySource>) -> Result<WorldTimeline, WorldError> {
+        WorldTimeline::open_with_config(source, TimelineConfig::default())
+    }
+
+    /// As [`WorldTimeline::open`] with an explicit memory budget (F2): a
+    /// weak-PC profile shrinks `frame_cache_entries`; the default stays 16.
+    ///
+    /// F2 audit note (justified O(recorded-hours) floor): this `to_vec()` is
+    /// a defensive copy of the source's validated hour spine — 8 B per
+    /// recorded hour (210,240 B for a 3-year hourly recording), the second of
+    /// exactly two such spines (the source keeps its own). Index spines are
+    /// NOT frame payloads and are the documented floor of the timeline's
+    /// working set; the frame cache above it is the only budgeted structure.
+    pub fn open_with_config(
+        source: Box<dyn ReplaySource>,
+        config: TimelineConfig,
+    ) -> Result<WorldTimeline, WorldError> {
         let hours = source.hours().to_vec();
         if hours.is_empty() {
             return Err(WorldError::Timeline(format!(
@@ -1099,8 +1157,14 @@ impl WorldTimeline {
         Ok(WorldTimeline {
             source,
             hours,
-            cache: Mutex::new(FrameCache::new()),
+            config,
+            cache: Mutex::new(FrameCache::new(config.frame_cache_entries)),
         })
+    }
+
+    /// The frame-cache entry budget this timeline was opened with.
+    pub fn frame_cache_entries(&self) -> usize {
+        self.config.frame_cache_entries
     }
 
     pub fn game_id(&self) -> &str {
@@ -1186,15 +1250,20 @@ impl WorldTimeline {
     }
 }
 
-/// Tiny LRU (oldest first); linear scans are fine at [`FRAME_CACHE_CAP`].
+/// Tiny LRU (oldest first); linear scans are fine at the configured cap
+/// (a budget-sized constant — [`TimelineConfig::frame_cache_entries`],
+/// default 16 — never timeline-sized). A cap of 0 disables caching: every
+/// insert is immediately evicted, correctness is unchanged.
 struct FrameCache {
+    cap: usize,
     entries: Vec<(i64, Arc<WorldFrame>)>,
 }
 
 impl FrameCache {
-    fn new() -> FrameCache {
+    fn new(cap: usize) -> FrameCache {
         FrameCache {
-            entries: Vec::with_capacity(FRAME_CACHE_CAP),
+            cap,
+            entries: Vec::with_capacity(cap),
         }
     }
     fn get(&mut self, hour: i64) -> Option<Arc<WorldFrame>> {
@@ -1209,7 +1278,7 @@ impl FrameCache {
             self.entries.remove(pos);
         }
         self.entries.push((hour, frame));
-        if self.entries.len() > FRAME_CACHE_CAP {
+        if self.entries.len() > self.cap {
             self.entries.remove(0);
         }
     }

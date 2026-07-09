@@ -1145,6 +1145,59 @@ fn multi_game_store_requires_selection() {
 }
 
 // ---------------------------------------------------------------------------
+// F2: the frame-cache budget (TimelineConfig) trades speed only, never
+// content — every budget down to 0 (caching disabled) resolves identical
+// frames, and the default stays 16.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn frame_cache_budget_is_content_neutral() {
+    use replay_core::TimelineConfig;
+
+    let root = unique_temp_dir("cache_budget");
+    write_dir_store(&root);
+
+    assert_eq!(
+        TimelineConfig::default().frame_cache_entries,
+        16,
+        "default budget is the soak-proven 16-entry cap"
+    );
+    let reference = open_timeline(&root);
+    assert_eq!(reference.frame_cache_entries(), 16);
+
+    for cap in [4usize, 1, 0] {
+        let timeline = WorldTimeline::open_with_config(
+            open_recording(&root).unwrap(),
+            TimelineConfig {
+                frame_cache_entries: cap,
+            },
+        )
+        .unwrap();
+        assert_eq!(timeline.frame_cache_entries(), cap);
+        // Thrash across the whole span twice (guaranteed evictions at every
+        // shrunken budget, including the cache-disabled cap of 0).
+        for _ in 0..2 {
+            for &hour in reference.hours() {
+                let got = timeline.seek(hour).unwrap();
+                let want = reference.seek(hour).unwrap();
+                assert_eq!(got.hour_index(), want.hour_index(), "cap {cap} @ {hour}");
+                assert_eq!(got.raw(), want.raw(), "cap {cap} raw content @ {hour}");
+                assert_eq!(
+                    got.owner_by_state(),
+                    want.owner_by_state(),
+                    "cap {cap} owner view @ {hour}"
+                );
+                // A4 invariant holds at every budget.
+                let played = timeline.play_to(hour).unwrap();
+                assert_eq!(played.raw(), got.raw(), "cap {cap} seek==play_to @ {hour}");
+            }
+        }
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
 // wrong-typed top-level `map` must warn and fall back, never pass silently
 // ---------------------------------------------------------------------------
 

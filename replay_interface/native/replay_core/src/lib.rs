@@ -19,7 +19,7 @@ pub use world::{
     PowerBalanceRow, PowerBalanceView, ProductionLineRow, ProductionView, ProvenanceView,
     ProvinceVisibility, RaidStateView, ResearchProgressRow, ResearchView, ScriptedGuiView,
     SessionMetadataView, ShipCompositionRow, SnowMudCell, SnowMudView, SpeedEvent,
-    SpottedUnitsView, StateBuildings, TimelineLookup, TopbarAlerts, TopbarRatios, TopbarScalars,
-    TradeContractRow, TradeView, ViewStatus, WarRelationRow, WeatherRegionRow, WingUnitRow,
-    WorldError, WorldFrame, WorldTimeline,
+    SpottedUnitsView, StateBuildings, TimelineConfig, TimelineLookup, TopbarAlerts, TopbarRatios,
+    TopbarScalars, TradeContractRow, TradeView, ViewStatus, WarRelationRow, WeatherRegionRow,
+    WingUnitRow, WorldError, WorldFrame, WorldTimeline,
 };
