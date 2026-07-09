@@ -197,6 +197,9 @@ dependencies = [
 [[package]]
 name = "game_ui"
 version = "0.1.0"
+dependencies = [
+ "replay_core",
+]
 
 [[package]]
 name = "getrandom"

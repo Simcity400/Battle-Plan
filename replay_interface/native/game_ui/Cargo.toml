@@ -5,6 +5,10 @@ edition = "2021"
 description = "game UI parser, sprite registry, and texture decoder foundation"
 
 [dependencies]
+# Consumers read world state ONLY through replay_core's typed views
+# (REPLAY_PRODUCTION_PLAN §0 Constraint 2). The topbar/ideology bindings
+# (D1/D2) map those views to UI strings; no recording bytes are parsed here.
+replay_core = { path = "../replay_core" }
 
 [[bin]]
 name = "ui_probe"
