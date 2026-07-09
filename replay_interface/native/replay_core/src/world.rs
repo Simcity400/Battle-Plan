@@ -251,6 +251,44 @@ pub struct WeatherRegionRow {
     pub snow_mud_fade_to: Leaf<f64>,
 }
 
+/// One per-province accumulated SnowMudData cell (requirements item 6): the
+/// engine's ground-cover texture is province-addressed and evolves
+/// independently from the strategic-region weather phenomenon.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnowMudCell {
+    pub region_id: Leaf<u32>,
+    pub snow_level_0_255: Leaf<u32>,
+    pub mud_level_0_255: Leaf<u32>,
+}
+
+/// Accumulated snow/mud ground-cover view (requirements item 6): per-province
+/// levels plus the fade phase/window that drives the visual blend. Distinct
+/// from [`WeatherRegionRow`], which carries the region-level phenomenon.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnowMudView {
+    pub status: ViewStatus,
+    pub by_province: BTreeMap<u32, SnowMudCell>,
+    pub fade_phase: Leaf<f64>,
+    pub fade_0_hour: Leaf<i64>,
+    pub fade_1_hour: Leaf<i64>,
+}
+
+impl SnowMudView {
+    fn with_status(status: ViewStatus) -> SnowMudView {
+        let (phase, h0, h1) = match status {
+            ViewStatus::DomainAbsent => (Leaf::Absent, Leaf::Absent, Leaf::Absent),
+            _ => (Leaf::Unobtained, Leaf::Unobtained, Leaf::Unobtained),
+        };
+        SnowMudView {
+            status,
+            by_province: BTreeMap::new(),
+            fade_phase: phase,
+            fade_0_hour: h0,
+            fade_1_hour: h1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CountryIdentity {
     pub cosmetic_tag: Leaf<String>,
@@ -544,6 +582,7 @@ pub struct WorldFrame {
     naval_supremacy_status: ViewStatus,
     weather_by_region: BTreeMap<u32, WeatherRegionRow>,
     weather_status: ViewStatus,
+    snow_mud: SnowMudView,
     country_identities: BTreeMap<String, CountryIdentity>,
     country_identities_status: ViewStatus,
     diplomacy: DiplomacyView,
@@ -654,6 +693,14 @@ impl WorldFrame {
     pub fn weather_status(&self) -> ViewStatus {
         self.weather_status
     }
+    /// Accumulated per-province snow/mud ground cover and its fade window
+    /// (requirements item 6), independent of the region weather phenomenon.
+    pub fn snow_mud(&self) -> &SnowMudView {
+        &self.snow_mud
+    }
+    pub fn snow_mud_status(&self) -> ViewStatus {
+        self.snow_mud.status
+    }
     pub fn country_identities(&self) -> &BTreeMap<String, CountryIdentity> {
         &self.country_identities
     }
@@ -751,6 +798,7 @@ impl WorldFrame {
         let (naval_supremacy_by_region, naval_supremacy_status) =
             build_naval_supremacy(&frame.rest, &mut warnings);
         let (weather_by_region, weather_status) = build_weather(&frame.rest, &mut warnings);
+        let snow_mud = build_snow_mud(&frame.rest, &mut warnings);
         let (country_identities, country_identities_status) =
             build_country_identities(&frame.rest, &mut warnings);
         let diplomacy = build_diplomacy(&frame.rest, &mut warnings);
@@ -788,6 +836,7 @@ impl WorldFrame {
             naval_supremacy_status,
             weather_by_region,
             weather_status,
+            snow_mud,
             country_identities,
             country_identities_status,
             diplomacy,
@@ -2261,6 +2310,10 @@ fn build_weather(
                             leaf_string(row, &["weather_kind"], &ctx, warnings),
                             leaf_string(row, &["kind"], &ctx, warnings),
                             leaf_string(row, &["phenomenon"], &ctx, warnings),
+                            // A3 round-trip: the strategic-region weather rows
+                            // (requirements item 6) name the phenomenon under
+                            // `phenom_name`; honor it as a weather_kind alias.
+                            leaf_string(row, &["phenom_name"], &ctx, warnings),
                         ]),
                         intensity: leaf_f64(row, &["intensity"], &ctx, warnings),
                         snow_level_0_255: leaf_u32(row, &["snow_level_0_255"], &ctx, warnings),
@@ -2306,6 +2359,95 @@ fn build_weather(
         }
     }
     (out, ViewStatus::Present)
+}
+
+/// Accumulated snow/mud ground-cover view (requirements item 6). The engine's
+/// SnowMudData texture is province-addressed and lives under
+/// `weather.snow_mud` (`texture` = per-province levels, `fade` = the blend
+/// window), separate from the region-level phenomenon in `weather.regions`.
+fn build_snow_mud(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> SnowMudView {
+    let (weather, weather_status) = object_at_path(rest, &["weather"], "weather", warnings);
+    let Some(weather) = weather else {
+        return SnowMudView::with_status(weather_status);
+    };
+    let snow_mud = match weather.get("snow_mud") {
+        Some(Value::Object(obj)) => obj,
+        Some(Value::Null) => return SnowMudView::with_status(ViewStatus::DomainUnavailable),
+        None => return SnowMudView::with_status(ViewStatus::DomainAbsent),
+        Some(other) => {
+            warnings.push(format!(
+                "weather.snow_mud: present but wrong-typed (expected object, found {}); view unavailable",
+                json_type_name(other)
+            ));
+            return SnowMudView::with_status(ViewStatus::DomainUnavailable);
+        }
+    };
+    let mut by_province = BTreeMap::new();
+    match snow_mud.get("texture") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            for (i, item) in items.iter().enumerate() {
+                let row = match item.as_object() {
+                    Some(row) => row,
+                    None => {
+                        warnings.push(format!(
+                            "weather.snow_mud.texture[{i}]: expected object, found {}; cell skipped",
+                            json_type_name(item)
+                        ));
+                        continue;
+                    }
+                };
+                let ctx = format!("weather.snow_mud.texture[{i}]");
+                let province_id = match row.get("province_id").and_then(Value::as_u64) {
+                    Some(pid) if u32::try_from(pid).is_ok() => pid as u32,
+                    _ => {
+                        warnings.push(format!(
+                            "{ctx}: missing or invalid province_id; cell skipped"
+                        ));
+                        continue;
+                    }
+                };
+                by_province.insert(
+                    province_id,
+                    SnowMudCell {
+                        region_id: leaf_u32(row, &["region_id"], &ctx, warnings),
+                        snow_level_0_255: leaf_u32(row, &["snow_level_0_255"], &ctx, warnings),
+                        mud_level_0_255: leaf_u32(row, &["mud_level_0_255"], &ctx, warnings),
+                    },
+                );
+            }
+        }
+        Some(other) => warnings.push(format!(
+            "weather.snow_mud.texture: present but wrong-typed (expected array, found {}); ignored",
+            json_type_name(other)
+        )),
+    }
+    let (fade_phase, fade_0_hour, fade_1_hour) = match snow_mud.get("fade") {
+        Some(Value::Object(fade)) => {
+            let ctx = "weather.snow_mud.fade";
+            (
+                leaf_f64(fade, &["phase"], ctx, warnings),
+                leaf_i64(fade, &["fade_0_hour"], ctx, warnings),
+                leaf_i64(fade, &["fade_1_hour"], ctx, warnings),
+            )
+        }
+        Some(Value::Null) => (Leaf::Unobtained, Leaf::Unobtained, Leaf::Unobtained),
+        None => (Leaf::Absent, Leaf::Absent, Leaf::Absent),
+        Some(other) => {
+            warnings.push(format!(
+                "weather.snow_mud.fade: present but wrong-typed (expected object, found {}); treated as unobtained",
+                json_type_name(other)
+            ));
+            (Leaf::Unobtained, Leaf::Unobtained, Leaf::Unobtained)
+        }
+    };
+    SnowMudView {
+        status: ViewStatus::Present,
+        by_province,
+        fade_phase,
+        fade_0_hour,
+        fade_1_hour,
+    }
 }
 
 fn build_countries(
@@ -2388,7 +2530,13 @@ fn build_country_identities(
                 out.insert(
                     tag.clone(),
                     CountryIdentity {
-                        cosmetic_tag: leaf_string(obj, &["extra", "cosmetic_tag"], &ctx, warnings),
+                        // A3 round-trip: the cosmetic tag (requirements item 7b)
+                        // is mirrored under both `extra` and `misc`; accept
+                        // either so a country that carries only one still keys.
+                        cosmetic_tag: first_available_string([
+                            leaf_string(obj, &["extra", "cosmetic_tag"], &ctx, warnings),
+                            leaf_string(obj, &["misc", "cosmetic_tag"], &ctx, warnings),
+                        ]),
                         ruling_ideology: leaf_string(
                             obj,
                             &["politics", "ruling_party"],
@@ -2813,18 +2961,28 @@ fn build_topbar_scalars(
                         nukes_total: leaf_i64(obj, &["extra", "nukes_total"], &ctx, warnings),
                         nukes_ready: leaf_i64(obj, &["extra", "nukes_ready_total"], &ctx, warnings),
                         world_tension: world_tension.clone(),
-                        supply_value: leaf_f64(
-                            obj,
-                            &["economy", "logistics", "supply_value"],
-                            &ctx,
-                            warnings,
-                        ),
-                        supply_ratio: leaf_f64(
-                            obj,
-                            &["economy", "logistics", "supply_ratio"],
-                            &ctx,
-                            warnings,
-                        ),
+                        // A3 round-trip: the canonical supply figures live
+                        // under economy.logistics, but the topbar scalar sweep
+                        // (requirements item 9b) reports them under the derived
+                        // `scalars` bag; accept either, canonical first.
+                        supply_value: first_available_f64([
+                            leaf_f64(
+                                obj,
+                                &["economy", "logistics", "supply_value"],
+                                &ctx,
+                                warnings,
+                            ),
+                            leaf_f64(obj, &["scalars", "supply_value"], &ctx, warnings),
+                        ]),
+                        supply_ratio: first_available_f64([
+                            leaf_f64(
+                                obj,
+                                &["economy", "logistics", "supply_ratio"],
+                                &ctx,
+                                warnings,
+                            ),
+                            leaf_f64(obj, &["scalars", "supply_ratio"], &ctx, warnings),
+                        ]),
                     },
                 );
             }
@@ -2880,6 +3038,14 @@ fn topbar_world_tension(rest: &Map<String, Value>, warnings: &mut Vec<String>) -
 
 fn leaf_convoys(obj: &Map<String, Value>, ctx: &str, warnings: &mut Vec<String>) -> Leaf<f64> {
     match leaf_f64(obj, &["military", "convoy_count"], ctx, warnings) {
+        Leaf::Measured(v) => return Leaf::Measured(v),
+        Leaf::Unobtained => return Leaf::Unobtained,
+        Leaf::Absent => {}
+    }
+    // A3 round-trip: the topbar scalar sweep (requirements item 4/9b) reports
+    // the convoy stockpile as the scalar `military.convoys_count`; prefer it
+    // over summing the per-type `military.convoys` array when present.
+    match leaf_f64(obj, &["military", "convoys_count"], ctx, warnings) {
         Leaf::Measured(v) => return Leaf::Measured(v),
         Leaf::Unobtained => return Leaf::Unobtained,
         Leaf::Absent => {}
@@ -2981,17 +3147,29 @@ fn build_buildings(
                 continue;
             }
         };
-        let (state_buildings, state_status) = parse_building_map(
+        let (mut state_buildings, state_status) = parse_building_map(
             state.get("buildings"),
             &format!("states.{state_key}.buildings"),
             warnings,
         );
-        let (province_buildings, province_status) = parse_province_buildings(
+        let (mut province_buildings, province_status) = parse_province_buildings(
             state.get("province_buildings"),
             &format!("states.{state_key}.province_buildings"),
             warnings,
         );
-        let row_status = combine_status(state_status, province_status);
+        // A3 round-trip: building damage / repair / construction (requirements
+        // item 10) arrives as a per-state `building_damage` array of scoped
+        // rows; overlay each row onto the level-only building maps so a
+        // consumer sees damaged/healthy_level/repair without a second lookup.
+        let damage_status = fold_building_damage(
+            state.get("building_damage"),
+            &mut state_buildings,
+            &mut province_buildings,
+            &format!("states.{state_key}.building_damage"),
+            warnings,
+        );
+        let row_status =
+            combine_status(combine_status(state_status, province_status), damage_status);
         status = combine_status(status, row_status);
         if row_status != ViewStatus::DomainAbsent {
             out.insert(
@@ -3103,6 +3281,79 @@ fn parse_building_status(value: &Value, ctx: &str, warnings: &mut Vec<String>) -
     }
 }
 
+/// Overlay a per-state `building_damage` array (requirements item 10) onto the
+/// level-only building maps. Each row carries `scope` (`"state"`/`"province"`),
+/// `scope_id`, `building_type`, and the same status fields a building object
+/// would; a state-scope row updates `state_buildings[building_type]`, a
+/// province-scope row updates `province_buildings[scope_id][building_type]`.
+/// Returns `Present` if any row was folded, else `DomainAbsent`.
+fn fold_building_damage(
+    value: Option<&Value>,
+    state_buildings: &mut BTreeMap<String, BuildingStatus>,
+    province_buildings: &mut BTreeMap<u32, BTreeMap<String, BuildingStatus>>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> ViewStatus {
+    let items = match value {
+        None => return ViewStatus::DomainAbsent,
+        Some(Value::Null) => return ViewStatus::DomainUnavailable,
+        Some(Value::Array(items)) => items,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}: present but wrong-typed (expected array, found {}); building damage ignored",
+                json_type_name(other)
+            ));
+            return ViewStatus::DomainUnavailable;
+        }
+    };
+    let mut status = ViewStatus::DomainAbsent;
+    for (i, item) in items.iter().enumerate() {
+        let row = match item.as_object() {
+            Some(row) => row,
+            None => {
+                warnings.push(format!(
+                    "{ctx}[{i}]: expected object, found {}; row skipped",
+                    json_type_name(item)
+                ));
+                continue;
+            }
+        };
+        let building_type = match row.get("building_type").and_then(Value::as_str) {
+            Some(bt) => bt.to_string(),
+            None => {
+                warnings.push(format!(
+                    "{ctx}[{i}]: missing or non-string building_type; row skipped"
+                ));
+                continue;
+            }
+        };
+        let rctx = format!("{ctx}[{i}]");
+        let damaged = parse_building_status(item, &rctx, warnings);
+        match row.get("scope").and_then(Value::as_str) {
+            Some("state") | None => {
+                state_buildings.insert(building_type, damaged);
+                status = ViewStatus::Present;
+            }
+            Some("province") => match row.get("scope_id").and_then(Value::as_u64) {
+                Some(pid) if u32::try_from(pid).is_ok() => {
+                    province_buildings
+                        .entry(pid as u32)
+                        .or_default()
+                        .insert(building_type, damaged);
+                    status = ViewStatus::Present;
+                }
+                _ => warnings.push(format!(
+                    "{rctx}: province-scope row has missing/invalid scope_id; row skipped"
+                )),
+            },
+            Some(other) => warnings.push(format!(
+                "{rctx}: unknown building_damage scope {other:?}; row skipped"
+            )),
+        }
+    }
+    status
+}
+
 fn build_visibility(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
@@ -3111,7 +3362,9 @@ fn build_visibility(
     let Some(visibility) = visibility else {
         return (BTreeMap::new(), status);
     };
-    let by_pov = match visibility.get("by_pov") {
+    // A3 round-trip: per-POV visibility (requirements item 13) is nested under
+    // `by_pov`, or under `povs` in the recorder's own shape; accept either.
+    let by_pov = match visibility.get("by_pov").or_else(|| visibility.get("povs")) {
         Some(Value::Object(obj)) => obj,
         Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
         Some(other) => {
@@ -3217,7 +3470,14 @@ fn parse_pov_visibility(
         }
         None => {}
     }
-    let spotted_units = parse_spotted_units(obj.get("spotted_units"), pov, warnings);
+    // A3 round-trip: spotted units are `spotted_units`, or `visible_foreign_units`
+    // in the recorder's own per-POV shape (requirements item 13).
+    let spotted_units = parse_spotted_units(
+        obj.get("spotted_units")
+            .or_else(|| obj.get("visible_foreign_units")),
+        pov,
+        warnings,
+    );
     status = combine_status(status, spotted_units.status);
     PovVisibilityView {
         status,

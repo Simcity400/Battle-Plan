@@ -13,7 +13,7 @@ pub use world::{
     BuildingStatus, ChannelCoverage, CombatRow, CountryCore, CountryDiplomacy, CountryIdentity,
     DiplomacyView, DiplomaticPairState, DivisionRow, DivisionUnitRow, EquipmentAmount,
     FleetUnitRow, Leaf, MapLayerSource, NavalSupremacyRow, PlayerCountry, PovVisibilityView,
-    ProvenanceView, ProvinceVisibility, SessionMetadataView, ShipCompositionRow, SpeedEvent,
-    SpottedUnitsView, StateBuildings, TimelineLookup, TopbarScalars, ViewStatus, WeatherRegionRow,
-    WingUnitRow, WorldError, WorldFrame, WorldTimeline,
+    ProvenanceView, ProvinceVisibility, SessionMetadataView, ShipCompositionRow, SnowMudCell,
+    SnowMudView, SpeedEvent, SpottedUnitsView, StateBuildings, TimelineLookup, TopbarScalars,
+    ViewStatus, WeatherRegionRow, WingUnitRow, WorldError, WorldFrame, WorldTimeline,
 };
