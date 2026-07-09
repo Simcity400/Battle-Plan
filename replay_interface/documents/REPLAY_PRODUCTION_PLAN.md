@@ -92,6 +92,26 @@ spec may introduce a bare vanilla path join.
   (zoom ladder); scoreboard mean |err| 0.014–0.03 at h>500, degrading to 0.135
   at h=50 — the close-zoom gap **is** the unrendered dynamic content (units,
   buildings, rails, shadows), i.e. Phase C in this plan.
+  **C7 rescore audit (2026-07-09, lane c7-oracle-rescore):** the h=50 number is
+  **UNCHANGED from the 0.135 baseline** because none of this session's new
+  close-zoom laws are wired into the scoreboard's render path. (a) *Data:* the
+  mined store (`%LOCALAPPDATA%\hoi4_renderdoc\mined`) currently holds a SINGLE
+  frame — `hoi4_vanilla_frame9232` at cam-height **h≈50.04** (the definition-of-
+  done frame) — the 38-frame ladder is not present, so no full-ladder table can
+  be regenerated from the current store. (b) *Render-path audit:* the scoreboard
+  drives `replay_app --capture live_PAN2` = the **captured-pass replay**
+  (`CapturedPassLayer` → `NativeD3d11TerrainRenderer`), whose layers are
+  terrain/water/rivers/borders/trees only. The 7 new law modules (b6
+  shadow/PCF, b3 buildings, c5 rails, occupation stripes, b4 tree scatter,
+  camera-interp, snow-mud) are `mod`+`pub use` in `map_viewer/src/lib.rs`
+  **only** — grep-verified absent from `d3d11_replay.rs`/`pass_graph.rs`/
+  `replay_app/render.rs`. So the h=50 residual closes by **WIRING** (add
+  buildings/rails/shadow-map/occupation/tree-scatter draw passes + a
+  `snow_mud` terrain-CB feed into `ProductionMapPassGraph`) + the particles
+  descope decision — **not** by new law. (c) *Winter confound:* frame9232 (h=50)
+  is winter ground; `snow_mud_feed` is itself unwired, so a faithful snow input
+  cannot be fed even if the scoreboard were re-run — the base-terrain diff at
+  h=50 stays winter-confounded. See `documents/lane_reports/c7-oracle-rescore`.
 - **Per-track completion estimate:** static map ~85–90 %; data spine (ingest →
   timeline → render keying) structurally present but thin; dynamic war content
   ~10–15 % (ledger row "Units/counters/rail/arrows": 1 FILE / 6 UNKNOWN); UI
@@ -286,7 +306,7 @@ extractor-independent.
 | C4 | Front lines + movement/plan arrows (or explicit descope for v1 if not in recording — arrows are player-plan state; **decision needed, tracked in REPLAY_DATA_REQUIREMENTS**) | RE + requirements | parity or descope note | OPEN |
 | C5 | Rail/supply overlay | RE + defines | parity gate | **FILES-FIRST DONE 2026-07-09** (`map_viewer/src/rail_files.rs` + FIDELITY_LEDGER §2.18): railways.txt/supply_nodes.txt parse (reusing `map_static_data`), world-space polyline geometry from province centroids + `RAILWAY_Y_OFFSET`, and the `railroad.shader`+`00_graphics.lua` render law (all FILE), gated on shipped files (909 railways, 727 hubs, exact level histogram, full referential integrity, in-bounds). **Remaining CAPTURE/RE rows:** ribbon world width per level / UV tiling / inter-centroid curve / hub icon frame (CAP9 rail VB or ribbon-builder RE); **built-rail state stays A8** (extractor-side) |
 | C6 | Sea-zone naval-supremacy tint (recording R6/D56 shaped) | GB-field law + fixtures | parity vs captured supremacy frame | OPEN |
-| C7 | Close-zoom 3D pass completion (units/buildings/rails/shadows) measured by the existing oracle: h=50 scoreboard mean |err| 0.135 → ≤0.03 | all of C1–C6 + B3/B4 + **B6 shadow/PCF path** + an explicit **particles decision** (descope candidate — if descoped, restate the h=50 target on particle-free frames or a documented delta) | RenderDoc-oracle scoreboard at low h | OPEN — **this is the definition-of-done metric for Phase C** |
+| C7 | Close-zoom 3D pass completion (units/buildings/rails/shadows) measured by the existing oracle: h=50 scoreboard mean |err| 0.135 → ≤0.03 | all of C1–C6 + B3/B4 + **B6 shadow/PCF path** + an explicit **particles decision** (descope candidate — if descoped, restate the h=50 target on particle-free frames or a documented delta) | RenderDoc-oracle scoreboard at low h | OPEN — **this is the definition-of-done metric for Phase C**. **Rescore audit 2026-07-09 (c7-oracle-rescore): h=50 STILL 0.135** — all 7 new close-zoom law modules are `lib.rs`-only (grep-verified unwired from the render path), so the scoreboard output is byte-unchanged; the oracle number is a **WIRING** gate now (add the passes to `ProductionMapPassGraph`/`d3d11_replay`), not a new-law gate. Mined store also reduced to the single h≈50 frame (frame9232); ladder regen needs a re-mine. |
 | C8 | **FoW visual law (observer country-POV)**: terrain shader transform is now mined: CAP4 proves the carrier is the screen-space `ShadowMap` SRV, with FoW color/alpha packed in `.g/.b`; shipped `fow.fxh` / `pdxmap.shader` define the final blend and producer packing. Remaining scope: regenerate the producer inputs (`IntelTex`/`ExtraFOW`/visibility state) for arbitrary camera/time and mine hidden-unit culling from a labelled counter/UI pair. Scene-CB0 FoW gate did not change in CAP4, so C8 is texture/draw-state driven for this pair. | installed content first (shader sources) + CAP4 pair; follow-up §4-CAP10 for producer/counter residuals | `map_viewer` FoW gate: identical terrain draw sets, only `ShadowMap` terrain SRV differs; clear-region parity plus adversarial mismatch; future POV-fixture unit-hiding gates | PARTIAL — carrier + shader law implemented/gated in tooling (`fow_law.rs`); product path still blocked by producer-input + hidden-unit evidence |
 
 ### Phase D — UI completion: EVERY panel at full fidelity (game_ui)
