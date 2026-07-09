@@ -95,3 +95,4 @@ build_pyi/
 *.battleplan
 *.hoi4replay
 *.battleplan.part/
+.re_scratch/

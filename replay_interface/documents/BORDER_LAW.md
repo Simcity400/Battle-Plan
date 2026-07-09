@@ -29,10 +29,55 @@ heights included):
    world `(i+0.5, (H−1)−j−0.5)`.
 
 Known non-covered cases (pinpointed, never guessed around): sea|sea
-(`sea_region`) strips follow a DIFFERENT, underived construction and are
-skipped by the render pass; closed loops (~0.13% of land chains) use an
-unverified anchor rule; ~3.4% of pool strips (dominated by water classes)
-remain undiagnosed in the harness. See FIDELITY_LEDGER 2.5.
+(`sea_region`) strips are SKIPPED by the render pass, but the reason was
+re-scoped by BORD7 (2026-07-09, static decompile). The sole border-VB-pool
+applies ONE class-uniform construction with NO water branch — so sea|sea uses
+the SAME centerline law as land/coast; the earlier "sea uses a different
+construction" was a from-raster tracing artifact, NOT an engine divergence
+(ENGINE_RE_MAP §7). Closed loops are now RESOLVED (BORD6, `closed_loop_rows`:
+M edge-midpoint rows / CCW / min-z seam anchor, EXACT on 605 captured loops).
+The genuine remaining gaps are the water CONTROL-POLYGON construction (BORD8
+below: the uniform emit kernel does NOT reproduce sea POSITIONS from the pixel
+staircase — the pool refutes it) and the fade CPU-consumer residual. The
+answer-key pool (`session_BORDERZOOM_3`, 31,824,096 B) was NOT lost: it was
+recovered from the cleanup backup and PRESERVED at
+`C:\Users\Example\hoi4_border_pool_preserved\session_BORDERZOOM_3` (BORD8), so
+strip-by-strip re-validation still runs. See FIDELITY_LEDGER 2.5.
+
+## BORD8 — the answer-key pool is NOT lost, and BORD7's "sea = land law" is input-scoped
+
+Two corrections to BORD7, both pool-validated (2026-07-09):
+
+1. **The pool survives.** `session_BORDERZOOM_3` (the 31,824,096-byte border VB
+   pool, byte count exact) was recovered from the capture-cleanup backup
+   `%LOCALAPPDATA%\Claude_pzs8sxrjxfjjc.data-backup-20260709-103135\LocalCache\Local\hoi4_captures\session_BORDERZOOM_3`
+   and PRESERVED at `C:\Users\Example\hoi4_border_pool_preserved\session_BORDERZOOM_3\`
+   (VB pool + index + CB0/1/2 + bundle/session json). Re-validating any
+   sea/tracing/fade fix does NOT need a new capture — the answer key is on disk.
+
+2. **The land↔sea divergence is REAL, but upstream of the smoothing.** If BORD7's
+   strips must be reproducible from *some* control polygon under that smoothing.
+   Pool measurement (harness `water_deconv.py`, `repro_all.py`): the land law is
+   `stations{0,0.5,…,M−0.5,M}` + **exactly ONE** box-3 pass — land reproduces
+   399/399 at one pass and collapses to 12/399 at two passes, so the pass count
+   is pinned to 1. Under that SAME one-pass law, the 7,733 water|water open
+   strips are NOT reproducible from ANY pixel-lattice staircase: the box-3
+   pre-image of a captured water centerline is a *sub-pixel, near-zero-step*
+   polygon (recovered station steps range 0.01–1.36, std ≈0.49), which no
+   4-connected corner walk can emit; and box-3×K of the pixel staircase plateaus
+   at ≈0.16 max-err (never < 1e-3) for all K. Conclusion: the shared smoothing
+   kernel does NOT make "sea == land law on the pixel staircase" — the
+   water-specific step is the CONTROL POLYGON the builder is fed (a simplified /
+   coarser / sea-zone-sourced boundary), which is upstream of the box-3 call. So
+   `sea_region` open strips stay render-BLOCKED (drawing them with the land law
+   would emit provably wrong geometry per the pool), and the crack is to recover
+   any pre-simplification, validate against the preserved pool).
+
+Closed loops (BORD6) ARE fully pool-validated: `closed_loop_rows` reproduces all
+605 cleanly-traced captured loops EXACTLY (8e-5), predictively (min-z-midpoint
+anchor + CCW winding, no captured-anchor input). ~277 island loops whose A|B
+pixel boundary is not a single connected simple cycle remain a TRACING gap
+(not a construction gap).
 
 Everything below this line is the pre-BORD5 file-first derivation record;
 where it conflicts with the captured law above, the captured law wins (the

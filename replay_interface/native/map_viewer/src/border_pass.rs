@@ -731,12 +731,19 @@ mod windows_impl {
 
             for (range, diffuse_srv) in &pass.class_draws {
                 if range.material == crate::BorderMaterial::SeaRegion {
-                    // BORD5 pinpointed gap: sea|sea chains use a DIFFERENT,
-                    // underived centerline construction (iterated box3 refuted
-                    // against 294/300 captured sea strips). Drawing them with
-                    // the land-chain geometry would be an unlabeled
-                    // approximation, so the class is skipped until its law is
-                    // derived (FIDELITY_LEDGER 2.5).
+                    // BORD7 (2026-07-09): the sea|sea centerline CONSTRUCTION is
+                    // no longer the open question — a static decompile of the
+                    // sole border-VB-pool builder (`pdxmapborders.cpp` =
+                    // construction with no water branch, so sea|sea uses the
+                    // same law as land/coast (the earlier "sea refutes box3" was
+                    // a from-raster tracing artifact for water topologies). The
+                    // class is STILL skipped because the from-files sea chain
+                    // TRACING is unvalidated for water topologies and the
+                    // captured answer-key pool (session_BORDERZOOM_3) was
+                    // DELETED in the 2026-07-09 capture cleanup, so a sea/tracing
+                    // fix can no longer be gated without a NEW pool capture.
+                    // Drawing mis-traced sea chains would be an unlabeled
+                    // approximation (FIDELITY_LEDGER 2.5).
                     continue;
                 }
                 let transparency =
