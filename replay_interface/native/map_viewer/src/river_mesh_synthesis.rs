@@ -8,12 +8,16 @@ use std::path::{Path, PathBuf};
 // (world_x, heightmap_r8 * 0.1, world_z, fade), TEXCOORD0 is
 // (side, station, tangent_x, tangent_z), and rivers.bmp maps as
 // bmp_x=round(world_x), bmp_y=2047-round(world_z) on the 5632x2048 map.
-// The captured class-3 run ramps from width 0.0 to about 1.1 world units over
-// the first 11 stations, then holds near 1.1.
 pub(crate) const RIVER_VERTEX_STRIDE_BYTES: u32 = 32;
-// Capture-fitted (PAN2 class-3 run): stations to reach full width. NOT a
-// shipped define; tracked FIT (FIDELITY_LEDGER 2.10).
-const RIVER_SOURCE_WIDTH_RAMP_STEPS: f32 = 11.0;
+// Source-strip width ramp, world units per station. CAPTURE-measured from the
+// world river VB (see river_world_synthesis: `width = min(0.1*station,
+// width(class))`). This REPLACES the retired capture-FIT literal
+// `RIVER_SOURCE_WIDTH_RAMP_STEPS = 11.0`. The class->width map itself is
+// engine CPU mesh-gen — the river shader passes POSITION through unchanged
+// (river.shader:198), so width is baked into the VB, not file-derivable; the
+// only file-grounded distinction is the small/large split
+// (00_defines.lua:936-938). See FIDELITY_LEDGER 2.10.
+const RIVER_WIDTH_RAMP_PER_STATION: f32 = 0.1;
 
 /// `rivers.bmp` palette-split defines, shipped in
 /// `common/defines/00_defines.lua:936-938` (comment "color indices for
@@ -576,9 +580,12 @@ fn append_river_polyline_mesh(
         let class = rivers.pixels[pixel];
         let base_width = river_width_for_class(class)
             .or_else(|| nearest_polyline_width(polyline, i, rivers))
-            .unwrap_or(1.1);
-        let width_ramp = (station / RIVER_SOURCE_WIDTH_RAMP_STEPS).clamp(0.0, 1.0);
-        let width = base_width * width_ramp;
+            .ok_or("river polyline has no width-classified pixel (class 3..=11)")?;
+        // Measured source ramp: width grows RIVER_WIDTH_RAMP_PER_STATION world
+        // units per station up to the class steady width (river_world_synthesis,
+        // CAPTURE). Fail-closed above: an uncited plausible fallback width is
+        // forbidden (lane rule), so a fully-unclassified polyline errors.
+        let width = (RIVER_WIDTH_RAMP_PER_STATION * station).min(base_width);
         // Source-ending fade over RIVER_FADE_FROM - RIVER_FADE_TO stations
         // (00_graphics.lua:993-994; vanilla span 17.0 == the old PAN2-fitted
         // RIVER_SOURCE_FADE_STEPS literal, so vanilla output is byte-identical).
@@ -792,19 +799,15 @@ fn nearest_polyline_width(polyline: &[usize], index: usize, rivers: &IndexImage)
     None
 }
 
+/// Steady-state world-space width for a rivers.bmp palette class. Single
+/// source of truth = the CAPTURE-measured world-VB law in
+/// `river_world_synthesis` (`width(k) = 1.11 + 0.17*(k-3)`, verified for k in
+/// {3,4,6,7,9,10,11}, classes 5/8 interpolated inside the same measured linear
+/// law). The old fabricated per-class table (1.1..4.2, uncited) is retired.
+/// Classes 0..=2 (source/flow markers) and >=12 (not-river) have no steady
+/// width and return `None`.
 fn river_width_for_class(class: u8) -> Option<f32> {
-    match class {
-        3 => Some(1.1),
-        4 => Some(1.4),
-        5 => Some(1.7),
-        6 => Some(2.0),
-        7 => Some(2.4),
-        8 => Some(2.8),
-        9 => Some(3.2),
-        10 => Some(3.7),
-        11 => Some(4.2),
-        _ => None,
-    }
+    crate::river_world_synthesis::river_world_width_for_class(class)
 }
 
 fn sample_height_world(heightmap: &IndexImage, x: f32, z: f32) -> f32 {

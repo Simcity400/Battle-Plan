@@ -258,15 +258,18 @@ pub use restore_evidence::{
     RestoreSceneTexturePayloadSummary, RestoreSceneUniforms, RESTORE_PASS_BUNDLE_FILE,
 };
 pub use river_mesh_synthesis::{
-    MapLayerSynthesisInputs, RiverCaptureDecodeReport, RiverCaptureStation, RiverMeshSynthesis,
-    RiverMeshSynthesisStats,
+    MapLayerSynthesisInputs, RiverCaptureDecodeReport, RiverCaptureStation, RiverFadeDefines,
+    RiverMeshSynthesis, RiverMeshSynthesisStats, RiverPaletteDefines, RIVER_FADE_DEFINES_SOURCE,
+    RIVER_PALETTE_DEFINES_SOURCE,
 };
 pub use river_world_synthesis::{
-    compare_river_world_mesh_to_capture, heightmap_bmp_from_resolver, load_captured_river_world,
-    river_world_width_for_class, rivers_bmp_from_resolver, synthesize_river_world_mesh,
+    classify_river_pixel, compare_river_world_mesh_to_capture, heightmap_bmp_from_resolver,
+    load_captured_river_world, river_extraction_stats, river_world_width_for_class,
+    rivers_bmp_from_resolver, synthesize_river_world_mesh,
     synthesize_river_world_mesh_from_resolver, CapturedRiverWorld, RiverDistanceStats,
-    RiverWidthClassRow, RiverWorldComparisonReport, RiverWorldMesh, RiverWorldStrip,
-    RiverWorldSynthesisParams, RiverWorldVertex, HEIGHTMAP_BMP_SOURCE, RIVERS_BMP_SOURCE,
+    RiverExtractionStats, RiverPixelKind, RiverWidthClassRow, RiverWorldComparisonReport,
+    RiverWorldMesh, RiverWorldStrip, RiverWorldSynthesisParams, RiverWorldVertex,
+    HEIGHTMAP_BMP_SOURCE, RIVERS_BMP_SOURCE,
 };
 pub use seasons::{
     apply_tree_season_cb_override, seasons_table_from_game_dir, seasons_table_from_resolver,

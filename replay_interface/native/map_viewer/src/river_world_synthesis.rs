@@ -82,12 +82,168 @@ impl Default for RiverWorldSynthesisParams {
     }
 }
 
-/// Measured steady-state half-strip width per rivers.bmp palette class.
+/// [CAPTURE] Measured steady-state full width (world units) per rivers.bmp
+/// palette class, from the captured world river VB. Law `width(k) = 1.11 +
+/// 0.17*(k-3)` was fit to and verified against the captured medians for k in
+/// {3,4,6,7,9,10,11} (`gate_river_world_comparison_against_captured_sessions`
+/// keeps every delta < 0.02). Classes 5 and 8 are unused by the vanilla map,
+/// so their widths here are INTERPOLATIONS inside the same measured linear law
+/// (each bracketed by measured neighbours 4/6 and 7/9) — not independently
+/// observed. Classes 0..=2 (source/flow markers, no steady width) and >=12
+/// (not a river) return `None` — an uncited width is never fabricated.
+///
+/// The class->width map is not in any shipped file: the river shader passes
+/// vertex POSITION through unchanged (`gfx/FX/river.shader:198`), so width is
+/// baked into the VB by engine CPU mesh-generation. The only file-grounded
+/// class distinction is the small/large split (`common/defines/00_defines.lua`
+/// :936-938). RE target to promote this from CAPTURE to FILE: the hoi4.exe
+/// routine that builds the stride-32 river VB from rivers.bmp — its per-class
+/// half-width lookup is the half-distance between the paired side-0/side-1
+/// POSITION.xz at each steady-state station.
 pub fn river_world_width_for_class(class: u8) -> Option<f32> {
     if (RIVER_FIRST_WIDTH_CLASS..=RIVER_MAX_CLASS).contains(&class) {
         Some(1.11 + 0.17 * (class - RIVER_FIRST_WIDTH_CLASS) as f32)
     } else {
         None
+    }
+}
+
+/// Render-topology bucket for a rivers.bmp palette index. The small/large/
+/// not-river partition is FILE-grounded (`RiverPaletteDefines`,
+/// `common/defines/00_defines.lua:936-938`); the source/flow-in/flow-out
+/// meaning of indices 0/1/2 is finer than the shipped files (index 0 = source
+/// is CAPTURE-confirmed — every class-0 pixel is a strip start in the captured
+/// world VB; indices 1/2 = flow-in/flow-out is HOI4-wiki convention, UNKNOWN
+/// in shipped files).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RiverPixelKind {
+    /// Palette index 0 — river source. [CAPTURE] strip-start; also the FILE
+    /// small-range start (`RIVER_SMALL_START_INDEX = 0`).
+    Source,
+    /// Palette index 1 — flow-in marker. [wiki/UNKNOWN in files] inside the
+    /// FILE small range 0..=6.
+    FlowIn,
+    /// Palette index 2 — flow-out marker. [wiki/UNKNOWN in files] inside the
+    /// FILE small range 0..=6.
+    FlowOut,
+    /// Small river channel: `3 ..= RIVER_SMALL_STOP_INDEX` (FILE small minus
+    /// the 0..=2 markers).
+    SmallChannel,
+    /// Large river channel: `RIVER_SMALL_STOP_INDEX+1 ..= RIVER_LARGE_STOP_INDEX`
+    /// (FILE large, 7..=11).
+    LargeChannel,
+    /// Not a river: palette index `> RIVER_LARGE_STOP_INDEX` (>=12); vanilla
+    /// uses 254 (land) and 255 (sea).
+    NotRiver,
+}
+
+/// Classify a rivers.bmp palette index through the FILE-defined split
+/// (`RiverPaletteDefines`, 00_defines.lua:936-938) plus the render-topology
+/// markers for indices 0/1/2. Total over all u8 — every pixel lands in exactly
+/// one kind (asserted by `gate_river_pixel_classification_is_total`).
+pub fn classify_river_pixel(value: u8, palette: RiverPaletteDefines) -> RiverPixelKind {
+    if !palette.is_river_pixel(value) {
+        return RiverPixelKind::NotRiver;
+    }
+    match value {
+        0 => RiverPixelKind::Source,
+        1 => RiverPixelKind::FlowIn,
+        2 => RiverPixelKind::FlowOut,
+        v if palette.is_small_river(v) => RiverPixelKind::SmallChannel,
+        _ => RiverPixelKind::LargeChannel,
+    }
+}
+
+/// Full-map extraction/classification stats over a `rivers.bmp` index image,
+/// keyed by the FILE-defined palette split. Used by the vanilla extraction
+/// gate: every palette index is bucketed and `unclassified_pixels` must be 0.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RiverExtractionStats {
+    pub total_pixels: usize,
+    /// Non-zero palette-index counts (compact).
+    pub palette_histogram: BTreeMap<u8, usize>,
+    pub river_pixels: usize,
+    pub not_river_pixels: usize,
+    /// Pixels in no bucket. Definitionally 0 (classify is total); gated.
+    pub unclassified_pixels: usize,
+    pub source_pixels: usize,
+    pub flow_in_pixels: usize,
+    pub flow_out_pixels: usize,
+    pub small_channel_pixels: usize,
+    pub large_channel_pixels: usize,
+    /// FILE small range `0..=RIVER_SMALL_STOP_INDEX` total (00_defines.lua:936-937).
+    pub file_small_pixels: usize,
+    /// FILE large range `RIVER_SMALL_STOP_INDEX+1..=RIVER_LARGE_STOP_INDEX`
+    /// total (00_defines.lua:937-938).
+    pub file_large_pixels: usize,
+    /// Width classes (3..=11) actually present in the map.
+    pub present_width_classes: Vec<u8>,
+    /// Width classes (3..=11) absent from the map (width via CAPTURE-law
+    /// interpolation, unobserved here).
+    pub absent_width_classes: Vec<u8>,
+}
+
+/// Classify every `rivers.bmp` pixel through the FILE palette split.
+pub fn river_extraction_stats(
+    rivers: &IndexImage,
+    palette: RiverPaletteDefines,
+) -> RiverExtractionStats {
+    let mut palette_histogram: BTreeMap<u8, usize> = BTreeMap::new();
+    let mut source_pixels = 0usize;
+    let mut flow_in_pixels = 0usize;
+    let mut flow_out_pixels = 0usize;
+    let mut small_channel_pixels = 0usize;
+    let mut large_channel_pixels = 0usize;
+    let mut not_river_pixels = 0usize;
+    for &value in &rivers.pixels {
+        *palette_histogram.entry(value).or_insert(0) += 1;
+        match classify_river_pixel(value, palette) {
+            RiverPixelKind::Source => source_pixels += 1,
+            RiverPixelKind::FlowIn => flow_in_pixels += 1,
+            RiverPixelKind::FlowOut => flow_out_pixels += 1,
+            RiverPixelKind::SmallChannel => small_channel_pixels += 1,
+            RiverPixelKind::LargeChannel => large_channel_pixels += 1,
+            RiverPixelKind::NotRiver => not_river_pixels += 1,
+        }
+    }
+    palette_histogram.retain(|_, count| *count > 0);
+    let total_pixels = rivers.pixels.len();
+    let river_pixels = source_pixels
+        + flow_in_pixels
+        + flow_out_pixels
+        + small_channel_pixels
+        + large_channel_pixels;
+    let unclassified_pixels = total_pixels - river_pixels - not_river_pixels;
+    let file_small_pixels = (palette.small_start_index..=palette.small_stop_index)
+        .map(|index| palette_histogram.get(&index).copied().unwrap_or(0))
+        .sum();
+    let file_large_pixels = (palette.small_stop_index.saturating_add(1)..=palette.large_stop_index)
+        .map(|index| palette_histogram.get(&index).copied().unwrap_or(0))
+        .sum();
+    let mut present_width_classes = Vec::new();
+    let mut absent_width_classes = Vec::new();
+    for class in RIVER_FIRST_WIDTH_CLASS..=RIVER_MAX_CLASS {
+        if palette_histogram.get(&class).copied().unwrap_or(0) > 0 {
+            present_width_classes.push(class);
+        } else {
+            absent_width_classes.push(class);
+        }
+    }
+    RiverExtractionStats {
+        total_pixels,
+        palette_histogram,
+        river_pixels,
+        not_river_pixels,
+        unclassified_pixels,
+        source_pixels,
+        flow_in_pixels,
+        flow_out_pixels,
+        small_channel_pixels,
+        large_channel_pixels,
+        file_small_pixels,
+        file_large_pixels,
+        present_width_classes,
+        absent_width_classes,
     }
 }
 
@@ -909,9 +1065,252 @@ mod tests {
                 "class {class}: law {generated} vs measured {width}"
             );
         }
+        // Classes 5 and 8 are absent from the vanilla map: the law interpolates
+        // them inside the measured linear range (bracketed by 4/6 and 7/9), so
+        // they still resolve to Some — never fabricated, never out of range.
+        let w5 = river_world_width_for_class(5).expect("interpolated class 5");
+        let w8 = river_world_width_for_class(8).expect("interpolated class 8");
+        assert!(
+            river_world_width_for_class(4).unwrap() < w5
+                && w5 < river_world_width_for_class(6).unwrap(),
+            "class 5 width must sit between measured 4 and 6"
+        );
+        assert!(
+            river_world_width_for_class(7).unwrap() < w8
+                && w8 < river_world_width_for_class(9).unwrap(),
+            "class 8 width must sit between measured 7 and 9"
+        );
+        // Source/flow markers and non-river indices have no steady width.
         assert_eq!(river_world_width_for_class(0), None);
+        assert_eq!(river_world_width_for_class(1), None);
+        assert_eq!(river_world_width_for_class(2), None);
         assert_eq!(river_world_width_for_class(12), None);
         assert_eq!(river_world_width_for_class(254), None);
+        assert_eq!(river_world_width_for_class(255), None);
+    }
+
+    fn vanilla_palette_defines() -> RiverPaletteDefines {
+        RiverPaletteDefines::from_defines_source(
+            "RIVER_SMALL_START_INDEX = 0,\nRIVER_SMALL_STOP_INDEX = 6,\nRIVER_LARGE_STOP_INDEX = 11,",
+        )
+        .expect("vanilla palette defines")
+    }
+
+    #[test]
+    fn gate_river_pixel_classification_is_total() {
+        // Every u8 lands in exactly one kind, and the kind agrees with the FILE
+        // palette predicates for river-or-not.
+        let palette = vanilla_palette_defines();
+        for value in 0u8..=255 {
+            let kind = classify_river_pixel(value, palette);
+            match kind {
+                RiverPixelKind::NotRiver => {
+                    assert!(!palette.is_river_pixel(value), "index {value} misbucketed")
+                }
+                _ => assert!(palette.is_river_pixel(value), "index {value} misbucketed"),
+            }
+        }
+        assert_eq!(classify_river_pixel(0, palette), RiverPixelKind::Source);
+        assert_eq!(classify_river_pixel(1, palette), RiverPixelKind::FlowIn);
+        assert_eq!(classify_river_pixel(2, palette), RiverPixelKind::FlowOut);
+        assert_eq!(
+            classify_river_pixel(3, palette),
+            RiverPixelKind::SmallChannel
+        );
+        assert_eq!(
+            classify_river_pixel(6, palette),
+            RiverPixelKind::SmallChannel
+        );
+        assert_eq!(
+            classify_river_pixel(7, palette),
+            RiverPixelKind::LargeChannel
+        );
+        assert_eq!(
+            classify_river_pixel(11, palette),
+            RiverPixelKind::LargeChannel
+        );
+        assert_eq!(classify_river_pixel(12, palette), RiverPixelKind::NotRiver);
+        assert_eq!(classify_river_pixel(254, palette), RiverPixelKind::NotRiver);
+        assert_eq!(classify_river_pixel(255, palette), RiverPixelKind::NotRiver);
+    }
+
+    #[test]
+    fn extraction_stats_reconcile_on_synthetic_map() {
+        // 4x4: one source(0), one flow-in(1), two class-3, rest not-river(254).
+        let pixels = vec![
+            0, 1, 3, 254, //
+            3, 254, 254, 254, //
+            254, 254, 254, 254, //
+            254, 254, 254, 255,
+        ];
+        let rivers = IndexImage {
+            width: 4,
+            height: 4,
+            pixels,
+        };
+        let stats = river_extraction_stats(&rivers, vanilla_palette_defines());
+        assert_eq!(stats.total_pixels, 16);
+        assert_eq!(stats.unclassified_pixels, 0);
+        assert_eq!(stats.river_pixels, 4);
+        assert_eq!(stats.not_river_pixels, 12);
+        assert_eq!(stats.source_pixels, 1);
+        assert_eq!(stats.flow_in_pixels, 1);
+        assert_eq!(stats.flow_out_pixels, 0);
+        assert_eq!(stats.small_channel_pixels, 2);
+        assert_eq!(stats.large_channel_pixels, 0);
+        assert_eq!(stats.file_small_pixels, 4); // 0,1,3,3
+        assert_eq!(stats.file_large_pixels, 0);
+        assert_eq!(stats.present_width_classes, vec![3]);
+        assert_eq!(stats.absent_width_classes, vec![4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(
+            stats.river_pixels + stats.not_river_pixels + stats.unclassified_pixels,
+            stats.total_pixels
+        );
+    }
+
+    /// Full-map extraction/classification gate against the real shipped vanilla
+    /// `rivers.bmp`. Runs offline (no capture needed); skipped if the install
+    /// is absent. Proves: every one of the 5632x2048 pixels is classified with
+    /// zero unclassified, the exact per-index histogram, the FILE small/large
+    /// split totals, which width classes are present vs absent, and that the
+    /// synthesized world mesh turns every reachable river pixel into one
+    /// station (pairs + engine-dropped sourceless pixels == river pixels).
+    #[test]
+    fn gate_full_map_river_extraction_vanilla() {
+        let game_dir = PathBuf::from(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
+        if !game_dir.is_dir() {
+            eprintln!("skipping full-map river extraction gate: vanilla install absent");
+            return;
+        }
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let rivers = rivers_bmp_from_resolver(&resolver).expect("rivers.bmp");
+        let palette = RiverPaletteDefines::from_resolver(&resolver).expect("palette defines");
+        let stats = river_extraction_stats(&rivers, palette);
+
+        assert_eq!(stats.total_pixels, 5632 * 2048);
+        assert_eq!(stats.total_pixels, 11_534_336);
+        assert_eq!(
+            stats.unclassified_pixels, 0,
+            "every rivers.bmp pixel must be classified"
+        );
+        assert_eq!(
+            stats.river_pixels + stats.not_river_pixels,
+            stats.total_pixels
+        );
+
+        // Exact vanilla per-index histogram of the shipped rivers.bmp.
+        let expected: &[(u8, usize)] = &[
+            (0, 317),
+            (1, 250),
+            (2, 14),
+            (3, 35_104),
+            (4, 10_985),
+            (6, 13_144),
+            (7, 1_154),
+            (9, 1_677),
+            (10, 43),
+            (11, 27_665),
+            (254, 7_479_319),
+            (255, 3_964_664),
+        ];
+        for (index, count) in expected {
+            assert_eq!(
+                stats.palette_histogram.get(index).copied().unwrap_or(0),
+                *count,
+                "rivers.bmp index {index} count drifted"
+            );
+        }
+        assert_eq!(
+            stats.palette_histogram.len(),
+            expected.len(),
+            "rivers.bmp has unexpected extra palette indices: {:?}",
+            stats.palette_histogram
+        );
+
+        assert_eq!(stats.river_pixels, 90_353);
+        assert_eq!(stats.source_pixels, 317);
+        assert_eq!(stats.flow_in_pixels, 250);
+        assert_eq!(stats.flow_out_pixels, 14);
+        // FILE small/large split (00_defines.lua:936-938).
+        assert_eq!(
+            stats.file_small_pixels,
+            317 + 250 + 14 + 35_104 + 10_985 + 13_144
+        );
+        assert_eq!(stats.file_large_pixels, 1_154 + 1_677 + 43 + 27_665);
+
+        // Width classes present vs absent; every present class has a CAPTURE
+        // width, and no non-channel index resolves to a width.
+        assert_eq!(stats.present_width_classes, vec![3, 4, 6, 7, 9, 10, 11]);
+        assert_eq!(stats.absent_width_classes, vec![5, 8]);
+        for class in &stats.present_width_classes {
+            assert!(
+                river_world_width_for_class(*class).is_some(),
+                "present class {class} must have a CAPTURE width"
+            );
+        }
+        for index in [0u8, 1, 2, 12, 254, 255] {
+            assert!(
+                river_world_width_for_class(index).is_none(),
+                "index {index} must not resolve to a width"
+            );
+        }
+
+        // Segments per class from the synthesized world mesh (default params).
+        let heightmap = heightmap_bmp_from_resolver(&resolver).expect("heightmap.bmp");
+        let mesh =
+            synthesize_river_world_mesh(&rivers, &heightmap, &RiverWorldSynthesisParams::default())
+                .expect("world mesh");
+        assert_eq!(mesh.river_pixel_count, 90_353);
+        assert_eq!(mesh.source_pixel_count, 317);
+        // Every river pixel is one of: a station/pair in a strip, a singleton
+        // chain (traced but too short for geometry: length < 2, no pair), or a
+        // sourceless 4-connected pixel dropped by the engine (CAPTURE law).
+        // Pairs + skipped can never exceed the total, and the singleton
+        // remainder must be small.
+        let reached_pairs = mesh.pair_count();
+        assert!(
+            reached_pairs + mesh.skipped_sourceless_pixels <= 90_353,
+            "pairs {reached_pairs} + skipped {} exceed river pixels",
+            mesh.skipped_sourceless_pixels
+        );
+        let singleton_pixels = 90_353 - reached_pairs - mesh.skipped_sourceless_pixels;
+        assert!(
+            singleton_pixels < 1_000 && mesh.skipped_sourceless_pixels < 1_000,
+            "unexpected reconciliation: singletons {singleton_pixels}, skipped {}",
+            mesh.skipped_sourceless_pixels
+        );
+        let mut per_class_pairs: BTreeMap<u8, usize> = BTreeMap::new();
+        for strip in &mesh.strips {
+            for pair in strip.pair_start..strip.pair_end {
+                // Class under the pair midpoint (round to nearest pixel).
+                let a = mesh.vertices[pair * 2].position;
+                let b = mesh.vertices[pair * 2 + 1].position;
+                let bx = ((a[0] + b[0]) * 0.5).round();
+                let bz = ((a[2] + b[2]) * 0.5).round();
+                if bx < 0.0 || bz < 0.0 || bx >= rivers.width as f32 || bz >= rivers.height as f32 {
+                    continue;
+                }
+                let by = rivers.height - 1 - bz as usize;
+                let class = rivers.pixels[by * rivers.width + bx as usize];
+                *per_class_pairs.entry(class).or_insert(0) += 1;
+            }
+        }
+        println!(
+            "full-map river extraction: {} river px ({} not-river), {} strips, {} reached pairs, \
+             {} singleton px, {} skipped sourceless; classes present {:?} absent(interp) {:?}; \
+             FILE small {} / large {}; per-class pairs {:?}",
+            stats.river_pixels,
+            stats.not_river_pixels,
+            mesh.strips.len(),
+            reached_pairs,
+            singleton_pixels,
+            mesh.skipped_sourceless_pixels,
+            stats.present_width_classes,
+            stats.absent_width_classes,
+            stats.file_small_pixels,
+            stats.file_large_pixels,
+            per_class_pairs
+        );
     }
 
     #[test]
