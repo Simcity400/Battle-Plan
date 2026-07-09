@@ -467,6 +467,44 @@ the relations read) and 92.3% of stream bytes. Finally, reset expectations on sk
 bursty world (min local interval 28.2 ms) — true zero-skip is a separate architectural item
 (cheap hour-boundary latch decoupled from heavy decode), not a frame-time-reduction item.
 
+### lane/fold-perf — post-capture fold bottleneck (2026-07-10) — **LANDED, 5.4x measured**
+
+Profile first (FOLD_PROFILE=1 env-gated phase timers, deep-war 512 MiB prefix, 189 hours,
+release, this rig): fold wall 173.1 s = **build_snapshot 65%** (75.2 s), apply_domain_data
+10.5% (12.2 s), serde_json serialize 10% (11.5 s), snapshot write 3.8% (4.4 s). Input
+512 MiB expands to 5.13 GB of per-hour snapshot JSON (14x amplification, 27–55 MB/hour) —
+serialization/IO were never the wall; per-hour `Value`-tree projection is.
+
+Levers landed (all G1-gated byte-identical, all orchestration-layer — zero domain-fold
+body edits):
+1. **Background emit pipeline**: FRAME_END hands the built snapshot `Value` to a bounded
+   (depth 2) worker that serializes straight into the spill file through a SHA-256-tee
+   writer (serialize+write+hash off the critical path, no intermediate Vec, no re-read for
+   the report hash; `serde_json::to_writer` == `to_vec` bytes). 173.1 s → 128.6 s.
+2. **Parallel strided fold** (`fold_compact_stream_file_parallel`): hours are NOT
+   independent fold units (delta accumulators carry across hours), so N workers each fold
+   the WHOLE stream (apply is ~10% of cost) and worker k builds+emits only hours with
+   emission ordinal ≡ k (mod N). `build_snapshot` is `&self`-pure, so skipping it on
+   non-owned hours cannot perturb state — union output is byte-identical by construction;
+   worker accounting divergence fails loudly. Recorder-host finalize + stream_fold
+   `--workers N` (default = cores/2 clamp; 8-core knee is 4 — memory-bandwidth-bound, 8
+   workers is SLOWER).
+3. **mimalloc global allocator** (both bins): the fold is allocation-bound (multi-GB Value
+   trees built/dropped per hour); Windows heap serializes badly across workers. G1-neutral.
+
+Measured on the SAME deep-war 512 MiB prefix, same rig, back-to-back: 3.07 MB/s baseline →
+4.14 (emit pipeline) → 11.15 (4 workers) → **16.59 MB/s (4 workers + mimalloc) = 5.4x**,
+peak WS 3.09 GB (vs 1.05 GB baseline). 2 GiB prefix, 4 workers: 23.45 MB/s, 349 hours,
+peak WS 8.52 GB. G1 evidence: chain hash + all 189 per-hour SHA-256 byte-identical to the
+pre-change baseline fold on every configuration; determinism gate: two identical-input
+parallel runs → identical chain (both 1w-pipelined and 8w). 12.9 GB deep-war projection:
+~40 min → **~9–13 min**.
+
+Also landed (separate commit): `--skip-host-fold` production option — skips the host fold
+entirely (raw compact stream is the canonical artifact; replay_decoder D1 gives consumers
+per-hour access), packs an empty snapshots array, and marks the manifest + container index
+`host_fold_skipped` explicitly. Default behavior unchanged.
+
 ## Phase 3 (original spec below)
 
 1. **zstd with long window** for container entries (writer `snapshot/src/pack.rs:456` is

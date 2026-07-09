@@ -79,6 +79,126 @@ pub fn fold_compact_stream_file(
     Ok((files, stats))
 }
 
+/// Default worker count for the parallel post-capture fold. The fold is OFFLINE
+/// batch work (post-capture finalization / re-fold tooling), where the
+/// weaker-PC law's "don't lean on cores" constraint does not apply — that law
+/// governs CAPTURE-time per-frame work.
+///
+/// cores/2, capped at 8: measured on the deep-war 512 MiB prefix (8-core rig),
+/// 4 workers (11.15 MB/s) beats 8 workers (10.2 MB/s) — the fold is
+/// memory-bandwidth/allocation-bound, and each fold worker also owns an emit
+/// worker thread, so cores/2 fold workers already saturates the machine. The
+/// cap also bounds peak memory (each worker holds a full fold-state copy).
+pub fn default_fold_workers() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    (cores / 2).clamp(1, 8)
+}
+
+/// Parallel bounded-memory fold of an on-disk compact stream: `workers`
+/// independent streaming folds each walk the WHOLE stream (fold state is
+/// carried across hours, so every worker must apply every record — record
+/// application is ~10% of fold cost), but worker `k` BUILDS + spills only the
+/// hours whose emission ordinal is `≡ k (mod workers)`. Because
+/// `WorldFold::build_snapshot` is `&self`-pure, skipping it on non-owned hours
+/// cannot perturb any worker's state, so the union of the workers' outputs is
+/// byte-identical to the sequential fold's output — same files, same names,
+/// same canonical bytes, same hashes (G1-preserving by construction).
+///
+/// Returns the merged snapshot descriptors sorted by `hour_index` (identical
+/// ordering to the sequential fold) and the pass accounting from worker 0
+/// (every worker walks identical bytes, so their `FoldStreamStats` must agree;
+/// divergence fails loudly). `workers <= 1` delegates to the sequential fold.
+pub fn fold_compact_stream_file_parallel(
+    stream_path: &Path,
+    game_id: &str,
+    snapshot_dir: &Path,
+    workers: usize,
+) -> io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)> {
+    if workers <= 1 {
+        return fold_compact_stream_file(stream_path, game_id, snapshot_dir);
+    }
+    // A worker that ends up owning zero hours is only wasted CPU, never a
+    // correctness problem, so no up-front knowledge of the hour count is needed.
+    let results: Vec<io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)>> =
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|k| {
+                    scope.spawn(
+                        move || -> io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)> {
+                            let file = std::fs::File::open(stream_path)?;
+                            let total_len = file.metadata()?.len();
+                            let reader = BufReader::with_capacity(CHUNK, file);
+                            let mut fold = WorldFold::new_file_backed_strided(
+                                game_id,
+                                snapshot_dir,
+                                workers as u64,
+                                k as u64,
+                            )?;
+                            let stats = drive_fold(reader, total_len, &mut fold)?;
+                            let files = fold
+                                .finish_file_backed()
+                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                            Ok((files, stats))
+                        },
+                    )
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "parallel fold worker panicked",
+                        ))
+                    })
+                })
+                .collect()
+        });
+
+    let mut merged: Vec<FoldedSnapshotFile> = Vec::new();
+    let mut stats: Option<FoldStreamStats> = None;
+    for result in results {
+        let (files, worker_stats) = result?;
+        // Every worker framed identical bytes; any accounting divergence means a
+        // non-deterministic walk and MUST fail loudly rather than merge.
+        if let Some(reference) = &stats {
+            let agree = reference.stream_bytes == worker_stats.stream_bytes
+                && reference.bytes_folded == worker_stats.bytes_folded
+                && reference.records_total == worker_stats.records_total
+                && reference.hours_emitted == worker_stats.hours_emitted
+                && reference.stop_reason == worker_stats.stop_reason;
+            if !agree {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "parallel fold workers disagree on stream accounting: \
+                         {reference:?} vs {worker_stats:?}"
+                    ),
+                ));
+            }
+        } else {
+            stats = Some(worker_stats);
+        }
+        merged.extend(files);
+    }
+    merged.sort_by_key(|f| f.hour_index);
+    let stats = stats.expect("workers >= 2 always yields stats");
+    if merged.len() as u64 != stats.hours_emitted {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "parallel fold merged {} snapshot files but the stream closed {} hours",
+                merged.len(),
+                stats.hours_emitted
+            ),
+        ));
+    }
+    Ok((merged, stats))
+}
+
 /// Hash spilled snapshot files for the offline report. When `discard_snapshots`
 /// is true, each file is removed only after its hash and byte count are captured.
 pub fn hash_folded_snapshot_files(
@@ -87,8 +207,14 @@ pub fn hash_folded_snapshot_files(
 ) -> io::Result<Vec<FoldedSnapshotReportRow>> {
     let mut rows = Vec::with_capacity(files.len());
     for f in files {
-        let snapshot_hash = sha256_file(&f.path)
-            .map_err(|e| io::Error::new(e.kind(), format!("hash {}: {e}", f.path.display())))?;
+        // Prefer the hash the emit worker already computed over the exact bytes it
+        // wrote — avoids re-reading (and re-hashing) every multi-MB snapshot from
+        // disk. Fall back to a fresh read only for snapshots without a stored hash.
+        let snapshot_hash = match &f.sha256 {
+            Some(hash) => hash.clone(),
+            None => sha256_file(&f.path)
+                .map_err(|e| io::Error::new(e.kind(), format!("hash {}: {e}", f.path.display())))?,
+        };
         rows.push(FoldedSnapshotReportRow {
             hour_index: f.hour_index,
             date: f.date.clone(),
@@ -452,5 +578,69 @@ mod tests {
                 .is_none(),
             "discard snapshot directory should be empty"
         );
+    }
+
+    /// The emit worker's streamed SHA-256 equals a fresh hash of the exact bytes
+    /// it wrote (tee-writer correctness), for every spilled hour.
+    #[test]
+    fn stored_snapshot_sha_matches_file_bytes() {
+        let dir = TmpDir::new("teesha");
+        let stream = three_hour_stream();
+        let stream_path = dir.0.join("s.bin");
+        std::fs::write(&stream_path, &stream).unwrap();
+        let (files, _) =
+            fold_compact_stream_file(&stream_path, "gid", &dir.0.join("snaps")).unwrap();
+        assert_eq!(files.len(), 3);
+        for f in &files {
+            let bytes = std::fs::read(&f.path).unwrap();
+            assert_eq!(bytes.len(), f.byte_len);
+            assert_eq!(
+                f.sha256.as_deref(),
+                Some(to_hex(&Sha256::digest(&bytes)).as_str()),
+                "stored sha for hour {} must match spilled bytes",
+                f.hour_index
+            );
+        }
+    }
+
+    /// G1 at the unit level for the parallel fold: for several worker counts
+    /// (including more workers than hours), the merged strided output is
+    /// byte-identical to the sequential fold — same hour set, same per-hour
+    /// hashes, same chain hash, same stats accounting.
+    #[test]
+    fn parallel_fold_matches_sequential_for_all_worker_counts() {
+        let dir = TmpDir::new("par");
+        let stream = three_hour_stream();
+        let stream_path = dir.0.join("s.bin");
+        std::fs::write(&stream_path, &stream).unwrap();
+
+        let (seq_files, seq_stats) =
+            fold_compact_stream_file(&stream_path, "gid", &dir.0.join("seq")).unwrap();
+        let seq_rows = hash_folded_snapshot_files(&seq_files, false).unwrap();
+        let seq_chain = snapshot_chain_hash(&seq_rows);
+        assert_eq!(seq_stats.hours_emitted, 3);
+
+        for workers in [2usize, 3, 5] {
+            let out = dir.0.join(format!("par{workers}"));
+            let (par_files, par_stats) =
+                fold_compact_stream_file_parallel(&stream_path, "gid", &out, workers).unwrap();
+            assert_eq!(
+                par_stats.hours_emitted, seq_stats.hours_emitted,
+                "workers={workers}"
+            );
+            assert_eq!(par_stats.records_total, seq_stats.records_total);
+            assert_eq!(par_stats.bytes_folded, seq_stats.bytes_folded);
+            let par_rows = hash_folded_snapshot_files(&par_files, false).unwrap();
+            assert_eq!(par_rows, seq_rows, "workers={workers} rows diverge");
+            assert_eq!(
+                snapshot_chain_hash(&par_rows),
+                seq_chain,
+                "workers={workers} chain diverges"
+            );
+            // Ordering contract: merged descriptors ascend by hour_index exactly
+            // like the sequential emit order.
+            let hours: Vec<i64> = par_files.iter().map(|f| f.hour_index).collect();
+            assert_eq!(hours, vec![HOUR_A, HOUR_B, HOUR_C]);
+        }
     }
 }

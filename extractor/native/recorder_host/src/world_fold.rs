@@ -43,6 +43,62 @@ use naval_missions_status_live_lane as naval56;
 use serde_json::{json, Map, Value};
 use session_multiplayer_metadata_live as session57;
 
+/// Env-gated, zero-overhead-when-off phase profiler for the fold hot path.
+/// Set `FOLD_PROFILE=1` to accumulate per-phase nanoseconds and print a
+/// breakdown from the `stream_fold` tool at exit. Never affects folded bytes,
+/// so it is safe to leave compiled in (all `Instant` calls are behind the flag).
+pub mod foldprof {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    pub static APPLY_NS: AtomicU64 = AtomicU64::new(0);
+    pub static BUILD_NS: AtomicU64 = AtomicU64::new(0);
+    pub static SERIALIZE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static WRITE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static SNAP_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub fn enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("FOLD_PROFILE").is_some())
+    }
+
+    /// Time `f` into `counter` only when profiling is enabled.
+    #[inline]
+    pub fn timed<T>(counter: &AtomicU64, f: impl FnOnce() -> T) -> T {
+        if enabled() {
+            let t = Instant::now();
+            let out = f();
+            counter.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            out
+        } else {
+            f()
+        }
+    }
+
+    pub fn add_bytes(n: usize) {
+        if enabled() {
+            SNAP_BYTES.fetch_add(n as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Human-readable breakdown, or `None` when profiling was never enabled.
+    pub fn report() -> Option<String> {
+        if !enabled() {
+            return None;
+        }
+        let ms = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e6;
+        Some(format!(
+            "fold phase breakdown (ms): apply_domain_data={:.1} build_snapshot={:.1} serialize={:.1} write={:.1} | snapshot_bytes={}",
+            ms(&APPLY_NS),
+            ms(&BUILD_NS),
+            ms(&SERIALIZE_NS),
+            ms(&WRITE_NS),
+            SNAP_BYTES.load(Ordering::Relaxed),
+        ))
+    }
+}
+
 const SCHEMA_VERSION: &str = "1";
 
 /// The canonical world-state snapshot schema version stamped into every folded
@@ -713,11 +769,188 @@ pub struct FoldedSnapshotFile {
     pub date: String,
     pub path: PathBuf,
     pub byte_len: usize,
+    /// Canonical SHA-256 (lowercase hex) of the spilled snapshot bytes, computed
+    /// during the write itself so downstream consumers never have to re-read the
+    /// file to hash it. `None` only for snapshots constructed outside the fold
+    /// (e.g. unit-test fixtures).
+    pub sha256: Option<String>,
+}
+
+/// A closed game-hour handed from the (sequential) fold thread to the background
+/// emit worker: the fold builds the canonical snapshot `Value`, the worker
+/// serializes + writes + hashes it. `Value` is `Send`, so ownership moves with no
+/// copy; the fold thread proceeds to the next hour immediately.
+struct SnapshotEmitJob {
+    hour_index: i64,
+    date: String,
+    path: PathBuf,
+    snapshot: Value,
+}
+
+/// Shared result sink for the emit worker. The worker pushes one
+/// [`FoldedSnapshotFile`] per successfully written hour (or records the first
+/// error). Ordering is re-established by the fold thread at finalize, so the
+/// worker never needs to preserve receive order.
+#[derive(Default)]
+struct SnapshotEmitResults {
+    files: Vec<FoldedSnapshotFile>,
+    error: Option<String>,
+}
+
+/// Background snapshot emitter. Moves serialize + write + per-hour SHA-256 off
+/// the fold's critical path so they overlap the next hour's `build_snapshot`
+/// (the dominant, inherently-sequential fold cost). A bounded channel provides
+/// backpressure so peak memory stays O(a small constant × one hour's snapshot),
+/// independent of stream length — the same bounded-memory contract the inline
+/// path guaranteed, just with a small fixed number of in-flight hours.
+struct SnapshotEmitPipeline {
+    tx: Option<std::sync::mpsc::SyncSender<SnapshotEmitJob>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    results: std::sync::Arc<std::sync::Mutex<SnapshotEmitResults>>,
+}
+
+/// In-flight hours the emit channel may hold before the fold thread blocks. A
+/// single worker keeps up with the fold thread comfortably (emit is a small
+/// fraction of `build_snapshot`), so this only caps the worst case. Two is
+/// enough to fully decouple producer and consumer while keeping peak memory low.
+const SNAPSHOT_EMIT_QUEUE_DEPTH: usize = 2;
+
+impl SnapshotEmitPipeline {
+    fn spawn() -> SnapshotEmitPipeline {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<SnapshotEmitJob>(SNAPSHOT_EMIT_QUEUE_DEPTH);
+        let results = std::sync::Arc::new(std::sync::Mutex::new(SnapshotEmitResults::default()));
+        let worker_results = std::sync::Arc::clone(&results);
+        let handle = std::thread::Builder::new()
+            .name("world-fold-emit".to_string())
+            .spawn(move || {
+                for job in rx {
+                    // Once any hour has failed, keep draining the channel (so the
+                    // fold thread never deadlocks on a bounded send) but skip work.
+                    if worker_results.lock().unwrap().error.is_some() {
+                        continue;
+                    }
+                    match serialize_write_hash_snapshot(&job.path, &job.snapshot) {
+                        Ok((byte_len, sha256)) => {
+                            worker_results.lock().unwrap().files.push(FoldedSnapshotFile {
+                                hour_index: job.hour_index,
+                                date: job.date,
+                                path: job.path,
+                                byte_len,
+                                sha256: Some(sha256),
+                            });
+                        }
+                        Err(err) => {
+                            let mut guard = worker_results.lock().unwrap();
+                            if guard.error.is_none() {
+                                guard.error = Some(format!(
+                                    "write folded snapshot hour_index {} failed: {err}",
+                                    job.hour_index
+                                ));
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("spawn world-fold emit worker");
+        SnapshotEmitPipeline {
+            tx: Some(tx),
+            handle: Some(handle),
+            results,
+        }
+    }
+
+    /// Hand a closed hour to the worker. Blocks only if the bounded channel is
+    /// full (backpressure). Records a fatal error if the worker has hung up.
+    fn submit(&mut self, job: SnapshotEmitJob) {
+        if let Some(tx) = &self.tx {
+            if let Err(err) = tx.send(job) {
+                let mut guard = self.results.lock().unwrap();
+                if guard.error.is_none() {
+                    guard.error = Some(format!("snapshot emit worker unavailable: {err}"));
+                }
+            }
+        }
+    }
+
+    /// Close the channel, join the worker, and return the spilled files in
+    /// deterministic emit order (ascending `hour_index`) or the first error.
+    fn finish(mut self) -> Result<Vec<FoldedSnapshotFile>, String> {
+        drop(self.tx.take());
+        if let Some(handle) = self.handle.take() {
+            handle
+                .join()
+                .map_err(|_| "snapshot emit worker panicked".to_string())?;
+        }
+        let mut results = std::sync::Mutex::into_inner(
+            std::sync::Arc::try_unwrap(self.results)
+                .map_err(|_| "snapshot emit results still shared".to_string())?,
+        )
+        .map_err(|_| "snapshot emit results lock poisoned".to_string())?;
+        if let Some(err) = results.error.take() {
+            return Err(err);
+        }
+        results.files.sort_by_key(|f| f.hour_index);
+        Ok(results.files)
+    }
+}
+
+/// Serialize a canonical snapshot `Value` straight into its spill file while
+/// SHA-256-hashing the exact bytes written — one streaming pass, no intermediate
+/// `Vec` and no re-read. `serde_json::to_writer` emits byte-for-byte the same
+/// stream as `serde_json::to_vec`, so the hash and the file are identical to the
+/// old inline path (G1 byte-identity preserved).
+fn serialize_write_hash_snapshot(
+    path: &std::path::Path,
+    snapshot: &Value,
+) -> std::io::Result<(usize, String)> {
+    use std::io::Write as _;
+    foldprof::timed(&foldprof::SERIALIZE_NS, || {
+        let file = fs::File::create(path)?;
+        let mut writer = SnapshotHashingWriter {
+            inner: std::io::BufWriter::with_capacity(1 << 20, file),
+            hasher: snapshot::sha256::Sha256::new(),
+            len: 0,
+        };
+        serde_json::to_writer(&mut writer, snapshot)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        writer.inner.flush()?;
+        foldprof::add_bytes(writer.len);
+        let sha = snapshot::sha256::to_hex(&writer.hasher.finalize());
+        Ok((writer.len, sha))
+    })
+}
+
+/// A `Write` adapter that tees to the underlying file writer while updating a
+/// running SHA-256 and byte count.
+struct SnapshotHashingWriter<W: std::io::Write> {
+    inner: W,
+    hasher: snapshot::sha256::Sha256,
+    len: usize,
+}
+
+impl<W: std::io::Write> std::io::Write for SnapshotHashingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        self.len += n;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 struct SnapshotFileSink {
     dir: PathBuf,
-    files: Vec<FoldedSnapshotFile>,
+    pipeline: SnapshotEmitPipeline,
+    /// Emit-stride ownership for the parallel fold: this sink builds + spills
+    /// only closed hours whose emission ordinal `o` satisfies
+    /// `o % stride == stride_offset`. The fold's STATE transitions run for every
+    /// hour regardless (`build_snapshot` is `&self`-pure, so skipping it cannot
+    /// perturb any later hour). The sequential fold uses stride 1 / offset 0
+    /// (owns every hour) — behavior unchanged.
+    stride: u64,
+    stride_offset: u64,
 }
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -1183,8 +1416,35 @@ impl WorldFold {
         let mut fold = Self::new(game_id);
         fold.file_sink = Some(SnapshotFileSink {
             dir,
-            files: Vec::new(),
+            pipeline: SnapshotEmitPipeline::spawn(),
+            stride: 1,
+            stride_offset: 0,
         });
+        Ok(fold)
+    }
+
+    /// Construct a file-backed fold that OWNS only every `stride`-th closed hour
+    /// (those with emission ordinal `% stride == stride_offset`), building and
+    /// spilling snapshots for owned hours only. All fold STATE transitions still
+    /// run for every hour, so N strided folds over the same stream produce, in
+    /// union, byte-identical snapshots to one sequential fold — this is the unit
+    /// of the parallel post-capture fold (`fold_compact_stream_file_parallel`).
+    pub fn new_file_backed_strided(
+        game_id: impl Into<String>,
+        snapshot_dir: impl Into<PathBuf>,
+        stride: u64,
+        stride_offset: u64,
+    ) -> std::io::Result<Self> {
+        assert!(stride >= 1, "stride must be >= 1");
+        assert!(
+            stride_offset < stride,
+            "stride_offset must be < stride (got {stride_offset} >= {stride})"
+        );
+        let mut fold = Self::new_file_backed(game_id, snapshot_dir)?;
+        if let Some(sink) = &mut fold.file_sink {
+            sink.stride = stride;
+            sink.stride_offset = stride_offset;
+        }
         Ok(fold)
     }
 
@@ -1242,7 +1502,9 @@ impl WorldFold {
             if self.record_is_for_finalized_hour(game_hour_raw) {
                 self.record_late_domain_data(game_hour_raw);
             } else {
-                self.apply_domain_data(domain_id, payload, record_flags);
+                foldprof::timed(&foldprof::APPLY_NS, || {
+                    self.apply_domain_data(domain_id, payload, record_flags)
+                });
             }
         } else if record_type == COMPACT_RECORD_TYPE_FRAME_END {
             self.finish_hour(game_hour_raw);
@@ -2098,30 +2360,47 @@ impl WorldFold {
             return;
         }
         let date = date_from_raw(game_hour_raw).unwrap_or_default();
+        // Hour STATE transitions run unconditionally (also under a stride that
+        // does not own this hour): the prunes/prepare mutate accumulators that
+        // later hours' folds depend on. `build_snapshot` is `&self`-pure, so it
+        // (and emission) is the only part a non-owning strided fold may skip.
         self.prune_division_equipment_for_deleted_divisions_current_hour();
         self.prune_air_wing_loadout_orphans_for_current_hour();
         self.prepare_domain48_for_snapshot();
-        let snapshot = self.build_snapshot(hour_index, &date);
-        let bytes = serde_json::to_vec(&snapshot).expect("snapshot serializes");
-        if let Some(sink) = &mut self.file_sink {
+        // Emission ordinal of this hour: how many hours closed before it. The
+        // insert below is unconditional, so the ordinal sequence is identical
+        // across all strided folds of the same stream (determinism anchor).
+        let ordinal = self.emitted_hours.len() as u64;
+        if let Some(sink) = &self.file_sink {
+            let owns_hour = ordinal % sink.stride == sink.stride_offset;
             let path = sink.dir.join(format!("{hour_index:012}.snapshot.json"));
-            match fs::write(&path, &bytes) {
-                Ok(()) => {
-                    let byte_len = bytes.len();
-                    sink.files.push(FoldedSnapshotFile {
+            if owns_hour {
+                let snapshot = foldprof::timed(&foldprof::BUILD_NS, || {
+                    self.build_snapshot(hour_index, &date)
+                });
+                // Hand the owned snapshot `Value` to the background emit worker,
+                // which serializes + writes + hashes it off the critical path
+                // (overlapping the next hour's build). Ownership moves — no copy.
+                self.file_sink
+                    .as_mut()
+                    .expect("file sink present")
+                    .pipeline
+                    .submit(SnapshotEmitJob {
                         hour_index,
                         date,
                         path,
-                        byte_len,
+                        snapshot,
                     });
-                }
-                Err(err) => {
-                    self.file_sink_error = Some(format!(
-                        "write folded snapshot hour_index {hour_index} failed: {err}"
-                    ));
-                }
             }
         } else {
+            // In-memory fold: build + serialize inline as before, retain bytes.
+            let snapshot = foldprof::timed(&foldprof::BUILD_NS, || {
+                self.build_snapshot(hour_index, &date)
+            });
+            let bytes = foldprof::timed(&foldprof::SERIALIZE_NS, || {
+                serde_json::to_vec(&snapshot).expect("snapshot serializes")
+            });
+            foldprof::add_bytes(bytes.len());
             self.out.push((hour_index, date, bytes));
         }
         self.emitted_hours.insert(hour_index);
@@ -12145,13 +12424,16 @@ impl WorldFold {
     }
 
     /// Consume a file-backed fold and return every spilled snapshot in emit order.
+    /// Closes the emit channel and joins the background worker so every hour is
+    /// durably written (and hashed) before returning.
     pub fn finish_file_backed(self) -> Result<Vec<FoldedSnapshotFile>, String> {
         if let Some(err) = self.file_sink_error {
             return Err(err);
         }
-        self.file_sink
-            .map(|sink| sink.files)
-            .ok_or_else(|| "world fold was not file-backed".to_string())
+        let sink = self
+            .file_sink
+            .ok_or_else(|| "world fold was not file-backed".to_string())?;
+        sink.pipeline.finish()
     }
 }
 

@@ -12,6 +12,14 @@
 //! Usage:
 //!   stream_fold <collector_stream.bin> <out_snapshot_dir> [--game-id ID] [--json report.json] [--discard-snapshots]
 
+/// mimalloc as the global allocator: the post-capture fold is allocation-bound
+/// (multi-GB serde_json `Value` trees built and dropped per game-hour), and the
+/// Windows system heap serializes badly under that load across fold workers.
+/// Allocator choice cannot change any produced byte (G1-neutral).
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -19,7 +27,8 @@ use std::process::ExitCode;
 
 use recorder_host::proc_mem::peak_memory;
 use recorder_host::stream_fold::{
-    fold_compact_stream_file, hash_folded_snapshot_files, snapshot_chain_hash,
+    default_fold_workers, fold_compact_stream_file_parallel, hash_folded_snapshot_files,
+    snapshot_chain_hash,
 };
 use serde_json::{json, Value};
 
@@ -39,6 +48,7 @@ fn run() -> Result<(), String> {
     let mut game_id = "fold_check".to_string();
     let mut json_out: Option<String> = None;
     let mut discard_snapshots = false;
+    let mut workers = default_fold_workers();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -53,6 +63,17 @@ fn run() -> Result<(), String> {
             "--discard-snapshots" => {
                 discard_snapshots = true;
             }
+            "--workers" => {
+                i += 1;
+                workers = args
+                    .get(i)
+                    .ok_or("--workers requires a count")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("--workers expects a positive integer: {e}"))?;
+                if workers == 0 {
+                    return Err("--workers must be >= 1".into());
+                }
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "stream_fold <collector_stream.bin> <out_snapshot_dir> \
@@ -66,15 +87,18 @@ fn run() -> Result<(), String> {
         i += 1;
     }
     if positional.len() != 2 {
-        return Err("usage: stream_fold <stream.bin> <out_snapshot_dir> [--game-id ID] [--json report.json] [--discard-snapshots]".into());
+        return Err("usage: stream_fold <stream.bin> <out_snapshot_dir> [--game-id ID] [--json report.json] [--discard-snapshots] [--workers N]".into());
     }
     let stream_path = PathBuf::from(&positional[0]);
     let out_dir = PathBuf::from(&positional[1]);
 
     let start = std::time::Instant::now();
-    let (files, stats) = fold_compact_stream_file(&stream_path, &game_id, &out_dir)
+    let (files, stats) = fold_compact_stream_file_parallel(&stream_path, &game_id, &out_dir, workers)
         .map_err(|e| format!("streaming fold {}: {e}", stream_path.display()))?;
     let elapsed = start.elapsed();
+    if let Some(breakdown) = recorder_host::world_fold::foldprof::report() {
+        eprintln!("stream_fold: {breakdown}");
+    }
 
     let hour_rows = hash_folded_snapshot_files(&files, discard_snapshots)
         .map_err(|e| format!("snapshot report: {e}"))?;
@@ -95,6 +119,7 @@ fn run() -> Result<(), String> {
     let report = json!({
         "tool": "stream_fold",
         "input": stream_path.display().to_string(),
+        "workers": workers,
         "game_id": game_id,
         "totals": {
             "stream_bytes": stats.stream_bytes,

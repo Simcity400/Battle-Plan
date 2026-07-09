@@ -1,5 +1,13 @@
 #![recursion_limit = "256"]
 
+/// mimalloc as the global allocator: the post-capture fold is allocation-bound
+/// (multi-GB serde_json `Value` trees built and dropped per game-hour), and the
+/// Windows system heap serializes badly under that load across fold workers.
+/// Allocator choice cannot change any produced byte (G1-neutral).
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+
 use air_loss_stats_live_lane as airloss61;
 use army_battleplans_depth_live_lane as battleplans54;
 use capitulation_war_state_live as capwar60;
@@ -722,6 +730,15 @@ struct Config {
     /// absence (fail-closed, never fabricated). A present-but-unreadable path is a
     /// HARD error (never a silent skip).
     static_artifacts: Vec<StaticArtifactRequest>,
+    /// Production option: skip the host-side post-capture fold entirely. The
+    /// raw compact stream is the canonical artifact and `replay_decoder` (D1)
+    /// gives consumers bounded-memory per-hour access, so the folded per-hour
+    /// snapshot JSONs are a derived convenience the host need not pay a long
+    /// deep-war finalize for. The container then packs an EMPTY snapshots
+    /// array and both the container index and the session manifest carry an
+    /// explicit `host_fold_skipped` marker (never silently absent). Default
+    /// false: behavior unchanged unless `--skip-host-fold` is passed.
+    skip_host_fold: bool,
 }
 
 /// A request to pack one named pre-built static artifact into the container.
@@ -1360,6 +1377,30 @@ fn run() -> Result<(), String> {
     let mut fold_stats_telemetry: Option<recorder_host::stream_fold::FoldStreamStats> = None;
     let mut verify_report_telemetry: Option<snapshot::StreamVerifyReport> = None;
     match cfg.stream_format {
+        StreamFormat::Compact if cfg.skip_host_fold => {
+            // Production skip: the raw compact stream is the canonical artifact
+            // (replay_decoder D1 folds per-hour on demand); pack the container
+            // with an empty snapshots array and mark the skip EXPLICITLY in the
+            // container index and the session manifest (host_fold_skipped).
+            match write_native_replay_container_streaming(
+                &cfg,
+                &raw_path,
+                &capture,
+                &[],
+                None,
+                &manifest,
+                &manifest_path,
+                &replay_path,
+            ) {
+                Ok(verify) => {
+                    verify_report_telemetry = Some(verify);
+                }
+                Err(error) => {
+                    mark_manifest_replay_not_produced(&manifest_path, &mut manifest, &error);
+                    return Err(error);
+                }
+            }
+        }
         StreamFormat::Compact => {
             let snapshot_spill_dir = create_unique_snapshot_spill_dir(&cfg.out_dir)?;
             let replay_result = (|| -> Result<
@@ -1370,12 +1411,16 @@ fn run() -> Result<(), String> {
                 String,
             > {
                 // Bounded streaming fold over the on-disk stream: each hour's snapshot
-                // is spilled to disk and released, so peak memory is O(world state).
+                // is spilled to disk and released, so peak memory is O(world state)
+                // per worker. This is POST-capture offline batch work, so the
+                // parallel fold is used (the weaker-PC "don't lean on cores" law
+                // binds capture-time per-frame work, not finalization).
                 let (world_snapshot_files, fold_stats) =
-                    recorder_host::stream_fold::fold_compact_stream_file(
+                    recorder_host::stream_fold::fold_compact_stream_file_parallel(
                         &raw_path,
                         &replay_game_id,
                         &snapshot_spill_dir,
+                        recorder_host::stream_fold::default_fold_workers(),
                     )
                     .map_err(|e| format!("streaming fold failed: {e}"))?;
                 let verify = write_native_replay_container_streaming(
@@ -1383,7 +1428,7 @@ fn run() -> Result<(), String> {
                     &raw_path,
                     &capture,
                     &world_snapshot_files,
-                    &fold_stats,
+                    Some(&fold_stats),
                     &manifest,
                     &manifest_path,
                     &replay_path,
@@ -1426,6 +1471,7 @@ fn run() -> Result<(), String> {
         &capture,
         finalize_started.elapsed(),
         fold_stats_telemetry.as_ref(),
+        cfg.skip_host_fold && cfg.stream_format == StreamFormat::Compact,
         verify_report_telemetry.as_ref(),
     );
 
@@ -1491,6 +1537,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut d48_emit_mode = D48EmitMode::Delta;
     let mut d53_relation_read_mode = D53RelationReadMode::Offsets;
     let mut reader_concurrency = None;
+    let mut skip_host_fold = false;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
     let mut static_decisions_definitions: Option<PathBuf> = None;
@@ -1545,6 +1592,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--production" => production = true,
             "--lightweight-root-frame" => lightweight_root_frame = Some(true),
             "--special-projects-scan" => special_projects_scan = true,
+            "--skip-host-fold" => skip_host_fold = true,
             "--compact-country-frame" => compact_country_frame = Some(true),
             "--sidecar-log" => sidecar_log = Some(true),
             "--division-body-bridge" => {
@@ -1845,6 +1893,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             requested
         },
+        skip_host_fold,
     })
 }
 
@@ -1965,7 +2014,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--replay-zstd-level N] [--replay-zstd-window-log N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -3221,7 +3270,7 @@ fn write_native_replay_container_streaming(
     raw_path: &Path,
     capture: &PipeCapture,
     snapshot_files: &[FoldedSnapshotFile],
-    fold_stats: &recorder_host::stream_fold::FoldStreamStats,
+    fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
     manifest: &Value,
     manifest_path: &Path,
     replay_path: &Path,
@@ -3275,6 +3324,10 @@ fn write_native_replay_container_streaming(
     let index_bytes = serde_json::to_vec_pretty(&json!({
         "game_id": game_id.clone(),
         "schema_version": "1",
+        // Explicit skip marker: consumers must never confuse "host fold skipped
+        // by production option" (per-hour access via replay_decoder over the
+        // packed raw stream) with "recording had no hours".
+        "host_fold_skipped": fold_stats.is_none(),
         "snapshots": index_snapshots,
         "static_artifacts": static_artifact_index,
     }))
@@ -3399,6 +3452,7 @@ fn build_host_finalize_telemetry(
     capture: &PipeCapture,
     finalize_elapsed: Option<Duration>,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
+    fold_skipped: bool,
     verify: Option<&snapshot::StreamVerifyReport>,
     embedded_pre_pack_copy: bool,
 ) -> Value {
@@ -3422,7 +3476,18 @@ fn build_host_finalize_telemetry(
             json!(["finalize_seconds", "verify"]),
         );
     }
-    if let Some(fs) = fold_stats {
+    if fold_skipped {
+        // Explicit, never-silent skip record (production --skip-host-fold): the
+        // packed raw compact stream is the canonical artifact; per-hour world
+        // state is derivable on demand via replay_decoder (D1).
+        obj.insert(
+            "fold".into(),
+            json!({
+                "skipped": true,
+                "reason": "--skip-host-fold: raw compact stream is canonical; per-hour access via replay_decoder",
+            }),
+        );
+    } else if let Some(fs) = fold_stats {
         obj.insert(
             "fold".into(),
             json!({
@@ -3455,7 +3520,7 @@ fn build_host_finalize_telemetry(
 fn session_manifest_bytes_with_pre_pack_host_finalize(
     manifest_path: &Path,
     capture: &PipeCapture,
-    fold_stats: &recorder_host::stream_fold::FoldStreamStats,
+    fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
 ) -> Result<Vec<u8>, String> {
     let bytes =
         fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
@@ -3466,7 +3531,16 @@ fn session_manifest_bytes_with_pre_pack_host_finalize(
         .ok_or_else(|| "session manifest is not an object".to_string())?
         .insert(
             "host_finalize".to_string(),
-            build_host_finalize_telemetry(capture, None, Some(fold_stats), None, true),
+            // This helper is only used by the compact streaming path, where
+            // `fold_stats == None` means exactly one thing: --skip-host-fold.
+            build_host_finalize_telemetry(
+                capture,
+                None,
+                fold_stats,
+                fold_stats.is_none(),
+                None,
+                true,
+            ),
         );
     serde_json::to_vec_pretty(&manifest)
         .map_err(|e| format!("serialize embedded session manifest failed: {e}"))
@@ -3480,10 +3554,17 @@ fn write_host_finalize_telemetry(
     capture: &PipeCapture,
     finalize_elapsed: Duration,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
+    fold_skipped: bool,
     verify: Option<&snapshot::StreamVerifyReport>,
 ) {
-    let block =
-        build_host_finalize_telemetry(capture, Some(finalize_elapsed), fold_stats, verify, false);
+    let block = build_host_finalize_telemetry(
+        capture,
+        Some(finalize_elapsed),
+        fold_stats,
+        fold_skipped,
+        verify,
+        false,
+    );
 
     let updated = (|| -> Result<(), String> {
         let bytes = fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
@@ -16893,7 +16974,7 @@ mod tests {
         let bytes = session_manifest_bytes_with_pre_pack_host_finalize(
             &manifest_path,
             &capture,
-            &fold_stats,
+            Some(&fold_stats),
         )
         .unwrap();
         let manifest: Value = serde_json::from_slice(&bytes).unwrap();
@@ -26001,6 +26082,7 @@ mod tests {
             reader_concurrency: 0,
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
+            skip_host_fold: false,
         };
 
         let mut fold = WorldFold::new(replay_game_id("pack test/session"));
@@ -26072,6 +26154,7 @@ mod tests {
             date: "1936.1.1.0".to_string(),
             path: snapshot_path,
             byte_len: snapshot_bytes.len(),
+            sha256: None,
         }];
         let manifest = json!({
             "schema": "native_collector_session_v1",
@@ -26166,6 +26249,7 @@ mod tests {
             date: "1936.1.1.0".to_string(),
             path: snapshot_path,
             byte_len: snapshot_bytes.len(),
+            sha256: None,
         }];
         let fold_stats = recorder_host::stream_fold::FoldStreamStats {
             stream_bytes: raw.len() as u64,
@@ -26199,7 +26283,7 @@ mod tests {
             &raw_path,
             &capture,
             &snapshots,
-            &fold_stats,
+            Some(&fold_stats),
             &manifest,
             &manifest_path,
             &replay_path,
@@ -26225,6 +26309,107 @@ mod tests {
         assert_eq!(stored_stream, raw);
         let snap = container.load(hour_index).unwrap();
         assert_eq!(snap.hour_index, Some(hour_index));
+        // Default (fold ran): the index must NOT claim the host fold was skipped.
+        let index_bytes = container
+            .read_entry_bytes(&format!("payload/{game_id}/index.json"))
+            .unwrap();
+        let index_json: Value = serde_json::from_slice(&index_bytes).unwrap();
+        assert_eq!(index_json["host_fold_skipped"], json!(false));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `--skip-host-fold`: the streaming container packs with an EMPTY snapshots
+    /// array, still verifies end-to-end, and the skip is marked explicitly in
+    /// BOTH the container index (`host_fold_skipped: true`) and the embedded
+    /// session manifest (`host_finalize.fold.skipped: true`) — never a silent
+    /// absence a reader could confuse with "recording had no hours".
+    #[test]
+    fn streaming_container_skip_host_fold_packs_empty_snapshots_and_marks_skip() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan_skipfold_pack_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest_path = dir.join("native_session_manifest.json");
+        let replay_path = dir.join("native_session.battleplan");
+        let raw_path = dir.join("collector_stream.bin");
+        let session_id = "skip fold pack test/session";
+        let game_id = replay_game_id(session_id);
+
+        let mut raw = Vec::new();
+        for i in 0..(1024 * 1024u32) {
+            raw.push((i.wrapping_mul(2654435761) >> 7) as u8);
+        }
+        fs::write(&raw_path, &raw).unwrap();
+        let capture = PipeCapture {
+            byte_count: raw.len() as u64,
+            sha256: to_hex(&Sha256::digest(&raw)),
+        };
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "session_id": session_id,
+            "replay_game_id": game_id,
+            "stream_format": "compact",
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut cfg = test_config(vec![], None);
+        cfg.out_dir = dir.clone();
+        cfg.session_id = session_id.to_string();
+        cfg.skip_host_fold = true;
+
+        let report = write_native_replay_container_streaming(
+            &cfg,
+            &raw_path,
+            &capture,
+            &[],
+            None,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .unwrap();
+        assert_eq!(
+            report.stream_entry_sha256.as_deref(),
+            Some(capture.sha256.as_str())
+        );
+
+        let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        // Raw stream is intact (the canonical artifact).
+        let stored_stream = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/collector_raw/collector_stream.bin"
+            ))
+            .unwrap();
+        assert_eq!(stored_stream, raw);
+        // Empty snapshots + explicit skip marker in the index.
+        assert!(container.index().snapshots.is_empty());
+        let index_bytes = container
+            .read_entry_bytes(&format!("payload/{game_id}/index.json"))
+            .unwrap();
+        let index_json: Value = serde_json::from_slice(&index_bytes).unwrap();
+        assert_eq!(index_json["host_fold_skipped"], json!(true));
+        // Explicit skip marker in the embedded session manifest.
+        let manifest_bytes = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/recorder/native_session_manifest.json"
+            ))
+            .unwrap();
+        let embedded: Value = serde_json::from_slice(&manifest_bytes).unwrap();
+        assert_eq!(embedded["host_finalize"]["fold"]["skipped"], json!(true));
+        assert!(embedded["host_finalize"]["fold"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("skip-host-fold"));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -26334,9 +26519,11 @@ mod tests {
             dir.join("out").display().to_string(),
             "--reader-concurrency".to_string(),
             "6".to_string(),
+            "--skip-host-fold".to_string(),
         ])
         .unwrap();
         assert_eq!(cfg.reader_concurrency, 6);
+        assert!(cfg.skip_host_fold, "--skip-host-fold must parse");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -26858,6 +27045,7 @@ mod tests {
             reader_concurrency: 0,
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
+            skip_host_fold: false,
         }
     }
 

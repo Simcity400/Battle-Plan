@@ -21,6 +21,7 @@ naval_missions_status_live_lane = { path = "../lanes/naval_missions_status_live"
 session_multiplayer_metadata_live = { path = "../lanes/session_multiplayer_metadata_live" }
 serde_json = "1"
 snapshot = { path = "../snapshot" }
+mimalloc = "0.1.52"
 
 [[bin]]
 name = "collector_record"
