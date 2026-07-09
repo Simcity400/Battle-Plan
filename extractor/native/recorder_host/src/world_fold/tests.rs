@@ -7649,7 +7649,7 @@ fn chunk2_d48_distinguishes_unknown_absent_and_resolved_empty_queue() {
 }
 
 #[test]
-fn chunk2_d48_delta_after_baseline_is_unknown_not_full_replace() {
+fn chunk2_d48_delta_after_baseline_applies_carried_state() {
     let snaps = chunk1_snapshots(vec![
         vec![(48, d48_payload(0, Some(42)))],
         vec![(48, d48_payload(DELTA, Some(42)))],
@@ -7662,10 +7662,10 @@ fn chunk2_d48_delta_after_baseline_is_unknown_not_full_replace() {
     );
     assert_eq!(
         snaps[1]["states"]["42"]["construction_buildings_state_damage_live"],
-        Value::Null,
-        "D48 has no delta contract; DELTA_DATA must not be applied as a full replacement"
+        snaps[0]["states"]["42"]["construction_buildings_state_damage_live"],
+        "D48 DELTA_DATA applies to the prior baseline and renders the carried state"
     );
-    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+    assert!(!snaps[1]["provenance"]["collector"]["domain_problems"]
         .as_array()
         .unwrap()
         .iter()

@@ -115,6 +115,8 @@ pub const CONSTRUCTION_ROW_KNOWN_FLAGS: u32 = CONSTRUCTION_FLAG_TEMPLATE_PRESENT
     | CONSTRUCTION_FLAG_CREATED_DATE_PRESENT;
 pub const BUILDING_FLAG_HEALTHY_PRESENT: u32 = 1;
 pub const BUILDING_FLAG_DAMAGED: u32 = 1 << 1;
+pub const BUILDING_ROW_KNOWN_FLAGS: u32 = BUILDING_FLAG_HEALTHY_PRESENT | BUILDING_FLAG_DAMAGED;
+pub const ROW_ID_DELETED: u32 = 1 << 31;
 
 pub const PROVINCE_CONSTRUCTION_TEMPLATE_IDS: [u32; 4] = [12_790, 19_649, 22_353, 22_354];
 
@@ -810,6 +812,22 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
                 "construction row {index} has unknown flags {flags:#x}"
             ));
         }
+        if deleted_identity_id(read_u32_le(bytes, cursor + 4)).is_some()
+            && (read_u32_le(bytes, cursor + 8) != u32::MAX
+                || read_u32_le(bytes, cursor + 28) != 0
+                || read_u32_le(bytes, cursor + 36) != 0)
+        {
+            return Err(format!(
+                "construction row {index} tombstone has live fields"
+            ));
+        }
+        if flags & CONSTRUCTION_FLAG_CREATED_DATE_PRESENT == 0
+            && read_u32_le(bytes, cursor + 36) != 0
+        {
+            return Err(format!(
+                "construction row {index} created_date reserved field is nonzero"
+            ));
+        }
         let row = read_construction_row(bytes, cursor);
         validate_construction_row(index, &row)?;
         construction_rows.push(row);
@@ -817,6 +835,23 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
     }
     let mut building_rows = Vec::with_capacity(building_count);
     for index in 0..building_count {
+        let flags = read_u32_le(bytes, cursor + 24);
+        if flags & !BUILDING_ROW_KNOWN_FLAGS != 0 {
+            return Err(format!("building row {index} has unknown flags {flags:#x}"));
+        }
+        if flags & BUILDING_FLAG_DAMAGED != 0 && flags & BUILDING_FLAG_HEALTHY_PRESENT == 0 {
+            return Err(format!(
+                "building row {index} damaged flag set without healthy level"
+            ));
+        }
+        if read_u32_le(bytes, cursor + 28) != 0 {
+            return Err(format!("building row {index} reserved field is nonzero"));
+        }
+        if deleted_identity_id(read_u32_le(bytes, cursor + 12)).is_some()
+            && read_u32_le(bytes, cursor + 20) != u32::MAX
+        {
+            return Err(format!("building row {index} tombstone has live fields"));
+        }
         let row = read_building_row(bytes, cursor);
         validate_building_row(index, &row)?;
         building_rows.push(row);
@@ -824,6 +859,9 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
     }
     let mut resource_rows = Vec::with_capacity(resource_count);
     for index in 0..resource_count {
+        if read_u32_le(bytes, cursor + 12) != 0 {
+            return Err(format!("resource row {index} reserved field is nonzero"));
+        }
         let row = read_resource_row(bytes, cursor);
         validate_resource_row(index, &row)?;
         resource_rows.push(row);
@@ -872,21 +910,27 @@ pub fn gate_decoded_frame(frame: &LaneFrame) -> GateReport {
     if frame.source_flags & SOURCE_FLAG_DLL_NATIVE == 0 {
         errors.push("source_flags missing DLL-native bit".to_string());
     }
-    let clean_full_frame = frame.status_flags & STATUS_PARTIAL_DATA == 0;
+    let clean_full_frame = frame.status_flags & (STATUS_PARTIAL_DATA | STATUS_DELTA_DATA) == 0;
     if clean_full_frame && frame.building_rows.is_empty() {
         errors.push("no building rows emitted".to_string());
     }
     if clean_full_frame && frame.resource_rows.is_empty() {
         errors.push("no state resource rows emitted".to_string());
     }
+    let live_construction_rows = frame
+        .construction_rows
+        .iter()
+        .filter(|row| construction_row_deleted_id(row).is_none())
+        .count();
     let construction_rows_with_target_state = frame
         .construction_rows
         .iter()
+        .filter(|row| construction_row_deleted_id(row).is_none())
         .filter(|row| row.target_state_id.is_some())
         .count();
     let target_state_unavailable =
         frame.source_flags & SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE != 0;
-    if !frame.construction_rows.is_empty() {
+    if live_construction_rows != 0 {
         if construction_rows_with_target_state == 0 && !target_state_unavailable {
             errors.push(
                 "construction target_state_id absent without target-state-unavailable source flag"
@@ -900,7 +944,7 @@ pub fn gate_decoded_frame(frame: &LaneFrame) -> GateReport {
             );
         }
         if construction_rows_with_target_state > 0
-            && construction_rows_with_target_state != frame.construction_rows.len()
+            && construction_rows_with_target_state != live_construction_rows
         {
             errors.push(
                 "construction target_state_id partially emitted; fill every construction row or badge unavailable"
@@ -910,27 +954,27 @@ pub fn gate_decoded_frame(frame: &LaneFrame) -> GateReport {
     }
     let mut seen_construction = BTreeSet::new();
     for (index, row) in frame.construction_rows.iter().enumerate() {
-        if !seen_construction.insert((row.tag_db_id, row.line_id, row.priority)) {
-            errors.push(format!(
-                "construction row {index} duplicates tag/line/priority"
-            ));
+        if !seen_construction.insert((row.tag_db_id, row.line_id & !ROW_ID_DELETED)) {
+            errors.push(format!("construction row {index} duplicates tag/line"));
         }
     }
     let mut seen_buildings = BTreeSet::new();
     let mut damaged_building_rows = 0usize;
     for (index, row) in frame.building_rows.iter().enumerate() {
-        if !seen_buildings.insert((row.scope, row.location_id, row.type_id)) {
+        if !seen_buildings.insert((row.scope, row.location_id, row.type_id & !ROW_ID_DELETED)) {
             errors.push(format!(
                 "building row {index} duplicates scope/location/type"
             ));
         }
-        if row.healthy_level.is_some_and(|healthy| healthy < row.level) {
+        if building_row_deleted_id(row).is_none()
+            && row.healthy_level.is_some_and(|healthy| healthy < row.level)
+        {
             damaged_building_rows = damaged_building_rows.saturating_add(1);
         }
     }
     let mut seen_resources = BTreeSet::new();
     for (index, row) in frame.resource_rows.iter().enumerate() {
-        if !seen_resources.insert((row.state_id, row.resource_id)) {
+        if !seen_resources.insert((row.state_id, row.resource_id & !ROW_ID_DELETED)) {
             errors.push(format!("resource row {index} duplicates state/resource"));
         }
     }
@@ -1059,6 +1103,27 @@ fn validate_construction_row(index: usize, row: &ConstructionQueueRow) -> Result
             row.tag_db_id
         ));
     }
+    if let Some(line_id) = construction_row_deleted_id(row) {
+        if line_id == 0 {
+            return Err(format!("construction row {index} has zero deleted line_id"));
+        }
+        if row.template_id.is_some()
+            || row.active_factories != 0
+            || row.cost_raw != 0
+            || row.produced_raw != 0
+            || row.priority != 0
+            || row.target_state_id.is_some()
+            || row.created_date_raw.is_some()
+        {
+            return Err(format!(
+                "construction row {index} tombstone has live fields"
+            ));
+        }
+        return Ok(());
+    }
+    if row.line_id == 0 {
+        return Err(format!("construction row {index} has zero line_id"));
+    }
     if row.template_id == Some(0) {
         return Err(format!("construction row {index} has zero template_id"));
     }
@@ -1123,8 +1188,18 @@ fn validate_building_row(index: usize, row: &BuildingRow) -> Result<(), String> 
             row.state_id
         ));
     }
-    if row.type_id == 0 {
+    let type_id = row.type_id & !ROW_ID_DELETED;
+    if type_id == 0 {
         return Err(format!("building row {index} has zero type_id"));
+    }
+    if let Some(type_id) = building_row_deleted_id(row) {
+        if type_id == 0 {
+            return Err(format!("building row {index} has zero deleted type_id"));
+        }
+        if row.level != 0 || row.healthy_level.is_some() {
+            return Err(format!("building row {index} tombstone has live fields"));
+        }
+        return Ok(());
     }
     if row.level > BUILDING_LEVEL_SANE_MAX {
         return Err(format!("building row {index} invalid level {}", row.level));
@@ -1147,11 +1222,23 @@ fn validate_resource_row(index: usize, row: &StateResourceRow) -> Result<(), Str
             row.state_id
         ));
     }
-    if row.resource_id == 0 || row.resource_id == STATE_RESOURCE_NO_ID {
+    let resource_id = row.resource_id & !ROW_ID_DELETED;
+    if resource_id == 0 || resource_id == STATE_RESOURCE_NO_ID {
         return Err(format!(
             "resource row {index} invalid resource_id {}",
-            row.resource_id
+            resource_id
         ));
+    }
+    if let Some(resource_id) = resource_row_deleted_id(row) {
+        if resource_id == 0 || resource_id == STATE_RESOURCE_NO_ID {
+            return Err(format!(
+                "resource row {index} invalid deleted resource_id {resource_id}"
+            ));
+        }
+        if row.amount_raw != 0 {
+            return Err(format!("resource row {index} tombstone has live fields"));
+        }
+        return Ok(());
     }
     if !(0..=STATE_RESOURCE_MAX_ABS_RAW).contains(&row.amount_raw) {
         return Err(format!(
@@ -1160,6 +1247,22 @@ fn validate_resource_row(index: usize, row: &StateResourceRow) -> Result<(), Str
         ));
     }
     Ok(())
+}
+
+pub fn deleted_identity_id(value: u32) -> Option<u32> {
+    (value & ROW_ID_DELETED != 0).then_some(value & !ROW_ID_DELETED)
+}
+
+pub fn construction_row_deleted_id(row: &ConstructionQueueRow) -> Option<u32> {
+    deleted_identity_id(row.line_id)
+}
+
+pub fn building_row_deleted_id(row: &BuildingRow) -> Option<u32> {
+    deleted_identity_id(row.type_id)
+}
+
+pub fn resource_row_deleted_id(row: &StateResourceRow) -> Option<u32> {
+    deleted_identity_id(row.resource_id)
 }
 
 fn is_heap_ptr(value: usize) -> bool {

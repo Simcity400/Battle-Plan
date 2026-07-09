@@ -334,6 +334,7 @@ const COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
 const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
 const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = 1 << 17;
 const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 = 1 << 18;
+const COMPACT_SUPPLY_ROW_ID_DELETED: u32 = 1 << 31;
 const COMPACT_SUPPLY_ROW_VALID_FLAGS: u32 = COMPACT_SUPPLY_ROW_FLAG_RAIL
     | COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE
     | COMPACT_SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB
@@ -701,6 +702,8 @@ struct Config {
     sidecar_log: bool,
     extraction_perf_gate: bool,
     d41_emit_mode: D41EmitMode,
+    d44_emit_mode: D44EmitMode,
+    d48_emit_mode: D48EmitMode,
     /// Plan-v2 P2b lever A: bound the collector's per-frame reader fan-out to at
     /// most this many concurrently-running domain workers (0 = unbounded = legacy).
     /// Passed through the JSON control block to the injected DLL as
@@ -777,6 +780,52 @@ enum D41EmitMode {
 }
 
 impl D41EmitMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "delta" => Some(Self::Delta),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Delta => "delta",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum D44EmitMode {
+    Delta,
+    Full,
+}
+
+impl D44EmitMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "delta" => Some(Self::Delta),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Delta => "delta",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum D48EmitMode {
+    Delta,
+    Full,
+}
+
+impl D48EmitMode {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "delta" => Some(Self::Delta),
@@ -973,6 +1022,8 @@ fn run() -> Result<(), String> {
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "d41_emit_mode": cfg.d41_emit_mode.as_str(),
+                    "d44_emit_mode": cfg.d44_emit_mode.as_str(),
+                    "d48_emit_mode": cfg.d48_emit_mode.as_str(),
                     "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
@@ -1063,6 +1114,8 @@ fn run() -> Result<(), String> {
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "d41_emit_mode": cfg.d41_emit_mode.as_str(),
+                    "d44_emit_mode": cfg.d44_emit_mode.as_str(),
+                    "d48_emit_mode": cfg.d48_emit_mode.as_str(),
                     "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
@@ -1327,6 +1380,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut sidecar_log: Option<bool> = None;
     let mut extraction_perf_gate: Option<bool> = None;
     let mut d41_emit_mode = D41EmitMode::Delta;
+    let mut d44_emit_mode = D44EmitMode::Delta;
+    let mut d48_emit_mode = D48EmitMode::Delta;
     let mut reader_concurrency = None;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
@@ -1430,6 +1485,20 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 let value = required(args.get(i), "--d41-emit-mode")?;
                 d41_emit_mode = D41EmitMode::parse(&value).ok_or_else(|| {
                     format!("invalid --d41-emit-mode {value}; expected delta|full")
+                })?;
+            }
+            "--d44-emit-mode" => {
+                i += 1;
+                let value = required(args.get(i), "--d44-emit-mode")?;
+                d44_emit_mode = D44EmitMode::parse(&value).ok_or_else(|| {
+                    format!("invalid --d44-emit-mode {value}; expected delta|full")
+                })?;
+            }
+            "--d48-emit-mode" => {
+                i += 1;
+                let value = required(args.get(i), "--d48-emit-mode")?;
+                d48_emit_mode = D48EmitMode::parse(&value).ok_or_else(|| {
+                    format!("invalid --d48-emit-mode {value}; expected delta|full")
                 })?;
             }
             "--reader-concurrency" => {
@@ -1580,6 +1649,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         sidecar_log,
         extraction_perf_gate,
         d41_emit_mode,
+        d44_emit_mode,
+        d48_emit_mode,
         reader_concurrency,
         static_artifacts: {
             let mut requested = Vec::new();
@@ -1741,7 +1812,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d41-emit-mode delta|full] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -3625,6 +3696,8 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "stream_format": cfg.stream_format.as_str(),
         "extraction_perf_gate": cfg.extraction_perf_gate,
         "d41_emit_mode": cfg.d41_emit_mode.as_str(),
+        "d44_emit_mode": cfg.d44_emit_mode.as_str(),
+        "d48_emit_mode": cfg.d48_emit_mode.as_str(),
         "reader_concurrency": cfg.reader_concurrency,
         // Cadence thinning is FORBIDDEN (zero-data-loss): every scheduled domain
         // is captured hourly. This is always 1 and never a profile choice.
@@ -9568,7 +9641,7 @@ fn domain48_gate_problem_name(error: &str) -> &'static str {
         == "construction target_state_id partially emitted; fill every construction row or badge unavailable"
     {
         "domain48_gate_target_state_partially_emitted"
-    } else if error.contains("duplicates tag/line/priority") {
+    } else if error.contains("duplicates tag/line") {
         "domain48_gate_duplicate_construction_row"
     } else if error.contains("duplicates scope/location/type") {
         "domain48_gate_duplicate_building_row"
@@ -13086,6 +13159,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     let observed_division_roots = read_u32_le(payload, 40) as usize;
     let csupply_input_rows = read_u32_le(payload, 44) as usize;
     summary.status_flags_or |= status_flags;
+    let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
 
     if scale_raw != COMPACT_FIXED_SCALE_RAW {
         summary.parse_errors.push(format!(
@@ -13095,6 +13169,11 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     if changed_rows > row_count {
         summary.parse_errors.push(format!(
             "offset {offset}: supply logistics changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if delta_data && changed_rows != row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics delta changed_rows {changed_rows} != emitted row_count {row_count}"
         ));
     }
     if province_rows
@@ -13107,12 +13186,12 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             "offset {offset}: supply logistics row counters {province_rows}+{division_rows}+{badge_rows}+{csupply_input_rows} != row_count {row_count}"
         ));
     }
-    if observed_province_roots < province_rows {
+    if !delta_data && observed_province_roots < province_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: supply logistics observed_province_roots {observed_province_roots} < province_rows {province_rows}"
         ));
     }
-    if observed_division_roots < division_rows {
+    if !delta_data && observed_division_roots < division_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: supply logistics observed_division_roots {observed_division_roots} < division_rows {division_rows}"
         ));
@@ -13158,6 +13237,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     let mut seen_provinces = BTreeSet::new();
     let mut seen_divisions = BTreeSet::new();
     let mut seen_csupply_input_provinces = BTreeSet::new();
+    let mut seen_badge_flags = BTreeSet::new();
     let mut has_exact_supply_wall = false;
     let mut has_attrition_wall = false;
     let mut has_motorization_wall = false;
@@ -13197,14 +13277,29 @@ fn decode_compact_supply_logistics_attrition_data_payload(
         match row_kind {
             COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS => {
                 decoded_province_rows = decoded_province_rows.saturating_add(1);
-                if entity_id == 0 || entity_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
+                let deleted_id = compact_supply_logistics_deleted_id(entity_id);
+                let province_id = deleted_id.unwrap_or(entity_id);
+                if province_id == 0 || province_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics province row {row_index} has invalid province_id {entity_id}"
+                        "offset {offset}: supply logistics province row {row_index} has invalid province_id {province_id}"
                     ));
-                } else if !seen_provinces.insert(entity_id) {
+                } else if !seen_provinces.insert(province_id) {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics province row {row_index} duplicates province_id {entity_id}"
+                        "offset {offset}: supply logistics province row {row_index} duplicates province_id {province_id}"
                     ));
+                }
+                if deleted_id.is_some() {
+                    validate_supply_logistics_tombstone_fields(
+                        offset,
+                        summary,
+                        row_index,
+                        "province",
+                        join_id,
+                        owner_tag_db_id,
+                        flags,
+                        [value_a_raw, value_b_raw, value_c_raw, value_d_raw, aux_raw],
+                    );
+                    continue;
                 }
                 if join_id == 0 || join_id > COMPACT_SUPPLY_MAX_STATE_ID {
                     summary.parse_errors.push(format!(
@@ -13262,14 +13357,29 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             }
             COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY => {
                 decoded_division_rows = decoded_division_rows.saturating_add(1);
-                if entity_id == 0 || entity_id > COMPACT_SUPPLY_MAX_DIVISION_ID {
+                let deleted_id = compact_supply_logistics_deleted_id(entity_id);
+                let division_id = deleted_id.unwrap_or(entity_id);
+                if division_id == 0 || division_id > COMPACT_SUPPLY_MAX_DIVISION_ID {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} has invalid division_id {entity_id}"
+                        "offset {offset}: supply logistics division row {row_index} has invalid division_id {division_id}"
                     ));
-                } else if !seen_divisions.insert(entity_id) {
+                } else if !seen_divisions.insert(division_id) {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} duplicates division_id {entity_id}"
+                        "offset {offset}: supply logistics division row {row_index} duplicates division_id {division_id}"
                     ));
+                }
+                if deleted_id.is_some() {
+                    validate_supply_logistics_tombstone_fields(
+                        offset,
+                        summary,
+                        row_index,
+                        "division",
+                        join_id,
+                        owner_tag_db_id,
+                        flags,
+                        [value_a_raw, value_b_raw, value_c_raw, value_d_raw, aux_raw],
+                    );
+                    continue;
                 }
                 if join_id == 0 || join_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
                     summary.parse_errors.push(format!(
@@ -13368,14 +13478,29 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             }
             COMPACT_SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT => {
                 decoded_csupply_input_rows = decoded_csupply_input_rows.saturating_add(1);
-                if entity_id == 0 || entity_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
+                let deleted_id = compact_supply_logistics_deleted_id(entity_id);
+                let province_id = deleted_id.unwrap_or(entity_id);
+                if province_id == 0 || province_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics csupply row {row_index} has invalid province_id {entity_id}"
+                        "offset {offset}: supply logistics csupply row {row_index} has invalid province_id {province_id}"
                     ));
-                } else if !seen_csupply_input_provinces.insert(entity_id) {
+                } else if !seen_csupply_input_provinces.insert(province_id) {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics csupply row {row_index} duplicates province_id {entity_id}"
+                        "offset {offset}: supply logistics csupply row {row_index} duplicates province_id {province_id}"
                     ));
+                }
+                if deleted_id.is_some() {
+                    validate_supply_logistics_tombstone_fields(
+                        offset,
+                        summary,
+                        row_index,
+                        "csupply",
+                        join_id,
+                        owner_tag_db_id,
+                        flags,
+                        [value_a_raw, value_b_raw, value_c_raw, value_d_raw, aux_raw],
+                    );
+                    continue;
                 }
                 if join_id != 0 || owner_tag_db_id != 0 {
                     summary.parse_errors.push(format!(
@@ -13424,6 +13549,10 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                 if badge_flags.count_ones() != 1 {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics badge row {row_index} must carry exactly one badge flag"
+                    ));
+                } else if !seen_badge_flags.insert(badge_flags) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics badge row {row_index} duplicates badge flag {badge_flags:#x}"
                     ));
                 }
                 if flags != badge_flags {
@@ -13572,6 +13701,33 @@ fn validate_supply_logistics_presence_flag(
     if value != 0 && !present {
         summary.parse_errors.push(format!(
             "offset {offset}: supply logistics row {row_index} has nonzero {label} without presence flag"
+        ));
+    }
+}
+
+fn compact_supply_logistics_deleted_id(entity_id: u32) -> Option<u32> {
+    (entity_id & COMPACT_SUPPLY_ROW_ID_DELETED != 0)
+        .then_some(entity_id & !COMPACT_SUPPLY_ROW_ID_DELETED)
+}
+
+fn validate_supply_logistics_tombstone_fields(
+    offset: usize,
+    summary: &mut CompactSummary,
+    row_index: usize,
+    family: &str,
+    join_id: u32,
+    owner_tag_db_id: u32,
+    flags: u32,
+    values: [i32; 5],
+) {
+    if join_id != 0 || owner_tag_db_id != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics {family} tombstone row {row_index} has live identity fields"
+        ));
+    }
+    if flags != 0 || values.iter().any(|value| *value != 0) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics {family} tombstone row {row_index} has live fields"
         ));
     }
 }
@@ -21019,6 +21175,738 @@ mod tests {
     }
 
     #[test]
+    fn compact_supply_logistics_delta_lossless_gate_matches_full_snapshots() {
+        #[derive(Clone, Copy)]
+        struct TestSupplyRow {
+            kind: u32,
+            entity_id: u32,
+            join_id: u32,
+            owner_tag_db_id: u32,
+            flags: u32,
+            a: i32,
+            b: i32,
+            c: i32,
+            d: i32,
+            aux: i32,
+        }
+
+        #[derive(Clone)]
+        struct TestSupplyFrame {
+            rows: Vec<TestSupplyRow>,
+            status_flags: u32,
+            observed_province_roots: u32,
+            observed_division_roots: u32,
+        }
+
+        fn province_row(province_id: u32, state_id: u32, rail: i32) -> TestSupplyRow {
+            TestSupplyRow {
+                kind: COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS,
+                entity_id: province_id,
+                join_id: state_id,
+                owner_tag_db_id: 0,
+                flags: COMPACT_SUPPLY_ROW_FLAG_RAIL
+                    | COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE
+                    | COMPACT_SUPPLY_ROW_FLAG_INFRASTRUCTURE
+                    | COMPACT_SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR,
+                a: rail,
+                b: 2,
+                c: 0,
+                d: 4,
+                aux: 3,
+            }
+        }
+
+        fn division_row(
+            division_id: u32,
+            province_id: u32,
+            current_supply_raw: i32,
+            max_supply_raw: i32,
+        ) -> TestSupplyRow {
+            TestSupplyRow {
+                kind: COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY,
+                entity_id: division_id,
+                join_id: province_id,
+                owner_tag_db_id: 1,
+                flags: COMPACT_SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_OWNER
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_FUEL
+                    | COMPACT_SUPPLY_ROW_FLAG_PROXY_VALUE,
+                a: current_supply_raw,
+                b: max_supply_raw,
+                c: 25_000,
+                d: max_supply_raw.saturating_sub(current_supply_raw).max(0),
+                aux: 99_000,
+            }
+        }
+
+        fn csupply_row(province_id: u32, raw: i32) -> TestSupplyRow {
+            TestSupplyRow {
+                kind: COMPACT_SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT,
+                entity_id: province_id,
+                join_id: 0,
+                owner_tag_db_id: 0,
+                flags: COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY
+                    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY,
+                a: raw,
+                b: 0,
+                c: 0,
+                d: 0,
+                aux: 0,
+            }
+        }
+
+        fn tombstone_row(kind: u32, entity_id: u32) -> TestSupplyRow {
+            TestSupplyRow {
+                kind,
+                entity_id: entity_id | COMPACT_SUPPLY_ROW_ID_DELETED,
+                join_id: 0,
+                owner_tag_db_id: 0,
+                flags: 0,
+                a: 0,
+                b: 0,
+                c: 0,
+                d: 0,
+                aux: 0,
+            }
+        }
+
+        fn badge_rows() -> Vec<TestSupplyRow> {
+            [
+                (
+                    COMPACT_SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL,
+                    COMPACT_SUPPLY_BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT,
+                ),
+                (
+                    COMPACT_SUPPLY_ROW_FLAG_ATTRITION_WALL,
+                    COMPACT_SUPPLY_BADGE_ATTRITION_RUNTIME_COMPUTED,
+                ),
+                (
+                    COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL,
+                    COMPACT_SUPPLY_BADGE_MOTORIZATION_SETTINGS_UNPINNED,
+                ),
+                (
+                    COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL,
+                    COMPACT_SUPPLY_BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED,
+                ),
+                (
+                    COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED,
+                    COMPACT_SUPPLY_BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE,
+                ),
+            ]
+            .into_iter()
+            .map(|(flags, code)| TestSupplyRow {
+                kind: COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
+                entity_id: 0,
+                join_id: 0,
+                owner_tag_db_id: 0,
+                flags,
+                a: code,
+                b: 0,
+                c: 0,
+                d: 0,
+                aux: 0,
+            })
+            .collect()
+        }
+
+        fn full_frame(mut live_rows: Vec<TestSupplyRow>) -> TestSupplyFrame {
+            let observed_province_roots = live_rows
+                .iter()
+                .filter(|row| row.kind == COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS)
+                .count()
+                .min(u32::MAX as usize) as u32;
+            let observed_division_roots = live_rows
+                .iter()
+                .filter(|row| row.kind == COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY)
+                .count()
+                .min(u32::MAX as usize) as u32;
+            live_rows.extend(badge_rows());
+            TestSupplyFrame {
+                rows: live_rows,
+                status_flags: 0,
+                observed_province_roots,
+                observed_division_roots,
+            }
+        }
+
+        fn delta_frame(
+            mut rows: Vec<TestSupplyRow>,
+            full_state: &TestSupplyFrame,
+        ) -> TestSupplyFrame {
+            rows.extend(badge_rows());
+            TestSupplyFrame {
+                rows,
+                status_flags: COMPACT_STATUS_DELTA_DATA,
+                observed_province_roots: full_state.observed_province_roots,
+                observed_division_roots: full_state.observed_division_roots,
+            }
+        }
+
+        fn supply_payload(frame: &TestSupplyFrame) -> Vec<u8> {
+            let row_count = frame.rows.len().min(u32::MAX as usize) as u32;
+            let province_rows = frame
+                .rows
+                .iter()
+                .filter(|row| row.kind == COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS)
+                .count()
+                .min(u32::MAX as usize) as u32;
+            let division_rows = frame
+                .rows
+                .iter()
+                .filter(|row| row.kind == COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY)
+                .count()
+                .min(u32::MAX as usize) as u32;
+            let badge_rows = frame
+                .rows
+                .iter()
+                .filter(|row| row.kind == COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE)
+                .count()
+                .min(u32::MAX as usize) as u32;
+            let csupply_rows = frame
+                .rows
+                .iter()
+                .filter(|row| row.kind == COMPACT_SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT)
+                .count()
+                .min(u32::MAX as usize) as u32;
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&0u64.to_le_bytes());
+            payload.extend_from_slice(&row_count.to_le_bytes());
+            payload.extend_from_slice(&row_count.to_le_bytes());
+            payload.extend_from_slice(&frame.status_flags.to_le_bytes());
+            payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+            payload.extend_from_slice(&province_rows.to_le_bytes());
+            payload.extend_from_slice(&division_rows.to_le_bytes());
+            payload.extend_from_slice(&badge_rows.to_le_bytes());
+            payload.extend_from_slice(&frame.observed_province_roots.to_le_bytes());
+            payload.extend_from_slice(&frame.observed_division_roots.to_le_bytes());
+            payload.extend_from_slice(&csupply_rows.to_le_bytes());
+            for row in &frame.rows {
+                payload.extend_from_slice(&row.kind.to_le_bytes());
+                payload.extend_from_slice(&row.entity_id.to_le_bytes());
+                payload.extend_from_slice(&row.join_id.to_le_bytes());
+                payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+                payload.extend_from_slice(&row.flags.to_le_bytes());
+                payload.extend_from_slice(&row.a.to_le_bytes());
+                payload.extend_from_slice(&row.b.to_le_bytes());
+                payload.extend_from_slice(&row.c.to_le_bytes());
+                payload.extend_from_slice(&row.d.to_le_bytes());
+                payload.extend_from_slice(&row.aux.to_le_bytes());
+            }
+            payload
+        }
+
+        fn append_supply_frame(
+            raw: &mut Vec<u8>,
+            next_sequence: &mut u64,
+            game_hour_raw: i32,
+            frame: &TestSupplyFrame,
+        ) {
+            let emitted_rows = frame.rows.len().min(u32::MAX as usize) as u32;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                44,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(
+                    500,
+                    emitted_rows,
+                    emitted_rows,
+                    emitted_rows,
+                    emitted_rows,
+                    frame.status_flags,
+                ),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                44,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &supply_payload(frame),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *next_sequence += 1;
+        }
+
+        fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
+            fold_compact_snapshots(raw)
+                .into_iter()
+                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .collect()
+        }
+
+        let full0 = full_frame(vec![
+            province_row(2068, 64, 5),
+            division_row(42, 2068, 950_000, 1_200_000),
+            csupply_row(3544, 72_500),
+        ]);
+        let full1 = full_frame(vec![
+            province_row(2068, 64, 6),
+            province_row(2070, 65, 1),
+            division_row(42, 2070, 1_000_000, 1_200_000),
+            division_row(43, 2070, 500_000, 1_000_000),
+            csupply_row(3544, 80_000),
+            csupply_row(3550, 50_000),
+        ]);
+        let full2 = full_frame(vec![
+            province_row(2070, 65, 1),
+            division_row(42, 2070, 1_100_000, 1_200_000),
+            csupply_row(3550, 50_000),
+        ]);
+        let full3 = full2.clone();
+        let full4 = full_frame(vec![
+            province_row(2080, 66, 7),
+            division_row(99, 2080, 600_000, 900_000),
+            csupply_row(2080, 61_000),
+        ]);
+
+        let delta1 = delta_frame(
+            vec![
+                province_row(2068, 64, 6),
+                province_row(2070, 65, 1),
+                division_row(42, 2070, 1_000_000, 1_200_000),
+                division_row(43, 2070, 500_000, 1_000_000),
+                csupply_row(3544, 80_000),
+                csupply_row(3550, 50_000),
+            ],
+            &full1,
+        );
+        let delta2 = delta_frame(
+            vec![
+                tombstone_row(COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS, 2068),
+                tombstone_row(COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY, 43),
+                tombstone_row(COMPACT_SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT, 3544),
+                division_row(42, 2070, 1_100_000, 1_200_000),
+            ],
+            &full2,
+        );
+        let delta3 = delta_frame(Vec::new(), &full3);
+
+        let mut full_raw = Vec::new();
+        let mut full_seq = 1u64;
+        let mut delta_raw = Vec::new();
+        let mut delta_seq = 1u64;
+        let game_hour_raw = 60_759_360;
+        for (index, full) in [&full0, &full1, &full2, &full3, &full4].iter().enumerate() {
+            append_supply_frame(
+                &mut full_raw,
+                &mut full_seq,
+                game_hour_raw + index as i32,
+                full,
+            );
+        }
+        for (index, delta) in [&full0, &delta1, &delta2, &delta3, &full4]
+            .iter()
+            .enumerate()
+        {
+            append_supply_frame(
+                &mut delta_raw,
+                &mut delta_seq,
+                game_hour_raw + index as i32,
+                delta,
+            );
+        }
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        let delta_summary = summarize_compact_stream(&delta_raw);
+        let full_coverage = compact_domain_coverage_errors(&full_summary, &[44]);
+        let delta_coverage = compact_domain_coverage_errors(&delta_summary, &[44]);
+        assert!(
+            full_summary.parse_errors.is_empty(),
+            "{:?}",
+            full_summary.parse_errors
+        );
+        assert!(
+            delta_summary.parse_errors.is_empty(),
+            "{:?}",
+            delta_summary.parse_errors
+        );
+        assert!(full_coverage.is_empty(), "{full_coverage:?}");
+        assert!(delta_coverage.is_empty(), "{delta_coverage:?}");
+        assert_eq!(
+            delta_summary
+                .per_hour_data_domain_counts
+                .get(&(game_hour_raw + 3))
+                .and_then(|domains| domains.get(&44))
+                .copied(),
+            Some(1),
+            "zero-change delta frame must still count as a covered data record"
+        );
+        assert_ne!(delta_summary.status_flags_or & COMPACT_STATUS_DELTA_DATA, 0);
+        assert!(
+            delta_raw.len() < full_raw.len(),
+            "delta stream should be smaller than the equivalent full snapshots"
+        );
+        assert_eq!(
+            canonical_snapshots(&delta_raw),
+            canonical_snapshots(&full_raw)
+        );
+    }
+
+    #[test]
+    fn compact_construction_buildings_state_damage_delta_lossless_gate_matches_full_snapshots() {
+        fn source_flags() -> u32 {
+            domain48::SOURCE_FLAG_DLL_NATIVE
+                | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+                | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+                | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+        }
+
+        fn construction_row(
+            line_id: u32,
+            produced_raw: i32,
+            priority: u32,
+        ) -> domain48::ConstructionQueueRow {
+            domain48::ConstructionQueueRow {
+                tag_db_id: 1,
+                line_id,
+                template_id: Some(20_013),
+                active_factories: 5,
+                cost_raw: 10_000_000,
+                produced_raw,
+                priority,
+                target_state_id: Some(42),
+                created_date_raw: Some(60_827_043 + line_id),
+            }
+        }
+
+        fn tombstone_construction(line_id: u32) -> domain48::ConstructionQueueRow {
+            domain48::ConstructionQueueRow {
+                tag_db_id: 1,
+                line_id: line_id | domain48::ROW_ID_DELETED,
+                template_id: None,
+                active_factories: 0,
+                cost_raw: 0,
+                produced_raw: 0,
+                priority: 0,
+                target_state_id: None,
+                created_date_raw: None,
+            }
+        }
+
+        fn state_building(
+            type_id: u32,
+            level: u32,
+            healthy_level: Option<u32>,
+        ) -> domain48::BuildingRow {
+            domain48::BuildingRow {
+                scope: domain48::SCOPE_STATE,
+                location_id: 42,
+                state_id: 42,
+                type_id,
+                level,
+                healthy_level,
+            }
+        }
+
+        fn province_building(
+            type_id: u32,
+            level: u32,
+            healthy_level: Option<u32>,
+        ) -> domain48::BuildingRow {
+            domain48::BuildingRow {
+                scope: domain48::SCOPE_PROVINCE,
+                location_id: 2068,
+                state_id: 42,
+                type_id,
+                level,
+                healthy_level,
+            }
+        }
+
+        fn tombstone_building(
+            scope: u32,
+            location_id: u32,
+            state_id: u32,
+            type_id: u32,
+        ) -> domain48::BuildingRow {
+            domain48::BuildingRow {
+                scope,
+                location_id,
+                state_id,
+                type_id: type_id | domain48::ROW_ID_DELETED,
+                level: 0,
+                healthy_level: None,
+            }
+        }
+
+        fn resource_row(resource_id: u32, amount_raw: i32) -> domain48::StateResourceRow {
+            domain48::StateResourceRow {
+                state_id: 42,
+                resource_id,
+                amount_raw,
+            }
+        }
+
+        fn tombstone_resource(resource_id: u32) -> domain48::StateResourceRow {
+            domain48::StateResourceRow {
+                state_id: 42,
+                resource_id: resource_id | domain48::ROW_ID_DELETED,
+                amount_raw: 0,
+            }
+        }
+
+        fn stable_building_rows() -> Vec<domain48::BuildingRow> {
+            (0..8)
+                .map(|index| state_building(0x6000 + index, 1, Some(1)))
+                .collect()
+        }
+
+        fn stable_resource_rows() -> Vec<domain48::StateResourceRow> {
+            (0..8)
+                .map(|index| resource_row(0x7000 + index, 100_000 + (index as i32 * 10_000)))
+                .collect()
+        }
+
+        fn frame(
+            status_flags: u32,
+            construction_rows: Vec<domain48::ConstructionQueueRow>,
+            building_rows: Vec<domain48::BuildingRow>,
+            resource_rows: Vec<domain48::StateResourceRow>,
+        ) -> domain48::LaneFrame {
+            domain48::LaneFrame {
+                game_hour_raw: 0,
+                status_flags,
+                source_flags: source_flags(),
+                observed_country_roots: 1,
+                observed_state_roots: 1,
+                observed_province_roots: 1,
+                construction_rows,
+                building_rows,
+                resource_rows,
+            }
+        }
+
+        fn append_domain48_frame(
+            raw: &mut Vec<u8>,
+            next_sequence: &mut u64,
+            game_hour_raw: i32,
+            frame: &domain48::LaneFrame,
+        ) {
+            let row_count = frame
+                .construction_rows
+                .len()
+                .saturating_add(frame.building_rows.len())
+                .saturating_add(frame.resource_rows.len())
+                .min(u32::MAX as usize) as u32;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                48,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(
+                    500,
+                    row_count,
+                    row_count,
+                    row_count,
+                    row_count,
+                    frame.status_flags,
+                ),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                48,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &domain48::encode_lane_frame(frame),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *next_sequence += 1;
+        }
+
+        fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
+            fold_compact_snapshots(raw)
+                .into_iter()
+                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .collect()
+        }
+
+        let full0 = frame(
+            0,
+            vec![construction_row(77, 5_000_000, 0)],
+            {
+                let mut rows = vec![
+                    state_building(0x2fab, 5, Some(4)),
+                    province_building(0x4cc1, 2, Some(2)),
+                ];
+                rows.extend(stable_building_rows());
+                rows
+            },
+            {
+                let mut rows = vec![resource_row(0x3e03, 2_500_000)];
+                rows.extend(stable_resource_rows());
+                rows
+            },
+        );
+        let full1 = frame(
+            0,
+            vec![
+                construction_row(77, 6_000_000, 0),
+                construction_row(88, 2_000_000, 1),
+            ],
+            {
+                let mut rows = vec![
+                    state_building(0x2fab, 6, Some(5)),
+                    state_building(0x3000, 7, Some(7)),
+                    province_building(0x4cc1, 3, Some(3)),
+                    province_building(0x4cc2, 4, Some(4)),
+                ];
+                rows.extend(stable_building_rows());
+                rows
+            },
+            {
+                let mut rows = vec![
+                    resource_row(0x3e03, 2_600_000),
+                    resource_row(0x3e04, 400_000),
+                ];
+                rows.extend(stable_resource_rows());
+                rows
+            },
+        );
+        let full2 = frame(
+            0,
+            vec![construction_row(77, 7_000_000, 0)],
+            {
+                let mut rows = vec![
+                    state_building(0x2fab, 6, Some(6)),
+                    province_building(0x4cc1, 3, Some(2)),
+                ];
+                rows.extend(stable_building_rows());
+                rows
+            },
+            {
+                let mut rows = vec![resource_row(0x3e03, 2_700_000)];
+                rows.extend(stable_resource_rows());
+                rows
+            },
+        );
+        let full3 = full2.clone();
+        let full4 = frame(
+            0,
+            vec![construction_row(99, 1_000_000, 0)],
+            vec![
+                state_building(0x4000, 8, Some(8)),
+                province_building(0x5000, 1, Some(1)),
+            ],
+            vec![resource_row(0x3e05, 900_000)],
+        );
+
+        let delta1 = frame(
+            COMPACT_STATUS_DELTA_DATA,
+            vec![
+                construction_row(77, 6_000_000, 0),
+                construction_row(88, 2_000_000, 1),
+            ],
+            full1.building_rows.clone(),
+            full1.resource_rows.clone(),
+        );
+        let delta2 = frame(
+            COMPACT_STATUS_DELTA_DATA,
+            vec![
+                construction_row(77, 7_000_000, 0),
+                tombstone_construction(88),
+            ],
+            vec![
+                state_building(0x2fab, 6, Some(6)),
+                tombstone_building(domain48::SCOPE_STATE, 42, 42, 0x3000),
+                province_building(0x4cc1, 3, Some(2)),
+                tombstone_building(domain48::SCOPE_PROVINCE, 2068, 42, 0x4cc2),
+            ],
+            vec![resource_row(0x3e03, 2_700_000), tombstone_resource(0x3e04)],
+        );
+        let delta3 = frame(
+            COMPACT_STATUS_DELTA_DATA,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let mut full_raw = Vec::new();
+        let mut full_seq = 1u64;
+        let mut delta_raw = Vec::new();
+        let mut delta_seq = 1u64;
+        let game_hour_raw = 60_759_360;
+        for (index, full) in [&full0, &full1, &full2, &full3, &full4].iter().enumerate() {
+            append_domain48_frame(
+                &mut full_raw,
+                &mut full_seq,
+                game_hour_raw + index as i32,
+                full,
+            );
+        }
+        for (index, delta) in [&full0, &delta1, &delta2, &delta3, &full4]
+            .iter()
+            .enumerate()
+        {
+            append_domain48_frame(
+                &mut delta_raw,
+                &mut delta_seq,
+                game_hour_raw + index as i32,
+                delta,
+            );
+        }
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        let delta_summary = summarize_compact_stream(&delta_raw);
+        let full_coverage = compact_domain_coverage_errors(&full_summary, &[48]);
+        let delta_coverage = compact_domain_coverage_errors(&delta_summary, &[48]);
+        assert!(
+            full_summary.parse_errors.is_empty(),
+            "{:?}",
+            full_summary.parse_errors
+        );
+        assert!(
+            delta_summary.parse_errors.is_empty(),
+            "{:?}",
+            delta_summary.parse_errors
+        );
+        assert!(full_coverage.is_empty(), "{full_coverage:?}");
+        assert!(delta_coverage.is_empty(), "{delta_coverage:?}");
+        assert_eq!(
+            delta_summary
+                .per_hour_data_domain_counts
+                .get(&(game_hour_raw + 3))
+                .and_then(|domains| domains.get(&48))
+                .copied(),
+            Some(1),
+            "zero-change delta frame must still count as a covered data record"
+        );
+        assert_ne!(delta_summary.status_flags_or & COMPACT_STATUS_DELTA_DATA, 0);
+        assert!(
+            delta_raw.len() < full_raw.len(),
+            "delta stream should be smaller than the equivalent full snapshots"
+        );
+        assert_eq!(
+            canonical_snapshots(&delta_raw),
+            canonical_snapshots(&full_raw)
+        );
+    }
+
+    #[test]
     fn compact_summary_rejects_unknown_project_state_flags() {
         let mut payload = test_projects_data_payload(0);
         payload[284..288].copy_from_slice(&0x4000_0000u32.to_le_bytes());
@@ -23346,6 +24234,8 @@ mod tests {
             sidecar_log: false,
             extraction_perf_gate: true,
             d41_emit_mode: D41EmitMode::Delta,
+            d44_emit_mode: D44EmitMode::Delta,
+            d48_emit_mode: D48EmitMode::Delta,
             reader_concurrency: 0,
             static_artifacts: Vec::new(),
         };
@@ -23621,6 +24511,10 @@ mod tests {
             "--extraction-perf-gate".to_string(),
             "--d41-emit-mode".to_string(),
             "full".to_string(),
+            "--d44-emit-mode".to_string(),
+            "full".to_string(),
+            "--d48-emit-mode".to_string(),
+            "full".to_string(),
         ])
         .unwrap();
 
@@ -23638,6 +24532,8 @@ mod tests {
         assert_eq!(cfg.stream_format, StreamFormat::Compact);
         assert!(cfg.extraction_perf_gate);
         assert_eq!(cfg.d41_emit_mode, D41EmitMode::Full);
+        assert_eq!(cfg.d44_emit_mode, D44EmitMode::Full);
+        assert_eq!(cfg.d48_emit_mode, D48EmitMode::Full);
         assert_eq!(cfg.scheduled_domains, vec!["projects_live".to_string()]);
         assert_eq!(
             cfg.idea_group_filter.as_deref(),
@@ -23945,6 +24841,8 @@ mod tests {
         assert!(control.contains("\"sidecar_log\":true"));
         assert!(control.contains("\"extraction_perf_gate\":true"));
         assert!(control.contains("\"d41_emit_mode\":\"delta\""));
+        assert!(control.contains("\"d44_emit_mode\":\"delta\""));
+        assert!(control.contains("\"d48_emit_mode\":\"delta\""));
         assert!(control.contains("\"compact_country_frame\":false"));
         assert!(control.contains("\"stream_format\":\"compact\""));
         assert!(control.contains("\"scheduled_snapshot_step_hours\":1"));
@@ -24082,6 +24980,8 @@ mod tests {
             sidecar_log: false,
             extraction_perf_gate: true,
             d41_emit_mode: D41EmitMode::Delta,
+            d44_emit_mode: D44EmitMode::Delta,
+            d48_emit_mode: D48EmitMode::Delta,
             reader_concurrency: 0,
             static_artifacts: Vec::new(),
         }

@@ -249,6 +249,11 @@ const SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
 const SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
 const SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = 1 << 17;
 const SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 = 1 << 18;
+const SUPPLY_ROW_ID_DELETED: u32 = 1 << 31;
+const SUPPLY_MAX_PROVINCE_ID: u32 = 13_413;
+const SUPPLY_MAX_STATE_ID: u32 = 1_081;
+const SUPPLY_MAX_DIVISION_ID: u32 = i32::MAX as u32;
+const SUPPLY_MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 const SUPPLY_ROW_KNOWN_FLAGS: u32 = SUPPLY_ROW_FLAG_RAIL
     | SUPPLY_ROW_FLAG_SUPPLY_NODE
     | SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB
@@ -721,6 +726,9 @@ pub struct WorldFold {
     /// current hour only. D23 owns canonical state resources/buildings fields.
     domain48_known_this_hour: bool,
     domain48_unknown_this_hour: bool,
+    /// D48 row-state accumulator. Full-replaced by baselines, patched by deltas,
+    /// retained across unknown hours, and rendered only for proven hours.
+    domain48_state: Option<Domain48FoldState>,
     /// D53 diplomacy/intel/operative validated slice, projected only for the
     /// current hour under 53-owned keys.
     domain53_known_this_hour: bool,
@@ -740,8 +748,11 @@ pub struct WorldFold {
     /// D43 validated exported-resource slice; full-replaced only by valid MTRF
     /// trailers. Countries with zero exported resources remain absent.
     market_trade_resource_exported: BTreeMap<u32, [i64; 7]>,
-    /// D44 live supply proxy sidecar; full-replaced by each successful frame.
+    /// D44 live supply proxy sidecar rendered from the row-state accumulator.
     supply: Option<Map<String, Value>>,
+    /// D44 row-state accumulator. Full-replaced by baselines, patched by deltas,
+    /// and retained on failure/partial/source-unavailable frames.
+    supply_logistics: Option<SupplyLogisticsState>,
     /// D24 R2 weather overlay projected under `map._r2_weather_live`.
     weather_live: Option<WeatherLiveState>,
     /// D41 top-level special-projects snapshot.
@@ -944,6 +955,18 @@ struct Domain53WorldOverlay {
 }
 
 #[derive(Default, Clone)]
+struct Domain48FoldState {
+    source_flags: u32,
+    construction: BTreeMap<Domain48ConstructionKey, domain48::ConstructionQueueRow>,
+    buildings: BTreeMap<Domain48BuildingKey, domain48::BuildingRow>,
+    resources: BTreeMap<Domain48ResourceKey, domain48::StateResourceRow>,
+}
+
+type Domain48ConstructionKey = (u32, u32);
+type Domain48BuildingKey = (u32, u32, u32, u32);
+type Domain48ResourceKey = (u32, u32);
+
+#[derive(Default, Clone)]
 struct Domain57FoldState {
     players_by_country: Option<Vec<Domain57PlayerCountryProjection>>,
     pause_is_paused: Option<bool>,
@@ -1002,6 +1025,7 @@ impl WorldFold {
             map_detail_live: None,
             domain48_known_this_hour: false,
             domain48_unknown_this_hour: false,
+            domain48_state: None,
             domain53_known_this_hour: false,
             domain53_country_overlays_this_hour: BTreeMap::new(),
             domain53_world_overlay_this_hour: Domain53WorldOverlay::default(),
@@ -1011,6 +1035,7 @@ impl WorldFold {
             market_trade_contracts: None,
             market_trade_resource_exported: BTreeMap::new(),
             supply: None,
+            supply_logistics: None,
             weather_live: None,
             special_projects: None,
             frd_focus_metrics: BTreeMap::new(),
@@ -10108,17 +10133,6 @@ impl WorldFold {
             );
             return Ok(());
         }
-        if status_flags & COMPACT_STATUS_DELTA_DATA != 0 {
-            self.clear_domain48_extras();
-            self.domain48_known_this_hour = false;
-            self.domain48_unknown_this_hour = true;
-            self.mark_fold_domain_unknown(
-                CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
-                "delta_unsupported",
-                "construction_buildings_state_damage_live DELTA_DATA is unsupported; domain extras unknown this hour",
-            );
-            return Ok(());
-        }
         if !decoded.gate.ok {
             self.clear_domain48_extras();
             self.domain48_known_this_hour = false;
@@ -10134,32 +10148,92 @@ impl WorldFold {
             return Ok(());
         }
 
-        if !expected_partial {
+        let delta = status_flags & COMPACT_STATUS_DELTA_DATA != 0;
+        if delta
+            && !self
+                .delta_baselines_seen
+                .contains(&CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID)
+        {
             self.clear_domain48_extras();
-        } else if let Some(tolerance) = compact_contract::expected_partial_tolerance(
-            CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
-        ) {
+            self.domain48_known_this_hour = false;
+            self.domain48_unknown_this_hour = true;
             self.record_domain_problem(
                 CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
-                "partial_data",
+                "delta_before_baseline",
             );
-            self.note(format!(
-                "construction_buildings_state_damage_live expected partial tolerance applied: {}",
-                tolerance.reason
-            ));
-        }
-        self.domain48_known_this_hour = true;
-        self.domain48_unknown_this_hour = false;
-        self.mark_fold_domain_success(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
-        if status_flags & COMPACT_STATUS_DELTA_DATA == 0 {
-            self.delta_baselines_seen
-                .insert(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
+            self.note(
+                "construction_buildings_state_damage_live delta_before_baseline; domain extras unknown this hour",
+            );
+            return Ok(());
         }
 
-        let target_state_unavailable = decoded.frame.source_flags
-            & domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE
-            != 0;
+        if expected_partial {
+            if let Some(tolerance) = compact_contract::expected_partial_tolerance(
+                CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+            ) {
+                self.record_domain_problem(
+                    CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+                    "partial_data",
+                );
+                self.note(format!(
+                    "construction_buildings_state_damage_live expected partial tolerance applied: {}",
+                    tolerance.reason
+                ));
+            }
+        }
+
         let frame = decoded.frame;
+        let mut state = if delta || expected_partial {
+            self.domain48_state.clone().unwrap_or_default()
+        } else {
+            Domain48FoldState::default()
+        };
+        state.source_flags = frame.source_flags;
+        for row in frame.construction_rows {
+            let key = domain48_construction_key(&row);
+            if domain48::construction_row_deleted_id(&row).is_some() {
+                state.construction.remove(&key);
+            } else {
+                state.construction.insert(key, row);
+            }
+        }
+        for row in frame.building_rows {
+            let key = domain48_building_key(&row);
+            if domain48::building_row_deleted_id(&row).is_some() {
+                state.buildings.remove(&key);
+            } else {
+                state.buildings.insert(key, row);
+            }
+        }
+        for row in frame.resource_rows {
+            let key = domain48_resource_identity_key(&row);
+            if domain48::resource_row_deleted_id(&row).is_some() {
+                state.resources.remove(&key);
+            } else {
+                state.resources.insert(key, row);
+            }
+        }
+
+        let target_state_unavailable =
+            state.source_flags & domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE != 0;
+        let mut construction_rows = state
+            .construction
+            .values()
+            .cloned()
+            .collect::<Vec<domain48::ConstructionQueueRow>>();
+        construction_rows.sort_by_key(|row| (row.tag_db_id, row.priority, row.line_id));
+        let frame = domain48::LaneFrame {
+            game_hour_raw: 0,
+            status_flags,
+            source_flags: state.source_flags,
+            observed_country_roots: 0,
+            observed_state_roots: 0,
+            observed_province_roots: 0,
+            construction_rows,
+            building_rows: state.buildings.values().cloned().collect(),
+            resource_rows: state.resources.values().cloned().collect(),
+        };
+        self.clear_domain48_extras();
 
         let mut construction_by_country: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
         for row in frame.construction_rows {
@@ -10245,6 +10319,14 @@ impl WorldFold {
             extra.insert("source".into(), json!("C"));
         }
 
+        self.domain48_state = Some(state);
+        self.domain48_known_this_hour = true;
+        self.domain48_unknown_this_hour = false;
+        if !delta && !expected_partial {
+            self.delta_baselines_seen
+                .insert(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
+        }
+        self.mark_fold_domain_success(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
         Ok(())
     }
 
@@ -11491,7 +11573,7 @@ impl WorldFold {
         Ok(())
     }
 
-    // --- DOMAIN 44 supply_logistics_attrition_live (full proxy snapshot) ---
+    // --- DOMAIN 44 supply_logistics_attrition_live (baseline + delta) ------
     fn fold_supply_logistics_attrition(&mut self, payload: &[u8]) -> Result<(), String> {
         need(
             payload,
@@ -11500,6 +11582,7 @@ impl WorldFold {
         )?;
         let row_count = read_u32(payload, 8) as usize;
         let status_flags = read_u32(payload, 16);
+        let delta = status_flags & COMPACT_STATUS_DELTA_DATA != 0;
         let scale_raw = read_u32(payload, 20);
         let province_rows = read_u32(payload, 24) as usize;
         let division_rows = read_u32(payload, 28) as usize;
@@ -11529,6 +11612,14 @@ impl WorldFold {
                 FIXED_SCALE as u32
             ));
         }
+        if delta && !self.delta_baselines_seen.contains(&44) {
+            self.supply_unknown_this_hour = true;
+            self.record_domain_problem(44, "delta_before_baseline");
+            self.note(
+                "supply_logistics_attrition_live delta_before_baseline; supply sidecar unknown this hour",
+            );
+            return Ok(());
+        }
         if province_rows
             .saturating_add(division_rows)
             .saturating_add(badge_rows)
@@ -11538,9 +11629,17 @@ impl WorldFold {
             return Err("supply logistics header row counters do not sum to row_count".into());
         }
 
-        let mut by_province = Map::new();
-        let mut badges = Vec::new();
-        let mut badge_flags_seen = 0u32;
+        let mut state = if delta {
+            self.supply_logistics.clone().unwrap_or_default()
+        } else {
+            SupplyLogisticsState::default()
+        };
+        state.observed_province_roots = observed_province_roots;
+        state.observed_division_roots = observed_division_roots;
+        let mut seen_provinces = BTreeSet::new();
+        let mut seen_divisions = BTreeSet::new();
+        let mut seen_csupply_input_provinces = BTreeSet::new();
+        let mut seen_badge_flags = BTreeSet::new();
         let mut cursor = SUPPLY_LOGISTICS_HEADER_LEN;
         for row_index in 0..row_count {
             let row_kind = read_u32(payload, cursor);
@@ -11562,9 +11661,33 @@ impl WorldFold {
             }
             match row_kind {
                 SUPPLY_ROW_KIND_PROVINCE_LOGISTICS => {
-                    if entity_id == 0 || join_id == 0 {
+                    let deleted_id = supply_logistics_deleted_id(entity_id);
+                    let province_id = deleted_id.unwrap_or(entity_id);
+                    if province_id == 0 || province_id > SUPPLY_MAX_PROVINCE_ID {
                         return Err(format!(
-                            "supply province row {row_index} has invalid province/state join"
+                            "supply province row {row_index} has invalid province id {province_id}"
+                        ));
+                    }
+                    if !seen_provinces.insert(province_id) {
+                        return Err(format!(
+                            "supply province row {row_index} duplicates province id {province_id}"
+                        ));
+                    }
+                    if deleted_id.is_some() {
+                        validate_supply_logistics_tombstone(
+                            "province",
+                            row_index,
+                            join_id,
+                            owner_tag_db_id,
+                            flags,
+                            [value_a_raw, value_b_raw, value_c_raw, value_d_raw, aux_raw],
+                        )?;
+                        state.provinces.remove(&province_id);
+                        continue;
+                    }
+                    if join_id == 0 || join_id > SUPPLY_MAX_STATE_ID {
+                        return Err(format!(
+                            "supply province row {row_index} has invalid state id {join_id}"
                         ));
                     }
                     if owner_tag_db_id != 0 {
@@ -11577,37 +11700,48 @@ impl WorldFold {
                             "supply province row {row_index} missing live building vector flag"
                         ));
                     }
-                    let province = ensure_json_object_mut(&mut by_province, &entity_id.to_string());
-                    ensure_supply_province_defaults(province);
-                    let mut buildings = Map::new();
-                    for (flag, key, value) in [
-                        (SUPPLY_ROW_FLAG_RAIL, "rail_way", value_a_raw),
-                        (SUPPLY_ROW_FLAG_SUPPLY_NODE, "supply_node", value_b_raw),
-                        (
-                            SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB,
-                            "naval_supply_hub",
-                            value_c_raw,
-                        ),
-                        (
-                            SUPPLY_ROW_FLAG_INFRASTRUCTURE,
-                            "infrastructure",
-                            value_d_raw,
-                        ),
-                    ] {
-                        if flags & flag != 0 {
-                            buildings.insert(key.into(), json!(value));
-                        }
-                    }
-                    province.insert("logistics_buildings".into(), Value::Object(buildings));
-                    province.insert("state_id".into(), json!(join_id));
-                    if aux_raw != 0 {
-                        province.insert("logistics_building_count".into(), json!(aux_raw));
-                    }
+                    state.provinces.insert(
+                        province_id,
+                        SupplyProvinceLogisticsState {
+                            province_id,
+                            state_id: join_id,
+                            flags,
+                            rail: value_a_raw,
+                            supply_node: value_b_raw,
+                            naval_supply_hub: value_c_raw,
+                            infrastructure: value_d_raw,
+                            building_count: aux_raw,
+                        },
+                    );
                 }
                 SUPPLY_ROW_KIND_DIVISION_SUPPLY => {
-                    if entity_id == 0 || join_id == 0 {
+                    let deleted_id = supply_logistics_deleted_id(entity_id);
+                    let division_id = deleted_id.unwrap_or(entity_id);
+                    if division_id == 0 || division_id > SUPPLY_MAX_DIVISION_ID {
                         return Err(format!(
-                            "supply division row {row_index} has invalid raw division/province id"
+                            "supply division row {row_index} has invalid raw division id {division_id}"
+                        ));
+                    }
+                    if !seen_divisions.insert(division_id) {
+                        return Err(format!(
+                            "supply division row {row_index} duplicates raw division id {division_id}"
+                        ));
+                    }
+                    if deleted_id.is_some() {
+                        validate_supply_logistics_tombstone(
+                            "division",
+                            row_index,
+                            join_id,
+                            owner_tag_db_id,
+                            flags,
+                            [value_a_raw, value_b_raw, value_c_raw, value_d_raw, aux_raw],
+                        )?;
+                        state.divisions.remove(&division_id);
+                        continue;
+                    }
+                    if join_id == 0 || join_id > SUPPLY_MAX_PROVINCE_ID {
+                        return Err(format!(
+                            "supply division row {row_index} has invalid province id {join_id}"
                         ));
                     }
                     if flags & SUPPLY_ROW_FLAG_PROXY_VALUE == 0 {
@@ -11615,65 +11749,61 @@ impl WorldFold {
                             "supply division row {row_index} missing proxy flag"
                         ));
                     }
-                    let province = ensure_json_object_mut(&mut by_province, &join_id.to_string());
-                    ensure_supply_province_defaults(province);
-                    let mut division = Map::new();
-                    division.insert("raw_division_id".into(), json!(entity_id));
-                    division.insert(
-                        "owner".into(),
-                        if flags & SUPPLY_ROW_FLAG_DIVISION_OWNER != 0 {
-                            json!(owner_tag_db_id.to_string())
-                        } else {
-                            Value::Null
+                    let owner_tag_db_id = if flags & SUPPLY_ROW_FLAG_DIVISION_OWNER != 0 {
+                        if owner_tag_db_id == 0 || owner_tag_db_id > SUPPLY_MAX_TAG_DB_ID {
+                            return Err(format!(
+                                    "supply division row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+                                ));
+                        }
+                        Some(owner_tag_db_id)
+                    } else {
+                        if owner_tag_db_id != 0 {
+                            return Err(format!(
+                                "supply division row {row_index} has owner without owner flag"
+                            ));
+                        }
+                        None
+                    };
+                    state.divisions.insert(
+                        division_id,
+                        SupplyDivisionState {
+                            raw_division_id: division_id,
+                            province_id: join_id,
+                            owner_tag_db_id,
+                            flags,
+                            current_supply_raw: value_a_raw,
+                            max_supply_raw: value_b_raw,
+                            supply_gain_raw: value_c_raw,
+                            supply_deficit_raw: value_d_raw,
+                            fuel_raw: aux_raw,
                         },
                     );
-                    division.insert(
-                        "current_supply".into(),
-                        scaled_value_or_null(
-                            flags,
-                            SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY,
-                            value_a_raw,
-                        ),
-                    );
-                    division.insert(
-                        "max_supply".into(),
-                        scaled_value_or_null(
-                            flags,
-                            SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY,
-                            value_b_raw,
-                        ),
-                    );
-                    division.insert(
-                        "supply_gain".into(),
-                        scaled_value_or_null(
-                            flags,
-                            SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN,
-                            value_c_raw,
-                        ),
-                    );
-                    division.insert(
-                        "supply_deficit".into(),
-                        scaled_value_or_null(
-                            flags,
-                            SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT,
-                            value_d_raw,
-                        ),
-                    );
-                    division.insert(
-                        "fuel".into(),
-                        scaled_value_or_null(flags, SUPPLY_ROW_FLAG_DIVISION_FUEL, aux_raw),
-                    );
-                    division.insert(
-                        "r2_logistics_attrition_live".into(),
-                        json!({
-                            "raw_division_id_source": "compact_row_entity_id",
-                            "proxy_value": true,
-                            "flags": flags,
-                        }),
-                    );
-                    ensure_json_array_mut(province, "divisions").push(Value::Object(division));
                 }
                 SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT => {
+                    let deleted_id = supply_logistics_deleted_id(entity_id);
+                    let province_id = deleted_id.unwrap_or(entity_id);
+                    if province_id == 0 || province_id > SUPPLY_MAX_PROVINCE_ID {
+                        return Err(format!(
+                            "supply csupply row {row_index} has invalid province id {province_id}"
+                        ));
+                    }
+                    if !seen_csupply_input_provinces.insert(province_id) {
+                        return Err(format!(
+                            "supply csupply row {row_index} duplicates province id {province_id}"
+                        ));
+                    }
+                    if deleted_id.is_some() {
+                        validate_supply_logistics_tombstone(
+                            "csupply",
+                            row_index,
+                            join_id,
+                            owner_tag_db_id,
+                            flags,
+                            [value_a_raw, value_b_raw, value_c_raw, value_d_raw, aux_raw],
+                        )?;
+                        state.csupply_inputs.remove(&province_id);
+                        continue;
+                    }
                     let expected_flags =
                         SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY | SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY;
                     if entity_id == 0 || join_id != 0 || owner_tag_db_id != 0 {
@@ -11686,12 +11816,12 @@ impl WorldFold {
                             "supply csupply row {row_index} has invalid flags {flags:#x}"
                         ));
                     }
-                    let province = ensure_json_object_mut(&mut by_province, &entity_id.to_string());
-                    ensure_supply_province_defaults(province);
-                    province.insert(
-                        "csupply_input".into(),
-                        json!(value_a_raw as f64 / FIXED_SCALE),
-                    );
+                    if value_b_raw != 0 || value_c_raw != 0 || value_d_raw != 0 || aux_raw != 0 {
+                        return Err(format!(
+                            "supply csupply row {row_index} has nonzero reserved value fields"
+                        ));
+                    }
+                    state.csupply_inputs.insert(province_id, value_a_raw);
                 }
                 SUPPLY_ROW_KIND_COMPUTED_BADGE => {
                     if entity_id != 0 || join_id != 0 || owner_tag_db_id != 0 {
@@ -11710,19 +11840,17 @@ impl WorldFold {
                             "supply badge row {row_index} must carry exactly one badge flag"
                         ));
                     }
-                    let badge = if flags & SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL != 0 {
-                        "exact_supply_wall"
-                    } else if flags & SUPPLY_ROW_FLAG_ATTRITION_WALL != 0 {
-                        "attrition_wall"
-                    } else if flags & SUPPLY_ROW_FLAG_MOTORIZATION_WALL != 0 {
-                        "motorization_wall"
-                    } else if flags & SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL != 0 {
-                        "convoy_pressure_wall"
-                    } else {
-                        "csupply_candidate_rejected"
-                    };
-                    badge_flags_seen |= badge_flags;
-                    badges.push(json!({ "badge": badge, "code": value_a_raw }));
+                    if !seen_badge_flags.insert(badge_flags) {
+                        return Err(format!(
+                            "supply badge row {row_index} duplicates badge flag {badge_flags:#x}"
+                        ));
+                    }
+                    if value_b_raw != 0 || value_c_raw != 0 || value_d_raw != 0 || aux_raw != 0 {
+                        return Err(format!(
+                            "supply badge row {row_index} has nonzero reserved value fields"
+                        ));
+                    }
+                    state.badges.insert(badge_flags, value_a_raw);
                 }
                 other => {
                     return Err(format!(
@@ -11736,6 +11864,11 @@ impl WorldFold {
             | SUPPLY_ROW_FLAG_MOTORIZATION_WALL
             | SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
             | SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED;
+        let badge_flags_seen = state
+            .badges
+            .keys()
+            .copied()
+            .fold(0u32, |seen, flags| seen | flags);
         if (badge_flags_seen & required_badge_flags) != required_badge_flags {
             self.supply_unknown_this_hour = true;
             self.record_domain_problem(44, "missing_required_badge_rows");
@@ -11745,19 +11878,12 @@ impl WorldFold {
             return Ok(());
         }
 
-        let mut supply = Map::new();
-        supply.insert("by_province".into(), Value::Object(by_province));
-        supply.insert("source".into(), json!("M"));
-        supply.insert("confidence".into(), json!("division_province_proxy"));
-        supply.insert(
-            "r2_logistics_attrition".into(),
-            json!({
-                "badges": badges,
-                "observed_province_roots": observed_province_roots,
-                "observed_division_roots": observed_division_roots,
-            }),
-        );
-        self.supply = Some(supply);
+        self.supply = Some(render_supply_logistics_state(&state));
+        self.supply_logistics = Some(state);
+        if !delta {
+            self.delta_baselines_seen.insert(44);
+        }
+        self.mark_fold_domain_success(44);
         Ok(())
     }
 
@@ -11805,6 +11931,41 @@ struct CombatFoldRow {
     state: CombatState,
     attacker_count: usize,
     defender_count: usize,
+}
+
+#[derive(Clone, Default)]
+struct SupplyLogisticsState {
+    provinces: BTreeMap<u32, SupplyProvinceLogisticsState>,
+    divisions: BTreeMap<u32, SupplyDivisionState>,
+    csupply_inputs: BTreeMap<u32, i32>,
+    badges: BTreeMap<u32, i32>,
+    observed_province_roots: u32,
+    observed_division_roots: u32,
+}
+
+#[derive(Clone)]
+struct SupplyProvinceLogisticsState {
+    province_id: u32,
+    state_id: u32,
+    flags: u32,
+    rail: i32,
+    supply_node: i32,
+    naval_supply_hub: i32,
+    infrastructure: i32,
+    building_count: i32,
+}
+
+#[derive(Clone)]
+struct SupplyDivisionState {
+    raw_division_id: u32,
+    province_id: u32,
+    owner_tag_db_id: Option<u32>,
+    flags: u32,
+    current_supply_raw: i32,
+    max_supply_raw: i32,
+    supply_gain_raw: i32,
+    supply_deficit_raw: i32,
+    fuel_raw: i32,
 }
 
 // Keyed by (army, generation) only: generation is globally unique per order
@@ -13320,6 +13481,23 @@ fn domain48_resource_key(resource_id: u32) -> String {
     format!("tid_0x{resource_id:08x}")
 }
 
+fn domain48_construction_key(row: &domain48::ConstructionQueueRow) -> Domain48ConstructionKey {
+    (row.tag_db_id, row.line_id & !domain48::ROW_ID_DELETED)
+}
+
+fn domain48_building_key(row: &domain48::BuildingRow) -> Domain48BuildingKey {
+    (
+        row.scope,
+        row.location_id,
+        row.state_id,
+        row.type_id & !domain48::ROW_ID_DELETED,
+    )
+}
+
+fn domain48_resource_identity_key(row: &domain48::StateResourceRow) -> Domain48ResourceKey {
+    (row.state_id, row.resource_id & !domain48::ROW_ID_DELETED)
+}
+
 fn option_flag(flags: u32, flag: u32, value: u32) -> Option<u32> {
     (flags & flag != 0).then_some(value)
 }
@@ -13379,6 +13557,160 @@ fn scaled_value_or_null(flags: u32, flag: u32, raw: i32) -> Value {
     } else {
         Value::Null
     }
+}
+
+fn supply_logistics_deleted_id(entity_id: u32) -> Option<u32> {
+    (entity_id & SUPPLY_ROW_ID_DELETED != 0).then_some(entity_id & !SUPPLY_ROW_ID_DELETED)
+}
+
+fn validate_supply_logistics_tombstone(
+    family: &str,
+    row_index: usize,
+    join_id: u32,
+    owner_tag_db_id: u32,
+    flags: u32,
+    values: [i32; 5],
+) -> Result<(), String> {
+    if join_id != 0 || owner_tag_db_id != 0 {
+        return Err(format!(
+            "supply {family} tombstone row {row_index} has live identity fields"
+        ));
+    }
+    if flags != 0 || values.iter().any(|value| *value != 0) {
+        return Err(format!(
+            "supply {family} tombstone row {row_index} has live fields"
+        ));
+    }
+    Ok(())
+}
+
+fn render_supply_logistics_state(state: &SupplyLogisticsState) -> Map<String, Value> {
+    let mut by_province = Map::new();
+    for row in state.provinces.values() {
+        let province = ensure_json_object_mut(&mut by_province, &row.province_id.to_string());
+        ensure_supply_province_defaults(province);
+        let mut buildings = Map::new();
+        for (flag, key, value) in [
+            (SUPPLY_ROW_FLAG_RAIL, "rail_way", row.rail),
+            (SUPPLY_ROW_FLAG_SUPPLY_NODE, "supply_node", row.supply_node),
+            (
+                SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB,
+                "naval_supply_hub",
+                row.naval_supply_hub,
+            ),
+            (
+                SUPPLY_ROW_FLAG_INFRASTRUCTURE,
+                "infrastructure",
+                row.infrastructure,
+            ),
+        ] {
+            if row.flags & flag != 0 {
+                buildings.insert(key.into(), json!(value));
+            }
+        }
+        province.insert("logistics_buildings".into(), Value::Object(buildings));
+        province.insert("state_id".into(), json!(row.state_id));
+        if row.building_count != 0 {
+            province.insert("logistics_building_count".into(), json!(row.building_count));
+        }
+    }
+
+    for row in state.divisions.values() {
+        let province = ensure_json_object_mut(&mut by_province, &row.province_id.to_string());
+        ensure_supply_province_defaults(province);
+        let mut division = Map::new();
+        division.insert("raw_division_id".into(), json!(row.raw_division_id));
+        division.insert(
+            "owner".into(),
+            row.owner_tag_db_id
+                .map(|owner| json!(owner.to_string()))
+                .unwrap_or(Value::Null),
+        );
+        division.insert(
+            "current_supply".into(),
+            scaled_value_or_null(
+                row.flags,
+                SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY,
+                row.current_supply_raw,
+            ),
+        );
+        division.insert(
+            "max_supply".into(),
+            scaled_value_or_null(
+                row.flags,
+                SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY,
+                row.max_supply_raw,
+            ),
+        );
+        division.insert(
+            "supply_gain".into(),
+            scaled_value_or_null(
+                row.flags,
+                SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN,
+                row.supply_gain_raw,
+            ),
+        );
+        division.insert(
+            "supply_deficit".into(),
+            scaled_value_or_null(
+                row.flags,
+                SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT,
+                row.supply_deficit_raw,
+            ),
+        );
+        division.insert(
+            "fuel".into(),
+            scaled_value_or_null(row.flags, SUPPLY_ROW_FLAG_DIVISION_FUEL, row.fuel_raw),
+        );
+        division.insert(
+            "r2_logistics_attrition_live".into(),
+            json!({
+                "raw_division_id_source": "compact_row_entity_id",
+                "proxy_value": true,
+                "flags": row.flags,
+            }),
+        );
+        ensure_json_array_mut(province, "divisions").push(Value::Object(division));
+    }
+
+    for (province_id, raw) in &state.csupply_inputs {
+        let province = ensure_json_object_mut(&mut by_province, &province_id.to_string());
+        ensure_supply_province_defaults(province);
+        province.insert("csupply_input".into(), json!(*raw as f64 / FIXED_SCALE));
+    }
+
+    let badges = state
+        .badges
+        .iter()
+        .map(|(flags, code)| {
+            let badge = if flags & SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL != 0 {
+                "exact_supply_wall"
+            } else if flags & SUPPLY_ROW_FLAG_ATTRITION_WALL != 0 {
+                "attrition_wall"
+            } else if flags & SUPPLY_ROW_FLAG_MOTORIZATION_WALL != 0 {
+                "motorization_wall"
+            } else if flags & SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL != 0 {
+                "convoy_pressure_wall"
+            } else {
+                "csupply_candidate_rejected"
+            };
+            json!({ "badge": badge, "code": code })
+        })
+        .collect::<Vec<_>>();
+
+    let mut supply = Map::new();
+    supply.insert("by_province".into(), Value::Object(by_province));
+    supply.insert("source".into(), json!("M"));
+    supply.insert("confidence".into(), json!("division_province_proxy"));
+    supply.insert(
+        "r2_logistics_attrition".into(),
+        json!({
+            "badges": badges,
+            "observed_province_roots": state.observed_province_roots,
+            "observed_division_roots": state.observed_division_roots,
+        }),
+    );
+    supply
 }
 
 fn domain47_unit_leader_kind(kind: u8) -> &'static str {
