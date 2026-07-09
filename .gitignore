@@ -108,3 +108,8 @@ ghidra_appdata/
 ghidra_localappdata/
 ghidra_project_copy/
 ghidra_scripts/
+
+# Test fixtures are the ONE sanctioned committed .battleplan population
+# (deterministic, seed-exact, ~732K total; real recordings stay ignored)
+!replay_interface/fixtures/**/*.battleplan
+*.hoi4replay
