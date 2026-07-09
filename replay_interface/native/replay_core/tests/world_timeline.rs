@@ -1,11 +1,13 @@
+#![recursion_limit = "512"]
+
 //! Integration tests over synthetic fixtures: a 3-hour snapshot store
 //! (directory and packed `.battleplan`), a compact-stream-only production
 //! container (must fail closed), scrub semantics, and the Absent /
 //! Unobtained / Measured trichotomy.
 
 use replay_core::{
-    open_recording, open_recording_game, Leaf, MapLayerSource, SourceError, WorldError, WorldFrame,
-    WorldTimeline,
+    open_recording, open_recording_game, Leaf, MapLayerSource, SourceError, ViewStatus, WorldError,
+    WorldFrame, WorldTimeline,
 };
 use serde_json::{json, Value};
 use snapshot::{pack, PackEntry, PackIdentity};
@@ -57,27 +59,138 @@ fn snapshot_100() -> Value {
             "GER": {
                 // measured ZERO stability: must stay Measured(0.0), never Unobtained
                 "politics": { "stability": 0.0, "war_support": 0.55,
-                              "political_power": 12.5, "ruling_party": "fascism" },
-                "economy": { "fuel": { "current": 1000.0, "max": 5000.0 } },
-                "military": { "division_count": 2 }
+                              "political_power": 12.5, "command_power": 44.0,
+                              "ruling_party": "fascism", "is_human": true,
+                              "faction": { "name": "Axis", "is_leader": true },
+                              "capital_state": 64 },
+                "diplomacy": {
+                    "wars": [ { "against": ["SOV"], "war_score": 0.1 } ],
+                    "non_aggression": ["ITA"],
+                    "guarantees": [],
+                    "embargoes": ["SOV"],
+                    "military_access": [ { "tag": "ITA" } ]
+                },
+                "economy": {
+                    "factories": { "civ": 32, "mil": 41, "dockyard": 5 },
+                    "fuel": { "current": 1000.0, "max": 5000.0 },
+                    "logistics": { "supply_value": 12.0, "supply_ratio": 0.8 }
+                },
+                "military": {
+                    "division_count": 2,
+                    "manpower": { "available": 123456 },
+                    "xp": { "army": 10.5, "navy": 3.25, "air": 7.0 },
+                    "convoys": [ { "archetype": "convoy", "amount": 91.0 } ]
+                },
+                "extra": { "cosmetic_tag": "GER_reich", "nukes_total": 2, "nukes_ready_total": 1 }
             },
             "SOV": {
                 "politics": { "stability": null, "war_support": null,
-                              "political_power": null, "ruling_party": null },
-                "economy": { "fuel": { "current": null, "max": null } },
-                "military": { "division_count": 0 }
+                              "political_power": null, "command_power": null,
+                              "ruling_party": null, "is_human": false,
+                              "faction": { "name": null, "is_leader": null },
+                              "capital_state": null },
+                "diplomacy": { "wars": [ { "against": ["GER"] } ] },
+                "economy": {
+                    "factories": { "civ": null, "mil": null, "dockyard": null },
+                    "fuel": { "current": null, "max": null }
+                },
+                "military": {
+                    "division_count": 0,
+                    "manpower": { "available": null },
+                    "xp": { "army": null, "navy": null, "air": null },
+                    "convoys": []
+                },
+                "extra": { "cosmetic_tag": null, "nukes_total": null, "nukes_ready_total": null }
             }
         },
-        "states": { "10": { "owner": "GER" }, "20": { "owner": "GER" }, "30": { "owner": null } },
+        "states": {
+            "10": {
+                "owner": "GER",
+                "buildings": {
+                    "arms_factory": { "level": 3.0, "healthy_level": 2.0, "damaged": true,
+                                      "damage_fraction": 0.33, "repair_progress": 0.2,
+                                      "under_construction": false },
+                    "infrastructure": 5
+                },
+                "province_buildings": {
+                    "1000": {
+                        "naval_base": { "level": 2.0, "healthy_level": 2.0, "damaged": false }
+                    }
+                }
+            },
+            "20": { "owner": "GER" },
+            "30": { "owner": null }
+        },
         "provinces": { "1000": { "controller": "GER" }, "1001": { "controller": "GER" },
                        "2000": { "controller": "SOV" } },
         "divisions": [
             { "div_id": 5, "div_type": 1, "owner": "GER", "location_province": 1000,
-              "strength": 1.0, "organisation": 30.0, "in_combat": false },
+              "state_id": 10, "template_id": 100, "template_type": 7,
+              "template_name": "1. Infanterie", "template_role": "infantry",
+              "strength": 1.0, "organisation": 30.0, "moving": true,
+              "move_target_province": 1001, "move_progress": 0.4, "in_combat": false,
+              "equipment": [ { "archetype": "infantry_equipment", "equip_id": 11,
+                               "equip_type": 22, "amount": 900.0 } ] },
             { "div_id": 6, "owner": "GER", "location_province": 1001,
               "strength": 0.8, "organisation": null }
         ],
         "combats": [],
+        "session": {
+            "player_countries": [ { "tag": "GER", "player": "host" }, { "tag": "ITA", "player": null } ],
+            "speed_events": [ { "hour_index": 100, "speed": 3, "paused": false } ],
+            "active_dlcs": ["Arms Against Tyranny"],
+            "localisation_language": "english"
+        },
+        "naval_supremacy": {
+            "42": { "controller": "GER", "state": "friendly", "supremacy": 0.72 }
+        },
+        "weather": {
+            "by_region": {
+                "42": {
+                    "weather_kind": "snow", "intensity": 0.8,
+                    "snow_level_0_255": 180, "mud_level_0_255": 12,
+                    "snow_mud_fade": 0.5, "snow_mud_fade_from": 0.25,
+                    "snow_mud_fade_to": 0.75
+                }
+            }
+        },
+        "diplomacy_pairs": {
+            "GER|SOV": { "at_war": true, "same_faction": false, "nap": false,
+                         "access": false, "guarantee": false, "embargo": true,
+                         "subject": false },
+            "GER|ITA": { "at_war": false, "same_faction": true, "nap": true,
+                         "access": true, "guarantee": false, "embargo": false,
+                         "subject": false }
+        },
+        "order_of_battle": {
+            "fleets": [
+                { "id": "fleet-1", "owner": "GER", "name": "Baltic Fleet",
+                  "task_forces": [
+                    { "id": "tf-1", "owner": "GER", "location_province": 321,
+                      "mission": "patrol", "dominant_hull_class": "destroyer",
+                      "ships": [
+                        { "id": "ship-1", "definition": "destroyer", "organisation": 0.9,
+                          "strength": 0.8, "experience": 0.2, "name": "Z1",
+                          "equipment": [[77, 88, 1.0]] }
+                      ] }
+                  ] }
+            ],
+            "air_wings": [
+                { "id": "wing-1", "owner": "GER", "name": "JG 1", "count": 120,
+                  "experience": 0.3, "manpower": 240, "mission": "air_superiority",
+                  "strategic_region": 42, "air_base": "1000:1", "state_id": 10,
+                  "plane_definition": "fighter_equipment_0", "effective_planes": 118,
+                  "equipment": [ { "equip_id": 501, "equip_type": 2, "archetype": "fighter",
+                                   "amount": 120.0 } ] }
+            ]
+        },
+        "visibility": {
+            "GER": {
+                "provinces": { "1000": true, "2000": "fogged", "2001": null },
+                "spotted_units": { "divisions": ["7"], "fleets": ["tf-9"], "wings": [] }
+            }
+        },
+        "world": { "world_tension": 0.42 },
         "map": {
             "owner_by_state": { "10": "GER", "20": "GER", "30": null },
             "control_by_province": { "1000": "GER", "1001": "GER", "2000": "SOV" }
@@ -105,9 +218,15 @@ fn snapshot_101() -> Value {
             "GER": {
                 // same leaf UNOBTAINED here (explicit null) vs measured 0.0 at hour 100
                 "politics": { "stability": null, "war_support": 0.55,
-                              "political_power": 13.0, "ruling_party": "fascism" },
-                "economy": { "fuel": { "current": 980.0, "max": 5000.0 } },
-                "military": { "division_count": 2 }
+                              "political_power": 13.0, "command_power": null,
+                              "ruling_party": "fascism", "faction": { "name": null, "is_leader": null },
+                              "capital_state": null },
+                "economy": { "factories": { "civ": null, "mil": null, "dockyard": null },
+                             "fuel": { "current": 980.0, "max": 5000.0 } },
+                "military": { "division_count": 2, "manpower": { "available": null },
+                              "xp": { "army": null, "navy": null, "air": null },
+                              "convoys": null },
+                "extra": { "cosmetic_tag": null, "nukes_total": null, "nukes_ready_total": null }
             },
             "SOV": {
                 "politics": { "stability": null, "war_support": null,
@@ -116,7 +235,8 @@ fn snapshot_101() -> Value {
                 "military": { "division_count": 1 }
             }
         },
-        "states": { "10": { "owner": "GER" }, "20": { "owner": "GER" }, "30": { "owner": null } },
+        "states": { "10": { "owner": "GER", "buildings": null },
+                    "20": { "owner": "GER" }, "30": { "owner": null } },
         "provinces": { "1000": { "controller": "GER" }, "1001": { "controller": "GER" },
                        "2000": { "controller": "SOV" } },
         "divisions": [
@@ -127,12 +247,22 @@ fn snapshot_101() -> Value {
             // div_type null (unobtained, not absent): bare-id identity with a
             // coverage warning, never silent
             { "div_id": 7, "div_type": null, "owner": "SOV", "location_province": 2000,
-              "strength": 1.0 }
+              "strength": 1.0, "equipment": null }
         ],
         "combats": [
             { "combat_id": 900, "kind": "land", "location_province": 1001,
               "attackers": [5], "defenders": [7] }
         ],
+        "session": null,
+        "naval_supremacy": null,
+        "weather": null,
+        "diplomacy_pairs": {
+            "GER|SOV": { "at_war": null, "same_faction": null, "nap": null,
+                         "access": null, "guarantee": null, "embargo": null,
+                         "subject": null }
+        },
+        "order_of_battle": null,
+        "visibility": null,
         // mirrors explicitly null -> the typed views must fall back to
         // walking states.*.owner / provinces.*.controller
         "map": { "owner_by_state": null, "control_by_province": null }
@@ -265,6 +395,55 @@ fn write_container(path: &Path) {
 
 fn open_timeline(path: &Path) -> WorldTimeline {
     WorldTimeline::open(open_recording(path).unwrap()).unwrap()
+}
+
+fn write_absence_unavailable_store(root: &Path) {
+    let game = "absence_unavailable";
+    let dir = root.join(game);
+    fs::create_dir_all(&dir).unwrap();
+    let absent = json!({
+        "schema_version": "1",
+        "game_id": game,
+        "date": "1936.1.1.0",
+        "hour_index": 10
+    });
+    let unavailable = json!({
+        "schema_version": "1",
+        "game_id": game,
+        "date": "1936.1.1.1",
+        "hour_index": 11,
+        "countries": null,
+        "states": null,
+        "provinces": null,
+        "divisions": null,
+        "combats": null,
+        "map": null,
+        "session": null,
+        "naval_supremacy": null,
+        "weather": null,
+        "diplomacy_pairs": null,
+        "order_of_battle": null,
+        "visibility": null
+    });
+    fs::write(
+        dir.join("000000000010.snapshot.json"),
+        serde_json::to_vec(&absent).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("000000000011.snapshot.json"),
+        serde_json::to_vec(&unavailable).unwrap(),
+    )
+    .unwrap();
+    let index = json!({
+        "game_id": game,
+        "schema_version": "1",
+        "snapshots": [
+            { "hour_index": 10, "date": "1936.1.1.0", "file": "000000000010.snapshot.json" },
+            { "hour_index": 11, "date": "1936.1.1.1", "file": "000000000011.snapshot.json" }
+        ]
+    });
+    fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +583,191 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(sov_100.fuel_current, Leaf::Unobtained);
     assert_eq!(sov_100.division_count, Leaf::Measured(0));
 
+    // New A3 typed views: unit positions/composition, metadata, weather,
+    // diplomacy, topbar, buildings, and country-POV visibility.
+    assert_eq!(f100.division_units_status(), ViewStatus::Present);
+    let d5_unit = f100
+        .division_units()
+        .iter()
+        .find(|d| d.div_uid == "5:1")
+        .unwrap();
+    assert_eq!(
+        d5_unit.template_role,
+        Leaf::Measured("infantry".to_string())
+    );
+    assert_eq!(d5_unit.moving, Leaf::Measured(true));
+    assert_eq!(d5_unit.move_target_province, Leaf::Measured(1001));
+    assert_eq!(
+        d5_unit.equipment.measured().unwrap()[0].amount,
+        Leaf::Measured(900.0)
+    );
+    assert_eq!(f101.division_units_status(), ViewStatus::Present);
+    let d7_unit = f101
+        .division_units()
+        .iter()
+        .find(|d| d.div_uid == "7")
+        .unwrap();
+    assert_eq!(d7_unit.equipment, Leaf::Unobtained);
+
+    assert_eq!(f100.fleets_status(), ViewStatus::Present);
+    assert_eq!(f100.fleets()[0].task_force_uid, "tf-1");
+    assert_eq!(f100.fleets()[0].ship_count, Leaf::Measured(1));
+    assert_eq!(
+        f100.fleets()[0].dominant_hull_class,
+        Leaf::Measured("destroyer".to_string())
+    );
+    assert_eq!(
+        f100.fleets()[0].ships.measured().unwrap()[0].definition,
+        Leaf::Measured("destroyer".to_string())
+    );
+    assert_eq!(f100.wings_status(), ViewStatus::Present);
+    assert_eq!(f100.wings()[0].wing_uid, "wing-1");
+    assert_eq!(
+        f100.wings()[0].mission_kind,
+        Leaf::Measured("air_superiority".to_string())
+    );
+    assert_eq!(f100.wings()[0].strategic_region_id, Leaf::Measured(42));
+    assert_eq!(f101.fleets_status(), ViewStatus::DomainUnavailable);
+    assert_eq!(f101.wings_status(), ViewStatus::DomainUnavailable);
+
+    let session = f100.session_metadata();
+    assert_eq!(session.status, ViewStatus::Present);
+    assert_eq!(
+        session.player_countries.measured().unwrap()[0].tag,
+        Leaf::Measured("GER".to_string())
+    );
+    assert_eq!(
+        session.speed_events.measured().unwrap()[0].speed,
+        Leaf::Measured(3)
+    );
+    assert_eq!(
+        session.active_dlcs,
+        Leaf::Measured(vec!["Arms Against Tyranny".to_string()])
+    );
+    assert_eq!(
+        session.localisation_language,
+        Leaf::Measured("english".to_string())
+    );
+    assert_eq!(
+        f101.session_metadata().status,
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(f101.session_metadata().player_countries, Leaf::Unobtained);
+
+    assert_eq!(f100.naval_supremacy_status(), ViewStatus::Present);
+    assert_eq!(
+        f100.naval_supremacy_by_region()[&42].controller,
+        Leaf::Measured("GER".to_string())
+    );
+    assert_eq!(
+        f100.naval_supremacy_by_region()[&42].supremacy,
+        Leaf::Measured(0.72)
+    );
+    assert_eq!(f101.naval_supremacy_status(), ViewStatus::DomainUnavailable);
+
+    assert_eq!(f100.weather_status(), ViewStatus::Present);
+    let weather = &f100.weather_by_region()[&42];
+    assert_eq!(weather.weather_kind, Leaf::Measured("snow".to_string()));
+    assert_eq!(weather.snow_level_0_255, Leaf::Measured(180));
+    assert_eq!(weather.mud_level_0_255, Leaf::Measured(12));
+    assert_eq!(weather.snow_mud_fade, Leaf::Measured(0.5));
+    assert_eq!(f101.weather_status(), ViewStatus::DomainUnavailable);
+
+    let ger_identity = f100.country_identity("GER").unwrap();
+    assert_eq!(
+        ger_identity.cosmetic_tag,
+        Leaf::Measured("GER_reich".to_string())
+    );
+    assert_eq!(
+        ger_identity.ruling_ideology,
+        Leaf::Measured("fascism".to_string())
+    );
+    assert_eq!(
+        f101.country_identity("GER").unwrap().cosmetic_tag,
+        Leaf::Unobtained
+    );
+
+    let dip = f100.diplomacy();
+    assert_eq!(dip.status, ViewStatus::Present);
+    assert_eq!(
+        dip.countries["GER"].faction_name,
+        Leaf::Measured("Axis".to_string())
+    );
+    assert_eq!(dip.countries["GER"].capital_state, Leaf::Measured(64));
+    let ger_sov = f100.diplomatic_pair_state("GER", "SOV").unwrap();
+    assert_eq!(ger_sov.at_war, Leaf::Measured(true));
+    assert_eq!(ger_sov.same_faction, Leaf::Measured(false));
+    assert_eq!(ger_sov.embargo, Leaf::Measured(true));
+    let ger_ita = f100.diplomatic_pair_state("GER", "ITA").unwrap();
+    assert_eq!(ger_ita.same_faction, Leaf::Measured(true));
+    assert_eq!(ger_ita.non_aggression_pact, Leaf::Measured(true));
+    assert_eq!(
+        f101.diplomatic_pair_state("GER", "SOV").unwrap().at_war,
+        Leaf::Unobtained
+    );
+
+    let topbar = f100.topbar_scalars("GER").unwrap();
+    assert_eq!(topbar.political_power, Leaf::Measured(12.5));
+    assert_eq!(topbar.command_power, Leaf::Measured(44.0));
+    assert_eq!(topbar.manpower_available, Leaf::Measured(123456));
+    assert_eq!(topbar.xp_army, Leaf::Measured(10.5));
+    assert_eq!(topbar.factories_civ, Leaf::Measured(32));
+    assert_eq!(topbar.factories_mil, Leaf::Measured(41));
+    assert_eq!(topbar.factories_dockyard, Leaf::Measured(5));
+    assert_eq!(topbar.convoys, Leaf::Measured(91.0));
+    assert_eq!(topbar.nukes_total, Leaf::Measured(2));
+    assert_eq!(topbar.nukes_ready, Leaf::Measured(1));
+    assert_eq!(topbar.world_tension, Leaf::Measured(0.42));
+    assert_eq!(topbar.supply_ratio, Leaf::Measured(0.8));
+    assert_eq!(
+        f101.topbar_scalars("GER").unwrap().convoys,
+        Leaf::Unobtained
+    );
+
+    assert_eq!(f100.buildings_status(), ViewStatus::Present);
+    let state_10_buildings = &f100.buildings_by_state()[&10];
+    assert_eq!(state_10_buildings.status, ViewStatus::Present);
+    assert_eq!(
+        state_10_buildings.state_buildings["arms_factory"].level,
+        Leaf::Measured(3.0)
+    );
+    assert_eq!(
+        state_10_buildings.state_buildings["arms_factory"].damaged,
+        Leaf::Measured(true)
+    );
+    assert_eq!(
+        state_10_buildings.province_buildings[&1000]["naval_base"].healthy_level,
+        Leaf::Measured(2.0)
+    );
+    assert_eq!(
+        f101.buildings_by_state()[&10].status,
+        ViewStatus::DomainUnavailable
+    );
+
+    assert_eq!(f100.visibility_status(), ViewStatus::Present);
+    let ger_visibility = f100.visibility_for("GER");
+    assert_eq!(ger_visibility.status, ViewStatus::Present);
+    assert_eq!(
+        ger_visibility.provinces[&1000],
+        Leaf::Measured(replay_core::ProvinceVisibility {
+            level: "visible".to_string()
+        })
+    );
+    assert_eq!(
+        ger_visibility.provinces[&2000],
+        Leaf::Measured(replay_core::ProvinceVisibility {
+            level: "fogged".to_string()
+        })
+    );
+    assert_eq!(ger_visibility.provinces[&2001], Leaf::Unobtained);
+    assert_eq!(
+        f100.spotted_units_for("GER").divisions,
+        Leaf::Measured(vec!["7".to_string()])
+    );
+    assert_eq!(f100.spotted_units_for("GER").wings, Leaf::Measured(vec![]));
+    assert_eq!(f100.visibility_for("SOV").status, ViewStatus::DomainAbsent);
+    assert_eq!(f101.visibility_status(), ViewStatus::DomainUnavailable);
+
     // provenance channels + notes
     let prov = f100.provenance();
     let collector = &prov.channels["collector"];
@@ -420,6 +784,96 @@ fn dir_store_typed_views_and_trichotomy() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn typed_view_status_distinguishes_absent_from_unavailable_domains() {
+    let root = unique_temp_dir("view_status");
+    write_absence_unavailable_store(&root);
+    let timeline = open_timeline(&root);
+    let absent = timeline.frame(10).unwrap();
+    let unavailable = timeline.frame(11).unwrap();
+
+    assert_eq!(absent.owner_by_state_status(), ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.owner_by_state_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(absent.control_by_state_status(), ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.control_by_state_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(
+        absent.control_by_province_status(),
+        ViewStatus::DomainAbsent
+    );
+    assert_eq!(
+        unavailable.control_by_province_status(),
+        ViewStatus::DomainUnavailable
+    );
+
+    assert_eq!(absent.division_units_status(), ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.division_units_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(absent.fleets_status(), ViewStatus::DomainAbsent);
+    assert_eq!(unavailable.fleets_status(), ViewStatus::DomainUnavailable);
+    assert_eq!(absent.wings_status(), ViewStatus::DomainAbsent);
+    assert_eq!(unavailable.wings_status(), ViewStatus::DomainUnavailable);
+
+    assert_eq!(absent.countries_status(), ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.countries_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(absent.country_identities_status(), ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.country_identities_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(absent.topbar_status(), ViewStatus::DomainAbsent);
+    assert_eq!(unavailable.topbar_status(), ViewStatus::DomainUnavailable);
+
+    assert_eq!(absent.session_metadata().status, ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.session_metadata().status,
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(absent.naval_supremacy_status(), ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.naval_supremacy_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(absent.weather_status(), ViewStatus::DomainAbsent);
+    assert_eq!(unavailable.weather_status(), ViewStatus::DomainUnavailable);
+
+    assert_eq!(absent.diplomacy().status, ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.diplomacy().status,
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(absent.buildings_status(), ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.buildings_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(absent.visibility_status(), ViewStatus::DomainAbsent);
+    assert_eq!(
+        unavailable.visibility_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(
+        absent.visibility_for("GER").status,
+        ViewStatus::DomainAbsent
+    );
+    assert_eq!(
+        unavailable.visibility_for("GER").status,
+        ViewStatus::DomainUnavailable
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 // ---------------------------------------------------------------------------
 // dir store <-> container equivalence
 // ---------------------------------------------------------------------------
@@ -431,14 +885,43 @@ fn assert_frames_equal(a: &WorldFrame, b: &WorldFrame) {
     assert_eq!(a.raw(), b.raw());
     assert_eq!(a.owner_by_state(), b.owner_by_state());
     assert_eq!(a.owner_by_state_source(), b.owner_by_state_source());
+    assert_eq!(a.owner_by_state_status(), b.owner_by_state_status());
+    assert_eq!(a.control_by_state(), b.control_by_state());
+    assert_eq!(a.control_by_state_source(), b.control_by_state_source());
+    assert_eq!(a.control_by_state_status(), b.control_by_state_status());
     assert_eq!(a.control_by_province(), b.control_by_province());
     assert_eq!(
         a.control_by_province_source(),
         b.control_by_province_source()
     );
+    assert_eq!(
+        a.control_by_province_status(),
+        b.control_by_province_status()
+    );
     assert_eq!(a.divisions(), b.divisions());
+    assert_eq!(a.division_units(), b.division_units());
+    assert_eq!(a.division_units_status(), b.division_units_status());
+    assert_eq!(a.fleets(), b.fleets());
+    assert_eq!(a.fleets_status(), b.fleets_status());
+    assert_eq!(a.wings(), b.wings());
+    assert_eq!(a.wings_status(), b.wings_status());
     assert_eq!(a.combats(), b.combats());
     assert_eq!(a.countries(), b.countries());
+    assert_eq!(a.countries_status(), b.countries_status());
+    assert_eq!(a.session_metadata(), b.session_metadata());
+    assert_eq!(a.naval_supremacy_by_region(), b.naval_supremacy_by_region());
+    assert_eq!(a.naval_supremacy_status(), b.naval_supremacy_status());
+    assert_eq!(a.weather_by_region(), b.weather_by_region());
+    assert_eq!(a.weather_status(), b.weather_status());
+    assert_eq!(a.country_identities(), b.country_identities());
+    assert_eq!(a.country_identities_status(), b.country_identities_status());
+    assert_eq!(a.diplomacy(), b.diplomacy());
+    assert_eq!(a.topbar_scalars_by_country(), b.topbar_scalars_by_country());
+    assert_eq!(a.topbar_status(), b.topbar_status());
+    assert_eq!(a.buildings_by_state(), b.buildings_by_state());
+    assert_eq!(a.buildings_status(), b.buildings_status());
+    assert_eq!(a.visibility_status(), b.visibility_status());
+    assert_eq!(a.visibility_for("GER"), b.visibility_for("GER"));
     assert_eq!(a.provenance(), b.provenance());
     assert_eq!(a.coverage_warnings(), b.coverage_warnings());
 }
@@ -551,6 +1034,15 @@ fn scrub_state_at_semantics() {
     assert_eq!(timeline.state_at(102).unwrap().hour_index(), 101);
     assert_eq!(timeline.state_at(103).unwrap().hour_index(), 103);
     assert_eq!(timeline.state_at(5000).unwrap().hour_index(), 103);
+    let lookup = timeline.lookup_hour(102).unwrap();
+    assert_eq!(lookup.requested_hour, 102);
+    assert_eq!(lookup.frame_hour, 101);
+    assert!(!lookup.exact_match);
+    assert_eq!(lookup.next_hour, Some(103));
+    assert_frames_equal(
+        &timeline.seek(102).unwrap(),
+        &timeline.play_to(102).unwrap(),
+    );
 
     // before the first frame is an error, not a clamp
     match timeline.state_at(99) {

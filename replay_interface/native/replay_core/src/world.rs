@@ -95,6 +95,19 @@ pub enum MapLayerSource {
     Missing,
 }
 
+/// Domain-level availability for a typed view.
+///
+/// [`Leaf`] carries the trichotomy for individual values. This status carries
+/// the same honesty at the view root so consumers can distinguish "this
+/// recording never carried the domain" from "the domain exists, but the value
+/// for this hour was null or malformed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewStatus {
+    DomainAbsent,
+    DomainUnavailable,
+    Present,
+}
+
 /// One division row (REPLAY_SCHEMA.md §6).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DivisionRow {
@@ -117,6 +130,344 @@ pub struct CombatRow {
     /// Participant division ids (bare `div_id`s per §7).
     pub attackers: Leaf<Vec<i64>>,
     pub defenders: Leaf<Vec<i64>>,
+}
+
+/// Equipment composition row shared by divisions, task forces, and air wings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EquipmentAmount {
+    pub archetype: Leaf<String>,
+    pub equip_id: Leaf<i64>,
+    pub equip_type: Leaf<i64>,
+    pub amount: Leaf<f64>,
+}
+
+/// Full land-unit view for item 3: position, movement, template role, and
+/// equipment composition at this hour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DivisionUnitRow {
+    pub div_uid: String,
+    pub owner: Leaf<String>,
+    pub location_province: Leaf<u32>,
+    pub state_id: Leaf<u32>,
+    pub template_id: Leaf<i64>,
+    pub template_type: Leaf<i64>,
+    pub template_name: Leaf<String>,
+    pub template_role: Leaf<String>,
+    pub strength: Leaf<f64>,
+    pub organisation: Leaf<f64>,
+    pub moving: Leaf<bool>,
+    pub move_target_province: Leaf<u32>,
+    pub move_progress: Leaf<f64>,
+    pub in_combat: Leaf<bool>,
+    pub equipment: Leaf<Vec<EquipmentAmount>>,
+}
+
+/// Task-force / fleet presence view for item 8.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetUnitRow {
+    pub task_force_uid: String,
+    pub fleet_uid: Leaf<String>,
+    pub owner: Leaf<String>,
+    pub location_province: Leaf<u32>,
+    pub mission: Leaf<String>,
+    pub ship_count: Leaf<i64>,
+    pub dominant_hull_class: Leaf<String>,
+    pub ships: Leaf<Vec<ShipCompositionRow>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShipCompositionRow {
+    pub ship_uid: Leaf<String>,
+    pub definition: Leaf<String>,
+    pub organisation: Leaf<f64>,
+    pub strength: Leaf<f64>,
+    pub experience: Leaf<f64>,
+    pub name: Leaf<String>,
+    pub equipment: Leaf<Vec<EquipmentAmount>>,
+}
+
+/// Air-wing presence view for item 8.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WingUnitRow {
+    pub wing_uid: String,
+    pub owner: Leaf<String>,
+    pub name: Leaf<String>,
+    pub plane_count: Leaf<i64>,
+    pub experience: Leaf<f64>,
+    pub manpower: Leaf<i64>,
+    pub mission_kind: Leaf<String>,
+    pub strategic_region_id: Leaf<u32>,
+    pub air_base: Leaf<String>,
+    pub state_id: Leaf<u32>,
+    pub plane_definition: Leaf<String>,
+    pub effective_planes: Leaf<i64>,
+    pub equipment: Leaf<Vec<EquipmentAmount>>,
+}
+
+/// Session metadata needed for playback pacing and player-country POVs.
+///
+/// TODO(A3/A4): REPLAY_SCHEMA.md has not pinned a first-class session event
+/// payload for speed/pause changes yet. This view consumes a conservative
+/// internal `session` object when present, with fallback only to already
+/// schema-shaped `world.scenario` leaves for DLC/language. Missing fields stay
+/// absent/unavailable rather than inferred.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionMetadataView {
+    pub status: ViewStatus,
+    pub player_countries: Leaf<Vec<PlayerCountry>>,
+    pub speed_events: Leaf<Vec<SpeedEvent>>,
+    pub active_dlcs: Leaf<Vec<String>>,
+    pub localisation_language: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerCountry {
+    pub tag: Leaf<String>,
+    pub player_name: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeedEvent {
+    pub hour_index: Leaf<i64>,
+    pub speed: Leaf<i64>,
+    pub paused: Leaf<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NavalSupremacyRow {
+    pub controller: Leaf<String>,
+    pub state: Leaf<String>,
+    pub supremacy: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeatherRegionRow {
+    pub weather_kind: Leaf<String>,
+    pub intensity: Leaf<f64>,
+    pub snow_level_0_255: Leaf<u32>,
+    pub mud_level_0_255: Leaf<u32>,
+    pub snow_mud_fade: Leaf<f64>,
+    pub snow_mud_fade_from: Leaf<f64>,
+    pub snow_mud_fade_to: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CountryIdentity {
+    pub cosmetic_tag: Leaf<String>,
+    pub ruling_ideology: Leaf<String>,
+}
+
+impl CountryIdentity {
+    fn all_unobtained() -> CountryIdentity {
+        CountryIdentity {
+            cosmetic_tag: Leaf::Unobtained,
+            ruling_ideology: Leaf::Unobtained,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CountryDiplomacy {
+    pub faction_name: Leaf<String>,
+    pub faction_is_leader: Leaf<bool>,
+    pub capital_state: Leaf<u32>,
+}
+
+impl CountryDiplomacy {
+    fn all_unobtained() -> CountryDiplomacy {
+        CountryDiplomacy {
+            faction_name: Leaf::Unobtained,
+            faction_is_leader: Leaf::Unobtained,
+            capital_state: Leaf::Unobtained,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiplomaticPairState {
+    pub at_war: Leaf<bool>,
+    pub same_faction: Leaf<bool>,
+    pub non_aggression_pact: Leaf<bool>,
+    pub military_access: Leaf<bool>,
+    pub guarantee: Leaf<bool>,
+    pub embargo: Leaf<bool>,
+    pub subject: Leaf<bool>,
+}
+
+impl DiplomaticPairState {
+    fn all_absent() -> DiplomaticPairState {
+        DiplomaticPairState {
+            at_war: Leaf::Absent,
+            same_faction: Leaf::Absent,
+            non_aggression_pact: Leaf::Absent,
+            military_access: Leaf::Absent,
+            guarantee: Leaf::Absent,
+            embargo: Leaf::Absent,
+            subject: Leaf::Absent,
+        }
+    }
+
+    fn all_unobtained() -> DiplomaticPairState {
+        DiplomaticPairState {
+            at_war: Leaf::Unobtained,
+            same_faction: Leaf::Unobtained,
+            non_aggression_pact: Leaf::Unobtained,
+            military_access: Leaf::Unobtained,
+            guarantee: Leaf::Unobtained,
+            embargo: Leaf::Unobtained,
+            subject: Leaf::Unobtained,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiplomacyView {
+    pub status: ViewStatus,
+    pub pairs: BTreeMap<(String, String), DiplomaticPairState>,
+    pub countries: BTreeMap<String, CountryDiplomacy>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopbarScalars {
+    pub political_power: Leaf<f64>,
+    pub stability: Leaf<f64>,
+    pub war_support: Leaf<f64>,
+    pub command_power: Leaf<f64>,
+    pub manpower_available: Leaf<i64>,
+    pub xp_army: Leaf<f64>,
+    pub xp_navy: Leaf<f64>,
+    pub xp_air: Leaf<f64>,
+    pub factories_civ: Leaf<i64>,
+    pub factories_mil: Leaf<i64>,
+    pub factories_dockyard: Leaf<i64>,
+    pub fuel_current: Leaf<f64>,
+    pub fuel_max: Leaf<f64>,
+    pub convoys: Leaf<f64>,
+    pub nukes_total: Leaf<i64>,
+    pub nukes_ready: Leaf<i64>,
+    pub world_tension: Leaf<f64>,
+    pub supply_value: Leaf<f64>,
+    pub supply_ratio: Leaf<f64>,
+}
+
+impl TopbarScalars {
+    fn all_unobtained() -> TopbarScalars {
+        TopbarScalars {
+            political_power: Leaf::Unobtained,
+            stability: Leaf::Unobtained,
+            war_support: Leaf::Unobtained,
+            command_power: Leaf::Unobtained,
+            manpower_available: Leaf::Unobtained,
+            xp_army: Leaf::Unobtained,
+            xp_navy: Leaf::Unobtained,
+            xp_air: Leaf::Unobtained,
+            factories_civ: Leaf::Unobtained,
+            factories_mil: Leaf::Unobtained,
+            factories_dockyard: Leaf::Unobtained,
+            fuel_current: Leaf::Unobtained,
+            fuel_max: Leaf::Unobtained,
+            convoys: Leaf::Unobtained,
+            nukes_total: Leaf::Unobtained,
+            nukes_ready: Leaf::Unobtained,
+            world_tension: Leaf::Unobtained,
+            supply_value: Leaf::Unobtained,
+            supply_ratio: Leaf::Unobtained,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuildingStatus {
+    pub level: Leaf<f64>,
+    pub healthy_level: Leaf<f64>,
+    pub damaged: Leaf<bool>,
+    pub damage_fraction: Leaf<f64>,
+    pub repair_progress: Leaf<f64>,
+    pub under_construction: Leaf<bool>,
+}
+
+impl BuildingStatus {
+    fn all_absent() -> BuildingStatus {
+        BuildingStatus {
+            level: Leaf::Absent,
+            healthy_level: Leaf::Absent,
+            damaged: Leaf::Absent,
+            damage_fraction: Leaf::Absent,
+            repair_progress: Leaf::Absent,
+            under_construction: Leaf::Absent,
+        }
+    }
+
+    fn level_only(level: f64) -> BuildingStatus {
+        BuildingStatus {
+            level: Leaf::Measured(level),
+            ..BuildingStatus::all_absent()
+        }
+    }
+
+    fn all_unobtained() -> BuildingStatus {
+        BuildingStatus {
+            level: Leaf::Unobtained,
+            healthy_level: Leaf::Unobtained,
+            damaged: Leaf::Unobtained,
+            damage_fraction: Leaf::Unobtained,
+            repair_progress: Leaf::Unobtained,
+            under_construction: Leaf::Unobtained,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StateBuildings {
+    pub status: ViewStatus,
+    pub state_buildings: BTreeMap<String, BuildingStatus>,
+    pub province_buildings: BTreeMap<u32, BTreeMap<String, BuildingStatus>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProvinceVisibility {
+    pub level: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpottedUnitsView {
+    pub status: ViewStatus,
+    pub divisions: Leaf<Vec<String>>,
+    pub fleets: Leaf<Vec<String>>,
+    pub wings: Leaf<Vec<String>>,
+}
+
+impl SpottedUnitsView {
+    fn with_status(status: ViewStatus) -> SpottedUnitsView {
+        let leaf = match status {
+            ViewStatus::DomainAbsent => Leaf::Absent,
+            ViewStatus::DomainUnavailable => Leaf::Unobtained,
+            ViewStatus::Present => Leaf::Absent,
+        };
+        SpottedUnitsView {
+            status,
+            divisions: leaf.clone(),
+            fleets: leaf.clone(),
+            wings: leaf,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PovVisibilityView {
+    pub status: ViewStatus,
+    pub provinces: BTreeMap<u32, Leaf<ProvinceVisibility>>,
+    pub spotted_units: SpottedUnitsView,
+}
+
+impl PovVisibilityView {
+    fn with_status(status: ViewStatus) -> PovVisibilityView {
+        PovVisibilityView {
+            status,
+            provinces: BTreeMap::new(),
+            spotted_units: SpottedUnitsView::with_status(status),
+        }
+    }
 }
 
 /// Per-TAG country core values for the topbar surface (REPLAY_SCHEMA.md
@@ -171,13 +522,37 @@ pub struct WorldFrame {
     raw: Map<String, Value>,
     owner_by_state: BTreeMap<u32, Leaf<String>>,
     owner_by_state_source: MapLayerSource,
+    owner_by_state_status: ViewStatus,
     control_by_state: BTreeMap<u32, Leaf<String>>,
     control_by_state_source: MapLayerSource,
+    control_by_state_status: ViewStatus,
     control_by_province: BTreeMap<u32, Leaf<String>>,
     control_by_province_source: MapLayerSource,
+    control_by_province_status: ViewStatus,
     divisions: Vec<DivisionRow>,
+    division_units: Vec<DivisionUnitRow>,
+    division_units_status: ViewStatus,
+    fleets: Vec<FleetUnitRow>,
+    fleets_status: ViewStatus,
+    wings: Vec<WingUnitRow>,
+    wings_status: ViewStatus,
     combats: Vec<CombatRow>,
     countries: BTreeMap<String, CountryCore>,
+    countries_status: ViewStatus,
+    session_metadata: SessionMetadataView,
+    naval_supremacy_by_region: BTreeMap<u32, NavalSupremacyRow>,
+    naval_supremacy_status: ViewStatus,
+    weather_by_region: BTreeMap<u32, WeatherRegionRow>,
+    weather_status: ViewStatus,
+    country_identities: BTreeMap<String, CountryIdentity>,
+    country_identities_status: ViewStatus,
+    diplomacy: DiplomacyView,
+    topbar_scalars_by_country: BTreeMap<String, TopbarScalars>,
+    topbar_status: ViewStatus,
+    buildings_by_state: BTreeMap<u32, StateBuildings>,
+    buildings_status: ViewStatus,
+    visibility_by_pov: BTreeMap<String, PovVisibilityView>,
+    visibility_status: ViewStatus,
     provenance: ProvenanceView,
     coverage_warnings: Vec<String>,
 }
@@ -206,6 +581,9 @@ impl WorldFrame {
     pub fn owner_by_state_source(&self) -> MapLayerSource {
         self.owner_by_state_source
     }
+    pub fn owner_by_state_status(&self) -> ViewStatus {
+        self.owner_by_state_status
+    }
     /// Per-state controller (occupier when it differs from the owner).
     /// Schema §8 defines no `map.control_by_state` mirror today, so this
     /// normally comes from the `states.*.controller` domain walk; a future
@@ -216,14 +594,38 @@ impl WorldFrame {
     pub fn control_by_state_source(&self) -> MapLayerSource {
         self.control_by_state_source
     }
+    pub fn control_by_state_status(&self) -> ViewStatus {
+        self.control_by_state_status
+    }
     pub fn control_by_province(&self) -> &BTreeMap<u32, Leaf<String>> {
         &self.control_by_province
     }
     pub fn control_by_province_source(&self) -> MapLayerSource {
         self.control_by_province_source
     }
+    pub fn control_by_province_status(&self) -> ViewStatus {
+        self.control_by_province_status
+    }
     pub fn divisions(&self) -> &[DivisionRow] {
         &self.divisions
+    }
+    pub fn division_units(&self) -> &[DivisionUnitRow] {
+        &self.division_units
+    }
+    pub fn division_units_status(&self) -> ViewStatus {
+        self.division_units_status
+    }
+    pub fn fleets(&self) -> &[FleetUnitRow] {
+        &self.fleets
+    }
+    pub fn fleets_status(&self) -> ViewStatus {
+        self.fleets_status
+    }
+    pub fn wings(&self) -> &[WingUnitRow] {
+        &self.wings
+    }
+    pub fn wings_status(&self) -> ViewStatus {
+        self.wings_status
     }
     pub fn combats(&self) -> &[CombatRow] {
         &self.combats
@@ -231,8 +633,79 @@ impl WorldFrame {
     pub fn countries(&self) -> &BTreeMap<String, CountryCore> {
         &self.countries
     }
+    pub fn countries_status(&self) -> ViewStatus {
+        self.countries_status
+    }
     pub fn country(&self, tag: &str) -> Option<&CountryCore> {
         self.countries.get(tag)
+    }
+    pub fn session_metadata(&self) -> &SessionMetadataView {
+        &self.session_metadata
+    }
+    pub fn naval_supremacy_by_region(&self) -> &BTreeMap<u32, NavalSupremacyRow> {
+        &self.naval_supremacy_by_region
+    }
+    pub fn naval_supremacy_status(&self) -> ViewStatus {
+        self.naval_supremacy_status
+    }
+    pub fn weather_by_region(&self) -> &BTreeMap<u32, WeatherRegionRow> {
+        &self.weather_by_region
+    }
+    pub fn weather_status(&self) -> ViewStatus {
+        self.weather_status
+    }
+    pub fn country_identities(&self) -> &BTreeMap<String, CountryIdentity> {
+        &self.country_identities
+    }
+    pub fn country_identity(&self, tag: &str) -> Option<&CountryIdentity> {
+        self.country_identities.get(tag)
+    }
+    pub fn country_identities_status(&self) -> ViewStatus {
+        self.country_identities_status
+    }
+    pub fn diplomacy(&self) -> &DiplomacyView {
+        &self.diplomacy
+    }
+    pub fn diplomatic_pair_state(&self, owner: &str, viewed: &str) -> Option<&DiplomaticPairState> {
+        self.diplomacy
+            .pairs
+            .get(&(owner.to_string(), viewed.to_string()))
+    }
+    pub fn topbar_scalars_by_country(&self) -> &BTreeMap<String, TopbarScalars> {
+        &self.topbar_scalars_by_country
+    }
+    pub fn topbar_scalars(&self, tag: &str) -> Option<&TopbarScalars> {
+        self.topbar_scalars_by_country.get(tag)
+    }
+    pub fn topbar_status(&self) -> ViewStatus {
+        self.topbar_status
+    }
+    pub fn buildings_by_state(&self) -> &BTreeMap<u32, StateBuildings> {
+        &self.buildings_by_state
+    }
+    pub fn buildings_status(&self) -> ViewStatus {
+        self.buildings_status
+    }
+    pub fn visibility_for(&self, pov_tag: &str) -> PovVisibilityView {
+        self.visibility_by_pov
+            .get(pov_tag)
+            .cloned()
+            .unwrap_or_else(|| {
+                let status = match self.visibility_status {
+                    ViewStatus::Present => ViewStatus::DomainAbsent,
+                    other => other,
+                };
+                PovVisibilityView::with_status(status)
+            })
+    }
+    pub fn spotted_units_for(&self, pov_tag: &str) -> SpottedUnitsView {
+        self.visibility_for(pov_tag).spotted_units
+    }
+    pub fn visibility_status(&self) -> ViewStatus {
+        self.visibility_status
+    }
+    pub fn visibility_povs(&self) -> impl Iterator<Item = &str> {
+        self.visibility_by_pov.keys().map(String::as_str)
     }
     pub fn provenance(&self) -> &ProvenanceView {
         &self.provenance
@@ -245,30 +718,46 @@ impl WorldFrame {
 
     fn from_raw(frame: RawFrame) -> WorldFrame {
         let mut warnings: Vec<String> = Vec::new();
-        let (owner_by_state, owner_by_state_source) = build_tag_map(
+        let (owner_by_state, owner_by_state_source, owner_by_state_status) = build_tag_map(
             &frame.rest,
             "owner_by_state",
             "states",
             "owner",
             &mut warnings,
         );
-        let (control_by_state, control_by_state_source) = build_tag_map(
+        let (control_by_state, control_by_state_source, control_by_state_status) = build_tag_map(
             &frame.rest,
             "control_by_state",
             "states",
             "controller",
             &mut warnings,
         );
-        let (control_by_province, control_by_province_source) = build_tag_map(
-            &frame.rest,
-            "control_by_province",
-            "provinces",
-            "controller",
-            &mut warnings,
-        );
+        let (control_by_province, control_by_province_source, control_by_province_status) =
+            build_tag_map(
+                &frame.rest,
+                "control_by_province",
+                "provinces",
+                "controller",
+                &mut warnings,
+            );
+        let (division_units, division_units_status) =
+            build_division_units(&frame.rest, &mut warnings);
+        let (fleets, fleets_status) = build_fleets(&frame.rest, &mut warnings);
+        let (wings, wings_status) = build_wings(&frame.rest, &mut warnings);
         let divisions = build_divisions(&frame.rest, &mut warnings);
         let combats = build_combats(&frame.rest, &mut warnings);
-        let countries = build_countries(&frame.rest, &mut warnings);
+        let (countries, countries_status) = build_countries(&frame.rest, &mut warnings);
+        let session_metadata = build_session_metadata(&frame.rest, &mut warnings);
+        let (naval_supremacy_by_region, naval_supremacy_status) =
+            build_naval_supremacy(&frame.rest, &mut warnings);
+        let (weather_by_region, weather_status) = build_weather(&frame.rest, &mut warnings);
+        let (country_identities, country_identities_status) =
+            build_country_identities(&frame.rest, &mut warnings);
+        let diplomacy = build_diplomacy(&frame.rest, &mut warnings);
+        let (topbar_scalars_by_country, topbar_status) =
+            build_topbar_scalars(&frame.rest, &mut warnings);
+        let (buildings_by_state, buildings_status) = build_buildings(&frame.rest, &mut warnings);
+        let (visibility_by_pov, visibility_status) = build_visibility(&frame.rest, &mut warnings);
         let provenance = build_provenance(&frame.rest, &mut warnings);
         WorldFrame {
             hour_index: frame.hour_index,
@@ -277,13 +766,37 @@ impl WorldFrame {
             raw: frame.rest,
             owner_by_state,
             owner_by_state_source,
+            owner_by_state_status,
             control_by_state,
             control_by_state_source,
+            control_by_state_status,
             control_by_province,
             control_by_province_source,
+            control_by_province_status,
             divisions,
+            division_units,
+            division_units_status,
+            fleets,
+            fleets_status,
+            wings,
+            wings_status,
             combats,
             countries,
+            countries_status,
+            session_metadata,
+            naval_supremacy_by_region,
+            naval_supremacy_status,
+            weather_by_region,
+            weather_status,
+            country_identities,
+            country_identities_status,
+            diplomacy,
+            topbar_scalars_by_country,
+            topbar_status,
+            buildings_by_state,
+            buildings_status,
+            visibility_by_pov,
+            visibility_status,
             provenance,
             coverage_warnings: warnings,
         }
@@ -295,6 +808,20 @@ pub struct WorldTimeline {
     source: Box<dyn ReplaySource>,
     hours: Vec<i64>,
     cache: Mutex<FrameCache>,
+}
+
+/// Result of resolving an arbitrary requested hour against the snapshot spine.
+///
+/// This is the A4 seam: today it resolves to the nearest snapshot at-or-before
+/// the request. When snapshot+delta reconstruction lands, `frame_hour` remains
+/// the anchor snapshot and the delta window can hang off this lookup without
+/// changing callers that already test `seek(h) == play_to(h)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineLookup {
+    pub requested_hour: i64,
+    pub frame_hour: i64,
+    pub exact_match: bool,
+    pub next_hour: Option<i64>,
 }
 
 impl WorldTimeline {
@@ -341,6 +868,30 @@ impl WorldTimeline {
         self.source.warnings()
     }
 
+    pub fn lookup_hour(&self, hour_index: i64) -> Result<TimelineLookup, WorldError> {
+        let first = self.first_hour();
+        if hour_index < first {
+            return Err(WorldError::BeforeFirst {
+                hour: hour_index,
+                first,
+            });
+        }
+        match self.hours.binary_search(&hour_index) {
+            Ok(i) => Ok(TimelineLookup {
+                requested_hour: hour_index,
+                frame_hour: self.hours[i],
+                exact_match: true,
+                next_hour: self.hours.get(i + 1).copied(),
+            }),
+            Err(i) => Ok(TimelineLookup {
+                requested_hour: hour_index,
+                frame_hour: self.hours[i - 1],
+                exact_match: false,
+                next_hour: self.hours.get(i).copied(),
+            }),
+        }
+    }
+
     /// The frame at exactly `hour_index`; [`WorldError::NoSuchHour`] otherwise.
     pub fn frame(&self, hour_index: i64) -> Result<Arc<WorldFrame>, WorldError> {
         if self.hours.binary_search(&hour_index).is_err() {
@@ -352,18 +903,21 @@ impl WorldTimeline {
     /// The nearest frame at-or-before `hour_index` (the scrub primitive);
     /// [`WorldError::BeforeFirst`] before the first recorded frame.
     pub fn state_at(&self, hour_index: i64) -> Result<Arc<WorldFrame>, WorldError> {
-        let first = self.first_hour();
-        if hour_index < first {
-            return Err(WorldError::BeforeFirst {
-                hour: hour_index,
-                first,
-            });
-        }
-        let at = match self.hours.binary_search(&hour_index) {
-            Ok(i) => self.hours[i],
-            Err(i) => self.hours[i - 1],
-        };
-        self.load_cached(at)
+        let lookup = self.lookup_hour(hour_index)?;
+        self.load_cached(lookup.frame_hour)
+    }
+
+    /// Random-access seek. This is equivalent to [`WorldTimeline::state_at`]
+    /// until compact delta replay is wired behind [`TimelineLookup`].
+    pub fn seek(&self, hour_index: i64) -> Result<Arc<WorldFrame>, WorldError> {
+        self.state_at(hour_index)
+    }
+
+    /// Linear play-to hook for A4 equality tests. It deliberately resolves
+    /// through the same index today; a future delta walker should preserve
+    /// `seek(h) == play_to(h)` for all typed views.
+    pub fn play_to(&self, hour_index: i64) -> Result<Arc<WorldFrame>, WorldError> {
+        self.state_at(hour_index)
     }
 
     fn load_cached(&self, hour_index: i64) -> Result<Arc<WorldFrame>, WorldError> {
@@ -540,6 +1094,174 @@ fn leaf_string(
     })
 }
 
+fn leaf_id_string(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<String> {
+    typed_leaf(
+        obj,
+        path,
+        "string or integer id",
+        ctx,
+        warnings,
+        value_to_id_string,
+    )
+}
+
+fn value_to_id_string(v: &Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        Some(s.to_string())
+    } else {
+        v.as_i64().map(|id| id.to_string())
+    }
+}
+
+fn combine_status(a: ViewStatus, b: ViewStatus) -> ViewStatus {
+    match (a, b) {
+        (ViewStatus::Present, _) | (_, ViewStatus::Present) => ViewStatus::Present,
+        (ViewStatus::DomainUnavailable, _) | (_, ViewStatus::DomainUnavailable) => {
+            ViewStatus::DomainUnavailable
+        }
+        _ => ViewStatus::DomainAbsent,
+    }
+}
+
+fn object_at_path<'a>(
+    rest: &'a Map<String, Value>,
+    path: &[&str],
+    label: &str,
+    warnings: &mut Vec<String>,
+) -> (Option<&'a Map<String, Value>>, ViewStatus) {
+    match walk_path(rest, path, "snapshot", warnings) {
+        Leaf::Absent => (None, ViewStatus::DomainAbsent),
+        Leaf::Unobtained => (None, ViewStatus::DomainUnavailable),
+        Leaf::Measured(Value::Object(obj)) => (Some(obj), ViewStatus::Present),
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{label}: present but wrong-typed (expected object, found {}); \
+                 view is unavailable",
+                json_type_name(other)
+            ));
+            (None, ViewStatus::DomainUnavailable)
+        }
+    }
+}
+
+fn array_at_path<'a>(
+    rest: &'a Map<String, Value>,
+    path: &[&str],
+    label: &str,
+    warnings: &mut Vec<String>,
+) -> (Option<&'a Vec<Value>>, ViewStatus) {
+    match walk_path(rest, path, "snapshot", warnings) {
+        Leaf::Absent => (None, ViewStatus::DomainAbsent),
+        Leaf::Unobtained => (None, ViewStatus::DomainUnavailable),
+        Leaf::Measured(Value::Array(items)) => (Some(items), ViewStatus::Present),
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{label}: present but wrong-typed (expected array, found {}); \
+                 view is unavailable",
+                json_type_name(other)
+            ));
+            (None, ViewStatus::DomainUnavailable)
+        }
+    }
+}
+
+fn leaf_string_list(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<String>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match value_to_id_string(item) {
+                    Some(s) => out.push(s),
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.{}[{i}]: expected string/integer id, found {}; \
+                             whole list treated as unobtained",
+                            path.join("."),
+                            json_type_name(item)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(out)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected array, found {}); \
+                 treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn leaf_bool_alias(
+    obj: &Map<String, Value>,
+    keys: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<bool> {
+    let mut saw_unobtained = false;
+    for key in keys {
+        match leaf_bool(obj, &[*key], ctx, warnings) {
+            Leaf::Measured(v) => return Leaf::Measured(v),
+            Leaf::Unobtained => saw_unobtained = true,
+            Leaf::Absent => {}
+        }
+    }
+    if saw_unobtained {
+        Leaf::Unobtained
+    } else {
+        Leaf::Absent
+    }
+}
+
+fn first_available_f64(leaves: impl IntoIterator<Item = Leaf<f64>>) -> Leaf<f64> {
+    let mut saw_unobtained = false;
+    for leaf in leaves {
+        match leaf {
+            Leaf::Measured(v) => return Leaf::Measured(v),
+            Leaf::Unobtained => saw_unobtained = true,
+            Leaf::Absent => {}
+        }
+    }
+    if saw_unobtained {
+        Leaf::Unobtained
+    } else {
+        Leaf::Absent
+    }
+}
+
+fn first_available_i64(leaves: impl IntoIterator<Item = Leaf<i64>>) -> Leaf<i64> {
+    let mut saw_unobtained = false;
+    for leaf in leaves {
+        match leaf {
+            Leaf::Measured(v) => return Leaf::Measured(v),
+            Leaf::Unobtained => saw_unobtained = true,
+            Leaf::Absent => {}
+        }
+    }
+    if saw_unobtained {
+        Leaf::Unobtained
+    } else {
+        Leaf::Absent
+    }
+}
+
 /// A `{id-string: TAG|null}` layer -> typed map. Used for the `map.*`
 /// mirrors and for the fallback domain walk.
 fn tag_map_from_object(
@@ -582,7 +1304,7 @@ fn build_tag_map(
     domain: &str,
     field: &str,
     warnings: &mut Vec<String>,
-) -> (BTreeMap<u32, Leaf<String>>, MapLayerSource) {
+) -> (BTreeMap<u32, Leaf<String>>, MapLayerSource, ViewStatus) {
     let mirror = match rest.get("map") {
         Some(Value::Object(map)) => map.get(mirror_key),
         Some(Value::Null) | None => None,
@@ -601,28 +1323,62 @@ fn build_tag_map(
             return (
                 tag_map_from_object(layer, &ctx, warnings),
                 MapLayerSource::MapMirror,
+                ViewStatus::Present,
             );
         }
-        Some(Value::Null) | None => {}
+        Some(Value::Null) => {
+            if !matches!(rest.get(domain), Some(Value::Object(_))) {
+                return (
+                    BTreeMap::new(),
+                    MapLayerSource::Missing,
+                    ViewStatus::DomainUnavailable,
+                );
+            }
+        }
+        None => {}
         Some(other) => {
             warnings.push(format!(
                 "map.{mirror_key}: present but wrong-typed (expected object, found {}); \
                  falling back to walking {domain}.*.{field}",
                 json_type_name(other)
             ));
+            if !matches!(rest.get(domain), Some(Value::Object(_))) {
+                return (
+                    BTreeMap::new(),
+                    MapLayerSource::Missing,
+                    ViewStatus::DomainUnavailable,
+                );
+            }
         }
     }
     // Fallback: walk the full domain objects.
     let entries = match rest.get(domain) {
         Some(Value::Object(entries)) => entries,
-        Some(Value::Null) | None => return (BTreeMap::new(), MapLayerSource::Missing),
+        Some(Value::Null) => {
+            return (
+                BTreeMap::new(),
+                MapLayerSource::Missing,
+                ViewStatus::DomainUnavailable,
+            )
+        }
+        None => {
+            return (
+                BTreeMap::new(),
+                MapLayerSource::Missing,
+                ViewStatus::DomainAbsent,
+            )
+        }
         Some(other) => {
             warnings.push(format!(
                 "{domain}: present but wrong-typed (expected object, found {}); \
                  map view is empty",
                 json_type_name(other)
             ));
-            return (BTreeMap::new(), MapLayerSource::Missing);
+            return (
+                BTreeMap::new(),
+                MapLayerSource::Missing,
+                ViewStatus::DomainUnavailable,
+            );
         }
     };
     let mut out = BTreeMap::new();
@@ -650,7 +1406,351 @@ fn build_tag_map(
         };
         out.insert(id, leaf);
     }
-    (out, MapLayerSource::DomainWalk)
+    (out, MapLayerSource::DomainWalk, ViewStatus::Present)
+}
+
+fn build_division_units(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (Vec<DivisionUnitRow>, ViewStatus) {
+    let (items, status) = array_at_path(rest, &["divisions"], "divisions", warnings);
+    let Some(items) = items else {
+        return (Vec::new(), status);
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let obj = match item.as_object() {
+            Some(obj) => obj,
+            None => {
+                warnings.push(format!(
+                    "divisions[{i}]: expected object, found {}; row skipped",
+                    json_type_name(item)
+                ));
+                continue;
+            }
+        };
+        let div_id = match obj.get("div_id").and_then(Value::as_i64) {
+            Some(id) => id,
+            None => {
+                warnings.push(format!(
+                    "divisions[{i}]: missing or non-integer div_id; row skipped"
+                ));
+                continue;
+            }
+        };
+        let div_uid = division_uid_from_obj(obj, div_id, i, warnings);
+        let ctx = format!("divisions[{i}]");
+        rows.push(DivisionUnitRow {
+            div_uid,
+            owner: leaf_string(obj, &["owner"], &ctx, warnings),
+            location_province: leaf_u32(obj, &["location_province"], &ctx, warnings),
+            state_id: leaf_u32(obj, &["state_id"], &ctx, warnings),
+            template_id: leaf_i64(obj, &["template_id"], &ctx, warnings),
+            template_type: leaf_i64(obj, &["template_type"], &ctx, warnings),
+            template_name: leaf_string(obj, &["template_name"], &ctx, warnings),
+            template_role: leaf_string(obj, &["template_role"], &ctx, warnings),
+            strength: leaf_f64(obj, &["strength"], &ctx, warnings),
+            organisation: leaf_f64(obj, &["organisation"], &ctx, warnings),
+            moving: leaf_bool(obj, &["moving"], &ctx, warnings),
+            move_target_province: leaf_u32(obj, &["move_target_province"], &ctx, warnings),
+            move_progress: leaf_f64(obj, &["move_progress"], &ctx, warnings),
+            in_combat: leaf_bool(obj, &["in_combat"], &ctx, warnings),
+            equipment: leaf_equipment_list(obj, &["equipment"], &ctx, warnings),
+        });
+    }
+    (rows, ViewStatus::Present)
+}
+
+fn division_uid_from_obj(
+    obj: &Map<String, Value>,
+    div_id: i64,
+    _index: usize,
+    _warnings: &mut Vec<String>,
+) -> String {
+    match obj.get("div_type") {
+        None => format!("{div_id}"),
+        Some(Value::Null) => format!("{div_id}"),
+        Some(v) => match v.as_i64() {
+            Some(t) => format!("{div_id}:{t}"),
+            None => format!("{div_id}"),
+        },
+    }
+}
+
+fn build_fleets(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (Vec<FleetUnitRow>, ViewStatus) {
+    let (fleets, status) = array_at_path(
+        rest,
+        &["order_of_battle", "fleets"],
+        "order_of_battle.fleets",
+        warnings,
+    );
+    let Some(fleets) = fleets else {
+        return (Vec::new(), status);
+    };
+    let mut rows = Vec::new();
+    for (fleet_i, fleet) in fleets.iter().enumerate() {
+        let fleet_obj = match fleet.as_object() {
+            Some(obj) => obj,
+            None => {
+                warnings.push(format!(
+                    "order_of_battle.fleets[{fleet_i}]: expected object, found {}; row skipped",
+                    json_type_name(fleet)
+                ));
+                continue;
+            }
+        };
+        let fleet_ctx = format!("order_of_battle.fleets[{fleet_i}]");
+        let fleet_uid = leaf_id_string(fleet_obj, &["id"], &fleet_ctx, warnings);
+        let task_forces = match fleet_obj.get("task_forces") {
+            Some(Value::Array(items)) => items,
+            Some(Value::Null) | None => continue,
+            Some(other) => {
+                warnings.push(format!(
+                    "{fleet_ctx}.task_forces: present but wrong-typed (expected array, found {}); skipped",
+                    json_type_name(other)
+                ));
+                continue;
+            }
+        };
+        for (tf_i, task_force) in task_forces.iter().enumerate() {
+            let obj = match task_force.as_object() {
+                Some(obj) => obj,
+                None => {
+                    warnings.push(format!(
+                        "{fleet_ctx}.task_forces[{tf_i}]: expected object, found {}; row skipped",
+                        json_type_name(task_force)
+                    ));
+                    continue;
+                }
+            };
+            let ctx = format!("{fleet_ctx}.task_forces[{tf_i}]");
+            let task_force_uid = match obj.get("id").and_then(value_to_id_string) {
+                Some(id) => id,
+                None => {
+                    warnings.push(format!("{ctx}: missing or wrong-typed id; row skipped"));
+                    continue;
+                }
+            };
+            let ships = leaf_ships(obj, &ctx, warnings);
+            let ship_count = match leaf_i64(obj, &["ship_count"], &ctx, warnings) {
+                Leaf::Absent => match &ships {
+                    Leaf::Measured(rows) => Leaf::Measured(rows.len() as i64),
+                    Leaf::Unobtained => Leaf::Unobtained,
+                    Leaf::Absent => Leaf::Absent,
+                },
+                other => other,
+            };
+            rows.push(FleetUnitRow {
+                task_force_uid,
+                fleet_uid: fleet_uid.clone(),
+                owner: first_available_string([
+                    leaf_string(obj, &["owner"], &ctx, warnings),
+                    leaf_string(fleet_obj, &["owner"], &fleet_ctx, warnings),
+                ]),
+                location_province: leaf_u32(obj, &["location_province"], &ctx, warnings),
+                mission: leaf_string(obj, &["mission"], &ctx, warnings),
+                ship_count,
+                dominant_hull_class: first_available_string([
+                    leaf_string(obj, &["dominant_hull_class"], &ctx, warnings),
+                    leaf_string(obj, &["dominant_hull"], &ctx, warnings),
+                ]),
+                ships,
+            });
+        }
+    }
+    (rows, ViewStatus::Present)
+}
+
+fn build_wings(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (Vec<WingUnitRow>, ViewStatus) {
+    let (items, status) = array_at_path(
+        rest,
+        &["order_of_battle", "air_wings"],
+        "order_of_battle.air_wings",
+        warnings,
+    );
+    let Some(items) = items else {
+        return (Vec::new(), status);
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let obj = match item.as_object() {
+            Some(obj) => obj,
+            None => {
+                warnings.push(format!(
+                    "order_of_battle.air_wings[{i}]: expected object, found {}; row skipped",
+                    json_type_name(item)
+                ));
+                continue;
+            }
+        };
+        let ctx = format!("order_of_battle.air_wings[{i}]");
+        let wing_uid = match obj.get("id").and_then(value_to_id_string) {
+            Some(id) => id,
+            None => {
+                warnings.push(format!("{ctx}: missing or wrong-typed id; row skipped"));
+                continue;
+            }
+        };
+        rows.push(WingUnitRow {
+            wing_uid,
+            owner: leaf_string(obj, &["owner"], &ctx, warnings),
+            name: leaf_string(obj, &["name"], &ctx, warnings),
+            plane_count: first_available_i64([
+                leaf_i64(obj, &["count"], &ctx, warnings),
+                leaf_i64(obj, &["plane_count"], &ctx, warnings),
+            ]),
+            experience: leaf_f64(obj, &["experience"], &ctx, warnings),
+            manpower: leaf_i64(obj, &["manpower"], &ctx, warnings),
+            mission_kind: first_available_string([
+                leaf_string(obj, &["mission"], &ctx, warnings),
+                leaf_string(obj, &["mission_type"], &ctx, warnings),
+            ]),
+            strategic_region_id: leaf_u32(obj, &["strategic_region"], &ctx, warnings),
+            air_base: leaf_id_string(obj, &["air_base"], &ctx, warnings),
+            state_id: leaf_u32(obj, &["state_id"], &ctx, warnings),
+            plane_definition: leaf_string(obj, &["plane_definition"], &ctx, warnings),
+            effective_planes: leaf_i64(obj, &["effective_planes"], &ctx, warnings),
+            equipment: leaf_equipment_list(obj, &["equipment"], &ctx, warnings),
+        });
+    }
+    (rows, ViewStatus::Present)
+}
+
+fn first_available_string(leaves: impl IntoIterator<Item = Leaf<String>>) -> Leaf<String> {
+    let mut saw_unobtained = false;
+    for leaf in leaves {
+        match leaf {
+            Leaf::Measured(v) => return Leaf::Measured(v),
+            Leaf::Unobtained => saw_unobtained = true,
+            Leaf::Absent => {}
+        }
+    }
+    if saw_unobtained {
+        Leaf::Unobtained
+    } else {
+        Leaf::Absent
+    }
+}
+
+fn leaf_equipment_list(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<EquipmentAmount>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut rows = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    Value::Object(equip) => {
+                        let ectx = format!("{ctx}.{}[{i}]", path.join("."));
+                        rows.push(EquipmentAmount {
+                            archetype: leaf_string(equip, &["archetype"], &ectx, warnings),
+                            equip_id: first_available_i64([
+                                leaf_i64(equip, &["equip_id"], &ectx, warnings),
+                                leaf_i64(equip, &["id"], &ectx, warnings),
+                            ]),
+                            equip_type: first_available_i64([
+                                leaf_i64(equip, &["equip_type"], &ectx, warnings),
+                                leaf_i64(equip, &["type"], &ectx, warnings),
+                            ]),
+                            amount: leaf_f64(equip, &["amount"], &ectx, warnings),
+                        });
+                    }
+                    Value::Array(parts) if parts.len() >= 3 => {
+                        rows.push(EquipmentAmount {
+                            archetype: Leaf::Absent,
+                            equip_id: parts[0]
+                                .as_i64()
+                                .map(Leaf::Measured)
+                                .unwrap_or(Leaf::Unobtained),
+                            equip_type: parts[1]
+                                .as_i64()
+                                .map(Leaf::Measured)
+                                .unwrap_or(Leaf::Unobtained),
+                            amount: parts[2]
+                                .as_f64()
+                                .map(Leaf::Measured)
+                                .unwrap_or(Leaf::Unobtained),
+                        });
+                    }
+                    other => {
+                        warnings.push(format!(
+                            "{ctx}.{}[{i}]: expected object or [id,type,amount], found {}; \
+                             whole list treated as unobtained",
+                            path.join("."),
+                            json_type_name(other)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(rows)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected array, found {}); \
+                 treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn leaf_ships(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<ShipCompositionRow>> {
+    match walk_path(obj, &["ships"], ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut rows = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                let ship = match item.as_object() {
+                    Some(ship) => ship,
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.ships[{i}]: expected object, found {}; whole list treated as unobtained",
+                            json_type_name(item)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                };
+                let sctx = format!("{ctx}.ships[{i}]");
+                rows.push(ShipCompositionRow {
+                    ship_uid: leaf_id_string(ship, &["id"], &sctx, warnings),
+                    definition: leaf_string(ship, &["definition"], &sctx, warnings),
+                    organisation: leaf_f64(ship, &["organisation"], &sctx, warnings),
+                    strength: leaf_f64(ship, &["strength"], &sctx, warnings),
+                    experience: leaf_f64(ship, &["experience"], &sctx, warnings),
+                    name: leaf_string(ship, &["name"], &sctx, warnings),
+                    equipment: leaf_equipment_list(ship, &["equipment"], &sctx, warnings),
+                });
+            }
+            Leaf::Measured(rows)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.ships: present but wrong-typed (expected array, found {}); \
+                 treated as unobtained",
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
 }
 
 fn build_divisions(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Vec<DivisionRow> {
@@ -804,20 +1904,425 @@ fn build_combats(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Vec<C
     rows
 }
 
+fn build_session_metadata(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> SessionMetadataView {
+    let (session, session_status) = object_at_path(rest, &["session"], "session", warnings);
+    let (scenario, scenario_status) =
+        object_at_path(rest, &["world", "scenario"], "world.scenario", warnings);
+    let status = combine_status(session_status, scenario_status);
+    let player_countries = match session {
+        Some(obj) => leaf_player_countries(obj, warnings),
+        None => match status {
+            ViewStatus::DomainUnavailable => Leaf::Unobtained,
+            _ => Leaf::Absent,
+        },
+    };
+    let speed_events = match session {
+        Some(obj) => leaf_speed_events(obj, warnings),
+        None => match session_status {
+            ViewStatus::DomainUnavailable => Leaf::Unobtained,
+            _ => Leaf::Absent,
+        },
+    };
+    let active_dlcs = match session {
+        Some(obj) => first_available_string_list([
+            leaf_string_list(obj, &["active_dlcs"], "session", warnings),
+            leaf_string_list(obj, &["dlcs"], "session", warnings),
+        ]),
+        None => Leaf::Absent,
+    };
+    let active_dlcs = match active_dlcs {
+        Leaf::Absent => match scenario {
+            Some(obj) => leaf_string_list(obj, &["dlcs"], "world.scenario", warnings),
+            None if scenario_status == ViewStatus::DomainUnavailable => Leaf::Unobtained,
+            None => Leaf::Absent,
+        },
+        other => other,
+    };
+    let localisation_language = match session {
+        Some(obj) => first_available_string([
+            leaf_string(obj, &["localisation_language"], "session", warnings),
+            leaf_string(obj, &["language"], "session", warnings),
+        ]),
+        None => Leaf::Absent,
+    };
+    let localisation_language = match localisation_language {
+        Leaf::Absent => match scenario {
+            Some(obj) => first_available_string([
+                leaf_string(obj, &["localisation_language"], "world.scenario", warnings),
+                leaf_string(obj, &["language"], "world.scenario", warnings),
+            ]),
+            None if scenario_status == ViewStatus::DomainUnavailable => Leaf::Unobtained,
+            None => Leaf::Absent,
+        },
+        other => other,
+    };
+    SessionMetadataView {
+        status,
+        player_countries,
+        speed_events,
+        active_dlcs,
+        localisation_language,
+    }
+}
+
+fn first_available_string_list(
+    leaves: impl IntoIterator<Item = Leaf<Vec<String>>>,
+) -> Leaf<Vec<String>> {
+    let mut saw_unobtained = false;
+    for leaf in leaves {
+        match leaf {
+            Leaf::Measured(v) => return Leaf::Measured(v),
+            Leaf::Unobtained => saw_unobtained = true,
+            Leaf::Absent => {}
+        }
+    }
+    if saw_unobtained {
+        Leaf::Unobtained
+    } else {
+        Leaf::Absent
+    }
+}
+
+fn leaf_player_countries(
+    session: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<PlayerCountry>> {
+    match walk_path(session, &["player_countries"], "session", warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut players = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    Value::String(tag) => players.push(PlayerCountry {
+                        tag: Leaf::Measured(tag.clone()),
+                        player_name: Leaf::Absent,
+                    }),
+                    Value::Object(obj) => {
+                        let ctx = format!("session.player_countries[{i}]");
+                        players.push(PlayerCountry {
+                            tag: leaf_string(obj, &["tag"], &ctx, warnings),
+                            player_name: first_available_string([
+                                leaf_string(obj, &["player"], &ctx, warnings),
+                                leaf_string(obj, &["player_name"], &ctx, warnings),
+                                leaf_string(obj, &["human_name"], &ctx, warnings),
+                            ]),
+                        });
+                    }
+                    other => {
+                        warnings.push(format!(
+                            "session.player_countries[{i}]: expected string or object, found {}; \
+                             whole list treated as unobtained",
+                            json_type_name(other)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(players)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "session.player_countries: present but wrong-typed (expected array, found {}); \
+                 treated as unobtained",
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn leaf_speed_events(
+    session: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<SpeedEvent>> {
+    match walk_path(session, &["speed_events"], "session", warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut events = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                let obj = match item.as_object() {
+                    Some(obj) => obj,
+                    None => {
+                        warnings.push(format!(
+                            "session.speed_events[{i}]: expected object, found {}; whole list treated as unobtained",
+                            json_type_name(item)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                };
+                let ctx = format!("session.speed_events[{i}]");
+                events.push(SpeedEvent {
+                    hour_index: leaf_i64(obj, &["hour_index"], &ctx, warnings),
+                    speed: leaf_i64(obj, &["speed"], &ctx, warnings),
+                    paused: leaf_bool(obj, &["paused"], &ctx, warnings),
+                });
+            }
+            Leaf::Measured(events)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "session.speed_events: present but wrong-typed (expected array, found {}); \
+                 treated as unobtained",
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn build_naval_supremacy(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<u32, NavalSupremacyRow>, ViewStatus) {
+    if let (Some(obj), status) =
+        object_at_path(rest, &["naval_supremacy"], "naval_supremacy", warnings)
+    {
+        return (
+            parse_naval_supremacy_map(obj, "naval_supremacy", warnings),
+            status,
+        );
+    } else {
+        let (_, status) = object_at_path(rest, &["naval_supremacy"], "naval_supremacy", warnings);
+        if status == ViewStatus::DomainUnavailable {
+            return (BTreeMap::new(), status);
+        }
+    }
+
+    let (region_control, status) = object_at_path(
+        rest,
+        &["naval_air", "region_control"],
+        "naval_air.region_control",
+        warnings,
+    );
+    let Some(region_control) = region_control else {
+        return (BTreeMap::new(), status);
+    };
+    let mut out = BTreeMap::new();
+    for (key, value) in region_control {
+        let id = match key.parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => {
+                warnings.push(format!(
+                    "naval_air.region_control: non-numeric region id {key:?} skipped"
+                ));
+                continue;
+            }
+        };
+        let row_obj = match value {
+            Value::Array(items) => items.iter().find_map(Value::as_object),
+            Value::Object(obj) => Some(obj),
+            Value::Null => {
+                out.insert(
+                    id,
+                    NavalSupremacyRow {
+                        controller: Leaf::Unobtained,
+                        state: Leaf::Unobtained,
+                        supremacy: Leaf::Unobtained,
+                    },
+                );
+                continue;
+            }
+            other => {
+                warnings.push(format!(
+                    "naval_air.region_control.{key}: expected object/array, found {}; treated as unobtained",
+                    json_type_name(other)
+                ));
+                out.insert(
+                    id,
+                    NavalSupremacyRow {
+                        controller: Leaf::Unobtained,
+                        state: Leaf::Unobtained,
+                        supremacy: Leaf::Unobtained,
+                    },
+                );
+                continue;
+            }
+        };
+        if let Some(obj) = row_obj {
+            let ctx = format!("naval_air.region_control.{key}");
+            out.insert(
+                id,
+                NavalSupremacyRow {
+                    controller: leaf_string(obj, &["controller"], &ctx, warnings),
+                    state: first_available_string([
+                        leaf_string(obj, &["state"], &ctx, warnings),
+                        leaf_string(obj, &["status"], &ctx, warnings),
+                    ]),
+                    supremacy: first_available_f64([
+                        leaf_f64(obj, &["supremacy"], &ctx, warnings),
+                        leaf_f64(obj, &["value"], &ctx, warnings),
+                    ]),
+                },
+            );
+        }
+    }
+    (out, ViewStatus::Present)
+}
+
+fn parse_naval_supremacy_map(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<u32, NavalSupremacyRow> {
+    let mut out = BTreeMap::new();
+    for (key, value) in obj {
+        let id = match key.parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => {
+                warnings.push(format!("{ctx}: non-numeric region id {key:?} skipped"));
+                continue;
+            }
+        };
+        match value {
+            Value::Object(row) => {
+                let rctx = format!("{ctx}.{key}");
+                out.insert(
+                    id,
+                    NavalSupremacyRow {
+                        controller: leaf_string(row, &["controller"], &rctx, warnings),
+                        state: first_available_string([
+                            leaf_string(row, &["state"], &rctx, warnings),
+                            leaf_string(row, &["status"], &rctx, warnings),
+                        ]),
+                        supremacy: first_available_f64([
+                            leaf_f64(row, &["supremacy"], &rctx, warnings),
+                            leaf_f64(row, &["value"], &rctx, warnings),
+                        ]),
+                    },
+                );
+            }
+            Value::Null => {
+                out.insert(
+                    id,
+                    NavalSupremacyRow {
+                        controller: Leaf::Unobtained,
+                        state: Leaf::Unobtained,
+                        supremacy: Leaf::Unobtained,
+                    },
+                );
+            }
+            other => {
+                warnings.push(format!(
+                    "{ctx}.{key}: expected object, found {}; treated as unobtained",
+                    json_type_name(other)
+                ));
+                out.insert(
+                    id,
+                    NavalSupremacyRow {
+                        controller: Leaf::Unobtained,
+                        state: Leaf::Unobtained,
+                        supremacy: Leaf::Unobtained,
+                    },
+                );
+            }
+        }
+    }
+    out
+}
+
+fn build_weather(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<u32, WeatherRegionRow>, ViewStatus) {
+    let (weather, status) = object_at_path(rest, &["weather"], "weather", warnings);
+    let Some(weather) = weather else {
+        return (BTreeMap::new(), status);
+    };
+    let region_map = match weather.get("by_region").or_else(|| weather.get("regions")) {
+        Some(Value::Object(obj)) => obj,
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        Some(other) => {
+            warnings.push(format!(
+                "weather.by_region: present but wrong-typed (expected object, found {}); view unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+        None => weather,
+    };
+    let mut out = BTreeMap::new();
+    for (key, value) in region_map {
+        let id = match key.parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        match value {
+            Value::Object(row) => {
+                let ctx = format!("weather.by_region.{key}");
+                out.insert(
+                    id,
+                    WeatherRegionRow {
+                        weather_kind: first_available_string([
+                            leaf_string(row, &["weather_kind"], &ctx, warnings),
+                            leaf_string(row, &["kind"], &ctx, warnings),
+                            leaf_string(row, &["phenomenon"], &ctx, warnings),
+                        ]),
+                        intensity: leaf_f64(row, &["intensity"], &ctx, warnings),
+                        snow_level_0_255: leaf_u32(row, &["snow_level_0_255"], &ctx, warnings),
+                        mud_level_0_255: leaf_u32(row, &["mud_level_0_255"], &ctx, warnings),
+                        snow_mud_fade: leaf_f64(row, &["snow_mud_fade"], &ctx, warnings),
+                        snow_mud_fade_from: leaf_f64(row, &["snow_mud_fade_from"], &ctx, warnings),
+                        snow_mud_fade_to: leaf_f64(row, &["snow_mud_fade_to"], &ctx, warnings),
+                    },
+                );
+            }
+            Value::Null => {
+                out.insert(
+                    id,
+                    WeatherRegionRow {
+                        weather_kind: Leaf::Unobtained,
+                        intensity: Leaf::Unobtained,
+                        snow_level_0_255: Leaf::Unobtained,
+                        mud_level_0_255: Leaf::Unobtained,
+                        snow_mud_fade: Leaf::Unobtained,
+                        snow_mud_fade_from: Leaf::Unobtained,
+                        snow_mud_fade_to: Leaf::Unobtained,
+                    },
+                );
+            }
+            other => {
+                warnings.push(format!(
+                    "weather.by_region.{key}: expected object, found {}; treated as unobtained",
+                    json_type_name(other)
+                ));
+                out.insert(
+                    id,
+                    WeatherRegionRow {
+                        weather_kind: Leaf::Unobtained,
+                        intensity: Leaf::Unobtained,
+                        snow_level_0_255: Leaf::Unobtained,
+                        mud_level_0_255: Leaf::Unobtained,
+                        snow_mud_fade: Leaf::Unobtained,
+                        snow_mud_fade_from: Leaf::Unobtained,
+                        snow_mud_fade_to: Leaf::Unobtained,
+                    },
+                );
+            }
+        }
+    }
+    (out, ViewStatus::Present)
+}
+
 fn build_countries(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
-) -> BTreeMap<String, CountryCore> {
+) -> (BTreeMap<String, CountryCore>, ViewStatus) {
     let entries = match rest.get("countries") {
         Some(Value::Object(entries)) => entries,
-        Some(Value::Null) | None => return BTreeMap::new(),
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        None => return (BTreeMap::new(), ViewStatus::DomainAbsent),
         Some(other) => {
             warnings.push(format!(
                 "countries: present but wrong-typed (expected object, found {}); \
                  country view is empty",
                 json_type_name(other)
             ));
-            return BTreeMap::new();
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
         }
     };
     let mut out = BTreeMap::new();
@@ -855,7 +2360,899 @@ fn build_countries(
             },
         );
     }
+    (out, ViewStatus::Present)
+}
+
+fn build_country_identities(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, CountryIdentity>, ViewStatus) {
+    let entries = match rest.get("countries") {
+        Some(Value::Object(entries)) => entries,
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        None => return (BTreeMap::new(), ViewStatus::DomainAbsent),
+        Some(other) => {
+            warnings.push(format!(
+                "countries: present but wrong-typed (expected object, found {}); \
+                 country identity view is unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+    };
+    let mut out = BTreeMap::new();
+    for (tag, entry) in entries {
+        match entry {
+            Value::Object(obj) => {
+                let ctx = format!("countries.{tag}");
+                out.insert(
+                    tag.clone(),
+                    CountryIdentity {
+                        cosmetic_tag: leaf_string(obj, &["extra", "cosmetic_tag"], &ctx, warnings),
+                        ruling_ideology: leaf_string(
+                            obj,
+                            &["politics", "ruling_party"],
+                            &ctx,
+                            warnings,
+                        ),
+                    },
+                );
+            }
+            Value::Null => {
+                out.insert(tag.clone(), CountryIdentity::all_unobtained());
+            }
+            other => {
+                warnings.push(format!(
+                    "countries.{tag}: expected object, found {}; identity leaves treated as unobtained",
+                    json_type_name(other)
+                ));
+                out.insert(tag.clone(), CountryIdentity::all_unobtained());
+            }
+        }
+    }
+    (out, ViewStatus::Present)
+}
+
+fn build_diplomacy(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> DiplomacyView {
+    let mut countries = BTreeMap::new();
+    let mut pairs: BTreeMap<(String, String), DiplomaticPairState> = BTreeMap::new();
+    let mut status = ViewStatus::DomainAbsent;
+
+    match rest.get("countries") {
+        Some(Value::Object(entries)) => {
+            status = ViewStatus::Present;
+            for (tag, entry) in entries {
+                match entry {
+                    Value::Object(obj) => {
+                        let ctx = format!("countries.{tag}");
+                        countries.insert(
+                            tag.clone(),
+                            CountryDiplomacy {
+                                faction_name: leaf_string(
+                                    obj,
+                                    &["politics", "faction", "name"],
+                                    &ctx,
+                                    warnings,
+                                ),
+                                faction_is_leader: leaf_bool(
+                                    obj,
+                                    &["politics", "faction", "is_leader"],
+                                    &ctx,
+                                    warnings,
+                                ),
+                                capital_state: leaf_u32(
+                                    obj,
+                                    &["politics", "capital_state"],
+                                    &ctx,
+                                    warnings,
+                                ),
+                            },
+                        );
+                        fold_country_diplomacy_pairs(tag, obj, &mut pairs, warnings);
+                    }
+                    Value::Null => {
+                        countries.insert(tag.clone(), CountryDiplomacy::all_unobtained());
+                    }
+                    other => {
+                        warnings.push(format!(
+                            "countries.{tag}: expected object, found {}; diplomacy leaves treated as unobtained",
+                            json_type_name(other)
+                        ));
+                        countries.insert(tag.clone(), CountryDiplomacy::all_unobtained());
+                    }
+                }
+            }
+            fold_same_faction_pairs(&countries, &mut pairs);
+        }
+        Some(Value::Null) => status = combine_status(status, ViewStatus::DomainUnavailable),
+        None => {}
+        Some(other) => {
+            warnings.push(format!(
+                "countries: present but wrong-typed (expected object, found {}); diplomacy country view unavailable",
+                json_type_name(other)
+            ));
+            status = combine_status(status, ViewStatus::DomainUnavailable);
+        }
+    }
+
+    match rest.get("diplomacy_pairs") {
+        Some(Value::Object(obj)) => {
+            status = ViewStatus::Present;
+            fold_explicit_diplomacy_pairs(obj, &mut pairs, warnings);
+        }
+        Some(Value::Null) => status = combine_status(status, ViewStatus::DomainUnavailable),
+        None => {}
+        Some(other) => {
+            warnings.push(format!(
+                "diplomacy_pairs: present but wrong-typed (expected object, found {}); pair view unavailable",
+                json_type_name(other)
+            ));
+            status = combine_status(status, ViewStatus::DomainUnavailable);
+        }
+    }
+
+    DiplomacyView {
+        status,
+        pairs,
+        countries,
+    }
+}
+
+fn pair_entry<'a>(
+    pairs: &'a mut BTreeMap<(String, String), DiplomaticPairState>,
+    a: &str,
+    b: &str,
+) -> &'a mut DiplomaticPairState {
+    pairs
+        .entry((a.to_string(), b.to_string()))
+        .or_insert_with(DiplomaticPairState::all_absent)
+}
+
+fn fold_country_diplomacy_pairs(
+    tag: &str,
+    country: &Map<String, Value>,
+    pairs: &mut BTreeMap<(String, String), DiplomaticPairState>,
+    warnings: &mut Vec<String>,
+) {
+    let ctx = format!("countries.{tag}");
+    let diplomacy = match walk_path(country, &["diplomacy"], &ctx, warnings) {
+        Leaf::Measured(Value::Object(obj)) => Some(obj),
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.diplomacy: present but wrong-typed (expected object, found {}); relation arrays skipped",
+                json_type_name(other)
+            ));
+            None
+        }
+        _ => None,
+    };
+    if let Some(diplomacy) = diplomacy {
+        for other in tags_from_relation_list(diplomacy, "wars", "against", &ctx, warnings) {
+            pair_entry(pairs, tag, &other).at_war = Leaf::Measured(true);
+        }
+        for other in tags_from_simple_list(diplomacy, "non_aggression", &ctx, warnings) {
+            pair_entry(pairs, tag, &other).non_aggression_pact = Leaf::Measured(true);
+        }
+        for other in tags_from_simple_list(diplomacy, "guarantees", &ctx, warnings) {
+            pair_entry(pairs, tag, &other).guarantee = Leaf::Measured(true);
+        }
+        for other in tags_from_simple_list(diplomacy, "embargoes", &ctx, warnings) {
+            pair_entry(pairs, tag, &other).embargo = Leaf::Measured(true);
+        }
+        for other in tags_from_simple_list(diplomacy, "military_access", &ctx, warnings) {
+            pair_entry(pairs, tag, &other).military_access = Leaf::Measured(true);
+        }
+    }
+    match leaf_string(
+        country,
+        &["politics", "autonomy", "overlord"],
+        &ctx,
+        warnings,
+    ) {
+        Leaf::Measured(overlord) => {
+            pair_entry(pairs, tag, &overlord).subject = Leaf::Measured(true)
+        }
+        Leaf::Unobtained | Leaf::Absent => {}
+    }
+}
+
+fn tags_from_relation_list(
+    obj: &Map<String, Value>,
+    key: &str,
+    nested_key: &str,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    match obj.get(key) {
+        Some(Value::Array(items)) => {
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    Value::Object(row) => match row.get(nested_key) {
+                        Some(Value::Array(tags)) => {
+                            for (j, tag) in tags.iter().enumerate() {
+                                match tag.as_str() {
+                                    Some(tag) => out.push(tag.to_string()),
+                                    None => warnings.push(format!(
+                                        "{ctx}.diplomacy.{key}[{i}].{nested_key}[{j}]: expected TAG string, found {}; skipped",
+                                        json_type_name(tag)
+                                    )),
+                                }
+                            }
+                        }
+                        Some(Value::String(tag)) => out.push(tag.clone()),
+                        Some(Value::Null) | None => {}
+                        Some(other) => warnings.push(format!(
+                            "{ctx}.diplomacy.{key}[{i}].{nested_key}: expected array/string, found {}; skipped",
+                            json_type_name(other)
+                        )),
+                    },
+                    Value::String(tag) => out.push(tag.clone()),
+                    other => warnings.push(format!(
+                        "{ctx}.diplomacy.{key}[{i}]: expected object/string, found {}; skipped",
+                        json_type_name(other)
+                    )),
+                }
+            }
+        }
+        Some(Value::Null) | None => {}
+        Some(other) => warnings.push(format!(
+            "{ctx}.diplomacy.{key}: present but wrong-typed (expected array, found {}); skipped",
+            json_type_name(other)
+        )),
+    }
     out
+}
+
+fn tags_from_simple_list(
+    obj: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    match obj.get(key) {
+        Some(Value::Array(items)) => {
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    Value::String(tag) => out.push(tag.clone()),
+                    Value::Object(row) => {
+                        if let Some(tag) = row
+                            .get("tag")
+                            .or_else(|| row.get("target"))
+                            .or_else(|| row.get("other"))
+                            .and_then(Value::as_str)
+                        {
+                            out.push(tag.to_string());
+                        } else {
+                            warnings.push(format!(
+                                "{ctx}.diplomacy.{key}[{i}]: object has no tag/target/other; skipped"
+                            ));
+                        }
+                    }
+                    other => warnings.push(format!(
+                        "{ctx}.diplomacy.{key}[{i}]: expected string/object, found {}; skipped",
+                        json_type_name(other)
+                    )),
+                }
+            }
+        }
+        Some(Value::Null) | None => {}
+        Some(other) => warnings.push(format!(
+            "{ctx}.diplomacy.{key}: present but wrong-typed (expected array, found {}); skipped",
+            json_type_name(other)
+        )),
+    }
+    out
+}
+
+fn fold_same_faction_pairs(
+    countries: &BTreeMap<String, CountryDiplomacy>,
+    pairs: &mut BTreeMap<(String, String), DiplomaticPairState>,
+) {
+    let measured: Vec<(&str, &str)> = countries
+        .iter()
+        .filter_map(|(tag, dip)| {
+            dip.faction_name
+                .measured()
+                .map(|name| (tag.as_str(), name.as_str()))
+        })
+        .collect();
+    for (a, faction_a) in &measured {
+        for (b, faction_b) in &measured {
+            if a != b && faction_a == faction_b {
+                pair_entry(pairs, a, b).same_faction = Leaf::Measured(true);
+            }
+        }
+    }
+}
+
+fn fold_explicit_diplomacy_pairs(
+    obj: &Map<String, Value>,
+    pairs: &mut BTreeMap<(String, String), DiplomaticPairState>,
+    warnings: &mut Vec<String>,
+) {
+    for (key, value) in obj {
+        let (owner, viewed, row) = match value {
+            Value::Object(row) => {
+                let parsed = parse_pair_key(key).or_else(|| {
+                    let owner = row
+                        .get("owner")
+                        .or_else(|| row.get("a"))
+                        .and_then(Value::as_str)?;
+                    let viewed = row
+                        .get("viewed")
+                        .or_else(|| row.get("b"))
+                        .and_then(Value::as_str)?;
+                    Some((owner.to_string(), viewed.to_string()))
+                });
+                match parsed {
+                    Some((owner, viewed)) => (owner, viewed, row),
+                    None => {
+                        warnings.push(format!(
+                            "diplomacy_pairs.{key}: cannot determine owner/viewed pair; skipped"
+                        ));
+                        continue;
+                    }
+                }
+            }
+            Value::Null => {
+                if let Some((owner, viewed)) = parse_pair_key(key) {
+                    pairs.insert((owner, viewed), DiplomaticPairState::all_unobtained());
+                }
+                continue;
+            }
+            other => {
+                warnings.push(format!(
+                    "diplomacy_pairs.{key}: expected object, found {}; treated as unobtained when key is parseable",
+                    json_type_name(other)
+                ));
+                if let Some((owner, viewed)) = parse_pair_key(key) {
+                    pairs.insert((owner, viewed), DiplomaticPairState::all_unobtained());
+                }
+                continue;
+            }
+        };
+        let ctx = format!("diplomacy_pairs.{key}");
+        let entry = pair_entry(pairs, &owner, &viewed);
+        entry.at_war = leaf_bool(row, &["at_war"], &ctx, warnings);
+        entry.same_faction = leaf_bool(row, &["same_faction"], &ctx, warnings);
+        entry.non_aggression_pact =
+            leaf_bool_alias(row, &["non_aggression_pact", "nap"], &ctx, warnings);
+        entry.military_access =
+            leaf_bool_alias(row, &["military_access", "access"], &ctx, warnings);
+        entry.guarantee = leaf_bool(row, &["guarantee"], &ctx, warnings);
+        entry.embargo = leaf_bool(row, &["embargo"], &ctx, warnings);
+        entry.subject = leaf_bool(row, &["subject"], &ctx, warnings);
+    }
+}
+
+fn parse_pair_key(key: &str) -> Option<(String, String)> {
+    for sep in ["|", "->", ":"] {
+        if let Some((a, b)) = key.split_once(sep) {
+            if !a.is_empty() && !b.is_empty() {
+                return Some((a.to_string(), b.to_string()));
+            }
+        }
+    }
+    None
+}
+
+fn build_topbar_scalars(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, TopbarScalars>, ViewStatus) {
+    let entries = match rest.get("countries") {
+        Some(Value::Object(entries)) => entries,
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        None => return (BTreeMap::new(), ViewStatus::DomainAbsent),
+        Some(other) => {
+            warnings.push(format!(
+                "countries: present but wrong-typed (expected object, found {}); topbar view unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+    };
+    let world_tension = topbar_world_tension(rest, warnings);
+    let mut out = BTreeMap::new();
+    for (tag, entry) in entries {
+        match entry {
+            Value::Object(obj) => {
+                let ctx = format!("countries.{tag}");
+                out.insert(
+                    tag.clone(),
+                    TopbarScalars {
+                        political_power: leaf_f64(
+                            obj,
+                            &["politics", "political_power"],
+                            &ctx,
+                            warnings,
+                        ),
+                        stability: leaf_f64(obj, &["politics", "stability"], &ctx, warnings),
+                        war_support: leaf_f64(obj, &["politics", "war_support"], &ctx, warnings),
+                        command_power: first_available_f64([
+                            leaf_f64(obj, &["politics", "command_power"], &ctx, warnings),
+                            leaf_f64(obj, &["military", "command_power"], &ctx, warnings),
+                        ]),
+                        manpower_available: leaf_i64(
+                            obj,
+                            &["military", "manpower", "available"],
+                            &ctx,
+                            warnings,
+                        ),
+                        xp_army: leaf_f64(obj, &["military", "xp", "army"], &ctx, warnings),
+                        xp_navy: leaf_f64(obj, &["military", "xp", "navy"], &ctx, warnings),
+                        xp_air: leaf_f64(obj, &["military", "xp", "air"], &ctx, warnings),
+                        factories_civ: leaf_i64(
+                            obj,
+                            &["economy", "factories", "civ"],
+                            &ctx,
+                            warnings,
+                        ),
+                        factories_mil: leaf_i64(
+                            obj,
+                            &["economy", "factories", "mil"],
+                            &ctx,
+                            warnings,
+                        ),
+                        factories_dockyard: leaf_i64(
+                            obj,
+                            &["economy", "factories", "dockyard"],
+                            &ctx,
+                            warnings,
+                        ),
+                        fuel_current: leaf_f64(
+                            obj,
+                            &["economy", "fuel", "current"],
+                            &ctx,
+                            warnings,
+                        ),
+                        fuel_max: leaf_f64(obj, &["economy", "fuel", "max"], &ctx, warnings),
+                        convoys: leaf_convoys(obj, &ctx, warnings),
+                        nukes_total: leaf_i64(obj, &["extra", "nukes_total"], &ctx, warnings),
+                        nukes_ready: leaf_i64(obj, &["extra", "nukes_ready_total"], &ctx, warnings),
+                        world_tension: world_tension.clone(),
+                        supply_value: leaf_f64(
+                            obj,
+                            &["economy", "logistics", "supply_value"],
+                            &ctx,
+                            warnings,
+                        ),
+                        supply_ratio: leaf_f64(
+                            obj,
+                            &["economy", "logistics", "supply_ratio"],
+                            &ctx,
+                            warnings,
+                        ),
+                    },
+                );
+            }
+            Value::Null => {
+                out.insert(tag.clone(), TopbarScalars::all_unobtained());
+            }
+            other => {
+                warnings.push(format!(
+                    "countries.{tag}: expected object, found {}; topbar leaves treated as unobtained",
+                    json_type_name(other)
+                ));
+                out.insert(tag.clone(), TopbarScalars::all_unobtained());
+            }
+        }
+    }
+    (out, ViewStatus::Present)
+}
+
+fn topbar_world_tension(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Leaf<f64> {
+    let mut saw_unobtained = false;
+    for path in [
+        &["world", "world_tension"][..],
+        &["world", "tension"][..],
+        &["world_events", "world_tension"][..],
+    ] {
+        let leaf = match walk_path(rest, path, "snapshot", warnings) {
+            Leaf::Absent => Leaf::Absent,
+            Leaf::Unobtained => Leaf::Unobtained,
+            Leaf::Measured(v) => match v.as_f64() {
+                Some(v) => Leaf::Measured(v),
+                None => {
+                    warnings.push(format!(
+                        "snapshot.{}: present but wrong-typed (expected number, found {}); treated as unobtained",
+                        path.join("."),
+                        json_type_name(v)
+                    ));
+                    Leaf::Unobtained
+                }
+            },
+        };
+        match leaf {
+            Leaf::Measured(v) => return Leaf::Measured(v),
+            Leaf::Unobtained => saw_unobtained = true,
+            Leaf::Absent => {}
+        }
+    }
+    if saw_unobtained {
+        Leaf::Unobtained
+    } else {
+        Leaf::Absent
+    }
+}
+
+fn leaf_convoys(obj: &Map<String, Value>, ctx: &str, warnings: &mut Vec<String>) -> Leaf<f64> {
+    match leaf_f64(obj, &["military", "convoy_count"], ctx, warnings) {
+        Leaf::Measured(v) => return Leaf::Measured(v),
+        Leaf::Unobtained => return Leaf::Unobtained,
+        Leaf::Absent => {}
+    }
+    match walk_path(obj, &["military", "convoys"], ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut total = 0.0;
+            for (i, item) in items.iter().enumerate() {
+                let row = match item.as_object() {
+                    Some(row) => row,
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.military.convoys[{i}]: expected object, found {}; count treated as unobtained",
+                            json_type_name(item)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                };
+                match row.get("amount").and_then(Value::as_f64) {
+                    Some(amount) => total += amount,
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.military.convoys[{i}].amount missing or non-number; count treated as unobtained"
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(total)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.military.convoys: present but wrong-typed (expected array, found {}); treated as unobtained",
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn build_buildings(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<u32, StateBuildings>, ViewStatus) {
+    let states = match rest.get("states") {
+        Some(Value::Object(states)) => states,
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        None => return (BTreeMap::new(), ViewStatus::DomainAbsent),
+        Some(other) => {
+            warnings.push(format!(
+                "states: present but wrong-typed (expected object, found {}); building view unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+    };
+    let mut out = BTreeMap::new();
+    let mut status = ViewStatus::DomainAbsent;
+    for (state_key, state_value) in states {
+        let state_id = match state_key.parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => {
+                warnings.push(format!(
+                    "states: non-numeric state id {state_key:?} skipped"
+                ));
+                continue;
+            }
+        };
+        let state = match state_value {
+            Value::Object(state) => state,
+            Value::Null => {
+                status = combine_status(status, ViewStatus::DomainUnavailable);
+                out.insert(
+                    state_id,
+                    StateBuildings {
+                        status: ViewStatus::DomainUnavailable,
+                        state_buildings: BTreeMap::new(),
+                        province_buildings: BTreeMap::new(),
+                    },
+                );
+                continue;
+            }
+            other => {
+                warnings.push(format!(
+                    "states.{state_key}: expected object, found {}; building leaves treated as unobtained",
+                    json_type_name(other)
+                ));
+                status = combine_status(status, ViewStatus::DomainUnavailable);
+                out.insert(
+                    state_id,
+                    StateBuildings {
+                        status: ViewStatus::DomainUnavailable,
+                        state_buildings: BTreeMap::new(),
+                        province_buildings: BTreeMap::new(),
+                    },
+                );
+                continue;
+            }
+        };
+        let (state_buildings, state_status) = parse_building_map(
+            state.get("buildings"),
+            &format!("states.{state_key}.buildings"),
+            warnings,
+        );
+        let (province_buildings, province_status) = parse_province_buildings(
+            state.get("province_buildings"),
+            &format!("states.{state_key}.province_buildings"),
+            warnings,
+        );
+        let row_status = combine_status(state_status, province_status);
+        status = combine_status(status, row_status);
+        if row_status != ViewStatus::DomainAbsent {
+            out.insert(
+                state_id,
+                StateBuildings {
+                    status: row_status,
+                    state_buildings,
+                    province_buildings,
+                },
+            );
+        }
+    }
+    (out, status)
+}
+
+fn parse_building_map(
+    value: Option<&Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, BuildingStatus>, ViewStatus) {
+    let Some(value) = value else {
+        return (BTreeMap::new(), ViewStatus::DomainAbsent);
+    };
+    match value {
+        Value::Object(obj) => {
+            let mut out = BTreeMap::new();
+            for (building, value) in obj {
+                out.insert(
+                    building.clone(),
+                    parse_building_status(value, &format!("{ctx}.{building}"), warnings),
+                );
+            }
+            (out, ViewStatus::Present)
+        }
+        Value::Null => (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        other => {
+            warnings.push(format!(
+                "{ctx}: present but wrong-typed (expected object, found {}); treated as unavailable",
+                json_type_name(other)
+            ));
+            (BTreeMap::new(), ViewStatus::DomainUnavailable)
+        }
+    }
+}
+
+fn parse_province_buildings(
+    value: Option<&Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<u32, BTreeMap<String, BuildingStatus>>, ViewStatus) {
+    let Some(value) = value else {
+        return (BTreeMap::new(), ViewStatus::DomainAbsent);
+    };
+    match value {
+        Value::Object(provinces) => {
+            let mut out = BTreeMap::new();
+            for (province_key, value) in provinces {
+                let province_id = match province_key.parse::<u32>() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        warnings.push(format!(
+                            "{ctx}: non-numeric province id {province_key:?} skipped"
+                        ));
+                        continue;
+                    }
+                };
+                let (buildings, _) =
+                    parse_building_map(Some(value), &format!("{ctx}.{province_key}"), warnings);
+                out.insert(province_id, buildings);
+            }
+            (out, ViewStatus::Present)
+        }
+        Value::Null => (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        other => {
+            warnings.push(format!(
+                "{ctx}: present but wrong-typed (expected object, found {}); treated as unavailable",
+                json_type_name(other)
+            ));
+            (BTreeMap::new(), ViewStatus::DomainUnavailable)
+        }
+    }
+}
+
+fn parse_building_status(value: &Value, ctx: &str, warnings: &mut Vec<String>) -> BuildingStatus {
+    match value {
+        Value::Number(n) => n
+            .as_f64()
+            .map(BuildingStatus::level_only)
+            .unwrap_or_else(BuildingStatus::all_unobtained),
+        Value::Null => BuildingStatus::all_unobtained(),
+        Value::Object(obj) => BuildingStatus {
+            level: leaf_f64(obj, &["level"], ctx, warnings),
+            healthy_level: leaf_f64(obj, &["healthy_level"], ctx, warnings),
+            damaged: leaf_bool(obj, &["damaged"], ctx, warnings),
+            damage_fraction: first_available_f64([
+                leaf_f64(obj, &["damage_fraction"], ctx, warnings),
+                leaf_f64(obj, &["damage"], ctx, warnings),
+            ]),
+            repair_progress: leaf_f64(obj, &["repair_progress"], ctx, warnings),
+            under_construction: leaf_bool(obj, &["under_construction"], ctx, warnings),
+        },
+        other => {
+            warnings.push(format!(
+                "{ctx}: expected number/object/null building row, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            BuildingStatus::all_unobtained()
+        }
+    }
+}
+
+fn build_visibility(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, PovVisibilityView>, ViewStatus) {
+    let (visibility, status) = object_at_path(rest, &["visibility"], "visibility", warnings);
+    let Some(visibility) = visibility else {
+        return (BTreeMap::new(), status);
+    };
+    let by_pov = match visibility.get("by_pov") {
+        Some(Value::Object(obj)) => obj,
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        Some(other) => {
+            warnings.push(format!(
+                "visibility.by_pov: present but wrong-typed (expected object, found {}); view unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+        None => visibility,
+    };
+    let mut out = BTreeMap::new();
+    for (pov, value) in by_pov {
+        match value {
+            Value::Object(obj) => {
+                out.insert(pov.clone(), parse_pov_visibility(obj, pov, warnings));
+            }
+            Value::Null => {
+                out.insert(
+                    pov.clone(),
+                    PovVisibilityView::with_status(ViewStatus::DomainUnavailable),
+                );
+            }
+            other => {
+                warnings.push(format!(
+                    "visibility.{pov}: expected object, found {}; POV view unavailable",
+                    json_type_name(other)
+                ));
+                out.insert(
+                    pov.clone(),
+                    PovVisibilityView::with_status(ViewStatus::DomainUnavailable),
+                );
+            }
+        }
+    }
+    (out, ViewStatus::Present)
+}
+
+fn parse_pov_visibility(
+    obj: &Map<String, Value>,
+    pov: &str,
+    warnings: &mut Vec<String>,
+) -> PovVisibilityView {
+    let province_value = obj
+        .get("provinces")
+        .or_else(|| obj.get("province_visibility"));
+    let mut status = ViewStatus::DomainAbsent;
+    let mut provinces = BTreeMap::new();
+    match province_value {
+        Some(Value::Object(map)) => {
+            status = ViewStatus::Present;
+            for (key, value) in map {
+                let province_id = match key.parse::<u32>() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        warnings.push(format!(
+                            "visibility.{pov}.provinces: non-numeric province id {key:?} skipped"
+                        ));
+                        continue;
+                    }
+                };
+                provinces.insert(
+                    province_id,
+                    match value {
+                        Value::Bool(true) => Leaf::Measured(ProvinceVisibility {
+                            level: "visible".to_string(),
+                        }),
+                        Value::Bool(false) => Leaf::Measured(ProvinceVisibility {
+                            level: "fogged".to_string(),
+                        }),
+                        Value::String(level) => Leaf::Measured(ProvinceVisibility {
+                            level: level.clone(),
+                        }),
+                        Value::Null => Leaf::Unobtained,
+                        Value::Object(row) => match leaf_string(
+                            row,
+                            &["level"],
+                            &format!("visibility.{pov}.provinces.{key}"),
+                            warnings,
+                        ) {
+                            Leaf::Measured(level) => Leaf::Measured(ProvinceVisibility { level }),
+                            Leaf::Unobtained => Leaf::Unobtained,
+                            Leaf::Absent => Leaf::Unobtained,
+                        },
+                        other => {
+                            warnings.push(format!(
+                                "visibility.{pov}.provinces.{key}: expected bool/string/object/null, found {}; treated as unobtained",
+                                json_type_name(other)
+                            ));
+                            Leaf::Unobtained
+                        }
+                    },
+                );
+            }
+        }
+        Some(Value::Null) => status = combine_status(status, ViewStatus::DomainUnavailable),
+        Some(other) => {
+            warnings.push(format!(
+                "visibility.{pov}.provinces: expected object, found {}; treated as unavailable",
+                json_type_name(other)
+            ));
+            status = combine_status(status, ViewStatus::DomainUnavailable);
+        }
+        None => {}
+    }
+    let spotted_units = parse_spotted_units(obj.get("spotted_units"), pov, warnings);
+    status = combine_status(status, spotted_units.status);
+    PovVisibilityView {
+        status,
+        provinces,
+        spotted_units,
+    }
+}
+
+fn parse_spotted_units(
+    value: Option<&Value>,
+    pov: &str,
+    warnings: &mut Vec<String>,
+) -> SpottedUnitsView {
+    let Some(value) = value else {
+        return SpottedUnitsView::with_status(ViewStatus::DomainAbsent);
+    };
+    match value {
+        Value::Object(obj) => {
+            let ctx = format!("visibility.{pov}.spotted_units");
+            SpottedUnitsView {
+                status: ViewStatus::Present,
+                divisions: leaf_string_list(obj, &["divisions"], &ctx, warnings),
+                fleets: leaf_string_list(obj, &["fleets"], &ctx, warnings),
+                wings: leaf_string_list(obj, &["wings"], &ctx, warnings),
+            }
+        }
+        Value::Null => SpottedUnitsView::with_status(ViewStatus::DomainUnavailable),
+        other => {
+            warnings.push(format!(
+                "visibility.{pov}.spotted_units: expected object, found {}; treated as unavailable",
+                json_type_name(other)
+            ));
+            SpottedUnitsView::with_status(ViewStatus::DomainUnavailable)
+        }
+    }
 }
 
 fn build_provenance(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> ProvenanceView {

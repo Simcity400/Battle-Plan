@@ -10,6 +10,10 @@ pub mod world;
 
 pub use source::{open_recording, open_recording_game, RawFrame, ReplaySource, SourceError};
 pub use world::{
-    ChannelCoverage, CombatRow, CountryCore, DivisionRow, Leaf, MapLayerSource, ProvenanceView,
-    WorldError, WorldFrame, WorldTimeline,
+    BuildingStatus, ChannelCoverage, CombatRow, CountryCore, CountryDiplomacy, CountryIdentity,
+    DiplomacyView, DiplomaticPairState, DivisionRow, DivisionUnitRow, EquipmentAmount,
+    FleetUnitRow, Leaf, MapLayerSource, NavalSupremacyRow, PlayerCountry, PovVisibilityView,
+    ProvenanceView, ProvinceVisibility, SessionMetadataView, ShipCompositionRow, SpeedEvent,
+    SpottedUnitsView, StateBuildings, TimelineLookup, TopbarScalars, ViewStatus, WeatherRegionRow,
+    WingUnitRow, WorldError, WorldFrame, WorldTimeline,
 };
