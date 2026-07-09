@@ -355,6 +355,33 @@ fn raw_collector_stream_can_be_enumerated_and_read_verified() {
 }
 
 #[test]
+fn legacy_pre222_store_deflate_fixture_opens_and_stream_verifies() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/legacy/pre222_store_deflate.battleplan");
+    let container =
+        Container::open(&path, &ExpectedIdentity::default()).expect("open legacy fixture");
+    assert_eq!(container.game_id(), "legacy");
+    let snap = container
+        .load(16_959_360)
+        .expect("load legacy fixture snapshot");
+    assert_eq!(snap.hour_index, Some(16_959_360));
+    let stream_entry = container.entries_by_role("collector_compact_stream");
+    assert_eq!(stream_entry.len(), 1);
+    let stream = container
+        .read_entry_bytes(&stream_entry[0].path)
+        .expect("read legacy compact stream");
+    assert!(stream.starts_with(b"H4CR"));
+    container.verify_all().expect("legacy fixture verify_all");
+
+    let report =
+        snapshot::verify_replay_container_streaming(&path, "legacy", "collector_compact_stream")
+            .expect("streaming verify legacy fixture");
+    assert_eq!(report.entries_verified, 4);
+    assert_eq!(report.stream_entry_bytes, stream.len() as u64);
+    assert!(report.stream_entry_sha256.is_some());
+}
+
+#[test]
 fn verify_all_passes_on_clean_container() {
     let c =
         Container::from_bytes(build_container(true), &ExpectedIdentity::default()).expect("open");

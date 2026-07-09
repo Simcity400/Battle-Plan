@@ -17,9 +17,9 @@ use serde_json::{json, Value};
 use session_multiplayer_metadata_live as session57;
 use snapshot::sha256::{to_hex, Sha256};
 use snapshot::{
-    pack_borrowed_to_writer, pack_mixed_to_writer, pack_streaming_to_writer,
-    verify_replay_container_streaming, BorrowedPackEntry, Container, ExpectedIdentity,
-    FileBackedPackEntry, PackIdentity, StreamingFileEntry,
+    pack_borrowed_to_writer, pack_mixed_to_writer, pack_streaming_zstd_to_writer_with_profile,
+    verify_replay_container_streaming, BorrowedPackEntry, CompressionProfile, Container,
+    ExpectedIdentity, FileBackedPackEntry, PackIdentity, StreamingFileEntry,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -711,6 +711,7 @@ struct Config {
     /// Passed through the JSON control block to the injected DLL as
     /// `reader_concurrency`, the same channel as `extraction_perf_gate`.
     reader_concurrency: u32,
+    compression_profile: CompressionProfile,
     /// Optional pre-built static artifacts to pack into the production container.
     /// Each entry names a well-known artifact and the on-disk path to its JSON
     /// payload. Absent = not requested; the container still packs and records the
@@ -1443,6 +1444,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut static_idea_tech_loc_xref: Option<PathBuf> = None;
     let mut static_ship_definitions: Option<PathBuf> = None;
     let mut static_gfx_icon_manifest: Option<PathBuf> = None;
+    let mut replay_zstd_level: Option<i32> = None;
+    let mut replay_zstd_window_log: Option<u32> = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -1573,6 +1576,14 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 i += 1;
                 reader_concurrency = Some(parse_u32(args.get(i), "--reader-concurrency")?);
             }
+            "--replay-zstd-level" => {
+                i += 1;
+                replay_zstd_level = Some(parse_i32(args.get(i), "--replay-zstd-level")?);
+            }
+            "--replay-zstd-window-log" => {
+                i += 1;
+                replay_zstd_window_log = Some(parse_u32(args.get(i), "--replay-zstd-window-log")?);
+            }
             "--static-templates-equipment-catalog" => {
                 if static_templates_equipment_catalog.is_some() {
                     return Err(
@@ -1692,6 +1703,14 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let reader_concurrency = reader_concurrency
         .or_else(|| preset.map(|preset| preset.reader_concurrency))
         .unwrap_or(if production { 12 } else { 0 });
+    let default_compression = CompressionProfile::default();
+    let compression_profile = CompressionProfile {
+        zstd_level: replay_zstd_level.unwrap_or(default_compression.zstd_level),
+        zstd_window_log: replay_zstd_window_log.unwrap_or(default_compression.zstd_window_log),
+    };
+    compression_profile
+        .validate()
+        .map_err(|e| format!("invalid replay compression profile: {e}"))?;
     let dll = dll.ok_or_else(usage)?;
     let dll = fs::canonicalize(&dll).map_err(|e| format!("dll not found: {e}"))?;
     Ok(Config {
@@ -1722,6 +1741,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         d44_emit_mode,
         d48_emit_mode,
         reader_concurrency,
+        compression_profile,
         static_artifacts: {
             let mut requested = Vec::new();
             if let Some(path) = static_templates_equipment_catalog {
@@ -1882,7 +1902,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--replay-zstd-level N] [--replay-zstd-window-log N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -1912,6 +1932,12 @@ fn usage() -> String {
       ON, min_game_hours=12. Any explicit individual flag OVERRIDES its preset\n\
       value. Omitting --profile is exact legacy behavior (no preset applied).\n\
       (--stream-format json is a divergent dead path and is never a profile.)\n\
+      \n\
+      Replay compression: --replay-zstd-level and --replay-zstd-window-log tune\n\
+      the .battleplan Zstandard writer. Defaults preserve the container-v2\n\
+      profile: level=13 and window_log=27 (128 MiB). Lower values reduce weak-PC\n\
+      finalize CPU/RAM pressure at the cost of larger replay files; finalize\n\
+      budget gating is intentionally separate future work.\n\
       \n\
         --static-templates-equipment-catalog path   domain-59 templates/equipment catalog JSON\n\
                                                     (templates_equipment_catalog_gate.py out/ dir:\n\
@@ -3258,13 +3284,13 @@ fn write_native_replay_container_streaming(
         ..Default::default()
     };
     let (tmp, mut tmp_file) = create_unique_replay_temp(replay_path)?;
-    if let Err(err) = pack_streaming_to_writer(
+    if let Err(err) = pack_streaming_zstd_to_writer_with_profile(
         &game_id,
         &borrowed_entries,
         &file_entries,
         &streaming_entries,
         &identity,
-        true,
+        cfg.compression_profile,
         &mut tmp_file,
     )
     .map_err(|e| format!("pack replay container failed: {e}"))
@@ -25042,6 +25068,7 @@ mod tests {
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
             reader_concurrency: 0,
+            compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
         };
 
@@ -25379,6 +25406,47 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cfg.reader_concurrency, 6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_accepts_replay_zstd_profile() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_zstd_profile_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dll = dir.join("collector.dll");
+        fs::write(&dll, b"").unwrap();
+        let cfg = parse_args(vec![
+            "--pid".to_string(),
+            "1234".to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("out").display().to_string(),
+            "--replay-zstd-level".to_string(),
+            "5".to_string(),
+            "--replay-zstd-window-log".to_string(),
+            "20".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(cfg.compression_profile.zstd_level, 5);
+        assert_eq!(cfg.compression_profile.zstd_window_log, 20);
+
+        let err = parse_args(vec![
+            "--pid".to_string(),
+            "1234".to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("bad").display().to_string(),
+            "--replay-zstd-window-log".to_string(),
+            "28".to_string(),
+        ])
+        .expect_err("window above reader max is rejected");
+        assert!(err.contains("invalid replay compression profile"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -25798,6 +25866,7 @@ mod tests {
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
             reader_concurrency: 0,
+            compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
         }
     }

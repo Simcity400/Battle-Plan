@@ -27,6 +27,15 @@ hoi4.exe -> injected DLL collector/coordinator -> compact records -> Rust record
 Historical lane packets, registration plans, blocker reports, and old status
 notes are archived under `../documents/archive/native_lanes/`.
 
+## Replay Compression
+
+`recorder_host` writes large replay payloads with Zstandard by default at
+`--replay-zstd-level 13 --replay-zstd-window-log 27` (128 MiB window), preserving
+the container-v2 profile. Weak PCs can lower either value to reduce finalize
+CPU/RAM pressure at the cost of larger `.battleplan` files. Finalize budget
+gating remains separate future work; these flags only expose the compression
+knob.
+
 ## Checks
 
 ```powershell

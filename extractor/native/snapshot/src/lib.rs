@@ -31,7 +31,8 @@ pub mod zip;
 pub use container::{Container, ContainerError, ExpectedIdentity};
 pub use pack::{
     pack, pack_borrowed, pack_borrowed_to_writer, pack_borrowed_with, pack_borrowed_with_writer,
-    pack_mixed_to_writer, pack_streaming_to_writer, pack_with, BorrowedPackEntry,
+    pack_mixed_to_writer, pack_streaming_to_writer, pack_streaming_zstd_to_writer,
+    pack_streaming_zstd_to_writer_with_profile, pack_with, BorrowedPackEntry, CompressionProfile,
     FileBackedPackEntry, PackEntry, PackError, PackIdentity, PackOptions, StreamingFileEntry,
 };
 pub use stream_verify::{verify_replay_container_streaming, StreamVerifyReport};

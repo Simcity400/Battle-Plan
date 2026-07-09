@@ -35,22 +35,27 @@ Pipeline (compact/production path):
    disk, and *released* the moment its `FRAME_END` closes. The framing is the same
    contract `fold_check` walks, so streaming snapshots are hash-identical to the
    batch fold (gate **G1**).
-4. **Streaming pack.** `snapshot::pack_streaming_to_writer` appends the raw stream
+4. **Streaming pack.** `snapshot::pack_streaming_zstd_to_writer` appends the raw stream
    as a `StreamingFileEntry`: it is compressed and written to the container in
    bounded chunks (a trailing zip data descriptor carries the deferred crc/sizes;
    the true sizes live in the central directory, which is the reader's authority).
    Small entries (index/timeline/manifest/static) stay in RAM; snapshots are read
    one file at a time. The stream entry's manifest sha256 is the capture rolling
-   hash (no re-read to hash it).
+   hash (no re-read to hash it). Tiny entries stay STORE; large `collector_raw/*`
+   and `*.snapshot.json` payloads use ZIP method 93 (Zstandard) with
+   long-distance matching and Zip64 metadata when entry counts, sizes, or offsets
+   cross zip32 sentinels.
 5. **Streaming verify.** `snapshot::verify_replay_container_streaming` re-opens the
    finished container FROM DISK and hashes every entry against the manifest, one at
    a time, seeking to each local header and streaming its compressed bytes through
    the decompressor. The stream entry's decompressed sha256 is compared to the
    capture hash — the streaming replacement for the old whole-stream in-RAM
    byte-compare (behavior delta: evidence-equivalent hash compare rather than a
-   `Vec == Vec`). The writer enforces the standard reader's 2 GiB per-entry cap
-   for both compressed and uncompressed streamed bytes, and rejects other zip32
-   field/count overflows until the planned zip64 container upgrade.
+   `Vec == Vec`). This streaming path allows multi-GiB compact-stream entries
+   under a separate streaming cap. The normal `snapshot::Container` reader still
+   holds entries in RAM and keeps its 2 GiB per-entry guard; a container with a
+   >2 GiB stream entry is valid for recorder self-verify but not for that in-RAM
+   reader path.
 
 All hourly gate checks, coverage verification, per-domain perf/status accounting,
 manifest fields, and the quarantine-on-gate-fail naming

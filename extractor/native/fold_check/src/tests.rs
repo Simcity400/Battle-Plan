@@ -296,3 +296,18 @@ fn truncated_tail_reports_complete_hours_only() {
         "incomplete tail is reported"
     );
 }
+
+#[test]
+fn legacy_pre222_store_deflate_fixture_container_input_folds() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../snapshot/tests/data/legacy/pre222_store_deflate.battleplan");
+    let (run, kind) = run_input(&path).expect("fold legacy fixture container input");
+
+    assert_eq!(kind, "container");
+    assert_eq!(run.totals.records_total, 2);
+    assert_eq!(run.totals.data_records, 1);
+    assert_eq!(run.totals.frame_end_records, 1);
+    assert!(run.totals.stop_reason.is_none());
+    assert_eq!(run.hours.len(), 1);
+    assert_eq!(run.hours[0].hour_index, 16_959_360);
+}

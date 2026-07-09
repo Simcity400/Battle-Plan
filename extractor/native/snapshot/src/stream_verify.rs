@@ -15,7 +15,11 @@
 
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
-use crate::zip::{validate_path, MAX_CONTAINER_ENTRY_BYTES};
+use crate::zip::{
+    validate_path, INITIAL_ENTRY_RESERVE, MAX_CONTAINER_ENTRY_BYTES, MAX_READER_ENTRIES,
+    STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP32_MAX_FIELD_VALUE, ZIP_METHOD_DEFLATE,
+    ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
+};
 use flate2::write::DeflateDecoder;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -24,8 +28,14 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const EOCD_SIG: u32 = 0x0605_4b50;
+const ZIP64_EOCD_SIG: u32 = 0x0606_4b50;
+const ZIP64_LOCATOR_SIG: u32 = 0x0706_4b50;
 const CDH_SIG: u32 = 0x0201_4b50;
 const LFH_SIG: u32 = 0x0403_4b50;
+const ZIP64_EXTRA_ID: u16 = 0x0001;
+const EOCD_MIN_LEN: u64 = 22;
+const ZIP64_LOCATOR_LEN: u64 = 20;
+const ZIP64_EOCD_MIN_LEN: u64 = 56;
 const VERIFY_CHUNK: usize = 4 * 1024 * 1024;
 
 /// What a successful streaming verification observed.
@@ -61,6 +71,18 @@ fn rd_u32(b: &[u8], off: usize) -> Option<u32> {
         *b.get(off + 1)?,
         *b.get(off + 2)?,
         *b.get(off + 3)?,
+    ]))
+}
+fn rd_u64(b: &[u8], off: usize) -> Option<u64> {
+    Some(u64::from_le_bytes([
+        *b.get(off)?,
+        *b.get(off + 1)?,
+        *b.get(off + 2)?,
+        *b.get(off + 3)?,
+        *b.get(off + 4)?,
+        *b.get(off + 5)?,
+        *b.get(off + 6)?,
+        *b.get(off + 7)?,
     ]))
 }
 
@@ -161,10 +183,12 @@ pub fn verify_replay_container_streaming(
         if e.name == "manifest.json" {
             continue;
         }
-        if e.uncomp_size > MAX_CONTAINER_ENTRY_BYTES || e.comp_size > MAX_CONTAINER_ENTRY_BYTES {
+        if e.uncomp_size > STREAMING_MAX_CONTAINER_ENTRY_BYTES
+            || e.comp_size > STREAMING_MAX_CONTAINER_ENTRY_BYTES
+        {
             return Err(format!(
-                "entry {} exceeds per-entry reader cap (compressed {}, uncompressed {}, cap {})",
-                e.name, e.comp_size, e.uncomp_size, MAX_CONTAINER_ENTRY_BYTES
+                "entry {} exceeds streaming per-entry cap (compressed {}, uncompressed {}, cap {})",
+                e.name, e.comp_size, e.uncomp_size, STREAMING_MAX_CONTAINER_ENTRY_BYTES
             ));
         }
         zip_names.insert(e.name.as_str(), e);
@@ -224,8 +248,10 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
     if file_len < 22 {
         return Err("container too small for an EOCD".to_string());
     }
-    // The EOCD sits within the last 22 + 0xFFFF bytes (comment cap).
-    let tail_len = (22u64 + 0xFFFF).min(file_len);
+    // The EOCD sits within the last 22 + 0xFFFF bytes (comment cap). Include
+    // the Zip64 locator + minimum Zip64 EOCD before it, because a max-size EOCD
+    // comment otherwise pushes those records just outside the scanned tail.
+    let tail_len = (EOCD_MIN_LEN + 0xFFFF + ZIP64_LOCATOR_LEN + ZIP64_EOCD_MIN_LEN).min(file_len);
     let tail_start = file_len - tail_len;
     let mut tail = vec![0u8; tail_len as usize];
     file.seek(SeekFrom::Start(tail_start))
@@ -234,23 +260,40 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         .map_err(|e| format!("read eocd tail: {e}"))?;
 
     let eocd = find_eocd(&tail).ok_or_else(|| "no EOCD record found".to_string())?;
-    let total = rd_u16(&tail, eocd + 10).ok_or("truncated eocd")? as usize;
-    let cd_size = rd_u32(&tail, eocd + 12).ok_or("truncated eocd")? as u64;
-    let cd_off = rd_u32(&tail, eocd + 16).ok_or("truncated eocd")? as u64;
-    if cd_off == 0xFFFF_FFFF || cd_size == 0xFFFF_FFFF || total == 0xFFFF {
-        return Err("Zip64 not supported".to_string());
+    let total16 = rd_u16(&tail, eocd + 10).ok_or("truncated eocd")?;
+    let cd_size32 = rd_u32(&tail, eocd + 12).ok_or("truncated eocd")?;
+    let cd_off32 = rd_u32(&tail, eocd + 16).ok_or("truncated eocd")?;
+    let locator = find_zip64_locator(&tail, eocd);
+    let (total_u64, cd_size, cd_off) = if total16 == u16::MAX
+        || cd_size32 == u32::MAX
+        || cd_off32 == u32::MAX
+        || locator.is_some()
+    {
+        let locator = locator.ok_or_else(|| "Zip64 locator missing".to_string())?;
+        parse_zip64_eocd(&tail, tail_start, locator)?
+    } else {
+        (total16 as u64, cd_size32 as u64, cd_off32 as u64)
+    };
+    if total_u64 > MAX_READER_ENTRIES {
+        return Err(format!(
+            "central directory entry count {total_u64} exceeds reader cap {MAX_READER_ENTRIES}"
+        ));
     }
+    let total = usize::try_from(total_u64)
+        .map_err(|_| "central directory entry count too large".to_string())?;
     if cd_off.saturating_add(cd_size) > file_len {
         return Err("central directory out of range".to_string());
     }
 
-    let mut cd = vec![0u8; cd_size as usize];
+    let cd_size_usize =
+        usize::try_from(cd_size).map_err(|_| "central directory too large".to_string())?;
+    let mut cd = vec![0u8; cd_size_usize];
     file.seek(SeekFrom::Start(cd_off))
         .map_err(|e| format!("seek central dir: {e}"))?;
     file.read_exact(&mut cd)
         .map_err(|e| format!("read central dir: {e}"))?;
 
-    let mut entries = Vec::with_capacity(total);
+    let mut entries = Vec::with_capacity(total.min(INITIAL_ENTRY_RESERVE));
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut p = 0usize;
     while p + 46 <= cd.len() {
@@ -266,12 +309,12 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
                 "entry has unsupported zip general-purpose flags 0x{flags:04x}"
             ));
         }
-        let comp_size = rd_u32(&cd, p + 20).ok_or("truncated cdh")? as u64;
-        let uncomp_size = rd_u32(&cd, p + 24).ok_or("truncated cdh")? as u64;
+        let comp_size32 = rd_u32(&cd, p + 20).ok_or("truncated cdh")?;
+        let uncomp_size32 = rd_u32(&cd, p + 24).ok_or("truncated cdh")?;
         let name_len = rd_u16(&cd, p + 28).ok_or("truncated cdh")? as usize;
         let extra_len = rd_u16(&cd, p + 30).ok_or("truncated cdh")? as usize;
         let comment_len = rd_u16(&cd, p + 32).ok_or("truncated cdh")? as usize;
-        let lho = rd_u32(&cd, p + 42).ok_or("truncated cdh")? as u64;
+        let lho32 = rd_u32(&cd, p + 42).ok_or("truncated cdh")?;
         let name_start = p + 46;
         let name_end = name_start + name_len;
         if name_end > cd.len() {
@@ -280,6 +323,39 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         let name = std::str::from_utf8(&cd[name_start..name_end])
             .map_err(|_| "non-utf8 entry name".to_string())?
             .to_string();
+        let extra_start = name_end;
+        let extra_end = extra_start
+            .checked_add(extra_len)
+            .ok_or("cdh extra overflow")?;
+        if extra_end > cd.len() {
+            return Err("central dir extra past end".to_string());
+        }
+        let extra = &cd[extra_start..extra_end];
+        let need_uncomp = uncomp_size32 == u32::MAX;
+        let need_comp = comp_size32 == u32::MAX;
+        let need_lho = lho32 == u32::MAX;
+        let zip64 = parse_zip64_extra(extra, need_uncomp, need_comp, need_lho)?;
+        let uncomp_size = if need_uncomp {
+            zip64
+                .uncomp_size
+                .ok_or_else(|| format!("entry {name}: Zip64 uncompressed size missing"))?
+        } else {
+            uncomp_size32 as u64
+        };
+        let comp_size = if need_comp {
+            zip64
+                .comp_size
+                .ok_or_else(|| format!("entry {name}: Zip64 compressed size missing"))?
+        } else {
+            comp_size32 as u64
+        };
+        let lho = if need_lho {
+            zip64
+                .local_header_off
+                .ok_or_else(|| format!("entry {name}: Zip64 local header offset missing"))?
+        } else {
+            lho32 as u64
+        };
         validate_path(&name).map_err(|e| format!("unsafe entry path {name}: {e}"))?;
         if !seen.insert(name.clone()) {
             return Err(format!("duplicate entry name {name}"));
@@ -302,7 +378,113 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         }
         p = next;
     }
+    if entries.len() != total {
+        return Err(format!(
+            "central directory entry count mismatch (parsed {}, EOCD {total})",
+            entries.len()
+        ));
+    }
+    if p != cd.len() {
+        return Err("central directory trailing bytes".to_string());
+    }
     Ok(entries)
+}
+
+#[derive(Default)]
+struct Zip64Extra {
+    uncomp_size: Option<u64>,
+    comp_size: Option<u64>,
+    local_header_off: Option<u64>,
+}
+
+fn find_zip64_locator(tail: &[u8], eocd: usize) -> Option<usize> {
+    if eocd < 20 {
+        return None;
+    }
+    let off = eocd - 20;
+    (rd_u32(tail, off) == Some(ZIP64_LOCATOR_SIG)).then_some(off)
+}
+
+fn parse_zip64_eocd(
+    tail: &[u8],
+    tail_start: u64,
+    locator: usize,
+) -> Result<(u64, u64, u64), String> {
+    if rd_u32(tail, locator + 4).ok_or("truncated zip64 locator")? != 0 {
+        return Err("multi-disk Zip64 archives are not supported".to_string());
+    }
+    let zip64_eocd_abs = rd_u64(tail, locator + 8).ok_or("truncated zip64 locator")?;
+    let total_disks = rd_u32(tail, locator + 16).ok_or("truncated zip64 locator")?;
+    if total_disks != 1 {
+        return Err("multi-disk Zip64 archives are not supported".to_string());
+    }
+    if zip64_eocd_abs < tail_start {
+        return Err("Zip64 EOCD outside scanned tail".to_string());
+    }
+    let off = usize::try_from(zip64_eocd_abs - tail_start)
+        .map_err(|_| "Zip64 EOCD offset too large".to_string())?;
+    if off.checked_add(56).map_or(true, |end| end > tail.len()) {
+        return Err("truncated Zip64 EOCD".to_string());
+    }
+    if rd_u32(tail, off) != Some(ZIP64_EOCD_SIG) {
+        return Err("bad Zip64 EOCD signature".to_string());
+    }
+    let record_size = rd_u64(tail, off + 4).ok_or("truncated zip64 eocd")?;
+    if record_size < 44 {
+        return Err("truncated Zip64 EOCD size".to_string());
+    }
+    let disk_no = rd_u32(tail, off + 16).ok_or("truncated zip64 eocd")?;
+    let cd_disk = rd_u32(tail, off + 20).ok_or("truncated zip64 eocd")?;
+    if disk_no != 0 || cd_disk != 0 {
+        return Err("multi-disk Zip64 archives are not supported".to_string());
+    }
+    let entries_on_disk = rd_u64(tail, off + 24).ok_or("truncated zip64 eocd")?;
+    let total_entries = rd_u64(tail, off + 32).ok_or("truncated zip64 eocd")?;
+    if entries_on_disk != total_entries {
+        return Err("split Zip64 central directories are not supported".to_string());
+    }
+    let cd_size = rd_u64(tail, off + 40).ok_or("truncated zip64 eocd")?;
+    let cd_off = rd_u64(tail, off + 48).ok_or("truncated zip64 eocd")?;
+    Ok((total_entries, cd_size, cd_off))
+}
+
+fn parse_zip64_extra(
+    extra: &[u8],
+    need_uncomp: bool,
+    need_comp: bool,
+    need_lho: bool,
+) -> Result<Zip64Extra, String> {
+    let mut p = 0usize;
+    while p + 4 <= extra.len() {
+        let id = rd_u16(extra, p).ok_or("truncated extra")?;
+        let len = rd_u16(extra, p + 2).ok_or("truncated extra")? as usize;
+        let start = p + 4;
+        let end = start.checked_add(len).ok_or("extra length overflow")?;
+        if end > extra.len() {
+            return Err("extra field past end".to_string());
+        }
+        if id == ZIP64_EXTRA_ID {
+            let mut q = start;
+            let mut z = Zip64Extra::default();
+            if need_uncomp {
+                z.uncomp_size = Some(rd_u64(extra, q).ok_or("truncated Zip64 extra")?);
+                q += 8;
+            }
+            if need_comp {
+                z.comp_size = Some(rd_u64(extra, q).ok_or("truncated Zip64 extra")?);
+                q += 8;
+            }
+            if need_lho {
+                z.local_header_off = Some(rd_u64(extra, q).ok_or("truncated Zip64 extra")?);
+            }
+            return Ok(z);
+        }
+        p = end;
+    }
+    if need_uncomp || need_comp || need_lho {
+        return Err("Zip64 extra field missing".to_string());
+    }
+    Ok(Zip64Extra::default())
 }
 
 /// Read + decompress one entry FULLY into RAM. Only used for small entries
@@ -327,6 +509,17 @@ fn hash_entry_inner(
     e: &CdEntry,
     collect: Option<&mut Vec<u8>>,
 ) -> Result<(String, u64), String> {
+    let output_cap = if collect.is_some() {
+        MAX_CONTAINER_ENTRY_BYTES
+    } else {
+        STREAMING_MAX_CONTAINER_ENTRY_BYTES
+    };
+    if e.uncomp_size > output_cap || e.comp_size > STREAMING_MAX_CONTAINER_ENTRY_BYTES {
+        return Err(format!(
+            "entry {} exceeds verifier cap (compressed {}, uncompressed {}, output cap {})",
+            e.name, e.comp_size, e.uncomp_size, output_cap
+        ));
+    }
     // local file header: read fixed 30 bytes, then name+extra len to find data.
     let mut lfh = [0u8; 30];
     file.seek(SeekFrom::Start(e.local_header_off))
@@ -367,11 +560,34 @@ fn hash_entry_inner(
     let mut local_name = vec![0u8; lh_name_len as usize];
     file.read_exact(&mut local_name)
         .map_err(|err| format!("read local name {}: {err}", e.name))?;
+    let mut local_extra = vec![0u8; lh_extra_len as usize];
+    file.read_exact(&mut local_extra)
+        .map_err(|err| format!("read local extra {}: {err}", e.name))?;
     if local_name != e.name.as_bytes() {
         return Err(format!("entry {}: local/central name mismatch", e.name));
     }
     if e.flags & 0x0008 == 0 {
-        if lh_crc32 != e.crc32 || lh_comp_size != e.comp_size || lh_uncomp_size != e.uncomp_size {
+        let need_uncomp = lh_uncomp_size == u32::MAX as u64;
+        let need_comp = lh_comp_size == u32::MAX as u64;
+        let zip64 = parse_zip64_extra(&local_extra, need_uncomp, need_comp, false)?;
+        let local_uncomp_size = if need_uncomp {
+            zip64
+                .uncomp_size
+                .ok_or_else(|| format!("entry {}: local Zip64 size missing", e.name))?
+        } else {
+            lh_uncomp_size
+        };
+        let local_comp_size = if need_comp {
+            zip64
+                .comp_size
+                .ok_or_else(|| format!("entry {}: local Zip64 size missing", e.name))?
+        } else {
+            lh_comp_size
+        };
+        if lh_crc32 != e.crc32
+            || local_comp_size != e.comp_size
+            || local_uncomp_size != e.uncomp_size
+        {
             return Err(format!(
                 "entry {}: local/central crc or size mismatch",
                 e.name
@@ -387,10 +603,11 @@ fn hash_entry_inner(
         crc32: crc32fast::Hasher::new(),
         collect,
         len: 0,
+        limit: e.uncomp_size.saturating_add(1),
     };
 
     let final_sink = match e.method {
-        0 => {
+        ZIP_METHOD_STORE => {
             // STORE: comp_size == uncomp_size; stream raw bytes through the sink.
             let mut s = sink;
             stream_n(file, e.comp_size, |chunk| {
@@ -398,7 +615,7 @@ fn hash_entry_inner(
             })?;
             s
         }
-        8 => {
+        ZIP_METHOD_DEFLATE => {
             // DEFLATE: feed compressed bytes into a write-side decoder whose output
             // goes to the hashing sink.
             let mut dec = DeflateDecoder::new(sink);
@@ -407,6 +624,33 @@ fn hash_entry_inner(
             })?;
             dec.finish()
                 .map_err(|err| format!("entry {}: inflate failed: {err}", e.name))?
+        }
+        ZIP_METHOD_ZSTD => {
+            let mut s = sink;
+            {
+                let limited = std::io::Read::by_ref(file).take(e.comp_size);
+                let mut dec = zstd::stream::read::Decoder::new(limited)
+                    .map_err(|err| format!("entry {}: zstd decoder: {err}", e.name))?;
+                dec.window_log_max(ZSTD_WINDOW_LOG)
+                    .map_err(|err| format!("entry {}: zstd decoder: {err}", e.name))?;
+                let mut out = vec![0u8; VERIFY_CHUNK];
+                loop {
+                    let n = dec
+                        .read(&mut out)
+                        .map_err(|err| format!("entry {}: zstd decode failed: {err}", e.name))?;
+                    if n == 0 {
+                        break;
+                    }
+                    s.write_all(&out[..n]).map_err(|err| err.to_string())?;
+                }
+            }
+            file.seek(SeekFrom::Start(
+                data_start
+                    .checked_add(e.comp_size)
+                    .ok_or_else(|| format!("entry {}: data end overflow", e.name))?,
+            ))
+            .map_err(|err| format!("entry {}: seek after zstd data: {err}", e.name))?;
+            s
         }
         m => return Err(format!("entry {}: unsupported method {m}", e.name)),
     };
@@ -438,7 +682,8 @@ fn read_and_validate_data_descriptor(
     comp_size: u64,
     uncomp_size: u64,
 ) -> Result<(), String> {
-    let mut dd = [0u8; 16];
+    let zip64_descriptor = comp_size > ZIP32_MAX_FIELD_VALUE || uncomp_size > ZIP32_MAX_FIELD_VALUE;
+    let mut dd = vec![0u8; if zip64_descriptor { 24 } else { 16 }];
     file.read_exact(&mut dd)
         .map_err(|err| format!("entry {}: read data descriptor: {err}", e.name))?;
     if rd_u32(&dd, 0) != Some(0x0807_4b50) {
@@ -448,8 +693,17 @@ fn read_and_validate_data_descriptor(
         ));
     }
     let dd_crc32 = rd_u32(&dd, 4).ok_or("truncated data descriptor")?;
-    let dd_comp_size = rd_u32(&dd, 8).ok_or("truncated data descriptor")? as u64;
-    let dd_uncomp_size = rd_u32(&dd, 12).ok_or("truncated data descriptor")? as u64;
+    let (dd_comp_size, dd_uncomp_size) = if zip64_descriptor {
+        (
+            rd_u64(&dd, 8).ok_or("truncated data descriptor")?,
+            rd_u64(&dd, 16).ok_or("truncated data descriptor")?,
+        )
+    } else {
+        (
+            rd_u32(&dd, 8).ok_or("truncated data descriptor")? as u64,
+            rd_u32(&dd, 12).ok_or("truncated data descriptor")? as u64,
+        )
+    };
     if dd_crc32 != crc32 || dd_comp_size != comp_size || dd_uncomp_size != uncomp_size {
         return Err(format!(
             "entry {}: data descriptor mismatch (crc {dd_crc32:08x}/{crc32:08x}, compressed {dd_comp_size}/{comp_size}, uncompressed {dd_uncomp_size}/{uncomp_size})",
@@ -483,15 +737,28 @@ struct HashSink<'a> {
     crc32: crc32fast::Hasher,
     collect: Option<&'a mut Vec<u8>>,
     len: u64,
+    limit: u64,
 }
 impl Write for HashSink<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let next = self.len.checked_add(buf.len() as u64).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "entry length overflow")
+        })?;
+        if next > self.limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "entry exceeded declared uncompressed size cap {}",
+                    self.limit
+                ),
+            ));
+        }
         self.hasher.update(buf);
         self.crc32.update(buf);
         if let Some(c) = self.collect.as_deref_mut() {
             c.extend_from_slice(buf);
         }
-        self.len = self.len.saturating_add(buf.len() as u64);
+        self.len = next;
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -506,7 +773,7 @@ fn find_eocd(tail: &[u8]) -> Option<usize> {
     }
     let mut i = tail.len() - 22;
     loop {
-        if rd_u32(tail, i) == Some(EOCD_SIG) {
+        if rd_u32(tail, i) == Some(EOCD_SIG) && eocd_comment_ends_at_eof(tail, i) {
             return Some(i);
         }
         if i == 0 {
@@ -516,13 +783,23 @@ fn find_eocd(tail: &[u8]) -> Option<usize> {
     }
 }
 
+fn eocd_comment_ends_at_eof(tail: &[u8], off: usize) -> bool {
+    let comment_len = match rd_u16(tail, off + 20) {
+        Some(len) => len as usize,
+        None => return false,
+    };
+    off.checked_add(22)
+        .and_then(|end| end.checked_add(comment_len))
+        == Some(tail.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::container::{Container, ExpectedIdentity};
     use crate::pack::{
-        pack_streaming_to_writer, BorrowedPackEntry, FileBackedPackEntry, PackIdentity,
-        StreamingFileEntry,
+        pack_streaming_to_writer, pack_streaming_zstd_to_writer, BorrowedPackEntry,
+        FileBackedPackEntry, PackIdentity, StreamingFileEntry,
     };
     use std::fs;
     use std::io::{Read, Seek, SeekFrom};
@@ -553,6 +830,48 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn zip64_empty_with_entry_count(total_entries: u64, comment_len: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let zip64_eocd_off = out.len() as u64;
+        out.extend_from_slice(&ZIP64_EOCD_SIG.to_le_bytes());
+        out.extend_from_slice(&44u64.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&total_entries.to_le_bytes());
+        out.extend_from_slice(&total_entries.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+
+        out.extend_from_slice(&ZIP64_LOCATOR_SIG.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&zip64_eocd_off.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+
+        out.extend_from_slice(&EOCD_SIG.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&(comment_len as u16).to_le_bytes());
+        out.extend(std::iter::repeat(b'z').take(comment_len));
+        out
+    }
+
+    fn add_comment_with_fake_eocd(mut data: Vec<u8>) -> Vec<u8> {
+        let eocd = find_eocd(&data).expect("base archive eocd");
+        assert_eq!(rd_u16(&data, eocd + 20), Some(0));
+        let mut comment = vec![b'x'; 40];
+        comment[8..12].copy_from_slice(&EOCD_SIG.to_le_bytes());
+        comment[28..30].copy_from_slice(&0u16.to_le_bytes());
+        data[eocd + 20..eocd + 22].copy_from_slice(&(comment.len() as u16).to_le_bytes());
+        data.extend_from_slice(&comment);
+        data
     }
 
     fn build_store_streaming_container(dir: &TmpDir, tag: &str) -> (PathBuf, Vec<u8>, String) {
@@ -604,6 +923,115 @@ mod tests {
         let extra_len = rd_u16(&lfh, 28).unwrap() as u64;
         let data_start = entry.local_header_off + 30 + name_len + extra_len;
         (data_start, entry.comp_size)
+    }
+
+    #[test]
+    fn streaming_reader_rejects_zip64_entry_count_above_reader_cap() {
+        let dir = TmpDir::new("entry_count_cap");
+        let path = dir.join("too_many_entries.battleplan");
+        fs::write(
+            &path,
+            zip64_empty_with_entry_count(MAX_READER_ENTRIES + 1, 0),
+        )
+        .unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+
+        let err = match read_central_directory(&mut file, len) {
+            Ok(_) => panic!("entry-count cap should reject hostile Zip64 EOCD"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("entry count") && err.contains("reader cap"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn streaming_tail_includes_zip64_locator_with_max_eocd_comment() {
+        let dir = TmpDir::new("zip64_tail");
+        let path = dir.join("zip64_max_comment.battleplan");
+        fs::write(&path, zip64_empty_with_entry_count(0, 0xFFFF)).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+
+        let entries = read_central_directory(&mut file, len)
+            .expect("extended tail includes locator and Zip64 EOCD");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn streaming_eocd_collision_in_comment_is_ignored() {
+        let dir = TmpDir::new("eocd_collision");
+        let path = dir.join("collision.battleplan");
+        let index = br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#.to_vec();
+        let borrowed = vec![BorrowedPackEntry {
+            path: "payload/g/index.json".into(),
+            bytes: &index,
+            role: "index",
+            hour_index: None,
+        }];
+        let mut base = Vec::new();
+        crate::pack::pack_borrowed_to_writer(
+            "g",
+            &borrowed,
+            &PackIdentity::default(),
+            false,
+            &mut base,
+        )
+        .unwrap();
+        fs::write(&path, add_comment_with_fake_eocd(base)).unwrap();
+
+        let report = verify_replay_container_streaming(&path, "g", "collector_compact_stream")
+            .expect("collision inside EOCD comment does not hide real EOCD");
+        assert_eq!(report.entries_verified, 1);
+    }
+
+    fn build_zstd_streaming_container(dir: &TmpDir, tag: &str) -> (PathBuf, Vec<u8>, String) {
+        let stream_path = dir.join(&format!("{tag}.bin"));
+        let stream_bytes = (0..(256 * 1024u32))
+            .map(|i| (i.wrapping_mul(97) >> 5) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&stream_path, &stream_bytes).unwrap();
+        let stream_sha = to_hex(&Sha256::digest(&stream_bytes));
+        let index = br#"{"game_id":"g","schema_version":"1","snapshots":[{"hour_index":0,"date":"1936.1.1.1","file":"snapshots/000000000000.snapshot.json"}]}"#.to_vec();
+        let borrowed = vec![BorrowedPackEntry {
+            path: "payload/g/index.json".into(),
+            bytes: &index,
+            role: "index",
+            hour_index: None,
+        }];
+        let snap_path = dir.join(&format!("{tag}.snapshot.json"));
+        let snap = format!(
+            r#"{{"game_id":"g","schema_version":"1","hour_index":0,"date":"1936.1.1.1","countries":{{"GER":{{"blob":"{}"}}}}}}"#,
+            "x".repeat(64 * 1024)
+        );
+        fs::write(&snap_path, snap.as_bytes()).unwrap();
+        let files = vec![FileBackedPackEntry {
+            path: "payload/g/snapshots/000000000000.snapshot.json".into(),
+            file_path: snap_path.as_path(),
+            role: "snapshot",
+            hour_index: Some(0),
+        }];
+        let streaming = vec![StreamingFileEntry {
+            path: "payload/g/collector_raw/collector_stream.bin".into(),
+            file_path: &stream_path,
+            role: "collector_compact_stream",
+            hour_index: None,
+            sha256: Some(stream_sha.clone()),
+        }];
+        let container_path = dir.join(&format!("{tag}.battleplan"));
+        let mut out = fs::File::create(&container_path).unwrap();
+        pack_streaming_zstd_to_writer(
+            "g",
+            &borrowed,
+            &files,
+            &streaming,
+            &PackIdentity::default(),
+            &mut out,
+        )
+        .unwrap();
+        (container_path, stream_bytes, stream_sha)
     }
 
     /// Build a `.battleplan` via the STREAMING packer (a large streamed stream
@@ -707,6 +1135,435 @@ mod tests {
         let tampered =
             verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream");
         assert!(tampered.is_err(), "tampered container must fail verify");
+    }
+
+    #[test]
+    fn zstd_streaming_pack_roundtrips_both_readers() {
+        let dir = TmpDir::new("zstd_roundtrip");
+        let (container_path, stream_bytes, stream_sha) =
+            build_zstd_streaming_container(&dir, "zstd_roundtrip");
+
+        let mut file = fs::File::open(&container_path).unwrap();
+        let file_len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, file_len).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.name == "payload/g/collector_raw/collector_stream.bin")
+                .unwrap()
+                .method,
+            ZIP_METHOD_ZSTD
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.name == "payload/g/snapshots/000000000000.snapshot.json")
+                .unwrap()
+                .method,
+            ZIP_METHOD_ZSTD
+        );
+
+        let report =
+            verify_replay_container_streaming(&container_path, "g", "collector_compact_stream")
+                .expect("streaming verify zstd container");
+        assert_eq!(
+            report.stream_entry_sha256.as_deref(),
+            Some(stream_sha.as_str())
+        );
+        assert_eq!(report.stream_entry_bytes, stream_bytes.len() as u64);
+
+        let container = Container::open(&container_path, &ExpectedIdentity::default())
+            .expect("in-RAM reader opens zstd container");
+        let got_stream = container
+            .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
+            .expect("read zstd stream entry");
+        assert_eq!(got_stream, stream_bytes);
+        let snap = container.load(0).expect("load zstd snapshot");
+        assert_eq!(snap.hour_index, Some(0));
+    }
+
+    #[test]
+    fn corrupted_zstd_entry_is_rejected() {
+        let dir = TmpDir::new("zstd_corrupt");
+        let (container_path, _, _) = build_zstd_streaming_container(&dir, "zstd_corrupt");
+        let (data_start, comp_size) = entry_data_range(
+            &container_path,
+            "payload/g/collector_raw/collector_stream.bin",
+        );
+        assert!(comp_size > 16);
+
+        let bad_path = dir.join("zstd_corrupt_bad.battleplan");
+        let mut bytes = fs::read(&container_path).unwrap();
+        bytes[(data_start + comp_size / 2) as usize] ^= 0x40;
+        fs::write(&bad_path, &bytes).unwrap();
+
+        let err = verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream")
+            .expect_err("zstd payload corruption must fail verification");
+        assert!(
+            err.contains("zstd") || err.contains("crc32") || err.contains("sha256"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn zstd_zip64_entry_count_crossing_is_accepted_by_both_readers() {
+        let dir = TmpDir::new("zip64_count");
+        let empty: &[u8] = &[];
+        let index = br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#.to_vec();
+        let stream_path = dir.join("collector_stream.bin");
+        let stream_bytes = vec![42u8; 128 * 1024];
+        fs::write(&stream_path, &stream_bytes).unwrap();
+        let stream_sha = to_hex(&Sha256::digest(&stream_bytes));
+        let streaming = vec![StreamingFileEntry {
+            path: "payload/g/collector_raw/collector_stream.bin".into(),
+            file_path: stream_path.as_path(),
+            role: "collector_compact_stream",
+            hour_index: None,
+            sha256: Some(stream_sha.clone()),
+        }];
+        let mut borrowed = Vec::with_capacity(crate::zip::ZIP32_MAX_ENTRY_COUNT - 1);
+        borrowed.push(BorrowedPackEntry {
+            path: "payload/g/index.json".into(),
+            bytes: &index,
+            role: "index",
+            hour_index: None,
+        });
+        for i in 0..(crate::zip::ZIP32_MAX_ENTRY_COUNT - 2) {
+            borrowed.push(BorrowedPackEntry {
+                path: format!("payload/g/padding/{i:05}.bin"),
+                bytes: empty,
+                role: "padding",
+                hour_index: None,
+            });
+        }
+
+        let container_path = dir.join("zip64_count.battleplan");
+        {
+            let mut out = fs::File::create(&container_path).unwrap();
+            pack_streaming_zstd_to_writer(
+                "g",
+                &borrowed,
+                &[],
+                &streaming,
+                &PackIdentity::default(),
+                &mut out,
+            )
+            .unwrap();
+        }
+        let bytes = fs::read(&container_path).unwrap();
+        assert!(bytes.windows(4).any(|w| w == b"PK\x06\x06"));
+        assert!(bytes.windows(4).any(|w| w == b"PK\x06\x07"));
+        let mut file = fs::File::open(&container_path).unwrap();
+        let file_len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, file_len).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.name == "payload/g/collector_raw/collector_stream.bin")
+                .unwrap()
+                .method,
+            ZIP_METHOD_ZSTD
+        );
+
+        let container = Container::open(&container_path, &ExpectedIdentity::default())
+            .expect("in-RAM reader accepts zip64 entry count");
+        assert_eq!(container.entries().len(), borrowed.len() + 1);
+        assert_eq!(
+            container
+                .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
+                .unwrap(),
+            stream_bytes
+        );
+        let report =
+            verify_replay_container_streaming(&container_path, "g", "collector_compact_stream")
+                .expect("streaming verifier accepts zip64 entry count");
+        assert_eq!(report.entries_verified, borrowed.len() + 1);
+        assert_eq!(
+            report.stream_entry_sha256.as_deref(),
+            Some(stream_sha.as_str())
+        );
+    }
+
+    #[test]
+    #[ignore = "multi-GiB streaming verifier stress; run explicitly for Phase 3"]
+    fn streaming_verifier_accepts_multi_gib_zip64_zstd_entry() {
+        let dir = TmpDir::new("multi_gib_zstd");
+        let container_path = dir.join("multi_gib_zstd.battleplan");
+        let chunk = vec![0u8; 8 * 1024 * 1024];
+        let repeat = 257u64;
+        let uncomp_size = chunk.len() as u64 * repeat;
+        assert!(uncomp_size > MAX_CONTAINER_ENTRY_BYTES);
+
+        let frame = zstd::stream::encode_all(&chunk[..], 1).unwrap();
+        let mut sha = Sha256::new();
+        let mut crc = crc32fast::Hasher::new();
+        for _ in 0..repeat {
+            sha.update(&chunk);
+            crc.update(&chunk);
+        }
+        let stream_sha = to_hex(&sha.finalize());
+        let stream_crc = crc.finalize();
+        write_repeated_zstd_frame_container(
+            &container_path,
+            &frame,
+            repeat,
+            uncomp_size,
+            stream_crc,
+            &stream_sha,
+        );
+
+        let report =
+            verify_replay_container_streaming(&container_path, "g", "collector_compact_stream")
+                .expect("streaming verifier accepts >2 GiB zstd entry");
+        assert_eq!(
+            report.stream_entry_sha256.as_deref(),
+            Some(stream_sha.as_str())
+        );
+        assert_eq!(report.stream_entry_bytes, uncomp_size);
+
+        let err = match Container::open(&container_path, &ExpectedIdentity::default()) {
+            Ok(_) => panic!("in-RAM reader keeps 2 GiB cap"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("cap") || err.to_string().contains("too large"),
+            "{err}"
+        );
+    }
+
+    fn write_repeated_zstd_frame_container(
+        path: &Path,
+        frame: &[u8],
+        repeat: u64,
+        uncomp_size: u64,
+        stream_crc: u32,
+        stream_sha: &str,
+    ) {
+        use crate::canon::manifest_canonical_bytes;
+        use serde_json::json;
+
+        let stream_name = "payload/g/collector_raw/collector_stream.bin";
+        let comp_size = frame.len() as u64 * repeat;
+        let mut manifest = json!({
+            "format": "hoi4replay",
+            "container_version": 1,
+            "required_features": [],
+            "optional_features": [],
+            "schema_version": null,
+            "game_id": "g",
+            "build": { "exe_sha256": null, "pinned": false },
+            "mod_identity": null,
+            "created_utc": null,
+            "recorder": { "tool": "hoi4replay-recorder", "tool_version": "1.0.0" },
+            "counts": { "snapshots": 0 },
+            "entries": [{
+                "path": stream_name,
+                "sha256": stream_sha,
+                "bytes": uncomp_size,
+                "role": "collector_compact_stream"
+            }],
+            "manifest_digest": null,
+            "signature": null,
+        });
+        let digest = to_hex(&Sha256::digest(&manifest_canonical_bytes(&manifest)));
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .insert("manifest_digest".into(), json!(digest));
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let manifest_crc = crc32fast::hash(&manifest_bytes);
+
+        struct Cd {
+            name: &'static str,
+            method: u16,
+            crc: u32,
+            comp_size: u64,
+            uncomp_size: u64,
+            local_off: u64,
+            zip64_uncomp: bool,
+        }
+        let mut out = Vec::new();
+        let mut cd = Vec::new();
+
+        let stream_off = out.len() as u64;
+        write_local_header(
+            &mut out,
+            stream_name,
+            ZIP_METHOD_ZSTD,
+            stream_crc,
+            comp_size,
+            uncomp_size,
+            true,
+        );
+        for _ in 0..repeat {
+            out.extend_from_slice(frame);
+        }
+        append_cd(
+            &mut cd,
+            Cd {
+                name: stream_name,
+                method: ZIP_METHOD_ZSTD,
+                crc: stream_crc,
+                comp_size,
+                uncomp_size,
+                local_off: stream_off,
+                zip64_uncomp: true,
+            },
+        );
+
+        let manifest_off = out.len() as u64;
+        write_local_header(
+            &mut out,
+            "manifest.json",
+            ZIP_METHOD_STORE,
+            manifest_crc,
+            manifest_bytes.len() as u64,
+            manifest_bytes.len() as u64,
+            false,
+        );
+        out.extend_from_slice(&manifest_bytes);
+        append_cd(
+            &mut cd,
+            Cd {
+                name: "manifest.json",
+                method: ZIP_METHOD_STORE,
+                crc: manifest_crc,
+                comp_size: manifest_bytes.len() as u64,
+                uncomp_size: manifest_bytes.len() as u64,
+                local_off: manifest_off,
+                zip64_uncomp: false,
+            },
+        );
+
+        let cd_off = out.len() as u64;
+        let cd_size = cd.len() as u64;
+        out.extend_from_slice(&cd);
+        let zip64_eocd_off = out.len() as u64;
+        push_u32(&mut out, 0x0606_4b50);
+        push_u64(&mut out, 44);
+        push_u16(&mut out, 63);
+        push_u16(&mut out, 45);
+        push_u32(&mut out, 0);
+        push_u32(&mut out, 0);
+        push_u64(&mut out, 2);
+        push_u64(&mut out, 2);
+        push_u64(&mut out, cd_size);
+        push_u64(&mut out, cd_off);
+        push_u32(&mut out, 0x0706_4b50);
+        push_u32(&mut out, 0);
+        push_u64(&mut out, zip64_eocd_off);
+        push_u32(&mut out, 1);
+        push_u32(&mut out, 0x0605_4b50);
+        push_u16(&mut out, 0);
+        push_u16(&mut out, 0);
+        push_u16(&mut out, 2);
+        push_u16(&mut out, 2);
+        push_u32(&mut out, cd_size as u32);
+        push_u32(&mut out, cd_off as u32);
+        push_u16(&mut out, 0);
+        fs::write(path, out).unwrap();
+
+        fn write_local_header(
+            out: &mut Vec<u8>,
+            name: &str,
+            method: u16,
+            crc: u32,
+            comp_size: u64,
+            uncomp_size: u64,
+            zip64_uncomp: bool,
+        ) {
+            let extra = if zip64_uncomp {
+                zip64_extra(uncomp_size)
+            } else {
+                Vec::new()
+            };
+            push_u32(out, 0x0403_4b50);
+            push_u16(out, if method == ZIP_METHOD_ZSTD { 63 } else { 20 });
+            push_u16(out, 0);
+            push_u16(out, method);
+            push_u16(out, 0);
+            push_u16(out, 0);
+            push_u32(out, crc);
+            push_u32(out, comp_size as u32);
+            push_u32(
+                out,
+                if zip64_uncomp {
+                    u32::MAX
+                } else {
+                    uncomp_size as u32
+                },
+            );
+            push_u16(out, name.len() as u16);
+            push_u16(out, extra.len() as u16);
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&extra);
+        }
+
+        fn append_cd(cd: &mut Vec<u8>, entry: Cd) {
+            let extra = if entry.zip64_uncomp {
+                zip64_extra(entry.uncomp_size)
+            } else {
+                Vec::new()
+            };
+            push_u32(cd, 0x0201_4b50);
+            push_u16(
+                cd,
+                if entry.method == ZIP_METHOD_ZSTD {
+                    63
+                } else {
+                    20
+                },
+            );
+            push_u16(
+                cd,
+                if entry.method == ZIP_METHOD_ZSTD {
+                    63
+                } else {
+                    20
+                },
+            );
+            push_u16(cd, 0);
+            push_u16(cd, entry.method);
+            push_u16(cd, 0);
+            push_u16(cd, 0);
+            push_u32(cd, entry.crc);
+            push_u32(cd, entry.comp_size as u32);
+            push_u32(
+                cd,
+                if entry.zip64_uncomp {
+                    u32::MAX
+                } else {
+                    entry.uncomp_size as u32
+                },
+            );
+            push_u16(cd, entry.name.len() as u16);
+            push_u16(cd, extra.len() as u16);
+            push_u16(cd, 0);
+            push_u16(cd, 0);
+            push_u16(cd, 0);
+            push_u32(cd, 0);
+            push_u32(cd, entry.local_off as u32);
+            cd.extend_from_slice(entry.name.as_bytes());
+            cd.extend_from_slice(&extra);
+        }
+
+        fn zip64_extra(uncomp_size: u64) -> Vec<u8> {
+            let mut extra = Vec::new();
+            push_u16(&mut extra, 0x0001);
+            push_u16(&mut extra, 8);
+            push_u64(&mut extra, uncomp_size);
+            extra
+        }
+
+        fn push_u16(out: &mut Vec<u8>, value: u16) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        fn push_u32(out: &mut Vec<u8>, value: u32) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        fn push_u64(out: &mut Vec<u8>, value: u64) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
     }
 
     /// STORE (uncompressed) streaming entries verify too.

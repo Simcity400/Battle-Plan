@@ -241,8 +241,11 @@ fn drive_fold<R: Read>(
 
 /// Read a compact stream from disk, auto-detecting a raw stream vs a container,
 /// and fold it. The raw path streams the file; the container path extracts the
-/// verified `collector_compact_stream` entry (bounded by the reader's 2 GiB
-/// per-entry cap) and folds it from memory.
+/// verified `collector_compact_stream` entry through `snapshot::Container` and
+/// folds it from memory. That container path intentionally inherits the in-RAM
+/// reader's 2 GiB per-entry cap; use a raw `collector_stream.bin` input for
+/// multi-GiB fold checks until fold_check grows a direct streaming container
+/// entry reader.
 fn fold_input(
     path: &Path,
     on_hour: impl FnMut(i64, &str, &[u8], &BTreeMap<u16, u64>),
