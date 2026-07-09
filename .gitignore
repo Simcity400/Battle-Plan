@@ -97,6 +97,7 @@ build_pyi/
 *.battleplan.part/
 .re_scratch/
 scratch_re/
+scratch/
 # lane scratch: decompiled hoi4.exe evidence + local Ghidra project copies
 # (multi-GB). Never commit game code / binaries.
 scratchpad/

@@ -675,6 +675,389 @@ mod tests {
     use std::fs;
     use std::io::Write;
 
+    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
+
+    /// TEMPLATE-MATCH gate (MAP-OBJECTS lane, 2026-07-09): the captured PAN2
+    /// trees_pass template (IA slot 0: 6720 bytes / stride 56 = 120 vertices;
+    /// index buffer 432 bytes R16 = 216 indices; DrawIndexedInstanced 216x37)
+    /// is BYTE-EXACT equal to the shipped
+    /// `gfx/models/mapitems/trees/forest_dunge_blend.mesh` shape
+    /// `polySurfaceShape875` (the third shape, loddist [0,100,200,300] slot 2)
+    /// interleaved as p(3f) n(3f) ta(4f) u0(2f) u1(2f) — 14 f32 = 56 bytes per
+    /// vertex — with indices verbatim. That mesh is `gfx/entities/trees.gfx`
+    /// binding `mapobject_5` (scale = 1). This closes template selection AND
+    /// proves the engine uploads pdxasset streams verbatim in that interleave
+    /// order. Skips (with a note) when neither the live capture dir nor the
+    /// backup copy is present.
+    #[test]
+    fn gate_captured_tree_template_is_forest_dunge_blend_lod2() {
+        let capture_dir = [
+            std::env::var("TREES2_CAPTURE_DIR").ok(),
+            Some(r"C:\Users\Example\AppData\Local\hoi4_captures\live_PAN2".to_string()),
+            Some(
+                r"C:\Users\Example\AppData\Local\Claude_pzs8sxrjxfjjc.data-backup-20260709-103135\LocalCache\Local\hoi4_captures\live_PAN2"
+                    .to_string(),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .map(std::path::PathBuf::from)
+        .find(|dir| {
+            dir.join("trees_frame_draw000_ia_vertex_buffer_slot0.bin")
+                .is_file()
+        });
+        let Some(capture_dir) = capture_dir else {
+            eprintln!("skipping tree template match gate: no live_PAN2 tree capture available");
+            return;
+        };
+        let game_dir = std::path::PathBuf::from(VANILLA_GAME_DIR);
+        if !game_dir.is_dir() {
+            eprintln!("skipping tree template match gate: {VANILLA_GAME_DIR} is absent");
+            return;
+        }
+
+        let captured_vb =
+            fs::read(capture_dir.join("trees_frame_draw000_ia_vertex_buffer_slot0.bin"))
+                .expect("captured tree template VB");
+        let captured_ib = fs::read(capture_dir.join("trees_frame_draw000_ia_index_buffer.bin"))
+            .expect("captured tree template IB");
+        assert_eq!(captured_vb.len(), 120 * 56, "captured template VB size");
+        assert_eq!(captured_ib.len(), 216 * 2, "captured template IB size");
+
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let model = pdx_model_from_resolver(
+            &resolver,
+            "gfx/models/mapitems/trees/forest_dunge_blend.mesh",
+        )
+        .expect("forest_dunge_blend decode");
+        assert_eq!(model.lod_distances, vec![0.0, 100.0, 200.0, 300.0]);
+        let shape = &model.shapes[2];
+        assert_eq!(shape.name, "polySurfaceShape875");
+        let mesh = &shape.meshes[0];
+        assert_eq!(mesh.verts.len(), 120);
+        assert_eq!(mesh.indices.len(), 216);
+
+        // Interleave exactly as the engine template VB: p n ta u0 u1.
+        let mut generated = Vec::with_capacity(captured_vb.len());
+        for i in 0..mesh.verts.len() {
+            for f in mesh.verts[i]
+                .iter()
+                .chain(mesh.normals.as_ref().expect("n")[i].iter())
+                .chain(mesh.tangents.as_ref().expect("ta")[i].iter())
+                .chain(mesh.uv0.as_ref().expect("u0")[i].iter())
+                .chain(mesh.uv1.as_ref().expect("u1")[i].iter())
+            {
+                generated.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        let vb_mismatch = generated
+            .iter()
+            .zip(captured_vb.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            vb_mismatch, 0,
+            "captured tree template VB must be byte-exact forest_dunge_blend polySurfaceShape875"
+        );
+
+        let captured_indices = captured_ib
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]) as u32)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            captured_indices, mesh.indices,
+            "captured tree template IB must equal shipped tri list verbatim"
+        );
+        println!(
+            "gate_tree_template: {} VB bytes + {} indices byte-exact vs {}",
+            captured_vb.len(),
+            captured_indices.len(),
+            capture_dir.display()
+        );
+    }
+
+    fn interleave_pdx_mesh_56(mesh: &PdxMeshData) -> Vec<u8> {
+        let mut out = Vec::with_capacity(mesh.verts.len() * 56);
+        for i in 0..mesh.verts.len() {
+            for f in mesh.verts[i]
+                .iter()
+                .chain(
+                    mesh.normals
+                        .as_ref()
+                        .map(|v| v[i].iter())
+                        .unwrap_or([0.0f32; 3].iter()),
+                )
+                .chain(
+                    mesh.tangents
+                        .as_ref()
+                        .map(|v| v[i].iter())
+                        .unwrap_or([0.0f32; 4].iter()),
+                )
+                .chain(
+                    mesh.uv0
+                        .as_ref()
+                        .map(|v| v[i].iter())
+                        .unwrap_or([0.0f32; 2].iter()),
+                )
+                .chain(
+                    mesh.uv1
+                        .as_ref()
+                        .map(|v| v[i].iter())
+                        .unwrap_or([0.0f32; 2].iter()),
+                )
+            {
+                out.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// SCATTER-LAW gate (MAP-OBJECTS lane, 2026-07-09): reproduces every
+    /// instance count of the captured live_trees_measure trees_pass (8 draws)
+    /// from shipped files alone under the chunk law
+    /// (`TREE_CHUNK_WORLD_UNITS` = 256):
+    ///
+    /// 1. each draw's IA slot-0 template is byte-exact-identified against the
+    ///    `gfx/entities/trees.gfx` mapobject meshes (model + LOD shape);
+    /// 2. the LOD shape equals the `loddist` bracket containing the captured
+    ///    CB0 camera height;
+    /// 3. the camera frustum's ground footprint (CB0 InvViewProjMatrix)
+    ///    selects the visible 256-world-unit chunks;
+    /// 4. for each model (ascending trees.bmp palette index) and each
+    ///    footprint chunk in captured order (chunk x ascending, chunk z
+    ///    descending, zero-count chunks skipped), the per-chunk count of that
+    ///    palette index in map/trees.bmp equals the captured
+    ///    DrawIndexedInstanced instance count — 8/8 exact.
+    #[test]
+    fn gate_tree_scatter_chunk_law_vs_live_trees_measure() {
+        let capture_dir = [
+            std::env::var("TREES_MEASURE_CAPTURE_DIR").ok(),
+            Some(r"C:\Users\Example\AppData\Local\hoi4_captures\live_trees_measure".to_string()),
+            Some(
+                r"C:\Users\Example\AppData\Local\Claude_pzs8sxrjxfjjc.data-backup-20260709-103135\LocalCache\Local\hoi4_captures\live_trees_measure"
+                    .to_string(),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .map(std::path::PathBuf::from)
+        .find(|dir| dir.join(TREES_FRAME_BUNDLE_FILE).is_file());
+        let Some(capture_dir) = capture_dir else {
+            eprintln!("skipping tree scatter chunk law gate: no live_trees_measure capture");
+            return;
+        };
+        let game_dir = std::path::PathBuf::from(VANILLA_GAME_DIR);
+        if !game_dir.is_dir() {
+            eprintln!("skipping tree scatter chunk law gate: {VANILLA_GAME_DIR} is absent");
+            return;
+        }
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+
+        let bundle =
+            NativeD3d11TerrainBundle::load_trees(capture_dir.join(TREES_FRAME_BUNDLE_FILE))
+                .expect("live_trees_measure trees bundle");
+        let draws = &bundle.frame.draws;
+        assert_eq!(draws.len(), 8, "live_trees_measure trees_pass draw count");
+
+        // 1. Identify each draw's template mesh byte-exactly.
+        let bindings = tree_gfx_bindings_from_resolver(&resolver).expect("trees.gfx bindings");
+        struct TemplateId {
+            object_index: u8,
+            mesh_rel: String,
+            shape_index: usize,
+            shape_name: String,
+            lod_distances: Vec<f32>,
+        }
+        let mut templates: Vec<(Vec<u8>, Vec<u8>, TemplateId)> = Vec::new();
+        for binding in &bindings {
+            let model =
+                pdx_model_from_resolver(&resolver, &binding.mesh).expect("tree model decode");
+            for (shape_index, shape) in model.shapes.iter().enumerate() {
+                for mesh in &shape.meshes {
+                    if mesh.material.is_collision() {
+                        continue;
+                    }
+                    let ib = mesh
+                        .indices
+                        .iter()
+                        .flat_map(|i| u16::try_from(*i).expect("R16 index").to_le_bytes())
+                        .collect::<Vec<u8>>();
+                    templates.push((
+                        interleave_pdx_mesh_56(mesh),
+                        ib,
+                        TemplateId {
+                            object_index: binding.object_index,
+                            mesh_rel: binding.mesh.clone(),
+                            shape_index,
+                            shape_name: shape.name.clone(),
+                            lod_distances: model.lod_distances.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+        let mut identified: Vec<(&TemplateId, u32)> = Vec::new();
+        for draw in draws {
+            let vb_binding = draw.vertex_buffers.get("0").expect("IA slot 0");
+            let vb = read_map_frame_buffer_bytes(&capture_dir, vb_binding, "tree template VB")
+                .expect("tree template VB bytes");
+            let ib = read_map_frame_buffer_bytes(
+                &capture_dir,
+                &{
+                    let binding = draw.index_buffer.as_ref().expect("tree IB");
+                    MapFrameBufferBinding {
+                        stage: "IA".to_string(),
+                        slot: 0,
+                        declared_name: None,
+                        file: binding.file.clone(),
+                        byte_len: binding.byte_len,
+                        fnv1a64: binding.fnv1a64.clone(),
+                        stride: None,
+                        offset: None,
+                        dxgi_format: Some(binding.dxgi_format),
+                        bind_flags: 0,
+                        usage: 0,
+                        cpu_access_flags: 0,
+                    }
+                },
+                "tree template IB",
+            )
+            .expect("tree template IB bytes");
+            let hit = templates
+                .iter()
+                .find(|(tvb, tib, _)| *tvb == vb && *tib == ib)
+                .map(|(_, _, id)| id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "captured tree draw {} template ({} bytes) matches no trees.gfx mesh shape",
+                        draw.draw_index,
+                        vb.len()
+                    )
+                });
+            identified.push((hit, draw.instance_count.expect("instance count")));
+        }
+
+        // 2. Camera from the canonical scene CB0 (constants.fxh layout:
+        //    InvViewProjMatrix at byte 64, vCamPos at byte 208).
+        let cb0_binding = draws[0]
+            .constant_buffers
+            .iter()
+            .find(|cb| cb.stage == "VS" && cb.slot == 0)
+            .expect("VS CB0");
+        let cb0 = read_map_frame_buffer_bytes(&capture_dir, cb0_binding, "scene CB0")
+            .expect("scene CB0 bytes");
+        assert_eq!(cb0.len(), 416, "canonical scene CB0 size");
+        let f32_at = |off: usize| f32::from_le_bytes(cb0[off..off + 4].try_into().unwrap());
+        let cam_y = f32_at(208 + 4);
+        let mut inv_vp = [[0f64; 4]; 4];
+        for (i, cell) in inv_vp.iter_mut().flatten().enumerate() {
+            *cell = f32_at(64 + i * 4) as f64;
+        }
+        // Captured matrices are stored transposed relative to
+        // row-vector*matrix; unproject clip -> world via M^T.
+        let unproject = |x: f64, y: f64, z: f64| -> [f64; 3] {
+            let clip = [x, y, z, 1.0];
+            let mut world = [0f64; 4];
+            for (row, out) in world.iter_mut().enumerate() {
+                for (col, c) in clip.iter().enumerate() {
+                    *out += inv_vp[col][row] * c;
+                }
+            }
+            [
+                world[0] / world[3],
+                world[1] / world[3],
+                world[2] / world[3],
+            ]
+        };
+        let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
+        let (mut min_z, mut max_z) = (f64::INFINITY, f64::NEG_INFINITY);
+        for (cx, cy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let near = unproject(cx, cy, 0.0);
+            let far = unproject(cx, cy, 1.0);
+            let dy = far[1] - near[1];
+            assert!(dy.abs() > 1e-9, "degenerate ground ray");
+            let t = -near[1] / dy;
+            let hit_x = near[0] + t * (far[0] - near[0]);
+            let hit_z = near[2] + t * (far[2] - near[2]);
+            min_x = min_x.min(hit_x);
+            max_x = max_x.max(hit_x);
+            min_z = min_z.min(hit_z);
+            max_z = max_z.max(hit_z);
+        }
+        let chunk = TREE_CHUNK_WORLD_UNITS as f64;
+        let (cx0, cx1) = ((min_x / chunk) as u32, (max_x / chunk) as u32);
+        let (cz0, cz1) = ((min_z / chunk) as u32, (max_z / chunk) as u32);
+
+        // 3. Shipped trees.bmp per-chunk counts.
+        let trees_path = resolver
+            .resolve_required(TREES_BMP_SOURCE, "trees.bmp")
+            .expect("trees.bmp");
+        let heightmap_path = resolver
+            .resolve_required(TREE_HEIGHTMAP_SOURCE, "heightmap.bmp")
+            .expect("heightmap.bmp");
+        let trees = load_bmp_indexed(&trees_path).expect("trees.bmp decode");
+        let heightmap = load_bmp_indexed(&heightmap_path).expect("heightmap.bmp decode");
+        let chunk_counts = tree_chunk_index_counts(&trees, heightmap.width, heightmap.height);
+
+        // 4. Expected draw list: models ascending, chunk x ascending, chunk z
+        //    descending, zero-count chunks skipped (captured order law).
+        let mut model_indices = identified
+            .iter()
+            .map(|(id, _)| id.object_index)
+            .collect::<Vec<_>>();
+        model_indices.dedup();
+        let mut sorted_check = model_indices.clone();
+        sorted_check.sort_unstable();
+        assert_eq!(
+            model_indices, sorted_check,
+            "captured draws must group models in ascending palette order"
+        );
+        let mut expected: Vec<(u8, u32, u32, usize)> = Vec::new();
+        for &model in &model_indices {
+            for cx in cx0..=cx1 {
+                for cz in (cz0..=cz1).rev() {
+                    if let Some(count) = chunk_counts.get(&(cx, cz, model)) {
+                        expected.push((model, cx, cz, *count));
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            expected.len(),
+            identified.len(),
+            "visible-chunk draw count mismatch: expected {expected:?}"
+        );
+        let mut exact = 0usize;
+        for ((id, captured_count), (model, cx, cz, file_count)) in identified.iter().zip(&expected)
+        {
+            assert_eq!(
+                id.object_index, *model,
+                "draw model order vs chunk law expectation"
+            );
+            assert_eq!(
+                *captured_count as usize, *file_count,
+                "chunk ({cx},{cz}) index {model}: captured {} vs trees.bmp {}",
+                captured_count, file_count
+            );
+            exact += 1;
+            // LOD bracket: largest k with loddist[k] <= camera height.
+            let lod = id
+                .lod_distances
+                .iter()
+                .rposition(|d| *d <= cam_y)
+                .expect("loddist bracket");
+            assert_eq!(
+                id.shape_index, lod,
+                "{} LOD shape {} ({}) vs camera height {cam_y} bracket {lod}",
+                id.mesh_rel, id.shape_index, id.shape_name
+            );
+        }
+        println!(
+            "gate_tree_scatter: {exact}/8 captured instance counts reproduced exactly from \
+             map/trees.bmp chunk law (chunks x {cx0}..={cx1}, z {cz0}..={cz1}, cam_y {cam_y})"
+        );
+    }
+
     #[test]
     fn parses_tree_gfx_bindings_with_lines() {
         let text = r#"

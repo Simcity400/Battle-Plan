@@ -603,8 +603,8 @@ fn building_shader_cbuffer_mapping(
                     && normalized.contains("vUVAnimSpeed") =>
                 {
                     (
-                        "WorldMatrix = placement translation/rotation/scale in renderer-specific preview shader; AtlasCoordinate = (0,0,1,1) GUESS; vUVAnimSpeed = 0 GUESS".to_string(),
-                        "slot 1 building draw constants; guessed atlas/UV animation documented".to_string(),
+                        "WorldMatrix = placement translation/rotation/scale in renderer-specific preview shader; AtlasCoordinate + vUVAnimSpeed = DEAD BYTES for every non-skinned building effect: the shipped shader reads them only under #ifdef ATLAS (gfx/FX/pdxmesh.shader:453) / #ifdef UV_ANIM (gfx/FX/pdxmesh.shader:448), and ATLAS is defined only by PdxMeshAdvancedSkinned (pdxmesh.shader:795-801) + PdxMeshAdvancedSnowSkinned (:824-829), UV_ANIM only by PdxMeshAdvancedAnimSkinned (:859-864); PdxMeshStandard (:747-752) and the other non-skinned effects define neither, so the compiled bytecode never reads these slots (D3D_SVF_USED gate: gate_building_cb1_atlas_uvanim_dead_for_standard). Bytes are zero-filled; any value is output-identical.".to_string(),
+                        "slot 1 building draw constants; atlas/UV-anim disposition file-derived (compiled-out for non-skinned effects), no guessed values".to_string(),
                     )
                 }
                 2 if normalized.contains("matBones") => (
@@ -1170,5 +1170,77 @@ mod tests {
         let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
         fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         fs::write(path, text).expect("write text");
+    }
+
+    /// B2 GUESS-constant disposition gate (FIDELITY_LEDGER 2.12): the former
+    /// `AtlasCoordinate = (0,0,1,1) GUESS` / `vUVAnimSpeed = 0 GUESS` values
+    /// are proven DEAD for the building path. The shipped shader reads them
+    /// only under `#ifdef ATLAS` (gfx/FX/pdxmesh.shader:453) / `#ifdef
+    /// UV_ANIM` (:448); no non-skinned effect defines either macro
+    /// (PdxMeshStandard :747-752 defines none). This gate compiles the real
+    /// effects and checks the RDEF D3D_SVF_USED flag both ways: dead for
+    /// PdxMeshStandard, live for the skinned ATLAS / UV_ANIM variants.
+    #[cfg(windows)]
+    #[test]
+    fn gate_building_cb1_atlas_uvanim_dead_for_standard() {
+        use crate::shader_compile::{
+            build_stage_hlsl, d3d_compile_stage, parse_dxbc_reflection, ShaderStage,
+        };
+        let game_dir = PathBuf::from(VANILLA_GAME_DIR);
+        if !game_dir.is_dir() {
+            eprintln!("skipping building cb1 atlas gate: {VANILLA_GAME_DIR} is absent");
+            return;
+        }
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+
+        let var_used = |effect: &str, stage: ShaderStage, var: &str| -> Option<bool> {
+            let hlsl = build_stage_hlsl(&resolver, BUILDING_SHADER_SOURCE, effect, stage)
+                .unwrap_or_else(|err| panic!("{effect} HLSL: {err}"));
+            let blob = d3d_compile_stage(&hlsl, stage, 0)
+                .unwrap_or_else(|err| panic!("{effect} compile: {err}"));
+            let reflection = parse_dxbc_reflection(&blob).expect("reflection");
+            reflection
+                .cbuffers
+                .iter()
+                .flat_map(|cb| &cb.vars)
+                .find(|v| v.name == var)
+                .map(|v| v.used)
+        };
+
+        // Building effect: both constants must be dead in VS+PS. Two dead
+        // shapes exist: declared-but-unused (D3D_SVF_USED=0) when another var
+        // keeps the cbuffer alive, or absent entirely when fxc strips the
+        // whole unreferenced cbuffer from that stage's RDEF.
+        for stage in [ShaderStage::Vertex, ShaderStage::Pixel] {
+            for var in ["AtlasCoordinate", "vUVAnimSpeed"] {
+                let used = var_used("PdxMeshStandard", stage, var);
+                assert_ne!(
+                    used,
+                    Some(true),
+                    "PdxMeshStandard {stage:?} {var}: compiled bytecode reads the constant; \
+                     the dead-bytes disposition is wrong"
+                );
+            }
+        }
+        // Positive controls: the flag detection must light up on the variants
+        // that actually read the constants (pdxmesh.shader:800 / :863).
+        assert_eq!(
+            var_used(
+                "PdxMeshAdvancedSkinned",
+                ShaderStage::Pixel,
+                "AtlasCoordinate"
+            ),
+            Some(true),
+            "PdxMeshAdvancedSkinned PS must read AtlasCoordinate (ATLAS define)"
+        );
+        assert_eq!(
+            var_used(
+                "PdxMeshAdvancedAnimSkinned",
+                ShaderStage::Pixel,
+                "vUVAnimSpeed"
+            ),
+            Some(true),
+            "PdxMeshAdvancedAnimSkinned PS must read vUVAnimSpeed (UV_ANIM define)"
+        );
     }
 }

@@ -919,6 +919,9 @@ pub struct DxbcCbufferVar {
     pub name: String,
     pub offset: u32,
     pub size: u32,
+    /// D3D_SVF_USED (RDEF uFlags bit 1): the compiled bytecode actually reads
+    /// this variable. False = declared-but-dead bytes in the bound buffer.
+    pub used: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1016,6 +1019,9 @@ fn parse_rdef(body: &[u8], reflection: &mut DxbcReflection) -> Result<()> {
                 name: read_cstr(body, read_u32(body, var_base)? as usize)?,
                 offset: read_u32(body, var_base + 4)?,
                 size: read_u32(body, var_base + 8)?,
+                // RDEF variable record layout: name(0) offset(4) size(8)
+                // uFlags(12); D3D_SVF_USED = 2.
+                used: read_u32(body, var_base + 12)? & 2 != 0,
             });
         }
         reflection.cbuffers.push(DxbcCbuffer { name, size, vars });

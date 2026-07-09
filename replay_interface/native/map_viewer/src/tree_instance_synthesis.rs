@@ -10,6 +10,56 @@ use std::collections::BTreeMap;
 // the 5632x2048 world by cell centers.
 pub const TREE_INSTANCE_STRIDE_BYTES: u32 = 28;
 
+/// SCATTER LAW (MAP-OBJECTS lane, 2026-07-09, capture-proven 8/8 exact):
+/// the engine builds tree instance buffers per 256x256-world-unit chunk
+/// (= 75x75 trees.bmp cells at the 5632x2048 / 1650x600 vanilla scale) and
+/// issues one DrawIndexedInstanced per (visible chunk, tree palette index)
+/// with instance count = number of nonzero cells of that index in the chunk.
+/// Evidence: live_trees_measure trees_pass (8 draws) — model mapobject_5
+/// (forest_dunge_blend, LOD by camera height 348.07 -> sisataShape) drew
+/// 37/86/452/296 instances and mapobject_6 (forest_dunge -> shape
+/// polySurfaceShape875) drew 69/141/783/416, which equal the trees.bmp
+/// per-chunk counts of palette index 5 / index 6 for chunks
+/// (10,6),(10,5),(11,6),(11,5) exactly (all 8 numbers), and those four
+/// chunks are exactly the CB0 camera frustum's ground footprint. Cross-check:
+/// live_PAN2's DrawIndexedInstanced 216x37 = index-5 count 37 of chunk (10,6)
+/// at camera height 270.39 (blend LOD slot 2, loddist [200,300)).
+/// Captured draw order: chunk x ascending, then chunk z descending.
+///
+/// Consumed by the scatter-law gate; wired into the product tree layer once a
+/// captured instance VB grounds intra-chunk jitter/rotation.
+#[allow(dead_code)]
+pub const TREE_CHUNK_WORLD_UNITS: f32 = 256.0;
+
+/// Per-chunk, per-palette-index nonzero trees.bmp cell counts under the
+/// [`TREE_CHUNK_WORLD_UNITS`] chunk law. Key = (chunk_x, chunk_z, tree_index)
+/// with chunk_z in world coordinates (z = 0 at the map's south edge, i.e.
+/// the same flipped-z convention as instance synthesis).
+#[allow(dead_code)]
+pub fn tree_chunk_index_counts(
+    trees: &IndexImage,
+    map_width: usize,
+    map_height: usize,
+) -> BTreeMap<(u32, u32, u8), usize> {
+    let mut counts = BTreeMap::new();
+    let sx = map_width as f32 / trees.width as f32;
+    let sz = map_height as f32 / trees.height as f32;
+    for y in 0..trees.height {
+        for x in 0..trees.width {
+            let tree_index = trees.pixels[y * trees.width + x];
+            if tree_index == 0 {
+                continue;
+            }
+            let world_x = (x as f32 + 0.5) * sx;
+            let world_z = map_height as f32 - (y as f32 + 0.5) * sz;
+            let chunk_x = (world_x / TREE_CHUNK_WORLD_UNITS) as u32;
+            let chunk_z = (world_z / TREE_CHUNK_WORLD_UNITS) as u32;
+            *counts.entry((chunk_x, chunk_z, tree_index)).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TreeInstanceSynthesisStats {
     pub schema: String,
@@ -120,7 +170,7 @@ pub(crate) fn synthesize_tree_instances_from_images(
             instance_stride_bytes: TREE_INSTANCE_STRIDE_BYTES,
             tree_index_counts: counts,
             convention: format!("one nonzero map/trees.bmp cell -> one instance; position=(cell_center scaled to {map_width}x{map_height}, heightmap*0.1, flipped z); rotation=stable cell hash; slopes=heightmap gradient"),
-            captured_anchor_status: "PAN2 tree bundle contains the 120-vertex template mesh and DrawIndexedInstanced 216x37 args, but no separate instance vertex buffer or nonzero per-instance records; exact 37-instance anchor is not reconstructable from this bundle".to_string(),
+            captured_anchor_status: "PAN2 tree bundle contains the 120-vertex template mesh (byte-exact forest_dunge_blend.mesh polySurfaceShape875, trees.gfx mapobject_5) and DrawIndexedInstanced 216x37 args with no instance payload; the 37-instance anchor IS reconstructed by the chunk scatter law: 37 = nonzero index-5 trees.bmp cells in 256-world-unit chunk (10,6) (TREE_CHUNK_WORLD_UNITS; live_trees_measure 8/8 exact)".to_string(),
         },
     })
 }
