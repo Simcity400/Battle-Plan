@@ -462,6 +462,13 @@ Phase C1), `unitview`, `divisions_summary`, `landcombat`, `navalcombat`,
 `navalcombatresultswindow`, `combatlogview`, `waroverview`, `alerts`,
 `worldtensionwindowpopup`. Shared law: unit/combat/relation views (already
 skeletoned in A3) + counter render (C1). Finishes D3-adjacent HUD. **Do first.**
+- **U1a DONE (2026-07-09)** — on-map unit-counter **CONTENT** bound
+  (`game_ui::binding_counters`): per-unit name / str-org bar fractions / NATO
+  symbol key / owner-colour key / A15 badge states, fail-closed, from
+  `replay_core` unit views. Gated `cargo test -p game_ui` (`counter_binding` 3
+  fixture gates + 6 unit tests). Ledger §2.18a; gaps → item 3 / A15 (org-bar
+  max, non-served badges, naval TF name). Counter GEOMETRY/stacking/bar-render
+  stays C1/CAP6.
 
 **Wave U2 — event/decision chrome (data-driven, tiny panel count, huge coverage).**
 `eventwindow`, `popupwindow`, `countrydecisionview`. One binding lane renders

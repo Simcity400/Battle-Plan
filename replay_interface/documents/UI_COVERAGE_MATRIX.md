@@ -97,7 +97,7 @@ conference is a v1 descope candidate (rare, deferred with item 12 territory).
 | Map-mode bar | mapmodes_interface.gui | chrome-composable | active mode = replay-selected (not recorded) | see MAPMODE_COVERAGE_MATRIX |
 | Menubar | menubar.gui | chrome-composable `[interactive→read-only]` | none (inert) | static chrome |
 | Alerts / notifications | alerts.gui + topbar.gui | **POPULATED (U1)** — 4 topbar count badges | 9b alert counts (initiative/decisions/intel/market_contracts) + **NEW A18** (badge sub-counts + fired-alert feed) | `game_ui::alerts` binds the 4 counts; feed (`global_alerticon_window`) is recording-Absent → fail-closed; layout gate green |
-| Map icons (VP/counters furniture) | mapicons.gui | chrome-composable | 2 + 3 + 8b (VP/units/relation cols) | FURN-REL law partly done; unit counters = Phase C1 |
+| Map icons (VP/counters furniture) | mapicons.gui | **counter CONTENT POPULATED (U1)** | 2 + 3 + 8b (VP/units/relation cols) | FURN-REL law partly done; unit-counter CONTENT bound (`game_ui::binding_counters`: name/str-org bars/NATO key/owner-colour/A15 badges, fail-closed) — counter GEOMETRY/stacking/bar-render still Phase C1/CAP6 |
 | Selected-unit panel | unitview.gui | chrome-composable | 3/8 (selected div/fleet/wing) | binding |
 | Battle-plan tools | battleplantools.gui | chrome-composable `[interactive→read-only]` | 12 (plans, deferred) | inert; arrows deferred |
 | Right-click context menu | rightclickmenu.gui | chrome-composable `[interactive→read-only]` | none | inert |

@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod assets;
 pub mod binding;
+pub mod binding_counters;
 pub mod compose;
 pub mod dds;
 pub mod font;

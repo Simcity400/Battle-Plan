@@ -108,6 +108,17 @@ more per-division state than the row above: `supply_ratio`/`low_supply`
 hourly/on-change alongside the base division row; each missing field
 degrades to badge-absent. Same priority as the close-zoom unit lane (A7).
 
+Confirmed by the U1a counter-CONTENT binding (`game_ui::binding_counters`,
+2026-07-09): the typed `DivisionUnitRow` serves ONLY `moving` (orders) and
+`in_combat`; `supply_status`/`dig_in`/`experience`(training)/attrition/
+`active_ability_kinds` are all absent from the view and fail-close to
+badge-absent. **NEW field also needed:** a division **organisation max** (or a
+normalised org ratio like the 0..1 strength ratio) — the on-map
+`GFX_mapicon_unit_bar_org` fill = `organisation / max_organisation`, but the row
+carries only raw `organisation` points, so the org bar fraction is uncomputable
+today (bound `None`). Naval note (item 8): `FleetUnitRow` drops the task-force
+name (the counter name is `None`).
+
 ## 4. Session metadata (playback pacing & player labels)
 
 Speed/pause change events with timestamps, and the player↔country mapping
