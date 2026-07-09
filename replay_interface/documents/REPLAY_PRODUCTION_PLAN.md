@@ -295,7 +295,7 @@ law); the gap is bindings + population + remaining widgets.
 |---|---|---|
 | G1 | Full-ladder pixel parity vs the 38-frame RenderDoc oracle: mean |err| ≤0.03 at ALL heights incl. h=50 (non-snow frames per the winter confound) | scoreboard |
 | G2 | Fixture end-to-end: open synthetic 1936–1945 recording → play → scrub → **enter a country POV → verify FoW/unit-hiding → toggle back** → every surface updates; recorded as a scripted headless run with frame hashes | e2e hash gate |
-| G3 | Fidelity ledger: zero unlabelled FIT in any product-path parameter; every remaining UNKNOWN either product-blocked or explicitly descoped in this doc | ledger audit |
+| G3 | Fidelity ledger: zero unlabelled FIT in any product-path parameter; every remaining UNKNOWN either product-blocked or explicitly descoped in this doc | ledger audit. **Blocker-list machinery DONE 2026-07-09** — `replay_app/src/blockers.rs` is the canonical registry (29 surfaces: 23 blocked CLI switches + 6 env-override rejections; 10 carry a `*_product_path_blocked` gate). All `main.rs` gates route their fail-closed message through the registry (pure indirection, no behavior change); `--list-blockers` emits it deterministically; a coverage test asserts the registry covers every `*_product_path_blocked` symbol so no block can be added without a row (plus a `--list-blockers` snapshot test). Enumerated table + closure refs in `lane/g3-blockers` LANE_REPORT.md. **Remaining G3:** the ledger FIT/UNKNOWN audit itself. |
 | G4 | Full test suite green + Codex adversarial release review (read-only, xhigh) | 100 % pass + review disposition log |
 
 ### Phase H — Integration (DEFERRED until a real recording exists)

@@ -28,6 +28,7 @@
 //! timeline hour; Space toggles ~4 hours/sec autoplay; left click/drag on
 //! the scrub bar seeks the timeline; Escape quits.
 
+mod blockers;
 mod bundle;
 mod camera;
 mod clausewitz;
@@ -66,11 +67,12 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use blockers::BlockerId;
 use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOptions};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--validate-recording <path>] [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--list-blockers] [--validate-recording <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path>] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <N>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
@@ -208,10 +210,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                 recording = Some(PathBuf::from(value));
             }
             "--demo-scrub" => {
-                return Err(
-                    "--demo-scrub is blocked in replay_app: synthetic scrub data is not replay/capture-derived"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::DemoScrub).into());
             }
             "--dump-frame" => {
                 index += 1;
@@ -279,148 +278,82 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                 capture_dir = Some(PathBuf::from(value));
             }
             "--gb-cpu" => {
-                return Err(
-                    "--gb-cpu is blocked: replay-generated political GradientBorder textures are not engine-derived enough for product rendering"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::GbCpuFlag).into());
             }
             "--synthesize-terrain-chunks" => {
-                return Err(
-                    "--synthesize-terrain-chunks is blocked in replay_app: terrain chunk synthesis still depends on runtime/LOD state that is not fully engine-derived; use map_viewer terrain tooling only for development"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::SynthesizeTerrainChunks).into());
             }
             "--water-full" => {
                 water_full = true;
             }
             "--no-water-full" => {
-                return Err(
-                    "--no-water-full is blocked: the old app-owned water approximation is not engine-derived"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoWaterFull).into());
             }
             "--borders-from-files" => {
-                return Err(
-                    "--borders-from-files is blocked in replay_app: thin-border fade/loop/sea-region law still has UNKNOWN/FIT residuals; use map_viewer border tooling only for development"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::BordersFromFiles).into());
             }
             "--no-borders-from-files" => {
-                return Err(
-                    "--no-borders-from-files is blocked: borders are already blocked in replay_app; do not pass a no-op legacy opt-out"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoBordersFromFiles).into());
             }
             "--chunks-from-files" => {
-                return Err(
-                    "--chunks-from-files is blocked in replay_app: generated terrain chunk mesh buffers still depend on runtime/LOD state that is not fully engine-derived; use map_viewer terrain tooling only for development"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::ChunksFromFiles).into());
             }
             "--no-capture-water" => {
-                return Err(
-                    "--no-capture-water is blocked: omitting captured engine water is not the game's final map"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoCaptureWater).into());
             }
             "--no-capture-rivers" => {
-                return Err(
-                    "--no-capture-rivers is blocked: omitting captured engine rivers is not the game's final map"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoCaptureRivers).into());
             }
             "--no-capture-trees" => {
-                return Err(
-                    "--no-capture-trees is blocked: omitting captured engine trees is not the game's final map"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoCaptureTrees).into());
             }
             "--postfx" => {
                 postfx_enabled = true;
             }
             "--no-postfx" => {
-                return Err(
-                    "--no-postfx is blocked: raw captured render targets are not the game's final on-screen image"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoPostfx).into());
             }
             "--postfx-restore-full" => {
                 postfx_restore_full = true;
             }
             "--no-postfx-restore-full" => {
-                return Err(
-                    "--no-postfx-restore-full is blocked: RestoreScene grading is part of the final game image"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoPostfxRestoreFull).into());
             }
             "--postfx-validate-capture" => {
                 postfx_validate_capture = true;
             }
             "--tree-seasons-by-date" => {
-                return Err(
-                    "--tree-seasons-by-date is blocked in replay_app: tree-season CB1 date patching is still a hypothesis pending dated engine capture evidence"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::TreeSeasonsByDate).into());
             }
             "--trees-from-files" => {
-                return Err(
-                    "--trees-from-files is blocked in replay_app: tree scatter anchor, rotation, and model selection still have FIT/UNKNOWN residuals; use map_viewer tree tooling only for development"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::TreesFromFiles).into());
             }
             "--no-trees-second-subdraw" => {
-                return Err(
-                    "--no-trees-second-subdraw is removed: the alleged second tree draw is the mutually exclusive LOW_END_GFX tree shader, and captured product sessions do not bind it"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoTreesSecondSubdraw).into());
             }
             "--buildings-from-files" => {
-                return Err(
-                    "--buildings-from-files is blocked in replay_app: visible static buildings/cities require a grounded map_objects_pass or real mesh/material importer"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::BuildingsFromFiles).into());
             }
             "--buildings-preview-all" => {
-                return Err(
-                    "--buildings-preview-all is blocked: building preview rendering is not product engine-derived"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::BuildingsPreviewAll).into());
             }
             "--freeze-clock" => {
-                return Err(
-                    "--freeze-clock is blocked in replay_app: synthetic wall-clock map animation would overwrite captured engine constant-buffer time bytes"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::FreezeClock).into());
             }
             "--map-labels" => {
-                return Err(
-                    "--map-labels is blocked in replay_app: owner-vs-controller label keying and per-label Transp_OffsetX.x runtime alpha values await capture confirmation; the product glyph-VB builder/render path is present and gated against map_viewer mapname law output, but these two runtime inputs remain fail-closed"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::MapLabels).into());
             }
             "--no-map-labels" => {
-                return Err(
-                    "--no-map-labels is blocked: country labels are already blocked in replay_app; do not pass a no-op legacy opt-out"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoMapLabels).into());
             }
             "--map-labels-fallback" => {
-                return Err(
-                    "--map-labels-fallback is blocked: legacy country-label reconstruction is not engine-derived"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::MapLabelsFallback).into());
             }
             "--map-furniture" => {
-                return Err(
-                    "--map-furniture is blocked in replay_app: highlight ring rendering and the 0.40 map-text scale origin await capture/decompile confirmation; the relation-column law is engine-traced in map_viewer, but non-neutral capture coverage is still pending; the replay_app furniture module and 3D projection API are present but these draw-time inputs remain fail-closed"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::MapFurniture).into());
             }
             "--no-map-furniture" => {
-                return Err(
-                    "--no-map-furniture is blocked: map furniture is already blocked in replay_app; do not pass a no-op legacy opt-out"
-                        .into(),
-                );
+                return Err(blockers::reason(BlockerId::NoMapFurniture).into());
             }
             other => {
                 return Err(format!("unknown argument {other:?}\n{USAGE}").into());
@@ -554,6 +487,13 @@ fn run(args: &[String]) -> Result<()> {
             .get(index + 1)
             .ok_or_else(|| format!("--validate-recording requires a path\n{USAGE}"))?;
         return run_validate_recording(std::path::Path::new(path));
+    }
+    // G3: emit the canonical product-blocker list mechanically for audits and
+    // the definition-of-done. Intercepted before `parse_cli` so it needs no
+    // map bundle.
+    if args.iter().any(|arg| arg == "--list-blockers") {
+        print!("{}", blockers::render_list());
+        return Ok(());
     }
     let options = parse_cli(args)?;
     // Fail closed: no bundle, no window; nothing is fabricated.
@@ -767,10 +707,7 @@ fn dump_frame(
 
 fn reject_gb_cpu_env(value: Option<std::ffi::OsString>) -> Result<()> {
     if value.is_some() {
-        return Err(
-            "REPLAY_APP_GB_CPU is blocked: replay-generated political GradientBorder textures are not engine-derived enough for product rendering"
-                .into(),
-        );
+        return Err(blockers::reason(BlockerId::GbCpuEnv).into());
     }
     Ok(())
 }
@@ -781,10 +718,12 @@ fn reject_product_debug_env(name: &str) -> Result<()> {
 
 fn reject_product_debug_env_value(name: &str, value: Option<std::ffi::OsString>) -> Result<()> {
     if value.is_some() {
-        return Err(format!(
+        // The message is sourced from the canonical registry row for this env
+        // var, keeping `blockers` the single source of the fail-closed text.
+        let reason = blockers::env_reason_by_name(name).map(str::to_owned).unwrap_or_else(|| format!(
             "{name} is blocked in replay_app: debug and validation environment knobs must not mutate or side-effect the final product render path"
-        )
-        .into());
+        ));
+        return Err(reason.into());
     }
     Ok(())
 }
@@ -1408,6 +1347,84 @@ mod tests {
             err.to_string().contains("--validate-recording requires a path"),
             "{err}"
         );
+    }
+
+    /// G3 coverage gate: every `*_product_path_blocked` gate defined in the
+    /// crate must be referenced by a `blockers::REGISTRY` row's
+    /// `product_path_test`, and the registry must reference no phantom test — so
+    /// a new product-path block cannot be added without a registry row.
+    #[test]
+    fn registry_covers_every_product_path_gate() {
+        use std::collections::BTreeSet;
+        const NEEDLE: &str = "_product_path_blocked";
+        let src = include_str!("main.rs");
+        let bytes = src.as_bytes();
+        // Collect every `fn <name>_product_path_blocked` definition in the crate.
+        let mut gate_symbols: BTreeSet<&str> = BTreeSet::new();
+        for (idx, _) in src.match_indices(NEEDLE) {
+            let end = idx + NEEDLE.len();
+            let mut start = idx;
+            while start > 0 {
+                let c = bytes[start - 1];
+                if c.is_ascii_alphanumeric() || c == b'_' {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            // Keep only true `fn NAME` definitions (skip string-literal mentions
+            // like this test's own NEEDLE and any comment prose).
+            if src[..start].trim_end().ends_with("fn") {
+                gate_symbols.insert(&src[start..end]);
+            }
+        }
+        assert_eq!(
+            gate_symbols.len(),
+            10,
+            "expected 10 *_product_path_blocked gates, found {gate_symbols:?}"
+        );
+        // The set the registry claims to cover.
+        let covered: BTreeSet<&str> = blockers::REGISTRY
+            .iter()
+            .filter_map(|b| b.product_path_test)
+            .collect();
+        for sym in &gate_symbols {
+            assert!(
+                covered.contains(sym),
+                "product-path gate `{sym}` has no blockers::REGISTRY row referencing it"
+            );
+        }
+        for cov in &covered {
+            assert!(
+                gate_symbols.contains(cov),
+                "registry references `{cov}` but no such *_product_path_blocked gate exists"
+            );
+        }
+        assert_eq!(gate_symbols, covered, "gate set must equal registry-covered set");
+    }
+
+    #[test]
+    fn list_blockers_cli_runs_without_a_bundle() {
+        // The G3 emission is a standalone entry: no map bundle required.
+        run(&args(&["--list-blockers"])).expect("--list-blockers must succeed standalone");
+    }
+
+    #[test]
+    fn every_blocked_cli_switch_arm_routes_through_registry() {
+        // Each blocked CLI-switch registry row must actually be rejected by
+        // parse_cli with the registry's own message (indirection is wired, and
+        // no gate was weakened). Env rows are exercised by their own unit tests.
+        for b in blockers::REGISTRY {
+            if let blockers::Surface::CliSwitch(token) = b.surface {
+                let err = parse_cli(&args(&["--bundle", "some/dir", token]))
+                    .expect_err(&format!("{token} must be rejected"));
+                assert_eq!(
+                    err.to_string(),
+                    b.reason,
+                    "{token}: gate must return the registry reason verbatim"
+                );
+            }
+        }
     }
 
     #[test]
