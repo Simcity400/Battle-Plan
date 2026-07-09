@@ -31,6 +31,8 @@ mod map_label_capture;
 mod map_label_law;
 mod map_static_data;
 mod map_text;
+mod mapmode_air;
+mod mapmode_infrastructure;
 mod mod_resolver;
 mod naval_supremacy_tint;
 mod occupation_stripe_law;
@@ -247,6 +249,20 @@ pub use map_static_data::{
 pub use map_text::{
     draw_country_names_cutoff_from_resolver, localisation_table_from_resolver,
     merge_localisation_source, DRAW_COUNTRY_NAMES_CUTOFF_KEY, LOCALISATION_ROOT,
+};
+pub use mapmode_air::{
+    air_overlay_alpha, air_region_set_from_resolver, air_region_status, air_region_tint,
+    air_region_tints, build_air_regions, pov_air_status_color, strategic_air_colors_from_resolver,
+    strategic_air_colors_from_source, AirActivityInput, AirRegion, AirRegionSet, AirRegionStatus,
+    AirRegionTint, PovAirRelation, StrategicAirColors, VANILLA_STRATEGIC_AIR_COLORS,
+    AIR_GRAPHICS_DEFINES_SOURCE, AIR_STRATEGIC_REGIONS_DIR,
+};
+pub use mapmode_infrastructure::{
+    infra_gradient_colors_from_resolver, infra_gradient_colors_from_source, infra_gradient_rgba,
+    infra_ratio, infra_state_max_from_resolver, infra_state_tint, infra_state_tints,
+    parse_infrastructure_state_max, InfraGradientColors, InfraLevelInput, InfraStateTint,
+    INFRASTRUCTURE_BUILDING_KEY, INFRA_BUILDINGS_SOURCE, INFRA_GRAPHICS_DEFINES_SOURCE,
+    VANILLA_INFRA_GRADIENT_COLORS, VANILLA_INFRA_STATE_MAX,
 };
 pub use mod_resolver::{
     sensitive_file_overrides, GameFileResolver, GameFileResolverOptions, GameFileResolverStats,

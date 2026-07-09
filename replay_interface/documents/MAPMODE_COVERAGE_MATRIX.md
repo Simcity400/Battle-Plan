@@ -41,14 +41,14 @@ noted where known but flagged runtime.
 |---|---|---|---|---|---|---|
 | 1 | **Political** (strategic land / default) | `mapmode_button_1` / `ui_mapmode_strategic_land` / F1 | province/state fill = owner country color (HSV-modified raws) — **COL3 law CLOSED** (`col3-political-color-law`) | item 2 (owner/control) | **done** (fill law + borders) | none |
 | 2 | **Naval** (strategic navy) | `mapmode_button_2` / `ui_mapmode_strategic_navy` / F2 | sea-zone supremacy tint = controller color, alpha over `NAVAL_REGION_TRANSPARENCY_*` — **C6 law DONE** (`naval_supremacy_tint`) | item 5 (naval supremacy) | **law-known** (fixture-gated; supremacy unit capture-pending) | supremacy magnitude unit (CAP-gated) |
-| 3 | **Air** (strategic air) | `mapmode_button_3` / `ui_mapmode_strategic_air` / F3 | strategic-region air-activity tint | item 8 (air region activity, LANDED extractor-side) | not-started | air-mode tint RE + region fill |
+| 3 | **Air** (strategic air) | `mapmode_button_3` / `ui_mapmode_strategic_air` / F3 | strategic-region air-activity tint | item 8 (air region activity, LANDED extractor-side) | **law-known** (`mapmode_air.rs`: FILE status colours `STRATEGIC_AIR_COLOR_*` + full-region geometry + controller-colour omniscient fill; POV good/avg/bad thresholds UNKNOWN) | POV superiority-ratio thresholds + overlay-alpha capture |
 | 4 | **Operatives / intelligence** | `mapmode_button_4` / `ui_mapmode_operatives` | intel-network / operative-presence coloring | **NEW: intel/operatives state** | not-started | intel-mode RE (LaR-gated) |
 | 5 | **Supply** | `mapmode_button_5` / `ui_mapmode_supply` / F4 | supply-area coloring (hub range / supply value) | item 11 (rail/supply, deferred) | not-started | supply-mode RE + supply-graph render |
 | 6 | **Terrain** | `mapmode_button_6` / `ui_mapmode_terrain` / F5 | province terrain-type fill (static files, no recording) | none (files: `map/terrain`, `00_terrain.txt`) | **law-known** (static terrain colors file-derivable) | terrain-mode color table cite |
 | 7 | **Resistance** | `mapmode_button_7` / `ui_mapmode_resistance` / F6 | per-state resistance level gradient | **NEW: occupation/resistance state** | not-started | resistance-mode gradient RE (LaR-gated) |
 | 8 | **Compliance** | `mapmode_button_8` / `ui_mapmode_compliance` / F7 | per-state compliance level gradient | **NEW: occupation/compliance state** | not-started | compliance-mode gradient RE (LaR-gated) |
 | 9 | **Resource** | `mapmode_button_9` / `ui_mapmode_resource` / F8 | state resource-deposit coloring (static deposits + control) | item 2 (control) + files (`map/resources`, `00_resources.txt`) | **law-known** (deposits file-derivable) | resource-mode color/threshold cite |
-| 10 | **Infrastructure** | `mapmode_button_10` / `ui_mapmode_infrastructure` / F9 | per-state infrastructure level gradient | item 10 (buildings — infrastructure level) | not-started | infra-mode gradient RE |
+| 10 | **Infrastructure** | `mapmode_button_10` / `ui_mapmode_infrastructure` / F9 | per-state infrastructure level gradient | item 10 (buildings — infrastructure level) | **law-known** (`mapmode_infrastructure.rs`: FILE gradient `MAP_MODE_INFRA_RANGE_COLOR_FROM/TO` + FILE ceiling `infrastructure.level_cap.state_max`=5; level from buildings view; linear-over-[0,state_max] DERIVED) | confirm engine normalises over state_max vs dynamic map max (capture) |
 | 11 | **Factions** | `mapmode_button_11` / `ui_mapmode_factions` / F10 | faction-membership coloring — engine `game_map_mode_factions` layer | item 8b (faction membership) | **law-known** (hard-coded layer; color = faction/leader) | faction-mode color rule cite |
 | 12 | **Raids** (naval/air raids) | `mapmode_button_12` / `ui_mapmode_raids` | raid-target / naval-raid coloring | **NEW: raid state** (or item 8 naval) | not-started | raid-mode RE (BBA/MtG-gated) |
 
@@ -89,10 +89,12 @@ a replay render option, several already have law.
   allied-plans, fog, radar) — not modes.
 - **Status of the 16 modes:**
   - `done` = **1** (political — COL3 fill law + borders).
-  - `law-known` = **8** (naval, terrain, resource, factions, states, diplomacy,
-    players, ideology — fill law file-derivable or ported, gating/binding remains).
-  - `not-started` = **7** (air, operatives, supply, resistance, compliance,
-    infrastructure, raids — need mode-specific RE + a new/deferred data stream).
+  - `law-known` = **10** (naval, terrain, resource, factions, states, diplomacy,
+    players, ideology, **air** (`mapmode_air.rs`, M1d), **infrastructure**
+    (`mapmode_infrastructure.rs`, M1d) — fill law file-derivable or ported,
+    gating/binding remains).
+  - `not-started` = **5** (operatives, supply, resistance, compliance, raids —
+    need mode-specific RE + a new/deferred data stream).
 - **New data dependencies for map modes** (fold into REPLAY_DATA_REQUIREMENTS):
   intel/operatives state (mode 4), occupation resistance/compliance (modes 7/8) —
   **shared with UI_COVERAGE_MATRIX §9 items 6 & 8** (no duplicate stream), raid

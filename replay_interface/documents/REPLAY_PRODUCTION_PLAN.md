@@ -520,8 +520,11 @@ dep 14), so vanilla + arbitrary mod scripted-GUIs render from the same lane.
 - **M0 (done):** political (COL3). **M1 (law-known → gate):** naval (C6), terrain,
   resource, factions, states, diplomacy, players, ideology — 8 modes whose fill
   law is file-derivable/ported; one lane per shared primitive (engine layer types)
-  binds + gates them. **M2 (not-started, needs data + RE):** air, supply,
-  infrastructure (ride on items 8/11/10 from U3/U7), then resistance, compliance,
+  binds + gates them. **M2 (partial — M1d lane):** **air** (`mapmode_air.rs`) and
+  **infrastructure** (`mapmode_infrastructure.rs`) now law-known + fixture-gated
+  (FILE colours/geometry, recording-fed via items 8/10; air POV thresholds +
+  infra normalisation-denominator remain capture-gated, ledger §2.20/2.21);
+  supply still rides item 11 (not-started), then resistance, compliance,
   operatives, raids (LaR/BBA specialist RE, pair with U7). **M3:** generic
   scripted-map-mode layer composer for mods.
 
