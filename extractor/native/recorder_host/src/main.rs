@@ -5200,10 +5200,27 @@ fn decode_compact_frd_depth_data_payload(
                 "offset {offset}: focus row {row_index} has exact completed-token flag without token"
             ));
         }
+        // A completed-count-increase row is legitimately token-less when the
+        // encoder could not resolve a focus token: the country's completed_count
+        // ticked up while it had no active national/continuous focus at either
+        // bracketing sample (focus_kind == 0) and completed_tokens surfaced no
+        // new token, so neither the EXACT nor INFERRED completed-token flag is
+        // set. This is the encoder's `focus_completed_unresolved_rows` state, not
+        // corruption: the completion delta and counts are still carried, so
+        // accepting it loses no data and fabricates no token. An EXACT/INFERRED
+        // completed row without a token stays a hard error (caught here and by the
+        // exact-flag check above), and kinds 2..=5 always carry >=1 token, so this
+        // exemption stays tight and fail-closed.
+        let unresolved_completion = kind == COMPACT_FRD_FOCUS_EVENT_COMPLETED_COUNT_INCREASED
+            && flags
+                & (COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT
+                    | COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED)
+                == 0;
         if from_len == 0
             && to_len == 0
             && completed_len == 0
             && kind != COMPACT_FRD_FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES
+            && !unresolved_completion
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus depth row {row_index} has no token context"
@@ -20112,6 +20129,146 @@ mod tests {
             .parse_errors
             .iter()
             .any(|err| err.contains("missing required direct event hooks badge row")));
+    }
+
+    // Exact failing record payload extracted from the 2026-07-09 speed-5
+    // production run (production_speed5_ShortSpeed5_20260709_124210),
+    // H4CR record offset 2638411697: domain 45, record_type 3, schema-v2,
+    // payload_len 376. focus_count == 1 and that single focus row is a
+    // COMPLETED_COUNT_INCREASED event (tag 8, completed_count 43 -> 44,
+    // completed_delta 1) with focus_kind 0, flags 0, and all three inline
+    // tokens (from/to/completed) empty -- the encoder's
+    // focus_completed_unresolved_rows state (a country whose completed-focus
+    // count ticked up while it had no active national/continuous focus at
+    // either bracketing sample). This is one of the four records that made the
+    // production compact stream report NOT DECODABLE.
+    fn frd_depth_unresolved_completion_fixture() -> Vec<u8> {
+        const HEX: &str = "\
+4652443202003800070000000100000000000000010000000000000000000000\
+010000000000000001000000010000000300000021010000080000000100000000000000\
+000000002b0000002c0000000000000000000000010000000000000000002600000001000000\
+180000002101000000000000000000000100000001000000050000000c0000000100000001000000\
+3800666f6375735f70617573655f666c61675f6661696c5f636c6f7365645f6e6f5f7061757365645f\
+747275655f67726f756e645f747275746802000000050000001000000039010000020000003a00\
+6465636973696f6e5f7461726765745f6669656c64735f6661696c5f636c6f7365645f626f64795f\
+6c61796f75745f756e76616c6964617465640300000003000000e8030000010000000300000046\
+006469726563745f6576656e745f686f6f6b735f756e617661696c61626c655f7472616e736974696f\
+6e735f646572697665645f66726f6d5f636f6d706163745f6672616d6573";
+        let mut bytes = Vec::with_capacity(HEX.len() / 2);
+        let mut nibble = None;
+        for ch in HEX.chars() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            let v = ch.to_digit(16).expect("fixture hex digit") as u8;
+            match nibble.take() {
+                None => nibble = Some(v),
+                Some(high) => bytes.push((high << 4) | v),
+            }
+        }
+        assert!(nibble.is_none(), "fixture hex has odd nibble count");
+        bytes
+    }
+
+    #[test]
+    fn compact_frd_depth_unresolved_completion_from_production_decodes() {
+        let payload = frd_depth_unresolved_completion_fixture();
+        assert_eq!(payload.len(), 376, "fixture payload length");
+        let mut summary = CompactSummary::default();
+        // Seed the domain entry so per-domain row accounting is recorded (the
+        // full-stream path does this before dispatching each record).
+        summary.per_domain.insert(
+            COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+            CompactDomainSummary::default(),
+        );
+
+        decode_compact_frd_depth_data_payload(
+            0,
+            &payload,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &mut summary,
+        );
+
+        // After the fix the exact production bytes decode cleanly: the
+        // token-less completion is accepted, not treated as corruption, and no
+        // "no token context" error is raised.
+        assert!(
+            summary.parse_errors.is_empty(),
+            "expected clean decode, got {:?}",
+            summary.parse_errors
+        );
+        // The row's data is preserved (never dropped): one focus depth event row.
+        let depth = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .expect("frd depth domain present");
+        assert_eq!(
+            depth
+                .data_units_total
+                .get("focus_depth_event_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn compact_frd_depth_tokenless_noncompletion_still_fails_closed() {
+        // Corruption guard: the token-less exemption is scoped to
+        // COMPLETED_COUNT_INCREASED (kind 1). Flipping the same fixture row to a
+        // CURRENT_STARTED (kind 2) row leaves it with no tokens, which is
+        // impossible for a legitimately-encoded kind-2 row, so the decoder must
+        // still reject it as "no token context".
+        let mut payload = frd_depth_unresolved_completion_fixture();
+        // Row 0 begins at the FRD2 header end (56); kind is the second u32.
+        let kind_off = COMPACT_FRD_DEPTH_HEADER_LEN + 4;
+        payload[kind_off..kind_off + 4]
+            .copy_from_slice(&COMPACT_FRD_FOCUS_EVENT_CURRENT_STARTED.to_le_bytes());
+        let mut summary = CompactSummary::default();
+
+        decode_compact_frd_depth_data_payload(
+            0,
+            &payload,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &mut summary,
+        );
+
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("focus depth row 0 has no token context")),
+            "expected fail-closed on token-less non-completion, got {:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn compact_frd_depth_tokenless_inferred_completion_still_fails_closed() {
+        // Corruption guard: a COMPLETED row that claims an INFERRED completed
+        // token but carries no token bytes is inconsistent (the encoder only
+        // sets the INFERRED flag when it attaches a token), so it must stay a
+        // hard error rather than be swallowed by the unresolved exemption.
+        let mut payload = frd_depth_unresolved_completion_fixture();
+        let flags_off = COMPACT_FRD_DEPTH_HEADER_LEN + 12;
+        payload[flags_off..flags_off + 4]
+            .copy_from_slice(&COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED.to_le_bytes());
+        let mut summary = CompactSummary::default();
+
+        decode_compact_frd_depth_data_payload(
+            0,
+            &payload,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &mut summary,
+        );
+
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("focus depth row 0 has no token context")),
+            "expected fail-closed on inferred-flag token-less completion, got {:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]

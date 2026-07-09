@@ -1258,10 +1258,24 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                 "offset {offset}: focus row {row_index} has exact completed-token flag without token"
             ));
         }
+        // A completed-count-increase row is legitimately token-less when the
+        // encoder could not resolve a focus token: completed_count ticked up
+        // while the country had no active national/continuous focus at either
+        // bracketing sample (focus_kind == 0) and completed_tokens surfaced no
+        // new token, so neither the EXACT nor INFERRED completed-token flag is
+        // set. This is the `focus_completed_unresolved_rows` state, not
+        // corruption: the completion delta and counts are still carried, so
+        // accepting it loses no data and fabricates no token. An EXACT/INFERRED
+        // completed row without a token stays a hard error, and kinds 2..=5
+        // always carry >=1 token, so this exemption stays tight and fail-closed.
+        let unresolved_completion = kind == FOCUS_EVENT_COMPLETED_COUNT_INCREASED
+            && flags & (FOCUS_FLAG_COMPLETED_TOKEN_EXACT | FOCUS_FLAG_COMPLETED_TOKEN_INFERRED)
+                == 0;
         if from_len == 0
             && to_len == 0
             && completed_len == 0
             && kind != FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES
+            && !unresolved_completion
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus depth row {row_index} has no token context"
@@ -2581,6 +2595,158 @@ mod tests {
         assert_eq!(proof.focus_pause_badge_rows, 2);
         assert_eq!(proof.decision_target_badge_rows, 2);
         assert_eq!(proof.direct_event_badge_rows, 2);
+    }
+
+    #[test]
+    fn unresolved_focus_completion_gates_clean_and_counts_unresolved() {
+        // Emission/gate invariant regression for the 2026-07-09 speed-5
+        // production stream-corruption bug. A country's completed-focus count
+        // advances (43 -> 44) while it has no active national or continuous
+        // focus at either bracketing sample. The encoder can name no token, so
+        // it emits a COMPLETED_COUNT_INCREASED row with from/to/completed all
+        // empty -- the focus_completed_unresolved_rows state. The depth gate
+        // must accept it (no data loss, no fabricated token) rather than
+        // reporting "focus depth row N has no token context", which is what made
+        // the production compact stream NOT DECODABLE.
+        let mut stream = Vec::new();
+        let focus_1 = focus_payload(FocusState {
+            tag_db_id: 8,
+            completed_count: Some(43),
+            progress_raw: None,
+            current: None,
+            current_continuous: None,
+            completed_tokens: Vec::new(),
+        });
+        append_h4cr_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &focus_1,
+        );
+        append_h4cr_record(
+            &mut stream,
+            2,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &[],
+        );
+        let focus_2 = focus_payload(FocusState {
+            tag_db_id: 8,
+            completed_count: Some(44),
+            progress_raw: None,
+            current: None,
+            current_continuous: None,
+            completed_tokens: Vec::new(),
+        });
+        append_h4cr_record(
+            &mut stream,
+            3,
+            101,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &focus_2,
+        );
+        append_h4cr_record(
+            &mut stream,
+            4,
+            101,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &[],
+        );
+
+        let proof = derive_depth_stream(&stream).expect("derive proof");
+        assert!(proof.parse_errors.is_empty(), "{:?}", proof.parse_errors);
+        assert!(
+            proof.depth_parse_errors.is_empty(),
+            "{:?}",
+            proof.depth_parse_errors
+        );
+        // The completion event is retained (not dropped) and classified as
+        // unresolved (neither exact nor inferred token).
+        assert_eq!(proof.focus_event_rows, 1);
+        assert_eq!(proof.focus_completed_unresolved_rows, 1);
+        assert_eq!(proof.focus_completed_exact_rows, 0);
+        assert_eq!(proof.focus_completed_inferred_rows, 0);
+    }
+
+    #[test]
+    fn tokenless_non_completion_row_still_fails_closed() {
+        // Corruption guard: the token-less exemption is scoped to
+        // COMPLETED_COUNT_INCREASED. A CURRENT_STARTED row (kind 2) with no
+        // tokens cannot be produced by the encoder and must still be rejected.
+        let rows = DepthFrameRows {
+            status_flags: 0,
+            focus_events: vec![FocusEventRow {
+                tag_db_id: 8,
+                kind: FOCUS_EVENT_CURRENT_STARTED,
+                focus_kind: FOCUS_KIND_NATIONAL,
+                flags: 0,
+                previous_completed_count: 10,
+                current_completed_count: 10,
+                previous_progress_raw: 0,
+                current_progress_raw: 0,
+                completed_delta: 0,
+                from_token: None,
+                to_token: None,
+                completed_token: None,
+            }],
+            observed_focus_rows: 1,
+            ..DepthFrameRows::default()
+        };
+        let payload = encode_depth_payload(&rows);
+        let summary = decode_depth_payload(0, &payload);
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("focus depth row 0 has no token context")),
+            "expected fail-closed on token-less non-completion, got {:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn tokenless_inferred_completion_row_still_fails_closed() {
+        // Corruption guard: an INFERRED-flagged completion with no token bytes is
+        // inconsistent (the encoder sets INFERRED only when it attaches a token)
+        // and must stay a hard error, not be swallowed by the exemption.
+        let rows = DepthFrameRows {
+            status_flags: 0,
+            focus_events: vec![FocusEventRow {
+                tag_db_id: 8,
+                kind: FOCUS_EVENT_COMPLETED_COUNT_INCREASED,
+                focus_kind: 0,
+                flags: FOCUS_FLAG_COMPLETED_TOKEN_INFERRED,
+                previous_completed_count: 43,
+                current_completed_count: 44,
+                previous_progress_raw: 0,
+                current_progress_raw: 0,
+                completed_delta: 1,
+                from_token: None,
+                to_token: None,
+                completed_token: None,
+            }],
+            observed_focus_rows: 1,
+            ..DepthFrameRows::default()
+        };
+        let payload = encode_depth_payload(&rows);
+        let summary = decode_depth_payload(0, &payload);
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("focus depth row 0 has no token context")),
+            "expected fail-closed on inferred-flag token-less completion, got {:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]
