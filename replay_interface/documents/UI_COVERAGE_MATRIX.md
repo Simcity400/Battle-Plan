@@ -96,7 +96,7 @@ conference is a v1 descope candidate (rare, deferred with item 12 territory).
 | Minimap | minimap.gui | chrome-composable | 2 (owner colors) | minimap render + mode |
 | Map-mode bar | mapmodes_interface.gui | chrome-composable | active mode = replay-selected (not recorded) | see MAPMODE_COVERAGE_MATRIX |
 | Menubar | menubar.gui | chrome-composable `[interactive→read-only]` | none (inert) | static chrome |
-| Alerts / notifications | alerts.gui | chrome-composable | 9b alert/notification counts | binding |
+| Alerts / notifications | alerts.gui + topbar.gui | **POPULATED (U1)** — 4 topbar count badges | 9b alert counts (initiative/decisions/intel/market_contracts) + **NEW A18** (badge sub-counts + fired-alert feed) | `game_ui::alerts` binds the 4 counts; feed (`global_alerticon_window`) is recording-Absent → fail-closed; layout gate green |
 | Map icons (VP/counters furniture) | mapicons.gui | chrome-composable | 2 + 3 + 8b (VP/units/relation cols) | FURN-REL law partly done; unit counters = Phase C1 |
 | Selected-unit panel | unitview.gui | chrome-composable | 3/8 (selected div/fleet/wing) | binding |
 | Battle-plan tools | battleplantools.gui | chrome-composable `[interactive→read-only]` | 12 (plans, deferred) | inert; arrows deferred |
@@ -267,7 +267,7 @@ cross-cutting residual, not per-panel.
 | Category | rows | dominant status |
 |---|---|---|
 | Major views (§1) | 31 | chrome-composable; 1 POPULATED (diplomacy) |
-| HUD chrome (§2) | 24 | chrome-composable; 2 POPULATED (topbar, outliner) |
+| HUD chrome (§2) | 24 | chrome-composable; 3 POPULATED (topbar, outliner, alerts) |
 | Popups (§3) | 27 | chrome-composable |
 | Country scripted-GUI (§4) | 23 | chrome-composable shell / population not-started |
 | Frontend/meta/dev (§5) | 25 | not-started / descope |
@@ -277,8 +277,8 @@ cross-cutting residual, not per-panel.
 
 **Grand total = 133 panel files** (130 base `interface/*.gui` + 3 DLC music).
 True sub-panel surface = **2,009 `containerWindowType` window definitions**.
-POPULATED today: **3 panels** (topbar D1/D2, outliner D3, diplomacy D4) + the
-observer-POV shell (E6, a `replay_app` mode, not a panel). Everything else is
+POPULATED today: **4 panels** (topbar D1/D2, outliner D3, diplomacy D4, alerts
+strip U1) + the observer-POV shell (E6, a `replay_app` mode, not a panel). Everything else is
 `chrome-composable` (layout law solid, binding pending) or descoped.
 
 In-scope for a replay (excludes §5 frontend/meta + §6 music) = **105 panels**:

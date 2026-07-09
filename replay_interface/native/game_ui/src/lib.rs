@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod assets;
 pub mod binding;
 pub mod compose;

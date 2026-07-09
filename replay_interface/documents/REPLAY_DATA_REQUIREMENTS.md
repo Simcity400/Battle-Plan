@@ -365,6 +365,18 @@ unavailable badge / empty outliner section.
 > `countries.<tag>.scalars.*` and are now surfaced (`topbar_ratios()` /
 > `topbar_alerts()`).
 
+> ALERT SUB-COUNTS + FEED CAVEAT (U1 2026-07-09): the four `scalars.alerts.*`
+> AGGREGATE counts (initiative, decisions_available, intel, market_contracts) are
+> bound to the topbar alert badges by `game_ui::alerts` (`alerts_strip_from_frame`).
+> But the topbar shows TWO badges per category (decision available **and**
+> timeout; intel available **and** prepared/completed; **non-delivering** and
+> **delivering** contracts) plus prototype rewards, and the alerts.gui feed shows
+> N individual fired-alert icons — none of which a single aggregate count can fill.
+> Those SUB-counts + the fired-alert FEED stream (`{alert_type_key, target,
+> fire_time}` per POV per hour) are a NEW recording gap (EXTRACTION_NEEDS §A A18);
+> today they render fail-closed absent. Badge zero-suppression (hide when count=0)
+> is a FIT product convention in the binding, not a recorded/file law.
+
 Degrades to an unavailable badge per missing field (never a fabricated
 number). Deeper panel content (production lines, army lists — the
 listbox/gridbox rows) stays deferred with items 10–12 until those panels
