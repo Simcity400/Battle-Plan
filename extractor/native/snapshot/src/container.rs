@@ -13,7 +13,7 @@
 
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
-use crate::zip::{ZipArchive, ZipEntry};
+use crate::zip::{ZipArchive, ZipEntry, MAX_CONTAINER_ENTRY_BYTES};
 use crate::{Index, Snapshot};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -24,7 +24,6 @@ use std::sync::Mutex;
 pub const MAX_CONTAINER_VERSION: u64 = 1;
 /// Zip-bomb structural caps (spec §4.1). Generous for a real campaign yet bounded.
 const MAX_ENTRIES: usize = 2_000_000;
-const MAX_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB per entry
 const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024; // 64 GiB total
 
 #[derive(Debug)]
@@ -191,7 +190,7 @@ impl Container {
         }
         let mut total: u64 = 0;
         for e in archive.entries() {
-            if e.uncomp_size > MAX_ENTRY_BYTES {
+            if e.uncomp_size > MAX_CONTAINER_ENTRY_BYTES {
                 return Err(ContainerError::Reject(format!(
                     "entry {} exceeds per-entry cap",
                     e.name

@@ -1194,6 +1194,7 @@ fn run() -> Result<(), String> {
                     &raw_path,
                     &capture,
                     &world_snapshot_files,
+                    &fold_stats,
                     &manifest,
                     &manifest_path,
                     &replay_path,
@@ -1201,20 +1202,29 @@ fn run() -> Result<(), String> {
                 Ok((fold_stats, verify))
             })();
             cleanup_snapshot_spill_dir(&snapshot_spill_dir);
-            let (fold_stats, verify) = replay_result?;
+            let (fold_stats, verify) = match replay_result {
+                Ok(value) => value,
+                Err(error) => {
+                    mark_manifest_replay_not_produced(&manifest_path, &mut manifest, &error);
+                    return Err(error);
+                }
+            };
             fold_stats_telemetry = Some(fold_stats);
             verify_report_telemetry = Some(verify);
         }
         StreamFormat::Json => {
             let world_snapshots = Vec::new();
-            write_native_replay_container(
+            if let Err(error) = write_native_replay_container(
                 &cfg,
                 json_bytes.as_deref().unwrap_or(&[]),
                 &world_snapshots,
                 &manifest,
                 &manifest_path,
                 &replay_path,
-            )?;
+            ) {
+                mark_manifest_replay_not_produced(&manifest_path, &mut manifest, &error);
+                return Err(error);
+            }
         }
     }
 
@@ -2941,6 +2951,7 @@ fn write_native_replay_container_streaming(
     raw_path: &Path,
     capture: &PipeCapture,
     snapshot_files: &[FoldedSnapshotFile],
+    fold_stats: &recorder_host::stream_fold::FoldStreamStats,
     manifest: &Value,
     manifest_path: &Path,
     replay_path: &Path,
@@ -3008,7 +3019,7 @@ fn write_native_replay_container_streaming(
     }))
     .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
     let manifest_bytes =
-        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+        session_manifest_bytes_with_pre_pack_host_finalize(manifest_path, capture, fold_stats)?;
     let mut borrowed_entries = vec![
         BorrowedPackEntry {
             path: format!("payload/{game_id}/index.json"),
@@ -3114,16 +3125,13 @@ fn write_native_replay_container_streaming(
     Ok(verify)
 }
 
-/// Append the G5 memory + streaming-finalize telemetry to
-/// `native_session_manifest.json`. Best-effort: a failure here is logged to
-/// stderr and never turns an otherwise-successful capture into a failure.
-fn write_host_finalize_telemetry(
-    manifest_path: &Path,
+fn build_host_finalize_telemetry(
     capture: &PipeCapture,
-    finalize_elapsed: Duration,
+    finalize_elapsed: Option<Duration>,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
     verify: Option<&snapshot::StreamVerifyReport>,
-) {
+    embedded_pre_pack_copy: bool,
+) -> Value {
     let peak = recorder_host::proc_mem::peak_memory();
     let mut block = json!({
         "streaming": true,
@@ -3131,9 +3139,19 @@ fn write_host_finalize_telemetry(
         "peak_working_set_bytes": peak.map(|p| p.peak_working_set_bytes),
         "stream_bytes": capture.byte_count,
         "stream_sha256": capture.sha256,
-        "finalize_seconds": finalize_elapsed.as_secs_f64(),
     });
     let obj = block.as_object_mut().unwrap();
+    if let Some(elapsed) = finalize_elapsed {
+        obj.insert("finalize_seconds".into(), json!(elapsed.as_secs_f64()));
+    }
+    if embedded_pre_pack_copy {
+        obj.insert("embedded_copy_phase".into(), json!("pre_pack"));
+        obj.insert("standalone_manifest_is_authoritative".into(), json!(true));
+        obj.insert(
+            "post_pack_fields_in_standalone_manifest_only".into(),
+            json!(["finalize_seconds", "verify"]),
+        );
+    }
     if let Some(fs) = fold_stats {
         obj.insert(
             "fold".into(),
@@ -3161,6 +3179,41 @@ fn write_host_finalize_telemetry(
             }),
         );
     }
+    block
+}
+
+fn session_manifest_bytes_with_pre_pack_host_finalize(
+    manifest_path: &Path,
+    capture: &PipeCapture,
+    fold_stats: &recorder_host::stream_fold::FoldStreamStats,
+) -> Result<Vec<u8>, String> {
+    let bytes =
+        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+    let mut manifest: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("parse session manifest failed: {e}"))?;
+    manifest
+        .as_object_mut()
+        .ok_or_else(|| "session manifest is not an object".to_string())?
+        .insert(
+            "host_finalize".to_string(),
+            build_host_finalize_telemetry(capture, None, Some(fold_stats), None, true),
+        );
+    serde_json::to_vec_pretty(&manifest)
+        .map_err(|e| format!("serialize embedded session manifest failed: {e}"))
+}
+
+/// Append the G5 memory + streaming-finalize telemetry to
+/// `native_session_manifest.json`. Best-effort: a failure here is logged to
+/// stderr and never turns an otherwise-successful capture into a failure.
+fn write_host_finalize_telemetry(
+    manifest_path: &Path,
+    capture: &PipeCapture,
+    finalize_elapsed: Duration,
+    fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
+    verify: Option<&snapshot::StreamVerifyReport>,
+) {
+    let block =
+        build_host_finalize_telemetry(capture, Some(finalize_elapsed), fold_stats, verify, false);
 
     let updated = (|| -> Result<(), String> {
         let bytes = fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
@@ -3227,6 +3280,48 @@ fn replay_path_for_gate(out_dir: &Path, hourly_met: bool) -> PathBuf {
         out_dir.join("native_session.battleplan")
     } else {
         out_dir.join("native_session.failed.battleplan")
+    }
+}
+
+/// Fail-closed manifest correction for the replay-pack failure path.
+///
+/// The manifest is first written BEFORE fold/pack and names the replay file it
+/// expects to produce. If the pack then fails, that manifest (and any replay
+/// file left at the normal path by a PRIOR run) must not be readable as "this
+/// run produced a replay". Rewrites the on-disk manifest so `replay_file` is
+/// null and the failure is recorded. Best-effort write: the run is already
+/// failing with `error`, which stays the primary signal.
+fn mark_manifest_replay_not_produced(manifest_path: &Path, manifest: &mut Value, error: &str) {
+    if let Some(obj) = manifest.as_object_mut() {
+        obj.insert("replay_file".to_string(), Value::Null);
+        if let Some(artifact) = obj
+            .get_mut("replay_artifact")
+            .and_then(Value::as_object_mut)
+        {
+            artifact.insert("written_file".to_string(), Value::Null);
+            artifact.insert("pack_failed".to_string(), json!(true));
+            artifact.insert("pack_error".to_string(), json!(error));
+            artifact.insert(
+                "pack_failure_note".to_string(),
+                json!(
+                    "this run did NOT produce a replay container; any file at the \
+                     normal replay path is stale output from a prior run"
+                ),
+            );
+        }
+    }
+    match serde_json::to_vec_pretty(&*manifest) {
+        Ok(bytes) => {
+            if let Err(write_err) = fs::write(manifest_path, bytes) {
+                eprintln!(
+                    "recorder error: could not rewrite manifest after replay pack failure at {}: {write_err}",
+                    manifest_path.display()
+                );
+            }
+        }
+        Err(serialize_err) => eprintln!(
+            "recorder error: could not serialize manifest after replay pack failure: {serialize_err}"
+        ),
     }
 }
 
@@ -3620,6 +3715,22 @@ struct PipeCapture {
     sha256: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipeReadErrorDecision {
+    CleanEof,
+    RetryAfterNoData,
+    Unexpected(Dword),
+}
+
+fn classify_pipe_read_error(err: Dword, read_deadline_reached: bool) -> PipeReadErrorDecision {
+    match err {
+        ERROR_BROKEN_PIPE => PipeReadErrorDecision::CleanEof,
+        ERROR_NO_DATA if read_deadline_reached => PipeReadErrorDecision::CleanEof,
+        ERROR_NO_DATA => PipeReadErrorDecision::RetryAfterNoData,
+        other => PipeReadErrorDecision::Unexpected(other),
+    }
+}
+
 /// Read the collector pipe and stream every byte directly to `out_path` in bounded
 /// memory (one 64 KiB read buffer + a BufWriter), hashing as we go. Peak memory is
 /// O(1) regardless of how long the capture runs — the defect this replaces held
@@ -3681,6 +3792,7 @@ fn capture_pipe_to_file(
     let mut total: u64 = 0;
     let read_deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut write_err: Option<String> = None;
+    let mut read_err: Option<String> = None;
     loop {
         let mut buf = [0u8; GENERIC_READ_BUFFER];
         let mut got = 0u32;
@@ -3707,17 +3819,19 @@ fn capture_pipe_to_file(
             continue;
         }
         let err = last_error();
-        if err == ERROR_BROKEN_PIPE {
-            break;
-        }
-        if err == ERROR_NO_DATA {
-            if Instant::now() >= read_deadline {
+        match classify_pipe_read_error(err, Instant::now() >= read_deadline) {
+            PipeReadErrorDecision::CleanEof => {
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
-            continue;
+            PipeReadErrorDecision::RetryAfterNoData => {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            PipeReadErrorDecision::Unexpected(code) => {
+                read_err = Some(format!("ReadFile failed with unexpected OS error {code}"));
+                break;
+            }
         }
-        break;
     }
     unsafe {
         CloseHandle(handle);
@@ -3727,6 +3841,9 @@ fn capture_pipe_to_file(
     }
     drop(writer);
     if let Some(e) = write_err {
+        return Err(e);
+    }
+    if let Some(e) = read_err {
         return Err(e);
     }
     if total == 0 {
@@ -15986,6 +16103,134 @@ mod tests {
     use super::*;
     use recorder_host::world_fold::WorldFold;
 
+    #[test]
+    fn replay_pack_failure_rewrites_manifest_fail_closed() {
+        let tmp = TmpDir::new("pack_fail_manifest");
+        let manifest_path = tmp.0.join("native_session_manifest.json");
+        let mut manifest = json!({
+            "replay_file": "native_session.battleplan",
+            "replay_artifact": {
+                "normal_file": "native_session.battleplan",
+                "written_file": "native_session.battleplan",
+                "recovery": false,
+                "reason": "gate_passed",
+            },
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        mark_manifest_replay_not_produced(&manifest_path, &mut manifest, "streaming fold failed");
+
+        let on_disk: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert!(on_disk.get("replay_file").unwrap().is_null());
+        let artifact = on_disk.get("replay_artifact").unwrap();
+        assert!(artifact.get("written_file").unwrap().is_null());
+        assert_eq!(artifact.get("pack_failed").unwrap(), &json!(true));
+        assert_eq!(
+            artifact.get("pack_error").unwrap(),
+            &json!("streaming fold failed")
+        );
+        assert!(artifact
+            .get("pack_failure_note")
+            .and_then(Value::as_str)
+            .unwrap()
+            .contains("stale"));
+    }
+
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> TmpDir {
+            let mut p = std::env::temp_dir();
+            p.push(format!(
+                "battle-plan-recorder_host_{tag}_{}_{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&p).unwrap();
+            TmpDir(p)
+        }
+        fn join(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn pipe_read_error_classifier_rejects_unexpected_errors() {
+        assert_eq!(
+            classify_pipe_read_error(ERROR_BROKEN_PIPE, false),
+            PipeReadErrorDecision::CleanEof
+        );
+        assert_eq!(
+            classify_pipe_read_error(ERROR_NO_DATA, false),
+            PipeReadErrorDecision::RetryAfterNoData
+        );
+        assert_eq!(
+            classify_pipe_read_error(ERROR_NO_DATA, true),
+            PipeReadErrorDecision::CleanEof
+        );
+        assert_eq!(
+            classify_pipe_read_error(5, false),
+            PipeReadErrorDecision::Unexpected(5)
+        );
+    }
+
+    #[test]
+    fn embedded_manifest_pre_pack_copy_has_host_finalize_marker() {
+        let dir = TmpDir::new("manifest_prepack");
+        let manifest_path = dir.join("native_session_manifest.json");
+        fs::write(
+            &manifest_path,
+            br#"{"schema":"native_collector_session_v1"}"#,
+        )
+        .unwrap();
+        let capture = PipeCapture {
+            byte_count: 123,
+            sha256: "abc123".to_string(),
+        };
+        let fold_stats = recorder_host::stream_fold::FoldStreamStats {
+            stream_bytes: 123,
+            bytes_folded: 120,
+            truncated_tail_bytes: 0,
+            records_total: 7,
+            data_records: 3,
+            frame_end_records: 2,
+            perf_records: 2,
+            other_records: 0,
+            hours_emitted: 2,
+            stop_reason: None,
+        };
+
+        let bytes = session_manifest_bytes_with_pre_pack_host_finalize(
+            &manifest_path,
+            &capture,
+            &fold_stats,
+        )
+        .unwrap();
+        let manifest: Value = serde_json::from_slice(&bytes).unwrap();
+        let host_finalize = &manifest["host_finalize"];
+
+        assert_eq!(host_finalize["stream_bytes"], json!(123));
+        assert_eq!(host_finalize["stream_sha256"], json!("abc123"));
+        assert_eq!(host_finalize["fold"]["hours_emitted"], json!(2));
+        assert_eq!(
+            host_finalize["standalone_manifest_is_authoritative"],
+            json!(true)
+        );
+        assert!(host_finalize.get("verify").is_none());
+        assert!(host_finalize.get("finalize_seconds").is_none());
+    }
+
     fn country_identity_payload_with_cosmetic(rows: &[(u32, &str, u8, Option<&str>)]) -> Vec<u8> {
         let mut p = Vec::new();
         p.extend_from_slice(&0u64.to_le_bytes());
@@ -22559,6 +22804,18 @@ mod tests {
             path: snapshot_path,
             byte_len: snapshot_bytes.len(),
         }];
+        let fold_stats = recorder_host::stream_fold::FoldStreamStats {
+            stream_bytes: raw.len() as u64,
+            bytes_folded: raw.len() as u64,
+            truncated_tail_bytes: 0,
+            records_total: 0,
+            data_records: 0,
+            frame_end_records: 0,
+            perf_records: 0,
+            other_records: 0,
+            hours_emitted: snapshots.len() as u64,
+            stop_reason: None,
+        };
         let manifest = json!({
             "schema": "native_collector_session_v1",
             "session_id": session_id,
@@ -22579,6 +22836,7 @@ mod tests {
             &raw_path,
             &capture,
             &snapshots,
+            &fold_stats,
             &manifest,
             &manifest_path,
             &replay_path,

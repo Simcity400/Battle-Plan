@@ -18,6 +18,16 @@ const EOCD_SIG: u32 = 0x0605_4b50;
 const CDH_SIG: u32 = 0x0201_4b50;
 const LFH_SIG: u32 = 0x0403_4b50;
 
+/// ZIP32 scalar-field maximum. The writer rejects larger values until the
+/// planned Zip64 container upgrade lands.
+pub const ZIP32_MAX_FIELD_VALUE: u64 = u32::MAX as u64;
+/// ZIP32 EOCD entry-count maximum. 0xFFFF itself is excluded: readers (here and
+/// stream_verify) treat an EOCD total of 0xFFFF as the Zip64 sentinel and reject
+/// the archive, so the writer must stop one below it.
+pub const ZIP32_MAX_ENTRY_COUNT: usize = (u16::MAX as usize) - 1;
+/// Shared per-entry cap enforced by both the standard reader and streaming writer.
+pub const MAX_CONTAINER_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// A single central-directory record we care about.
 #[derive(Debug, Clone)]
 pub struct ZipEntry {

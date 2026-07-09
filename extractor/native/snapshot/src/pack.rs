@@ -12,7 +12,9 @@
 
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
-use crate::zip::validate_path;
+use crate::zip::{
+    validate_path, MAX_CONTAINER_ENTRY_BYTES, ZIP32_MAX_ENTRY_COUNT, ZIP32_MAX_FIELD_VALUE,
+};
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
 use serde_json::{json, Value};
@@ -170,6 +172,8 @@ pub fn pack_mixed_to_writer<W: Write>(
     deflate: bool,
     writer: &mut W,
 ) -> Result<(), PackError> {
+    planned_zip_file_count(&[borrowed_entries.len(), file_entries.len()], 1)?;
+
     let mut manifest_entries: Vec<Value> =
         Vec::with_capacity(borrowed_entries.len() + file_entries.len());
 
@@ -293,9 +297,10 @@ pub fn pack_mixed_to_writer<W: Write>(
 /// The written ZIP uses a trailing data descriptor for each streaming entry (the
 /// crc/sizes are unknown until the whole entry is written), and records the true
 /// crc/sizes in the central directory, which is the authority our reader
-/// ([`crate::zip`]) trusts. NOTE (zip32): a single streaming entry above 4 GiB
-/// compressed or uncompressed needs zip64, which this container does not yet
-/// support — such an entry is rejected (fail-closed) rather than truncated.
+/// ([`crate::zip`]) trusts. NOTE: a single streaming entry above the standard
+/// reader's 2 GiB per-entry cap, or above any zip32 field limit, needs the
+/// planned zip64-capable container upgrade; such an entry is rejected
+/// (fail-closed) rather than truncated.
 pub fn pack_streaming_to_writer<W: Write>(
     game_id: &str,
     borrowed_entries: &[BorrowedPackEntry<'_>],
@@ -305,6 +310,15 @@ pub fn pack_streaming_to_writer<W: Write>(
     deflate: bool,
     writer: &mut W,
 ) -> Result<(), PackError> {
+    planned_zip_file_count(
+        &[
+            borrowed_entries.len(),
+            file_entries.len(),
+            streaming_entries.len(),
+        ],
+        1,
+    )?;
+
     let mut manifest_entries: Vec<Value> =
         Vec::with_capacity(borrowed_entries.len() + file_entries.len() + streaming_entries.len());
     let mut counts_snapshots = 0u64;
@@ -478,6 +492,12 @@ pub fn pack_borrowed_with_writer<W: Write>(
     opts: &PackOptions,
     writer: &mut W,
 ) -> Result<(), PackError> {
+    planned_zip_file_count(
+        &[entries.len()],
+        (if opts.inject_stowaway.is_some() { 1 } else { 0 })
+            + (if !opts.omit_manifest { 1 } else { 0 }),
+    )?;
+
     // --- manifest entries (sha + bytes), in canonical path order ---
     let mut manifest_entries: Vec<Value> = Vec::with_capacity(entries.len());
 
@@ -584,6 +604,69 @@ pub fn pack_borrowed_with_writer<W: Write>(
 // --------------------------------------------------------------------------
 // minimal ZIP writer (STORE or DEFLATE; CRC32; no Zip64; deterministic)
 // --------------------------------------------------------------------------
+fn zip32_limit_err(detail: impl AsRef<str>) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "zip32 limit exceeded for {}; zip64 upgrade planned for larger replay containers",
+            detail.as_ref()
+        ),
+    )
+}
+
+fn checked_zip_u32(value: u64, field: &str, name: &str) -> std::io::Result<u32> {
+    if value > ZIP32_MAX_FIELD_VALUE {
+        return Err(zip32_limit_err(format!(
+            "{field} for {name} ({value} > {ZIP32_MAX_FIELD_VALUE})"
+        )));
+    }
+    Ok(value as u32)
+}
+
+fn checked_zip_u16_len(value: usize, field: &str, name: &str) -> std::io::Result<u16> {
+    if value > usize::from(u16::MAX) {
+        return Err(zip32_limit_err(format!(
+            "{field} for {name} ({value} > {})",
+            u16::MAX
+        )));
+    }
+    Ok(value as u16)
+}
+
+fn ensure_entry_size_within_limit(
+    name: &str,
+    field: &str,
+    value: u64,
+    limit: u64,
+) -> std::io::Result<()> {
+    if value > limit {
+        return Err(zip32_limit_err(format!(
+            "entry {name} {field} ({value} > per-entry reader cap {limit})"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_zip32_entry_count(file_count: usize) -> std::io::Result<()> {
+    if file_count > ZIP32_MAX_ENTRY_COUNT {
+        return Err(zip32_limit_err(format!(
+            "entry count ({file_count} > {ZIP32_MAX_ENTRY_COUNT})"
+        )));
+    }
+    Ok(())
+}
+
+fn planned_zip_file_count(parts: &[usize], extra: usize) -> std::io::Result<usize> {
+    let mut total = extra;
+    for part in parts {
+        total = total
+            .checked_add(*part)
+            .ok_or_else(|| zip32_limit_err("entry count overflow"))?;
+    }
+    ensure_zip32_entry_count(total)?;
+    Ok(total)
+}
+
 fn sha256_file(path: &Path) -> Result<(String, u64), PackError> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -618,9 +701,15 @@ fn write_zip_file_from_path<W: Write>(
 struct CountingWriter<'a, W: Write> {
     inner: &'a mut W,
     count: u64,
+    name: &'a str,
+    limit: u64,
 }
 impl<W: Write> Write for CountingWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let next = self.count.checked_add(buf.len() as u64).ok_or_else(|| {
+            zip32_limit_err(format!("streaming entry {} compressed size", self.name))
+        })?;
+        ensure_entry_size_within_limit(self.name, "compressed size", next, self.limit)?;
         let n = self.inner.write(buf)?;
         self.count = self.count.saturating_add(n as u64);
         Ok(n)
@@ -639,8 +728,8 @@ const STREAM_CHUNK: usize = 4 * 1024 * 1024;
 /// computed incrementally, a trailing data descriptor is written, and the central
 /// directory record carries the TRUE crc/sizes (the authority our reader trusts).
 ///
-/// Fails closed if the entry exceeds the zip32 4 GiB field range (zip64 is not
-/// yet supported by this container).
+/// Fails closed if the entry exceeds the standard reader's per-entry cap or any
+/// zip32 scalar field range (zip64 is deferred to the container upgrade).
 fn write_zip_file_streaming<W: Write>(
     out: &mut W,
     central: &mut Vec<u8>,
@@ -649,11 +738,31 @@ fn write_zip_file_streaming<W: Write>(
     path: &Path,
     deflate: bool,
 ) -> std::io::Result<()> {
-    let lho = *written as u32;
+    write_zip_file_streaming_with_entry_limit(
+        out,
+        central,
+        written,
+        name,
+        path,
+        deflate,
+        MAX_CONTAINER_ENTRY_BYTES,
+    )
+}
+
+fn write_zip_file_streaming_with_entry_limit<W: Write>(
+    out: &mut W,
+    central: &mut Vec<u8>,
+    written: &mut u64,
+    name: &str,
+    path: &Path,
+    deflate: bool,
+    entry_limit: u64,
+) -> std::io::Result<()> {
+    let lho = checked_zip_u32(*written, "local header offset", name)?;
     let method: u16 = if deflate { 8 } else { 0 };
     // general-purpose bit 3: crc-32 and sizes are in a trailing data descriptor.
     let flags: u16 = 0x0008;
-    let name_len = name.len() as u16;
+    let name_len = checked_zip_u16_len(name.len(), "entry name length", name)?;
 
     // --- local file header (crc + sizes zeroed; real values in descriptor + CD) ---
     write_all_counted(out, written, &0x0403_4b50u32.to_le_bytes())?; // sig
@@ -678,6 +787,8 @@ fn write_zip_file_streaming<W: Write>(
         let mut cw = CountingWriter {
             inner: out,
             count: 0,
+            name,
+            limit: entry_limit,
         };
         {
             let mut enc = DeflateEncoder::new(&mut cw, Compression::default());
@@ -686,8 +797,12 @@ fn write_zip_file_streaming<W: Write>(
                 if n == 0 {
                     break;
                 }
+                let next_len = data_len.checked_add(n as u64).ok_or_else(|| {
+                    zip32_limit_err(format!("streaming entry {name} uncompressed size"))
+                })?;
+                ensure_entry_size_within_limit(name, "uncompressed size", next_len, entry_limit)?;
                 hasher.update(&buf[..n]);
-                data_len = data_len.saturating_add(n as u64);
+                data_len = next_len;
                 enc.write_all(&buf[..n])?;
             }
             enc.finish()?;
@@ -700,27 +815,23 @@ fn write_zip_file_streaming<W: Write>(
             if n == 0 {
                 break;
             }
+            let next_len = data_len.checked_add(n as u64).ok_or_else(|| {
+                zip32_limit_err(format!("streaming entry {name} uncompressed size"))
+            })?;
+            ensure_entry_size_within_limit(name, "uncompressed size", next_len, entry_limit)?;
+            ensure_entry_size_within_limit(name, "compressed size", next_len, entry_limit)?;
             hasher.update(&buf[..n]);
-            data_len = data_len.saturating_add(n as u64);
+            data_len = next_len;
             out.write_all(&buf[..n])?;
-            n_total = n_total.saturating_add(n as u64);
+            n_total = next_len;
         }
         n_total
     };
     *written = written.saturating_add(comp_len);
     let crc = hasher.finalize();
 
-    if data_len > u64::from(u32::MAX) || comp_len > u64::from(u32::MAX) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "streaming entry {name} exceeds zip32 range (uncompressed {data_len}, \
-                 compressed {comp_len}); zip64 not yet supported by this container"
-            ),
-        ));
-    }
-    let comp_len32 = comp_len as u32;
-    let data_len32 = data_len as u32;
+    let comp_len32 = checked_zip_u32(comp_len, "compressed size", name)?;
+    let data_len32 = checked_zip_u32(data_len, "uncompressed size", name)?;
 
     // --- data descriptor (with signature, per APPNOTE 4.3.9.3) ---
     write_all_counted(out, written, &0x0807_4b50u32.to_le_bytes())?; // dd sig
@@ -758,6 +869,15 @@ fn write_zip_file<W: Write>(
     data: &[u8],
     deflate: bool,
 ) -> std::io::Result<()> {
+    let lho = checked_zip_u32(*written, "local header offset", name)?;
+    let data_len = checked_zip_u32(data.len() as u64, "uncompressed size", name)?;
+    ensure_entry_size_within_limit(
+        name,
+        "uncompressed size",
+        data.len() as u64,
+        MAX_CONTAINER_ENTRY_BYTES,
+    )?;
+    let name_len = checked_zip_u16_len(name.len(), "entry name length", name)?;
     let crc = crc32fast::hash(data);
     let (method, comp): (u16, Cow<'_, [u8]>) = if deflate {
         let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
@@ -766,10 +886,13 @@ fn write_zip_file<W: Write>(
     } else {
         (0, Cow::Borrowed(data))
     };
-    let lho = *written as u32;
-    let comp_len = comp.len() as u32;
-    let data_len = data.len() as u32;
-    let name_len = name.len() as u16;
+    let comp_len = checked_zip_u32(comp.len() as u64, "compressed size", name)?;
+    ensure_entry_size_within_limit(
+        name,
+        "compressed size",
+        comp.len() as u64,
+        MAX_CONTAINER_ENTRY_BYTES,
+    )?;
 
     write_all_counted(out, written, &0x0403_4b50u32.to_le_bytes())?; // sig
     write_all_counted(out, written, &20u16.to_le_bytes())?; // version needed
@@ -812,16 +935,18 @@ fn finish_zip<W: Write>(
     mut written: u64,
     file_count: usize,
 ) -> std::io::Result<()> {
-    let cd_off = written as u32;
-    let cd_size = central.len() as u32;
+    ensure_zip32_entry_count(file_count)?;
+    let cd_off = checked_zip_u32(written, "central directory offset", "EOCD")?;
+    let cd_size = checked_zip_u32(central.len() as u64, "central directory size", "EOCD")?;
+    let file_count16 = checked_zip_u16_len(file_count, "entry count", "EOCD")?;
     write_all_counted(out, &mut written, central)?;
 
     // end of central directory
     write_all_counted(out, &mut written, &0x0605_4b50u32.to_le_bytes())?;
     write_all_counted(out, &mut written, &0u16.to_le_bytes())?; // disk
     write_all_counted(out, &mut written, &0u16.to_le_bytes())?; // cd disk
-    write_all_counted(out, &mut written, &(file_count as u16).to_le_bytes())?;
-    write_all_counted(out, &mut written, &(file_count as u16).to_le_bytes())?;
+    write_all_counted(out, &mut written, &file_count16.to_le_bytes())?;
+    write_all_counted(out, &mut written, &file_count16.to_le_bytes())?;
     write_all_counted(out, &mut written, &cd_size.to_le_bytes())?;
     write_all_counted(out, &mut written, &cd_off.to_le_bytes())?;
     write_all_counted(out, &mut written, &0u16.to_le_bytes())?; // comment len
@@ -836,4 +961,124 @@ fn write_all_counted<W: Write>(
     out.write_all(bytes)?;
     *written = written.saturating_add(bytes.len() as u64);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> TmpDir {
+            let mut p = std::env::temp_dir();
+            p.push(format!(
+                "hoi4_pack_{tag}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&p).unwrap();
+            TmpDir(p)
+        }
+        fn join(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn streaming_entry_crossing_reader_cap_aborts_without_finalizing() {
+        let dir = TmpDir::new("entry_cap");
+        let stream_path = dir.join("stream.bin");
+        fs::write(&stream_path, b"0123456789abcdef").unwrap();
+
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        let mut written = 0u64;
+        let err = write_zip_file_streaming_with_entry_limit(
+            &mut out,
+            &mut central,
+            &mut written,
+            "payload/g/collector_raw/stream.bin",
+            &stream_path,
+            false,
+            8,
+        )
+        .expect_err("streaming cap must abort");
+
+        let msg = err.to_string();
+        assert!(msg.contains("per-entry reader cap"), "{msg}");
+        assert!(central.is_empty());
+        assert!(!out.windows(4).any(|w| w == b"PK\x05\x06"));
+    }
+
+    #[test]
+    fn entry_count_overflow_rejected_before_output() {
+        let empty: &[u8] = &[];
+        let entries = (0..ZIP32_MAX_ENTRY_COUNT)
+            .map(|i| BorrowedPackEntry {
+                path: format!("payload/g/e{i}"),
+                bytes: empty,
+                role: "snapshot",
+                hour_index: Some(i as i64),
+            })
+            .collect::<Vec<_>>();
+        let mut out = Vec::new();
+        let err = pack_borrowed_to_writer("g", &entries, &PackIdentity::default(), false, &mut out)
+            .expect_err("manifest entry pushes count over zip32");
+
+        let msg = err.to_string();
+        assert!(msg.contains("zip32 limit"), "{msg}");
+        assert!(msg.contains("entry count"), "{msg}");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn checked_zip_casts_error_instead_of_truncating() {
+        assert!(checked_zip_u32(
+            ZIP32_MAX_FIELD_VALUE + 1,
+            "central directory offset",
+            "EOCD",
+        )
+        .is_err());
+        assert!(checked_zip_u16_len(usize::from(u16::MAX) + 1, "entry count", "EOCD").is_err());
+
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        let mut written = ZIP32_MAX_FIELD_VALUE + 1;
+        let err = write_zip_file(
+            &mut out,
+            &mut central,
+            &mut written,
+            "payload/g/index.json",
+            b"{}",
+            false,
+        )
+        .expect_err("local header offset must not truncate");
+        assert!(err.to_string().contains("local header offset"));
+        assert!(out.is_empty());
+
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        let mut written = 0u64;
+        let long_name = format!("payload/g/{}", "x".repeat(usize::from(u16::MAX)));
+        let err = write_zip_file(
+            &mut out,
+            &mut central,
+            &mut written,
+            &long_name,
+            b"{}",
+            false,
+        )
+        .expect_err("entry name length must not truncate");
+        assert!(err.to_string().contains("entry name length"));
+        assert!(out.is_empty());
+    }
 }

@@ -15,7 +15,7 @@
 
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
-use crate::zip::validate_path;
+use crate::zip::{validate_path, MAX_CONTAINER_ENTRY_BYTES};
 use flate2::write::DeflateDecoder;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -44,7 +44,9 @@ pub struct StreamVerifyReport {
 /// A central-directory record we serve.
 struct CdEntry {
     name: String,
+    flags: u16,
     method: u16,
+    crc32: u32,
     comp_size: u64,
     uncomp_size: u64,
     local_header_off: u64,
@@ -86,6 +88,14 @@ pub fn verify_replay_container_streaming(
         .iter()
         .find(|e| e.name == "manifest.json")
         .ok_or_else(|| "container has no manifest.json (unfinalized/recovery-only)".to_string())?;
+    if man_entry.uncomp_size > MAX_CONTAINER_ENTRY_BYTES
+        || man_entry.comp_size > MAX_CONTAINER_ENTRY_BYTES
+    {
+        return Err(format!(
+            "entry manifest.json exceeds per-entry reader cap (compressed {}, uncompressed {}, cap {})",
+            man_entry.comp_size, man_entry.uncomp_size, MAX_CONTAINER_ENTRY_BYTES
+        ));
+    }
     let man_bytes = read_entry_bytes(&mut file, man_entry)?;
     let manifest: Value =
         serde_json::from_slice(&man_bytes).map_err(|e| format!("parse manifest.json: {e}"))?;
@@ -150,6 +160,12 @@ pub fn verify_replay_container_streaming(
     for e in &entries {
         if e.name == "manifest.json" {
             continue;
+        }
+        if e.uncomp_size > MAX_CONTAINER_ENTRY_BYTES || e.comp_size > MAX_CONTAINER_ENTRY_BYTES {
+            return Err(format!(
+                "entry {} exceeds per-entry reader cap (compressed {}, uncompressed {}, cap {})",
+                e.name, e.comp_size, e.uncomp_size, MAX_CONTAINER_ENTRY_BYTES
+            ));
         }
         zip_names.insert(e.name.as_str(), e);
         match by_path.get(&e.name) {
@@ -242,7 +258,14 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         if sig != CDH_SIG {
             break;
         }
+        let flags = rd_u16(&cd, p + 8).ok_or("truncated cdh")?;
         let method = rd_u16(&cd, p + 10).ok_or("truncated cdh")?;
+        let crc32 = rd_u32(&cd, p + 16).ok_or("truncated cdh")?;
+        if flags & !0x0008 != 0 {
+            return Err(format!(
+                "entry has unsupported zip general-purpose flags 0x{flags:04x}"
+            ));
+        }
         let comp_size = rd_u32(&cd, p + 20).ok_or("truncated cdh")? as u64;
         let uncomp_size = rd_u32(&cd, p + 24).ok_or("truncated cdh")? as u64;
         let name_len = rd_u16(&cd, p + 28).ok_or("truncated cdh")? as usize;
@@ -263,7 +286,9 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         }
         entries.push(CdEntry {
             name,
+            flags,
             method,
+            crc32,
             comp_size,
             uncomp_size,
             local_header_off: lho,
@@ -311,7 +336,17 @@ fn hash_entry_inner(
     if rd_u32(&lfh, 0) != Some(LFH_SIG) {
         return Err(format!("entry {}: bad local header signature", e.name));
     }
+    let lh_flags = rd_u16(&lfh, 6).unwrap();
     let lh_method = rd_u16(&lfh, 8).unwrap();
+    let lh_crc32 = rd_u32(&lfh, 14).unwrap();
+    let lh_comp_size = rd_u32(&lfh, 18).unwrap() as u64;
+    let lh_uncomp_size = rd_u32(&lfh, 22).unwrap() as u64;
+    if lh_flags != e.flags {
+        return Err(format!(
+            "entry {}: local/central flags mismatch (local 0x{lh_flags:04x}, central 0x{:04x})",
+            e.name, e.flags
+        ));
+    }
     if lh_method != e.method {
         return Err(format!("entry {}: local/central method mismatch", e.name));
     }
@@ -323,12 +358,33 @@ fn hash_entry_inner(
         .and_then(|v| v.checked_add(lh_name_len))
         .and_then(|v| v.checked_add(lh_extra_len))
         .ok_or_else(|| format!("entry {}: data start overflow", e.name))?;
+    let name_start = e
+        .local_header_off
+        .checked_add(30)
+        .ok_or_else(|| format!("entry {}: local name start overflow", e.name))?;
+    file.seek(SeekFrom::Start(name_start))
+        .map_err(|err| format!("seek local name {}: {err}", e.name))?;
+    let mut local_name = vec![0u8; lh_name_len as usize];
+    file.read_exact(&mut local_name)
+        .map_err(|err| format!("read local name {}: {err}", e.name))?;
+    if local_name != e.name.as_bytes() {
+        return Err(format!("entry {}: local/central name mismatch", e.name));
+    }
+    if e.flags & 0x0008 == 0 {
+        if lh_crc32 != e.crc32 || lh_comp_size != e.comp_size || lh_uncomp_size != e.uncomp_size {
+            return Err(format!(
+                "entry {}: local/central crc or size mismatch",
+                e.name
+            ));
+        }
+    }
     file.seek(SeekFrom::Start(data_start))
         .map_err(|err| format!("seek entry data {}: {err}", e.name))?;
 
     // A sink that owns the hasher and optionally collects decompressed output.
     let sink = HashSink {
         hasher: Sha256::new(),
+        crc32: crc32fast::Hasher::new(),
         collect,
         len: 0,
     };
@@ -362,7 +418,45 @@ fn hash_entry_inner(
             e.name, e.uncomp_size
         ));
     }
+    let crc32 = final_sink.crc32.finalize();
+    if crc32 != e.crc32 {
+        return Err(format!(
+            "entry {}: crc32 {crc32:08x} != central {:08x}",
+            e.name, e.crc32
+        ));
+    }
+    if e.flags & 0x0008 != 0 {
+        read_and_validate_data_descriptor(file, e, crc32, e.comp_size, uncomp_len)?;
+    }
     Ok((to_hex(&final_sink.hasher.finalize()), uncomp_len))
+}
+
+fn read_and_validate_data_descriptor(
+    file: &mut File,
+    e: &CdEntry,
+    crc32: u32,
+    comp_size: u64,
+    uncomp_size: u64,
+) -> Result<(), String> {
+    let mut dd = [0u8; 16];
+    file.read_exact(&mut dd)
+        .map_err(|err| format!("entry {}: read data descriptor: {err}", e.name))?;
+    if rd_u32(&dd, 0) != Some(0x0807_4b50) {
+        return Err(format!(
+            "entry {}: data descriptor signature missing",
+            e.name
+        ));
+    }
+    let dd_crc32 = rd_u32(&dd, 4).ok_or("truncated data descriptor")?;
+    let dd_comp_size = rd_u32(&dd, 8).ok_or("truncated data descriptor")? as u64;
+    let dd_uncomp_size = rd_u32(&dd, 12).ok_or("truncated data descriptor")? as u64;
+    if dd_crc32 != crc32 || dd_comp_size != comp_size || dd_uncomp_size != uncomp_size {
+        return Err(format!(
+            "entry {}: data descriptor mismatch (crc {dd_crc32:08x}/{crc32:08x}, compressed {dd_comp_size}/{comp_size}, uncompressed {dd_uncomp_size}/{uncomp_size})",
+            e.name
+        ));
+    }
+    Ok(())
 }
 
 /// Read exactly `n` bytes from `file` in chunks, handing each chunk to `f`.
@@ -386,12 +480,14 @@ fn stream_n(
 /// A `Write` sink that SHA-256-hashes everything and optionally collects it.
 struct HashSink<'a> {
     hasher: Sha256,
+    crc32: crc32fast::Hasher,
     collect: Option<&'a mut Vec<u8>>,
     len: u64,
 }
 impl Write for HashSink<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.hasher.update(buf);
+        self.crc32.update(buf);
         if let Some(c) = self.collect.as_deref_mut() {
             c.extend_from_slice(buf);
         }
@@ -429,6 +525,8 @@ mod tests {
         StreamingFileEntry,
     };
     use std::fs;
+    use std::io::{Read, Seek, SeekFrom};
+    use std::path::Path;
     use std::path::PathBuf;
 
     struct TmpDir(PathBuf);
@@ -455,6 +553,57 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn build_store_streaming_container(dir: &TmpDir, tag: &str) -> (PathBuf, Vec<u8>, String) {
+        let stream_path = dir.join(&format!("{tag}.bin"));
+        let stream_bytes = (0..4096u32)
+            .map(|i| (i.wrapping_mul(37) >> 3) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&stream_path, &stream_bytes).unwrap();
+        let stream_sha = to_hex(&Sha256::digest(&stream_bytes));
+        let index = br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#.to_vec();
+        let borrowed = vec![BorrowedPackEntry {
+            path: "payload/g/index.json".into(),
+            bytes: &index,
+            role: "index",
+            hour_index: None,
+        }];
+        let streaming = vec![StreamingFileEntry {
+            path: "payload/g/collector_raw/collector_stream.bin".into(),
+            file_path: &stream_path,
+            role: "collector_compact_stream",
+            hour_index: None,
+            sha256: Some(stream_sha.clone()),
+        }];
+        let container_path = dir.join(&format!("{tag}.battleplan"));
+        let mut out = fs::File::create(&container_path).unwrap();
+        pack_streaming_to_writer(
+            "g",
+            &borrowed,
+            &[],
+            &streaming,
+            &PackIdentity::default(),
+            false,
+            &mut out,
+        )
+        .unwrap();
+        (container_path, stream_bytes, stream_sha)
+    }
+
+    fn entry_data_range(path: &Path, name: &str) -> (u64, u64) {
+        let mut file = fs::File::open(path).unwrap();
+        let file_len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, file_len).unwrap();
+        let entry = entries.iter().find(|entry| entry.name == name).unwrap();
+        let mut lfh = [0u8; 30];
+        file.seek(SeekFrom::Start(entry.local_header_off)).unwrap();
+        file.read_exact(&mut lfh).unwrap();
+        assert_eq!(rd_u32(&lfh, 0), Some(LFH_SIG));
+        let name_len = rd_u16(&lfh, 26).unwrap() as u64;
+        let extra_len = rd_u16(&lfh, 28).unwrap() as u64;
+        let data_start = entry.local_header_off + 30 + name_len + extra_len;
+        (data_start, entry.comp_size)
     }
 
     /// Build a `.battleplan` via the STREAMING packer (a large streamed stream
@@ -603,5 +752,44 @@ mod tests {
             report.stream_entry_sha256.as_deref(),
             Some(stream_sha.as_str())
         );
+    }
+
+    #[test]
+    fn crc_verification_catches_single_store_payload_byte_corruption() {
+        let dir = TmpDir::new("crc");
+        let (container_path, _, _) = build_store_streaming_container(&dir, "crc");
+        let (data_start, _) = entry_data_range(
+            &container_path,
+            "payload/g/collector_raw/collector_stream.bin",
+        );
+
+        let bad_path = dir.join("crc_bad.battleplan");
+        let mut bytes = fs::read(&container_path).unwrap();
+        bytes[data_start as usize] ^= 0xff;
+        fs::write(&bad_path, &bytes).unwrap();
+
+        let err = verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream")
+            .expect_err("payload corruption must fail CRC verification");
+        assert!(err.contains("crc32"), "{err}");
+    }
+
+    #[test]
+    fn data_descriptor_validation_catches_tampered_descriptor() {
+        let dir = TmpDir::new("descriptor");
+        let (container_path, _, _) = build_store_streaming_container(&dir, "descriptor");
+        let (data_start, comp_size) = entry_data_range(
+            &container_path,
+            "payload/g/collector_raw/collector_stream.bin",
+        );
+        let descriptor_crc_offset = data_start + comp_size + 4;
+
+        let bad_path = dir.join("descriptor_bad.battleplan");
+        let mut bytes = fs::read(&container_path).unwrap();
+        bytes[descriptor_crc_offset as usize] ^= 0x01;
+        fs::write(&bad_path, &bytes).unwrap();
+
+        let err = verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream")
+            .expect_err("descriptor tamper must fail verification");
+        assert!(err.contains("data descriptor"), "{err}");
     }
 }

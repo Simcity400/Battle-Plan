@@ -48,8 +48,9 @@ Pipeline (compact/production path):
    the decompressor. The stream entry's decompressed sha256 is compared to the
    capture hash — the streaming replacement for the old whole-stream in-RAM
    byte-compare (behavior delta: evidence-equivalent hash compare rather than a
-   `Vec == Vec`). Zip32 sizes cap a single streamed entry at 4 GiB compressed /
-   uncompressed (zip64 is deferred to the Phase 3 container overhaul).
+   `Vec == Vec`). The writer enforces the standard reader's 2 GiB per-entry cap
+   for both compressed and uncompressed streamed bytes, and rejects other zip32
+   field/count overflows until the planned zip64 container upgrade.
 
 All hourly gate checks, coverage verification, per-domain perf/status accounting,
 manifest fields, and the quarantine-on-gate-fail naming
@@ -57,8 +58,13 @@ manifest fields, and the quarantine-on-gate-fail naming
 
 ### G5 telemetry (`native_session_manifest.json` → `host_finalize`)
 
-Written after fold/pack/verify so bounded memory is measurable from the manifest
-of every run:
+The `.battleplan` embeds the telemetry known before packing: peak memory so far,
+stream byte count/hash, and fold accounting. That embedded copy is marked with
+`host_finalize.standalone_manifest_is_authoritative = true`; post-pack fields
+(`finalize_seconds` and `verify.*`) are written only to the standalone
+`native_session_manifest.json` after pack/verify completes.
+
+Telemetry fields:
 
 - `host_finalize.peak_private_bytes` — peak private (pagefile-committed) bytes.
   The headline bound: it excludes evictable file-backed pages, so it is the honest
