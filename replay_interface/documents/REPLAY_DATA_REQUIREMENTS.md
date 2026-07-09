@@ -14,8 +14,12 @@ one-time GPU capture on the replay side — you never need to extract it.
 The replay layer is fail-closed: anything below that hasn't landed yet
 degrades gracefully (stated per item), it never blocks your work.
 
-Priority order: items 1–3 make replays function at all; 4–8 make them look
-real; 9–12 are polish/deferred.
+Priority order: items 1–3 make replays function at all; 4–8 (incl. the
+`b`-suffixed inserts) make them look real; 9–12 are polish/deferred.
+
+**Last full review: 2026-07-09**, after the engine-extraction wave (labels /
+borders / terrain / UI-chrome / furniture / code-ports lanes). New consumers
+landed on the replay side; items 7b, 8b and 9b were added for them.
 
 ---
 
@@ -49,6 +53,13 @@ province, per hour. This drives the political fill, borders, and the
 occupation stripes (replay derives stripes from owner≠controller — no
 extra extraction needed). Country colors themselves come from shipped
 files; only the tags are needed.
+
+New consumer (2026-07-09, labels lane): the on-map COUNTRY NAME labels key
+their text/color off the state's owner or controller (which of the two the
+engine uses in wartime is still capture-pending on the replay side) — the
+recording must simply carry BOTH per hour, which this item already
+specifies. No new shape needed; noting the consumer so this row never gets
+thinned to owner-only.
 
 ## 3. On-map land units & battles
 
@@ -117,6 +128,20 @@ hourly) `{tag, cosmetic_tag}` rows from live memory. The replay resolves
 the actual colors/flags/names from shipped files — only the tag stream is
 needed. Degrades to base-tag identity.
 
+## 7b. Ruling party (ideology) per country (LABEL TEXT + COLOR VARIANTS)
+
+Companion to item 7, same shape and cadence: on-change (or hourly)
+`{tag, ruling_party}` rows from live memory (e.g. `"fascism"`). The schema
+already carries this (§3.3 `politics.ruling_party`, live-collector
+sourced) — the ask is that it rides into item 1's hourly snapshots.
+
+Why (proven 2026-07-09, labels lane LAB4): the engine's on-map country
+names are IDEOLOGY-RESOLVED localisation keys — `<TAG>_<ideology>` first
+("GERMAN REICH", "BRITISH RAJ"), then `<TAG>`, then the tag. A replay that
+keeps the 1936 ruling party renders wrong names after every civil war,
+coup, or election. Ideology can also select color variants. Degrades to
+game-start ideology from history files (visibly wrong mid-game).
+
 ## 8. On-map naval & air presence
 
 Land is covered by item 3; oceans and skies are empty without:
@@ -129,6 +154,30 @@ Land is covered by item 3; oceans and skies are empty without:
    icons.
 Degrades to empty seas/skies.
 
+## 8b. Diplomatic pair-state, faction membership, capitals (MAP FURNITURE + WAR OVERLAYS)
+
+Three small per-country/per-pair streams, all with existing schema shapes
+(§3.3, §3.8, §7b) — the ask is that they ride into item 1's snapshots:
+
+1. **Pair relation state**: per hour (or on-change), for each country
+   pair with a non-default relation: at-war, same-faction/allied, subject/
+   overlord, guarantee, non-aggression pact, military access, embargo.
+   The extractor ALREADY live-extracts the relation flag set (the d53
+   relation-flag container work: NAP/military-access/docking/guarantee/
+   embargo — live-validated); at-war and faction membership come with it.
+   Consumer (2026-07-09, furniture lane): the map-furniture victory-point
+   icons carry a DIPLOMATIC COLOR COLUMN (relation of each province's
+   owner to the viewed country) — without pair state the column can't
+   tint. Also feeds war-state overlays (fronts/arrows) later. Degrades to
+   neutral tint everywhere.
+2. **Faction membership**: `{tag, faction_name_or_none, is_leader}`
+   on-change (schema §3.3 `faction.*`). Consumer: the same diplomatic
+   column (ally tint) + later diplomacy UI. Rides with (1) if easier.
+3. **Capital state per country**: `{tag, capital_state}` on-change
+   (schema §3.3 `capital_state`). Consumer: the capital-star map
+   furniture must move when a government relocates (France 1940).
+   Rare-event cadence; on-change is plenty.
+
 ## 9. Localisation / token joins
 
 The replay UI renders tokens the recording emits (focus ids, idea tokens,
@@ -136,6 +185,27 @@ tech names, decision ids). Need: a deterministic token → localised-name
 join (effective mod-over-vanilla), either packed in the container or as a
 documented static bundle keyed by the recording's mod identity. First
 surfaces to hit this: map labels, topbar, country panels.
+
+## 9b. Topbar / panel scalar bindings (UI CHROME — first rendered set)
+
+The the game UI chrome now composes from shipped `.gui` files on the replay
+side (all 453 parse; topbar rects gate ≤1px vs engine draw quads). Every
+NUMBER on it is recording-gated. The first fields the UI will actually
+render, all already shaped in the schema (§3.1–3.3) — the ask is presence
+in item 1's hourly snapshots for every country (the viewer can select any
+POV):
+
+- `politics.political_power`, `politics.stability`,
+  `politics.war_support`, `politics.command_power`
+- `military.manpower.available`, `military.xp.army/.navy/.air`
+- `economy.factories.civ/.mil/.dockyard`, `economy.fuel.current/.max`
+- `military.convoys[]` (count is enough for the topbar)
+- date + speed/pause (items 4 and the clock note below)
+
+Degrades to an unavailable badge per missing field (never a fabricated
+number). Deeper panel content (production lines, army lists — the
+listbox/gridbox rows) stays deferred with items 10–12 until those panels
+are scheduled.
 
 ## 10. Building levels per state (live feed — when building rendering lands)
 
@@ -189,8 +259,11 @@ so the registry is complete; do not build.
 | 5 | naval supremacy | needed |
 | 6 | weather state | needed |
 | 7 | cosmetic-tag stream | schema shape exists; live feed needed |
+| 7b | ruling party / ideology | schema shape exists (§3.3, live-collector); ride into snapshots |
 | 8 | naval/air presence | raw streams exist; consumable rows needed |
+| 8b | pair relations + faction + capitals | relation flags already live-extracted (d53); fold into snapshots |
 | 9 | localisation joins | needed |
+| 9b | topbar scalar bindings | schema shapes exist (§3.1–3.3); ride into snapshots |
 | 10 | building levels live | schema shape exists (save-only); deferred |
 | 11 | rail/supply state | deferred |
 | 12 | battle plans | deferred — do not build yet |
