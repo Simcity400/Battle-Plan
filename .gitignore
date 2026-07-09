@@ -104,3 +104,7 @@ scratch/
 # (multi-GB). Never commit game code / binaries.
 scratchpad/
 **/scratchpad/
+ghidra_appdata/
+ghidra_localappdata/
+ghidra_project_copy/
+ghidra_scripts/

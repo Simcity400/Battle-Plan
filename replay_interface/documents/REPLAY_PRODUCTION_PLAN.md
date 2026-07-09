@@ -172,7 +172,7 @@ closed. Product blocks earned off one by one.
 Offline (Codex jobs, no user session needed):
 | # | Item | Gate | Status |
 |---|---|---|---|
-| B1 | 60 water-strip residuals (sea|sea smoothing tail) + ~277 island loops + fade interior curve → unblock SeaRegion + `--borders-from-files` | pool gate 8,560/8,560 water, 27,018 land held; loops traced | OPEN (BORD9 got 8,500/8,560) |
+| B1 | 60 water-strip residuals (sea|sea smoothing tail) + ~277 island loops + fade interior curve → unblock SeaRegion + `--borders-from-files` | pool gate 8,560/8,560 water, 27,018 land held; loops traced | OPEN (BORD10 got 8,534/8,560; 26 water rows remain) |
 | B2 | Label residuals: component-emission limits, kerning table, anchor rule; glyph atlas mips | oracle63 float-exact held + new held-out capture rows | OPEN (arc/size/tracking laws closed) |
 | B3 | Building `.mesh` importer or map_objects_pass derivation → replace preview blocks | byte parity vs captured object pass | OPEN |
 | B4 | Tree scatter anchor/rotation/model-selection + season CB1 from files | parity vs live_trees_measure corpus | OPEN |
