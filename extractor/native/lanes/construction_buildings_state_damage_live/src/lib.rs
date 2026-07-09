@@ -118,6 +118,20 @@ pub const BUILDING_FLAG_DAMAGED: u32 = 1 << 1;
 
 pub const PROVINCE_CONSTRUCTION_TEMPLATE_IDS: [u32; 4] = [12_790, 19_649, 22_353, 22_354];
 
+/// Bulk-read window covering every CBuilding field the building walk reads:
+/// vtable `[0x00,0x08)`, type `[0x08,0x0C)`, level `[0x40,0x42)`, healthy_level
+/// `[0x42,0x44)`. `N = CBUILDING_OFF_HEALTHY_LEVEL + 2` = the far field's end, so
+/// the window's region gate is identical to a scalar read of the last field.
+pub const CBUILDING_WINDOW_LEN: usize = CBUILDING_OFF_HEALTHY_LEVEL + 2;
+
+/// Bulk-read window covering every CBuildingProductionLine field the queue walk
+/// reads on the line object itself: type `[0x08,0x0C)`, id `[0x0C,0x10)`,
+/// active_factories `[0x18,0x1C)`, cost `[0x28,0x2C)`, produced `[0x38,0x3C)`,
+/// created_date `[0x58,0x5C)`, construction_sub ptr `[0x70,0x78)`. `N =
+/// LINE_CONSTRUCTION_SUB + 8` = the far (mandatory) field's end. The sub-object
+/// (template/target) is chased separately and stays a per-field read.
+pub const LINE_WINDOW_LEN: usize = LINE_CONSTRUCTION_SUB + 8;
+
 pub trait LaneMemory {
     fn read_u8(&self, addr: usize) -> Option<u8>;
 
@@ -147,6 +161,30 @@ pub trait LaneMemory {
     fn read_u64(&self, addr: usize) -> Option<u64> {
         let bytes = self.read_bytes(addr, 8)?;
         Some(u64::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    /// Bulk-read a contiguous object window `[addr, addr + N)` in a single
+    /// guarded read, returning the captured bytes, or `None` when the whole
+    /// window is not readable as one region.
+    ///
+    /// The default returns `None`: generic/test callers fall back to per-field
+    /// reads, so the byte-for-byte accept/reject decision is identical to the
+    /// pre-collapse path (every existing `FakeMemory` fixture exercises this
+    /// fallback unchanged). The in-process collector impl overrides this with a
+    /// single region-gated copy, collapsing the several per-field guarded reads
+    /// of one heap object into one region check + copy.
+    ///
+    /// FAIL-CLOSED CONTRACT (byte-identical adoption rule): the window gates
+    /// `[addr, addr+N)` through the exact same region check a scalar read of the
+    /// field at the far end (`N = last_offset + last_size`) would use, so for a
+    /// real heap object (one allocation = one committed region) the window
+    /// succeeds iff every field is readable and fails iff the far field is
+    /// unreadable — identical to the per-field `?`/`continue` sequence. On
+    /// `None` the caller MUST read each field individually (which then
+    /// fail-close identically), so a failed bulk read is never worse than the
+    /// original per-field walk.
+    fn read_object_window<const N: usize>(&self, _addr: usize) -> Option<[u8; N]> {
+        None
     }
 }
 
@@ -386,22 +424,31 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
             read.skip_construction(ConstructionSkipReason::InvalidLinePtr);
             continue;
         }
-        if mem.read_u32(line_ptr.checked_add(LINE_TYPE)?)? != LINE_TYPE_CONSTRUCTION {
+        // Collapse the six per-field guarded reads of one CBuildingProductionLine
+        // (type/id/active_factories/cost/produced/created_date/sub-ptr) into one
+        // bulk window read. The generic default returns None so each `win_*`
+        // falls back to its original per-field guarded read; the window is
+        // `Some` only when the whole [0,0x78) span is one readable region, so
+        // every served field is byte-identical to its individual read. The
+        // sub-object (template/target) behind `sub_ptr` stays a per-field chase.
+        let window = mem.read_object_window::<LINE_WINDOW_LEN>(line_ptr);
+        let win = window.as_ref().map(|w| w.as_slice());
+        if win_u32(win, mem, line_ptr, LINE_TYPE)? != LINE_TYPE_CONSTRUCTION {
             read.skip_construction(ConstructionSkipReason::NonConstructionLine);
             continue;
         }
-        let active_factories = mem.read_i32(line_ptr.checked_add(LINE_ACTIVE_FACTORIES)?)?;
+        let active_factories = win_i32(win, mem, line_ptr, LINE_ACTIVE_FACTORIES)?;
         if !(0..=MAX_ACTIVE_FACTORIES).contains(&active_factories) {
             read.skip_construction(ConstructionSkipReason::InvalidActiveFactories);
             continue;
         }
-        let cost_raw = read_production_fixed_raw(mem, line_ptr.checked_add(LINE_COST)?)?;
-        let produced_raw = read_production_fixed_raw(mem, line_ptr.checked_add(LINE_PRODUCED)?)?;
+        let cost_raw = win_production_fixed_raw(win, mem, line_ptr, LINE_COST)?;
+        let produced_raw = win_production_fixed_raw(win, mem, line_ptr, LINE_PRODUCED)?;
         if cost_raw < 0 || produced_raw < 0 {
             read.skip_construction(ConstructionSkipReason::InvalidProgressFields);
             continue;
         }
-        let sub_ptr = mem.read_u64(line_ptr.checked_add(LINE_CONSTRUCTION_SUB)?)? as usize;
+        let sub_ptr = win_u64(win, mem, line_ptr, LINE_CONSTRUCTION_SUB)? as usize;
         let template_id = if is_heap_ptr(sub_ptr) {
             mem.read_u32(sub_ptr.checked_add(CONSTRUCTION_TEMPLATE_ID)?)
                 .filter(|id| *id > 0 && *id <= MAX_CONSTRUCTION_TEMPLATE_ID)
@@ -415,12 +462,11 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
         // W4: created_date at CBuildingProductionLine+0x58. Fail-closed — a read
         // failure or an implausible raw (0, or beyond the sane ceiling) is
         // badged absent (the row is still emitted with its validated fields).
-        let created_date_raw = mem
-            .read_u32(line_ptr.checked_add(LINE_CREATED_DATE)?)
+        let created_date_raw = win_u32(win, mem, line_ptr, LINE_CREATED_DATE)
             .filter(|raw| *raw != 0 && *raw <= MAX_CONSTRUCTION_CREATED_DATE_RAW);
         read.push(ConstructionQueueRow {
             tag_db_id,
-            line_id: mem.read_u32(line_ptr.checked_add(LINE_ID)?)?,
+            line_id: win_u32(win, mem, line_ptr, LINE_ID)?,
             template_id,
             active_factories,
             cost_raw,
@@ -562,18 +608,27 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
             skipped_rows = skipped_rows.saturating_add(1);
             continue;
         }
-        if mem.read_u64(building_ptr)? as usize != cbuilding_vtable {
+        // Collapse the four per-field guarded reads of one CBuilding
+        // (vtable/type/level/healthy_level) into one bulk window read. The
+        // collector impl serves the whole object from a single region-gated
+        // copy; the generic default returns None so `win_*` fall back to the
+        // original per-field reads. Because the window is only `Some` when the
+        // whole `[0,0x44)` span is readable as one region, every field served
+        // from it is byte-identical to what its individual guarded read would
+        // have returned (and on `None` we take the original path verbatim).
+        let window = mem.read_object_window::<CBUILDING_WINDOW_LEN>(building_ptr);
+        let win = window.as_ref().map(|w| w.as_slice());
+        if win_u64(win, mem, building_ptr, 0)? as usize != cbuilding_vtable {
             skipped_rows = skipped_rows.saturating_add(1);
             continue;
         }
-        let type_id = mem.read_u32(building_ptr.checked_add(CBUILDING_OFF_TYPE)?)?;
-        let level = mem.read_u16(building_ptr.checked_add(CBUILDING_OFF_LEVEL)?)? as u32;
+        let type_id = win_u32(win, mem, building_ptr, CBUILDING_OFF_TYPE)?;
+        let level = win_u16(win, mem, building_ptr, CBUILDING_OFF_LEVEL)? as u32;
         if type_id == 0 || level > BUILDING_LEVEL_SANE_MAX {
             skipped_rows = skipped_rows.saturating_add(1);
             continue;
         }
-        let healthy_level = mem
-            .read_u16(building_ptr.checked_add(CBUILDING_OFF_HEALTHY_LEVEL)?)
+        let healthy_level = win_u16(win, mem, building_ptr, CBUILDING_OFF_HEALTHY_LEVEL)
             .map(u32::from)
             .filter(|healthy| *healthy <= level && *healthy <= BUILDING_LEVEL_SANE_MAX);
         by_type
@@ -892,12 +947,6 @@ pub fn gate_decoded_frame(frame: &LaneFrame) -> GateReport {
     }
 }
 
-fn read_production_fixed_raw<M: LaneMemory>(mem: &M, addr: usize) -> Option<i32> {
-    mem.read_i32(addr).filter(|value| {
-        (-MAX_PRODUCTION_LINE_FIXED_RAW..=MAX_PRODUCTION_LINE_FIXED_RAW).contains(value)
-    })
-}
-
 fn state_resource_logical_rows(size: u32, cap: u32) -> Option<u32> {
     if size == 0 {
         return Some(0);
@@ -1151,6 +1200,67 @@ fn read_u64_from_slice(bytes: &[u8], offset: usize) -> Option<u64> {
     ))
 }
 
+fn read_u16_from_slice(bytes: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+// Window-or-live field readers. When `win` holds an object's captured bytes
+// (one guarded bulk read), the field is sliced from the buffer with no further
+// guarded read; otherwise the exact original per-field guarded read at
+// `addr + off` is performed. Both paths yield the identical value for a
+// readable field and identical `None` (fail-closed) for an unreadable one, so
+// swapping a per-field walk for `Some(window)` is byte-identical on any real
+// (single-region) heap object; on `None` the caller degrades to the original
+// per-field sequence.
+#[inline]
+fn win_u64<M: LaneMemory>(win: Option<&[u8]>, mem: &M, addr: usize, off: usize) -> Option<u64> {
+    match win {
+        Some(buf) => read_u64_from_slice(buf, off),
+        None => mem.read_u64(addr.checked_add(off)?),
+    }
+}
+
+#[inline]
+fn win_u32<M: LaneMemory>(win: Option<&[u8]>, mem: &M, addr: usize, off: usize) -> Option<u32> {
+    match win {
+        Some(buf) => read_u32_from_slice(buf, off),
+        None => mem.read_u32(addr.checked_add(off)?),
+    }
+}
+
+#[inline]
+fn win_u16<M: LaneMemory>(win: Option<&[u8]>, mem: &M, addr: usize, off: usize) -> Option<u16> {
+    match win {
+        Some(buf) => read_u16_from_slice(buf, off),
+        None => mem.read_u16(addr.checked_add(off)?),
+    }
+}
+
+#[inline]
+fn win_i32<M: LaneMemory>(win: Option<&[u8]>, mem: &M, addr: usize, off: usize) -> Option<i32> {
+    match win {
+        Some(buf) => read_i32_from_slice(buf, off),
+        None => mem.read_i32(addr.checked_add(off)?),
+    }
+}
+
+/// Reads a production-line fixed-point raw either from the captured window or
+/// via an individual guarded read, then applies the in-range filter (the
+/// former `read_production_fixed_raw` guard). Byte-identical to the original.
+#[inline]
+fn win_production_fixed_raw<M: LaneMemory>(
+    win: Option<&[u8]>,
+    mem: &M,
+    addr: usize,
+    off: usize,
+) -> Option<i32> {
+    win_i32(win, mem, addr, off).filter(|value| {
+        (-MAX_PRODUCTION_LINE_FIXED_RAW..=MAX_PRODUCTION_LINE_FIXED_RAW).contains(value)
+    })
+}
+
 fn read_u32_from_slice(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
         bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
@@ -1213,6 +1323,49 @@ mod tests {
         fn read_u8(&self, addr: usize) -> Option<u8> {
             self.bytes.get(&addr).copied()
         }
+    }
+
+    /// Test double modelling the in-process collector's bulk-window read. It
+    /// serves `read_object_window` from one contiguous copy — `Some` iff every
+    /// byte of `[addr, addr + N)` is mapped, exactly like the collector's
+    /// `read_into` succeeding only when the whole span is one readable region.
+    /// Every other read delegates to the inner sparse store, so the per-field
+    /// fallback path (over `FakeMemory`) and the bulk-window path (over this
+    /// double) observe identical underlying bytes — any offset/slice mistake in
+    /// the window helpers shows up as a row mismatch between the two.
+    struct ContiguousFakeMemory {
+        inner: FakeMemory,
+    }
+
+    impl LaneMemory for ContiguousFakeMemory {
+        fn read_u8(&self, addr: usize) -> Option<u8> {
+            self.inner.read_u8(addr)
+        }
+
+        fn read_object_window<const N: usize>(&self, addr: usize) -> Option<[u8; N]> {
+            let mut buf = [0u8; N];
+            for (index, slot) in buf.iter_mut().enumerate() {
+                *slot = self.inner.read_u8(addr.checked_add(index)?)?;
+            }
+            Some(buf)
+        }
+    }
+
+    /// Fully populate a CBuilding object (zero-filled window + fields) so the
+    /// contiguous window read succeeds.
+    fn write_full_building(
+        mem: &mut FakeMemory,
+        base: usize,
+        ptr: usize,
+        ty: u32,
+        level: u16,
+        healthy: u16,
+    ) {
+        mem.write_bytes(ptr, &[0u8; CBUILDING_WINDOW_LEN]);
+        mem.write_u64(ptr, (base + CBUILDING_VTABLE_RVA) as u64);
+        mem.write_u32(ptr + CBUILDING_OFF_TYPE, ty);
+        mem.write_u16(ptr + CBUILDING_OFF_LEVEL, level);
+        mem.write_u16(ptr + CBUILDING_OFF_HEALTHY_LEVEL, healthy);
     }
 
     #[test]
@@ -1645,6 +1798,99 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("healthy_level")));
+    }
+
+    #[test]
+    fn bulk_window_building_rows_match_per_field_path() {
+        // Two buildings under one state; one damaged, one bad pointer. The bulk
+        // window path (ContiguousFakeMemory) must yield rows byte-identical to
+        // the per-field fallback path (FakeMemory), proving the window offsets
+        // and slice readers reproduce the individual reads exactly.
+        let base = 0x1400_0000usize;
+        let state = 0x1000_0001_0000usize;
+        let vector = 0x1000_0002_0000usize;
+        let building_a = 0x1000_0003_0000usize;
+        let building_b = 0x1000_0003_1000usize;
+        let bad_building = 0x2000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(state + STATE_OFF_BUILDINGS_VEC, vector as u64);
+        mem.write_u64(state + STATE_OFF_BUILDINGS_VEC + 8, 3u64 << 32);
+        mem.write_u64(vector, building_a as u64);
+        mem.write_u64(vector + 8, building_b as u64);
+        mem.write_u64(vector + 16, bad_building as u64);
+        write_full_building(&mut mem, base, building_a, 0x2FAB, 5, 4);
+        write_full_building(&mut mem, base, building_b, 0x4CC1, 2, 2);
+
+        let root = StateRoot {
+            state_id: 42,
+            state_ptr: state,
+        };
+        let per_field = read_state_building_rows(&mem, base, root).unwrap();
+        let bulk =
+            read_state_building_rows(&ContiguousFakeMemory { inner: mem }, base, root).unwrap();
+
+        assert_eq!(per_field.rows, bulk.rows);
+        assert_eq!(per_field.skipped_rows, bulk.skipped_rows);
+        // Sanity: the fixture actually produced the expected rows (damage kept).
+        assert_eq!(bulk.skipped_rows, 1);
+        assert_eq!(bulk.rows.len(), 2);
+        assert_eq!(bulk.rows[0].healthy_level, Some(4));
+    }
+
+    #[test]
+    fn bulk_window_construction_rows_match_per_field_path() {
+        // One country queue with a construction line whose window is fully
+        // populated. The bulk window path must reproduce the per-field row
+        // (incl. created_date, template chase, and target-state lookup) exactly.
+        let manager = 0x1000_0000_0000usize;
+        let vector = 0x1000_0000_1000usize;
+        let line = 0x1000_0000_2000usize;
+        let sub = 0x1000_0000_3000usize;
+        let target = 0x1000_0000_4000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(manager + CONSTRUCTION_BEGIN, vector as u64);
+        mem.write_u32(manager + CONSTRUCTION_CAP, 1);
+        mem.write_u32(manager + CONSTRUCTION_SIZE, 1);
+        mem.write_u64(vector, line as u64);
+        // Fully populate the line window so the contiguous reader can snapshot it.
+        mem.write_bytes(line, &[0u8; LINE_WINDOW_LEN]);
+        mem.write_u32(line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
+        mem.write_u32(line + LINE_ID, 77);
+        mem.write_i32(line + LINE_ACTIVE_FACTORIES, 15);
+        mem.write_i32(line + LINE_COST, 1_080_000_000);
+        mem.write_i32(line + LINE_PRODUCED, 5_000_000);
+        mem.write_u32(line + LINE_CREATED_DATE, 60_827_043);
+        mem.write_u64(line + LINE_CONSTRUCTION_SUB, sub as u64);
+        mem.write_u32(sub + CONSTRUCTION_TEMPLATE_ID, 20_013);
+        mem.write_u64(sub + CONSTRUCTION_TARGET_LOCATION_PTR, target as u64);
+        mem.write_u32(target + TARGET_LOCATION_ID, 42);
+
+        let lookup = TargetStateLookup::new(
+            &[StateRoot {
+                state_id: 42,
+                state_ptr: 0x1000_0001_0000,
+            }],
+            &[],
+        );
+        let per_field =
+            read_construction_queue_from_manager_with_targets(&mem, manager, 123, Some(&lookup))
+                .unwrap();
+        let bulk = read_construction_queue_from_manager_with_targets(
+            &ContiguousFakeMemory { inner: mem },
+            manager,
+            123,
+            Some(&lookup),
+        )
+        .unwrap();
+
+        assert_eq!(per_field.rows, bulk.rows);
+        assert_eq!(per_field.skipped_rows, bulk.skipped_rows);
+        // Sanity: the populated fixture produced the fully-decoded row.
+        assert_eq!(bulk.rows.len(), 1);
+        assert_eq!(bulk.rows[0].line_id, 77);
+        assert_eq!(bulk.rows[0].template_id, Some(20_013));
+        assert_eq!(bulk.rows[0].created_date_raw, Some(60_827_043));
+        assert_eq!(bulk.rows[0].target_state_id, Some(42));
     }
 
     fn sample_frame() -> LaneFrame {
