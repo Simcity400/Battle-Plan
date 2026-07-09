@@ -8,6 +8,10 @@ description = "Rust-native the game map bundle tooling and D3D11 terrain replay 
 minifb = "0.27"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# A5 keying swap: the renderer reads owner/controller/cosmetic from the
+# scrubbable WorldTimeline typed views instead of the static history parse.
+# Acyclic (replay_core depends only on serde/serde_json/snapshot).
+replay_core = { path = "../replay_core" }
 winapi = { version = "0.3.9", features = [
     "d3d11",
     "d3dcommon",

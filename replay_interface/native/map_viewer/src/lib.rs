@@ -21,6 +21,7 @@ mod fow_law;
 mod frame_bundle;
 mod game_data;
 mod image_load;
+mod keying;
 mod light_law;
 mod luminance_law;
 mod map_furniture;
@@ -108,7 +109,8 @@ pub use border_texture_law::{
 };
 pub use border_world_synthesis::{
     border_material_sources_from_resolver, border_source_evidence_from_resolver,
-    synthesize_border_world_mesh_from_resolver, BorderChain, BorderClassIndexPartition,
+    synthesize_border_world_mesh_from_resolver, synthesize_border_world_mesh_with_keying,
+    BorderChain, BorderClassIndexPartition,
     BorderClassIndexRange, BorderMaterial, BorderMaterialSource, BorderRank,
     BorderSourceEvidenceReport, BorderSourceExcerpt, BorderWaterClass, BorderWorldMesh,
     BorderWorldSynthesisStats, BorderWorldVertex, BORDER_CONSTANTS_SOURCE,
@@ -164,6 +166,7 @@ pub use frame_bundle::{
     validate_borders_map_frame_bundle, validate_rivers_map_frame_bundle,
     validate_trees_map_frame_bundle, validate_water_map_frame_bundle,
 };
+pub use keying::KeyingTables;
 pub use light_law::{defines as light_defines, offsets as light_offsets};
 pub use light_law::{
     diffuse_color_rgb_from_hsv_define, night_yzw_residual, render_sun_dir_yzw,
@@ -179,7 +182,7 @@ pub use map_furniture::{
     base_icon_layer_from_resolver, building_locator_pixel, capital_states_from_resolver,
     compute_base_icon_markers, compute_furniture_markers, cosmetic_tags_from_resolver,
     cosmetic_tags_from_resolver_with_dlc, country_colors_from_game_resolver,
-    furniture_layer_from_resolver, furniture_static_data_from_resolver,
+    furniture_layer_from_resolver, furniture_layer_with_keying, furniture_static_data_from_resolver,
     heightmap_grid_from_resolver, load_vp_label_font, load_vp_map_text_font, load_vp_strip_rgba,
     parse_base_icon_defines, parse_bmfont, parse_state_building_levels, parse_vp_icon_defines,
     ruling_parties_from_resolver, state_building_levels_from_resolver,
@@ -258,7 +261,8 @@ pub use pdx_mesh::{
 };
 pub use political_color_synthesis::{
     compare_political_colors_to_capture, dump_political_color_comparison,
-    political_color_composition_law, synthesize_political_colors, PoliticalColorComparisonReport,
+    political_color_composition_law, synthesize_political_colors,
+    synthesize_political_colors_with_keying, InitialStateControl, PoliticalColorComparisonReport,
     PoliticalColorCompositionLaw, PoliticalColorDumpPaths, PoliticalColorMismatchSample,
     PoliticalColorSamplerDescriptor, PoliticalColorSynthesis, PoliticalColorSynthesisSource,
     PoliticalColorTextureDescriptor, PROVINCE_COLOR_MAP_DXGI_FORMAT, PROVINCE_COLOR_MAP_HEIGHT,

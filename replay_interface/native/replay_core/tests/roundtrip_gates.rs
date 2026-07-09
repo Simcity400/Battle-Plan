@@ -19,7 +19,9 @@
 //! `snapshot_path_is_deterministic` gates the snapshot path (re-open yields
 //! byte-identical world state).
 
-use replay_core::{open_recording, Leaf, SnowMudCell, ViewStatus, WorldFrame, WorldTimeline};
+use replay_core::{
+    open_recording, Leaf, PlayerCountry, SnowMudCell, ViewStatus, WorldFrame, WorldTimeline,
+};
 use serde_json::Value;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -688,6 +690,48 @@ fn rt_dlc_language_variation() {
             "CAN cosmetic @ {}",
             f.hour_index()
         );
+    }
+}
+
+/// Player-country picker round-trip (observer-POV dependency): the list lives
+/// under `world.scenario.players` in the recording/fixture schema, not the
+/// internal `session.player_countries` key. The view must surface it so the
+/// POV country picker is not fail-closed on every real recording.
+///
+/// Oracle derived from the fixture generator source
+/// (`replay_fixture_gen/src/main.rs` `base_snapshot`): each player entry is
+/// `{"tag": <TAG>, "slot": <n>, "label": <name>}`, so the view's `tag` is the
+/// entry's `tag` and `player_name` falls back to `label`.
+#[test]
+fn rt_player_countries_from_world_scenario_players() {
+    for name in POSITIVE_FIXTURES {
+        let t = open_fixture(name);
+        for f in frames(&t) {
+            let players = raw(&f, &["world", "scenario", "players"])
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{name} @ {}: fixture must carry world.scenario.players",
+                        f.hour_index()
+                    )
+                });
+            let expected: Vec<PlayerCountry> = players
+                .iter()
+                .map(|entry| {
+                    let obj = entry.as_object().expect("player entry object");
+                    PlayerCountry {
+                        tag: exp_string(obj.get("tag")),
+                        player_name: exp_string(obj.get("label")),
+                    }
+                })
+                .collect();
+            assert_eq!(
+                f.session_metadata().player_countries,
+                Leaf::Measured(expected),
+                "{name} @ {}: player_countries from world.scenario.players",
+                f.hour_index()
+            );
+        }
     }
 }
 

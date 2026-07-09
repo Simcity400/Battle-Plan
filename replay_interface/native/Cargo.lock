@@ -302,6 +302,7 @@ name = "map_viewer"
 version = "0.1.0"
 dependencies = [
  "minifb",
+ "replay_core",
  "serde",
  "serde_json",
  "winapi",

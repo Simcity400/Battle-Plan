@@ -169,7 +169,12 @@ pub(crate) fn merge_dlc_conditional_cosmetics(
     Ok(())
 }
 
-pub(crate) fn load_country_colors_from_game_resolver(
+/// Base tag colors WITHOUT any cosmetic-tag override: `common/country_tags`
+/// per-country files plus `common/countries/colors.txt` overrides. The A5
+/// timeline path re-applies cosmetic overrides on top of this base using the
+/// recording's per-moment cosmetic tags (see
+/// [`country_colors_from_game_resolver_with_cosmetics`]).
+pub(crate) fn load_base_country_colors_from_game_resolver(
     resolver: &GameFileResolver,
 ) -> Result<BTreeMap<String, [u8; 3]>> {
     let mut colors = BTreeMap::new();
@@ -187,20 +192,46 @@ pub(crate) fn load_country_colors_from_game_resolver(
             colors.insert(tag.clone(), color);
         }
     }
-    // NAME1: the 1936 cosmetic-tag color overrides.
+    Ok(colors)
+}
+
+/// Load `common/countries/cosmetic.txt` (cosmetic tag -> map color), or an
+/// empty map when the file is absent.
+pub(crate) fn load_cosmetic_colors_from_game_resolver(
+    resolver: &GameFileResolver,
+) -> Result<BTreeMap<String, [u8; 3]>> {
+    if let Some(path) = resolver.resolve("common/countries/cosmetic.txt")? {
+        load_cosmetic_colors(&path)
+    } else {
+        Ok(BTreeMap::new())
+    }
+}
+
+/// A5 timeline color path: base tag colors with the *recording's* per-moment
+/// cosmetic tags applied (NAME1 color override), instead of the 1936-history
+/// cosmetic parse. `cosmetic_by_tag` comes from the `WorldTimeline`
+/// `country_identities` cosmetic view (see [`crate::keying::KeyingTables`]).
+pub(crate) fn country_colors_from_game_resolver_with_cosmetics(
+    resolver: &GameFileResolver,
+    cosmetic_by_tag: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, [u8; 3]>> {
+    let mut colors = load_base_country_colors_from_game_resolver(resolver)?;
+    let cosmetic_colors = load_cosmetic_colors_from_game_resolver(resolver)?;
+    apply_cosmetic_color_overrides(&mut colors, cosmetic_by_tag, &cosmetic_colors);
+    Ok(colors)
+}
+
+pub(crate) fn load_country_colors_from_game_resolver(
+    resolver: &GameFileResolver,
+) -> Result<BTreeMap<String, [u8; 3]>> {
+    // NAME1: the 1936 cosmetic-tag color overrides (static-file path).
     let history_files = resolver
         .resolve_dir_files("history/countries", Some("txt"))
         .unwrap_or_default();
     let mut cosmetic_tags = cosmetic_tags_1936_from_history_files(&history_files)?;
     // NAME1b: DLC-conditional cosmetics, all-DLC assumed for the bundle.
     merge_dlc_conditional_cosmetics(&mut cosmetic_tags, &history_files, |_| true)?;
-    let cosmetic_colors = if let Some(path) = resolver.resolve("common/countries/cosmetic.txt")? {
-        load_cosmetic_colors(&path)?
-    } else {
-        BTreeMap::new()
-    };
-    apply_cosmetic_color_overrides(&mut colors, &cosmetic_tags, &cosmetic_colors);
-    Ok(colors)
+    country_colors_from_game_resolver_with_cosmetics(resolver, &cosmetic_tags)
 }
 
 /// NAME1: tag -> 1936 cosmetic tag from `history/countries/<TAG> - *.txt`.

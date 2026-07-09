@@ -1961,12 +1961,26 @@ fn build_session_metadata(
     let (scenario, scenario_status) =
         object_at_path(rest, &["world", "scenario"], "world.scenario", warnings);
     let status = combine_status(session_status, scenario_status);
-    let player_countries = match session {
-        Some(obj) => leaf_player_countries(obj, warnings),
-        None => match status {
-            ViewStatus::DomainUnavailable => Leaf::Unobtained,
-            _ => Leaf::Absent,
-        },
+    // Players live under `world.scenario.players` in the schema/fixtures; the
+    // internal `session.player_countries` path is honored first when a writer
+    // provides it, then we fall through to the scenario location. Genuine
+    // absence (neither location carries a list) stays Absent.
+    let player_countries = {
+        let from_session = match session {
+            Some(obj) => leaf_player_countries(obj, "player_countries", "session", warnings),
+            None => Leaf::Absent,
+        };
+        match from_session {
+            Leaf::Absent => match scenario {
+                Some(obj) => leaf_player_countries(obj, "players", "world.scenario", warnings),
+                None if scenario_status == ViewStatus::DomainUnavailable => Leaf::Unobtained,
+                None => match status {
+                    ViewStatus::DomainUnavailable => Leaf::Unobtained,
+                    _ => Leaf::Absent,
+                },
+            },
+            other => other,
+        }
     };
     let speed_events = match session {
         Some(obj) => leaf_speed_events(obj, warnings),
@@ -2035,11 +2049,18 @@ fn first_available_string_list(
     }
 }
 
+/// Parse a player-country list from `obj[key]`. Shared by the internal
+/// `session.player_countries` path and the schema-shaped
+/// `world.scenario.players` path (`base` names the enclosing object for
+/// warnings, `key` the list field). Trichotomy is preserved: a missing key is
+/// [`Leaf::Absent`] so the caller can fall through to the other location.
 fn leaf_player_countries(
-    session: &Map<String, Value>,
+    obj: &Map<String, Value>,
+    key: &str,
+    base: &str,
     warnings: &mut Vec<String>,
 ) -> Leaf<Vec<PlayerCountry>> {
-    match walk_path(session, &["player_countries"], "session", warnings) {
+    match walk_path(obj, &[key], base, warnings) {
         Leaf::Absent => Leaf::Absent,
         Leaf::Unobtained => Leaf::Unobtained,
         Leaf::Measured(Value::Array(items)) => {
@@ -2050,20 +2071,21 @@ fn leaf_player_countries(
                         tag: Leaf::Measured(tag.clone()),
                         player_name: Leaf::Absent,
                     }),
-                    Value::Object(obj) => {
-                        let ctx = format!("session.player_countries[{i}]");
+                    Value::Object(entry) => {
+                        let ctx = format!("{base}.{key}[{i}]");
                         players.push(PlayerCountry {
-                            tag: leaf_string(obj, &["tag"], &ctx, warnings),
+                            tag: leaf_string(entry, &["tag"], &ctx, warnings),
                             player_name: first_available_string([
-                                leaf_string(obj, &["player"], &ctx, warnings),
-                                leaf_string(obj, &["player_name"], &ctx, warnings),
-                                leaf_string(obj, &["human_name"], &ctx, warnings),
+                                leaf_string(entry, &["player"], &ctx, warnings),
+                                leaf_string(entry, &["player_name"], &ctx, warnings),
+                                leaf_string(entry, &["human_name"], &ctx, warnings),
+                                leaf_string(entry, &["label"], &ctx, warnings),
                             ]),
                         });
                     }
                     other => {
                         warnings.push(format!(
-                            "session.player_countries[{i}]: expected string or object, found {}; \
+                            "{base}.{key}[{i}]: expected string or object, found {}; \
                              whole list treated as unobtained",
                             json_type_name(other)
                         ));
@@ -2075,7 +2097,7 @@ fn leaf_player_countries(
         }
         Leaf::Measured(other) => {
             warnings.push(format!(
-                "session.player_countries: present but wrong-typed (expected array, found {}); \
+                "{base}.{key}: present but wrong-typed (expected array, found {}); \
                  treated as unobtained",
                 json_type_name(other)
             ));
