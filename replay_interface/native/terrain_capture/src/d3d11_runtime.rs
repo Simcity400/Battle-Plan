@@ -179,6 +179,26 @@ const DEFAULT_SETTLE_MS: u64 = 8_000;
 /// oversized `--dwell-ms`; the DLL additionally clamps here so no path can wedge
 /// the game open indefinitely. 10 minutes = 600000 ms.
 pub const MAX_DWELL_MS: u32 = 600_000;
+
+/// CAPFIX4 (2026-07-09, user-approved): the dwell timeout is an IDLE cap, not a
+/// hard session cap. Each ACCEPTED control-file command (manual round /
+/// ui-state capture) re-anchors the dwell clock, so an operator-driven session
+/// stays open while work is happening; a session with no operator activity
+/// still dies within the dwell timeout (the CAPFIX2 anti-wedge intent stands —
+/// live 2026-07-09, the 10-min window expired during the save load before the
+/// first manual round could fire).
+static LAST_CONTROL_ACTIVITY_TICK_MS: AtomicU64 = AtomicU64::new(0);
+
+fn note_control_activity() {
+    let now = unsafe { GetTickCount64() };
+    LAST_CONTROL_ACTIVITY_TICK_MS.store(now, Ordering::SeqCst);
+}
+
+/// Elapsed dwell time measured from the LATER of session start and the last
+/// accepted control command. Pure so the extension rule is unit-testable.
+fn dwell_elapsed_ms(now: u64, started: u64, last_activity: u64) -> u64 {
+    now.saturating_sub(last_activity.max(started))
+}
 pub const DEFAULT_TERRAIN_CHUNK_LIBRARY_MAX_DRAWS_PER_PASS: u32 = 8_192;
 pub const DEFAULT_TERRAIN_CHUNK_LIBRARY_MAX_TOTAL_PAYLOAD_BYTES_PER_SESSION: u64 = 2_147_483_648;
 pub const DEFAULT_TERRAIN_CHUNK_LIBRARY_MAX_CAPTURE_WORK_MS_PER_FRAME: u64 = 2_000;
@@ -2452,7 +2472,13 @@ pub(crate) fn run_one_shot_capture(module_dir: &Path, timeout_ms: u32) {
         // Polled here (off the render thread, every ~50ms) so a wedge like
         // session_LAW_6 is reported instead of leaving the log silent.
         runtime_lock_watchdog_tick();
-        let elapsed = unsafe { GetTickCount64() }.saturating_sub(started);
+        // CAPFIX4: idle-anchored dwell — accepted control commands re-anchor
+        // the clock (see LAST_CONTROL_ACTIVITY_TICK_MS).
+        let elapsed = dwell_elapsed_ms(
+            unsafe { GetTickCount64() },
+            started,
+            LAST_CONTROL_ACTIVITY_TICK_MS.load(Ordering::SeqCst),
+        );
         if elapsed >= u64::from(timeout_ms) {
             break;
         }
@@ -6941,6 +6967,7 @@ fn poll_control_file_for_round_command_for_runtime(runtime: &mut CaptureRuntime)
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string();
+            note_control_activity();
             request_map_frame_round_for_runtime(runtime, label);
         }
         Some("capture_map_frames_round") => {}
@@ -6950,6 +6977,7 @@ fn poll_control_file_for_round_command_for_runtime(runtime: &mut CaptureRuntime)
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string();
+            note_control_activity();
             if let Err(error) = request_ui_capture_state_now_for_runtime(runtime, &label) {
                 write_event(
                     &runtime.output_dir,
@@ -21099,6 +21127,21 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capfix4_dwell_elapsed_anchors_to_latest_control_activity() {
+        // No activity (0): anchored to session start.
+        assert_eq!(dwell_elapsed_ms(10_000, 1_000, 0), 9_000);
+        // Activity after start re-anchors: elapsed measured from the command.
+        assert_eq!(dwell_elapsed_ms(700_000, 1_000, 650_000), 50_000);
+        // Stale activity from a previous session (before start) is ignored.
+        assert_eq!(dwell_elapsed_ms(10_000, 8_000, 2_000), 2_000);
+        // Idle cap intent: 10 minutes after the LAST command still expires.
+        let timeout = u64::from(MAX_DWELL_MS);
+        assert!(dwell_elapsed_ms(650_000 + timeout, 1_000, 650_000) >= timeout);
+        // Clock weirdness never underflows.
+        assert_eq!(dwell_elapsed_ms(5, 10, 0), 0);
+    }
 
     fn temp_capture_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
