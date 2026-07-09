@@ -374,7 +374,42 @@ reproduced identically by sequential and 4-worker parallel folds. **There is no 
 re-capturing any deleted stream requires a live game session.** Read it in place; never copy or
 modify it.
 
+## ⚠ CORRECTION 2026-07-10 — the Phase 4 "1.2 ms floor" is UNSUPPORTED
+
+The `lane/phase4-mirror-mapdetail` lane (report: `lane_reports/phase4-mirror-mapdetail.md`,
+Codex-reviewed twice) **refuted the premise** that `map_control`'s 40x advantage comes from a
+dense-mirror / change-driven read. Verified independently against the source:
+
+- `map_control` reads **one scalar at a fixed offset inside an already-resolved object**
+  (`collector/src/lib.rs:33545`) and walks **every** entity **every** frame. It is *not*
+  change-driven at read time — its 5.07M→15k reduction is ordinary **delta emission**, which
+  every domain already has.
+- `map_detail` chases `pdx::vector<CBuilding*>` and reads `CBuilding.level` (+0x40) from
+  individually heap-allocated 0x1F0-byte objects. **No contiguous building-level array exists**
+  in the engine. It is *already* change-driven collector-side. Part of its 49.2 ms is also an
+  impure measure: a `Mutex<BTreeMap>` cache that clones a `Vec` per lookup
+  (`collector/src/lib.rs:6135`).
+
+**The 40x gap is DATA SHAPE, not change-driven-vs-full-read.** Therefore, in the lever table
+below, the projection `proj = max(1.2 ms, changed_frac × read)` — and every row derived from it,
+including lever **1b (map_detail 49.2→1.2 ms)** — is **unsupported** for any domain whose fields
+live in scattered per-object heap allocations. The 1.2 ms floor is reachable only where the
+needed field is a scalar inside an object the topology already resolved. **Re-derive the floor
+per domain against its actual data shape before quoting a saving.**
+
+What survives unchanged: **no engine dirty signal exists**; any change-driven scheme must be
+*complete by construction*; and 77% of read-work still reads provably-unchanged rows (that is a
+statement about what is read, not about how cheaply it could be read).
+
+The live open question for scattered-object domains is **region-coalesced bulk reads** of
+already-known pointers (complete by construction; cuts guarded-read *calls*, not entities).
+Payoff is an empirical address-locality question, unanswerable offline — run
+`runs/d23_speed/d23_locality_probe.py` on a paused deep-war save before building anything.
+
 ## DEEP-WAR LEVER RANKING (2026-07-09 night corpus)
+
+> **Read the correction above first.** Lever 1 and its sub-rows (1a–1g) quote a 1.2 ms
+> change-driven floor that is now known to be data-shape-dependent, not universally reachable.
 
 Source: `runs/live_validation_20260709_221706/stage2_shortspeed5` — manifest per-domain
 `read_time_us` + a full header-only scan of the 12.0 GB `collector_stream.bin` (1421 frame_end
