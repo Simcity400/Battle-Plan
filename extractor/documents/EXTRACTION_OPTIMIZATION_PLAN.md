@@ -189,8 +189,49 @@ delta|full runtime override, tracker never advances on failure/partial frames (d
 frames emit no deltas at all — no tombstone storms), fold treats non-delta records as full
 baselines (old recordings unaffected). Every domain has a lossless gate test folding full vs
 delta streams to byte-identical per-hour state; all five pass together. Honest residuals
-(stay full-emission, no safe identity): d44 computed badges; d51 delayed-event/scripted-GUI
-opaque rows; d53 operation_instances/incoming_actions/intel_network_graphs/factions.
+(stay full-emission, no safe identity): ~~d44 computed badges~~ (CLOSED — see residual-deltas
+lane below); d51 delayed-event/scripted-GUI opaque rows (MEASURED-NOT-WORTH-IT — see below);
+d53 operation_instances/incoming_actions/intel_network_graphs/factions.
+
+**Residual-deltas lane 2026-07-09 (lane/residual-deltas):** measured both documented d44/d51
+full-emission residuals on the deep-war corpus
+(`runs/live_validation_20260709_221706/stage2_shortspeed5/collector_stream.bin`, 12.9 GB;
+4×300 MiB windows @ 0/35/70/~100 % → 28,964 records, 1.225 GB sampled). Per-domain byte
+shares of the sampled stream: d53 85.3 %, d48 6.1 %, d20 3.6 %, **d44 1.16 %**, everything
+else <0.5 %; **d51 total 0.05 %**.
+
+- **d44 computed badges — CLOSED (implemented + gated).** The five computed-badge rows are
+  constant compile-time rows (each wall flag → a fixed `value_a_raw` code); the collector was
+  force-emitting all five in EVERY delta frame (sample: 1,305 badge rows over 261 records =
+  5.0/frame = **200 B/game-hour**, 0.37 % of d44 bytes, 0.0043 % of the whole stream). Fix:
+  the collector now deltas badges like any other row (emit once in the baseline, skip while
+  unchanged — they never change) and the fold already RETAINS them
+  (`SupplyLogisticsState::badges` keyed by badge_flags; required-badge coverage reads the
+  retained set). Also made the host decode gate's mandatory-five-badges check baseline-only
+  (a delta record legitimately carries zero badges), mirroring the fold. Gates: collector
+  unit test (baseline emits 5, unchanged frame emits 0, changed live row re-emits only itself
+  with badges silent); host fold-identity gate updated so delta frames omit badges and folds
+  stay byte-identical incl. tombstone/reverted/zero-change frames; decoder tests
+  (delta-without-badges decodes clean; baseline-missing-badge still fails).
+- **d51 delayed-event/scripted-GUI opaque rows — MEASURED-NOT-WORTH-IT (documented, no code).**
+  Two sub-parts, both left full-emission:
+  1. *Constant opaque badges* (`VALUE_DELAYED_EVENT_OPAQUE` + `VALUE_SCRIPTED_GUI_OPAQUE`): in
+     the corpus exactly 1 + 1 constant badge row per frame (522 rows over 261 records),
+     **≈165 B/game-hour**, 6.5 % of d51 bytes but only **0.0035 % of the whole stream**. They
+     ARE cleanly deltable in principle (stable string-key identity), but the fold deliberately
+     CLEARS `scripted_world_opaque_badges` every delta frame (Vec, rebuilt per-frame), so
+     closing them needs a coordinated tombstone-parity change across THREE layers that the
+     lane keeps in lock-step — collector key + `world_fold` (Vec→keyed map, stop-clear split,
+     upsert/remove, tombstone-flag arm, render) + the FROZEN lane gate
+     `validate_tombstone_row` (which today hard-rejects opaque value_kinds) — for a reward the
+     zstd-93 container layer (163× measured on exactly this constant-redundancy class) already
+     reduces to ≈1 B/game-hour. Verdict: keep full-emission; the container codec is the
+     intended absorber (same rationale the plan applies to d53 full-churn).
+  2. *Measured delayed-event rows* (`VALUE_DELAYED_EVENT`): carry a per-event
+     `due_remaining_hours` that DECREMENTS every game-hour, so a delta would re-emit them every
+     frame regardless (zero savings); and they measured **ZERO rows across the entire 12.9 GB
+     deep-war corpus** (delayed-event discovery stayed fixture-blocked/unresolved). Verdict:
+     keep full-emission.
 
 **Adversarial review wave 2026-07-09 night (Opus reviewers):** bulk-collapse sweep
 certified SOUND across all 12 lanes; delta-emission review found and FIXED two real defects

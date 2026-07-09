@@ -13790,20 +13790,28 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             "offset {offset}: supply logistics csupply_input_rows {csupply_input_rows} != decoded {decoded_csupply_input_rows}"
         ));
     }
-    for (label, present) in [
-        ("exact supply wall", has_exact_supply_wall),
-        ("attrition wall", has_attrition_wall),
-        ("motorization wall", has_motorization_wall),
-        ("convoy pressure wall", has_convoy_pressure_wall),
-        (
-            "csupply candidate rejection",
-            has_csupply_candidate_rejected,
-        ),
-    ] {
-        if !present {
-            summary.parse_errors.push(format!(
-                "offset {offset}: supply logistics missing {label} badge row"
-            ));
+    // The five computed badges are constant compile-time rows: the collector
+    // emits them once in the baseline and skips them while unchanged (they never
+    // change), and the fold RETAINS them across delta frames. Requiring all five
+    // per record therefore only applies to baseline (non-delta) records; a delta
+    // record legitimately carries zero badge rows. (This mirrors the fold's
+    // required-badge coverage check, which reads the retained badge set.)
+    if !delta_data {
+        for (label, present) in [
+            ("exact supply wall", has_exact_supply_wall),
+            ("attrition wall", has_attrition_wall),
+            ("motorization wall", has_motorization_wall),
+            ("convoy pressure wall", has_convoy_pressure_wall),
+            (
+                "csupply candidate rejection",
+                has_csupply_candidate_rejected,
+            ),
+        ] {
+            if !present {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: supply logistics missing {label} badge row"
+                ));
+            }
         }
     }
     add_compact_domain_data_unit(summary, 44, "supply_division_fuel_rows", division_fuel_rows);
@@ -22487,11 +22495,12 @@ mod tests {
             }
         }
 
-        fn delta_frame(
-            mut rows: Vec<TestSupplyRow>,
-            full_state: &TestSupplyFrame,
-        ) -> TestSupplyFrame {
-            rows.extend(badge_rows());
+        // Delta frames intentionally carry NO computed-badge rows: the
+        // collector emits the five constant badges once in the baseline and
+        // then skips them while unchanged (they are constant), and the fold
+        // RETAINS them in `SupplyLogisticsState::badges`. This mirrors the real
+        // collector wire output and gates that badge retention is lossless.
+        fn delta_frame(rows: Vec<TestSupplyRow>, full_state: &TestSupplyFrame) -> TestSupplyFrame {
             TestSupplyFrame {
                 rows,
                 status_flags: COMPACT_STATUS_DELTA_DATA,
@@ -22650,12 +22659,29 @@ mod tests {
         );
         let delta3 = delta_frame(Vec::new(), &full3);
 
+        // Failure frame between delta2 and delta3: the collector's failure
+        // path returns the read UNCHANGED (full rows incl. all five badges, no
+        // DELTA flag) and does NOT advance the tracker; the fold marks the hour
+        // supply-unknown without touching retained state. The subsequent
+        // zero-change delta (computed against the pre-failure tracker) must
+        // still fold byte-identical — gating badge retention across failure
+        // frames.
+        let failure = TestSupplyFrame {
+            rows: full2.rows.clone(),
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            observed_province_roots: full2.observed_province_roots,
+            observed_division_roots: full2.observed_division_roots,
+        };
+
         let mut full_raw = Vec::new();
         let mut full_seq = 1u64;
         let mut delta_raw = Vec::new();
         let mut delta_seq = 1u64;
         let game_hour_raw = 60_759_360;
-        for (index, full) in [&full0, &full1, &full2, &full3, &full4].iter().enumerate() {
+        for (index, full) in [&full0, &full1, &full2, &failure, &full3, &full4]
+            .iter()
+            .enumerate()
+        {
             append_supply_frame(
                 &mut full_raw,
                 &mut full_seq,
@@ -22663,7 +22689,7 @@ mod tests {
                 full,
             );
         }
-        for (index, delta) in [&full0, &delta1, &delta2, &delta3, &full4]
+        for (index, delta) in [&full0, &delta1, &delta2, &failure, &delta3, &full4]
             .iter()
             .enumerate()
         {
@@ -22694,7 +22720,7 @@ mod tests {
         assert_eq!(
             delta_summary
                 .per_hour_data_domain_counts
-                .get(&(game_hour_raw + 3))
+                .get(&(game_hour_raw + 4))
                 .and_then(|domains| domains.get(&44))
                 .copied(),
             Some(1),
@@ -23776,6 +23802,28 @@ mod tests {
             .parse_errors
             .iter()
             .any(|err| err.contains("missing csupply candidate rejection badge row")));
+    }
+
+    #[test]
+    fn compact_supply_logistics_delta_record_without_badges_decodes_clean() {
+        // A DELTA record legitimately carries ZERO computed-badge rows: the
+        // five constant badges are emitted once in the baseline and RETAINED by
+        // the fold. Strip the five trailing badge rows, set the DELTA flag, and
+        // rewrite the counters to describe the three surviving live rows.
+        let mut payload = test_supply_logistics_attrition_data_payload(COMPACT_STATUS_DELTA_DATA);
+        payload.truncate(payload.len() - 5 * COMPACT_SUPPLY_LOGISTICS_ROW_LEN);
+        payload[8..12].copy_from_slice(&3u32.to_le_bytes()); // row_count
+        payload[12..16].copy_from_slice(&3u32.to_le_bytes()); // changed_rows (== emitted for delta)
+        payload[32..36].copy_from_slice(&0u32.to_le_bytes()); // badge_rows
+        let mut summary = CompactSummary::default();
+
+        decode_compact_supply_logistics_attrition_data_payload(0, &payload, &mut summary);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "delta record without badges must decode clean: {:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]
