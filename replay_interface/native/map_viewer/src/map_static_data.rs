@@ -1081,6 +1081,32 @@ mod tests {
         assert!((-6.05..=-6.03).contains(&min_rotation), "{min_rotation}");
         assert!((6.27..=6.29).contains(&max_rotation), "{max_rotation}");
 
+        // buildings.txt position stats: every locator must be finite and sit
+        // in the map's world quadrant (x,z >= 0). Vanilla map world extent is
+        // 5632 x 2048; a generous ceiling catches parse-shift corruption
+        // without hard-coding an over-tight bound.
+        let mut bounds = [[f32::INFINITY, f32::NEG_INFINITY]; 3];
+        for placement in &buildings {
+            for axis in 0..3 {
+                let v = placement.pos[axis];
+                assert!(v.is_finite(), "non-finite building coordinate {v}");
+                bounds[axis][0] = bounds[axis][0].min(v);
+                bounds[axis][1] = bounds[axis][1].max(v);
+            }
+        }
+        assert!(bounds[0][0] >= 0.0 && bounds[0][1] <= 5632.0, "x {:?}", bounds[0]);
+        assert!(bounds[2][0] >= 0.0 && bounds[2][1] <= 2048.0, "z {:?}", bounds[2]);
+        assert!(bounds[1][0] >= 0.0 && bounds[1][1] <= 200.0, "y {:?}", bounds[1]);
+        println!(
+            "buildings.txt position stats: {} rows; x[{:.1},{:.1}] y[{:.2},{:.2}] z[{:.1},{:.1}] \
+             rotation[{:.3},{:.3}]",
+            buildings.len(),
+            bounds[0][0], bounds[0][1],
+            bounds[1][0], bounds[1][1],
+            bounds[2][0], bounds[2][1],
+            min_rotation, max_rotation
+        );
+
         assert!(railways.iter().all(|segment| !segment.provinces.is_empty()));
         assert!(supply_nodes.iter().all(|node| node.province_id > 0));
     }

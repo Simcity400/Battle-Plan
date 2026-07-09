@@ -21,11 +21,29 @@ pub struct BuildingEntityBinding {
     pub scale_line: Option<usize>,
 }
 
+/// A `.gfx` pdxmesh `meshsettings` sub-block. When present it OVERRIDES the
+/// mesh's baked-in material textures for the shape at `index` (FILE law,
+/// `gfx/entities/buildings.gfx`: e.g. `facility_nuclear.mesh`'s baked material
+/// names a nonexistent `building_facility_nuclear_diffuse.dds`, and the real
+/// textures — `facility_diffuse.dds` / `nuclearreactor_diffuse.dds` — arrive
+/// here). Absent `meshsettings` ⇒ the mesh's baked material applies.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MeshSettingTexture {
+    pub index: Option<u32>,
+    pub texture_diffuse: Option<String>,
+    pub texture_normal: Option<String>,
+    pub texture_specular: Option<String>,
+    pub shader: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BuildingPdxmeshBinding {
     pub name: String,
     pub mesh: String,
     pub scale: f32,
+    /// `.gfx` per-shape texture overrides (authoritative over the mesh's baked
+    /// material when non-empty).
+    pub mesh_settings: Vec<MeshSettingTexture>,
     pub source: String,
     pub block_line: usize,
     pub name_line: usize,
@@ -90,6 +108,43 @@ pub struct BuildingMeshVertexBuffer {
     pub indices: Vec<u32>,
 }
 
+/// One material texture reference (diffuse/normal/specular) on a loaded
+/// building mesh, with the resolver-relative path it was looked up at and
+/// whether that path resolves to a real shipped (or mod-overridden) file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BuildingMaterialTextureRef {
+    pub entity_name: String,
+    pub pdxmesh_name: String,
+    pub source_mesh: String,
+    /// `"diffuse"`, `"normal"`, or `"specular"`.
+    pub slot: String,
+    /// The texture name exactly as written in the `.mesh` material node.
+    pub texture_name: String,
+    /// The resolver-relative path resolution was attempted at (the mesh-dir
+    /// join that resolved, else the last candidate tried).
+    pub resolved_rel: String,
+    pub resolved: bool,
+}
+
+/// Coverage of every material texture referenced by the loaded building
+/// meshes. Texture names in a pdxmesh `material` node are stored relative to
+/// the `.mesh` file's own directory (FILE-derived: `bunker.mesh` references
+/// `bunkercomplex_diffuse.dds`, a sibling under `gfx/models/buildings/`);
+/// resolution goes through the mod-aware [`GameFileResolver`], mesh-dir first
+/// with a root-relative fallback.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BuildingMaterialTextureReport {
+    pub total: usize,
+    pub resolved: usize,
+    pub refs: Vec<BuildingMaterialTextureRef>,
+}
+
+impl BuildingMaterialTextureReport {
+    pub fn unresolved(&self) -> impl Iterator<Item = &BuildingMaterialTextureRef> {
+        self.refs.iter().filter(|row| !row.resolved)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BuildingPreviewInstance {
     pub state_id: u32,
@@ -114,6 +169,13 @@ pub struct BuildingFileDerivedLayerStats {
     pub instance_count: usize,
     pub coverage: Vec<BuildingBindingCoverageRow>,
     pub shader: BuildingShaderPreparation,
+    /// Total material texture references (diffuse/normal/specular) across the
+    /// loaded building meshes.
+    pub material_texture_count: usize,
+    /// How many of those resolved to a real file through the resolver.
+    pub material_texture_resolved_count: usize,
+    /// The unresolved tail, reported explicitly (fail-closed, never guessed).
+    pub material_texture_unresolved: Vec<String>,
     pub level_policy: String,
     pub gaps: Vec<String>,
 }
@@ -152,9 +214,22 @@ pub fn building_file_derived_layer_from_resolver(
         preview_all,
     );
     let shader = prepare_building_shader_from_resolver(resolver);
+    let textures = resolve_building_material_textures(resolver, &models, &meshes)?;
     let resolved_type_count = coverage.iter().filter(|row| row.fully_resolved()).count();
     let missing_type_count = coverage.len().saturating_sub(resolved_type_count);
     let mut gaps = model_gaps;
+    let material_texture_unresolved = textures
+        .unresolved()
+        .map(|row| {
+            format!(
+                "{} {} texture unresolved: {} (looked up {})",
+                row.entity_name, row.slot, row.texture_name, row.resolved_rel
+            )
+        })
+        .collect::<Vec<_>>();
+    for message in &material_texture_unresolved {
+        gaps.push(format!("building material {message}"));
+    }
     if !preview_all {
         gaps.push(
             "--buildings-from-files prepared static placements and meshes but emitted zero instances; REPLAY_DATA_REQUIREMENTS item 10 must supply recorded state building levels before slot visibility is real".to_string(),
@@ -176,6 +251,9 @@ pub fn building_file_derived_layer_from_resolver(
         instance_count: instances.len(),
         coverage,
         shader,
+        material_texture_count: textures.total,
+        material_texture_resolved_count: textures.resolved,
+        material_texture_unresolved,
         level_policy: if preview_all {
             "visual gate override: render slot 0..show_on_map-1 per state at level>=1 assumption; real playback must gate slots on recorded building levels per REPLAY_DATA_REQUIREMENTS item 10".to_string()
         } else {
@@ -440,6 +518,131 @@ pub fn building_mesh_vertex_buffer_from_model(
         index_count: mesh.indices.len(),
         vertices,
         indices: mesh.indices.clone(),
+    })
+}
+
+/// Resolve every material texture referenced by the loaded building meshes.
+///
+/// Paradox pdxmesh material texture names are stored relative to the `.mesh`
+/// file's own directory (FILE law, verified against shipped bytes:
+/// `gfx/models/buildings/bunker.mesh` → `bunkercomplex_diffuse.dds`, a sibling
+/// under `gfx/models/buildings/`). Every lookup goes through the mod-aware
+/// resolver so a modded recording's texture overrides win
+/// (MOD_COMPATIBILITY.md). Resolution tries the mesh-directory join first and
+/// falls back to a root-relative lookup for any name that already carries a
+/// path separator; the tail that resolves to no shipped/overridden file is
+/// reported, never guessed.
+pub fn resolve_building_material_textures(
+    resolver: &GameFileResolver,
+    models: &[BuildingMeshVertexBuffer],
+    pdxmesh_bindings: &[BuildingPdxmeshBinding],
+) -> Result<BuildingMaterialTextureReport> {
+    if models.is_empty() {
+        return Ok(BuildingMaterialTextureReport {
+            total: 0,
+            resolved: 0,
+            refs: Vec::new(),
+        });
+    }
+    let settings_by_mesh = pdxmesh_bindings
+        .iter()
+        .map(|binding| (binding.name.as_str(), binding))
+        .collect::<BTreeMap<_, _>>();
+    // Filename -> resolver-relative path index across gfx/models. The engine's
+    // texture manager is filename-keyed (FILE evidence: nonormal.dds lives at
+    // gfx/models/, v2_rocket_launchsite_*.dds under gfx/models/units/planes/,
+    // both referenced by building meshes). Resolver-routed so mod overrides win.
+    let mut by_basename: BTreeMap<String, String> = BTreeMap::new();
+    for (rel, _) in resolver.resolve_dir_files_recursive(PDX_MODELS_ROOT, Some("dds"))? {
+        if let Some(base) = rel.rsplit('/').next() {
+            by_basename
+                .entry(base.to_ascii_lowercase())
+                .or_insert_with(|| rel.clone());
+        }
+    }
+
+    let mut refs = Vec::new();
+    let mut resolved = 0usize;
+    for model in models {
+        let mesh_dir = model
+            .source_mesh
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .unwrap_or("");
+        // Authoritative textures: .gfx meshsettings overrides when present,
+        // else the mesh's baked material.
+        let overrides = settings_by_mesh
+            .get(model.pdxmesh_name.as_str())
+            .map(|binding| binding.mesh_settings.as_slice())
+            .unwrap_or(&[]);
+        let mut slots: Vec<(&'static str, String)> = Vec::new();
+        if overrides.is_empty() {
+            if let Some(texture) = &model.material_diffuse {
+                slots.push(("diffuse", texture.clone()));
+            }
+            if let Some(texture) = &model.material_normal_map {
+                slots.push(("normal", texture.clone()));
+            }
+            if let Some(texture) = &model.material_specular {
+                slots.push(("specular", texture.clone()));
+            }
+        } else {
+            for setting in overrides {
+                if let Some(texture) = &setting.texture_diffuse {
+                    slots.push(("diffuse", texture.clone()));
+                }
+                if let Some(texture) = &setting.texture_normal {
+                    slots.push(("normal", texture.clone()));
+                }
+                if let Some(texture) = &setting.texture_specular {
+                    slots.push(("specular", texture.clone()));
+                }
+            }
+        }
+        for (slot, texture) in slots {
+            let normalized = texture.replace('\\', "/");
+            let base = normalized
+                .rsplit('/')
+                .next()
+                .unwrap_or(&normalized)
+                .to_ascii_lowercase();
+            let mut candidates = Vec::new();
+            if !mesh_dir.is_empty() && !normalized.starts_with("gfx/") {
+                candidates.push(format!("{mesh_dir}/{normalized}"));
+            }
+            candidates.push(normalized.clone());
+            let mut hit = None;
+            for candidate in &candidates {
+                if resolver.resolve(candidate)?.is_some() {
+                    hit = Some(candidate.clone());
+                    break;
+                }
+            }
+            if hit.is_none() {
+                if let Some(rel) = by_basename.get(&base) {
+                    hit = Some(rel.clone());
+                }
+            }
+            let is_resolved = hit.is_some();
+            if is_resolved {
+                resolved += 1;
+            }
+            refs.push(BuildingMaterialTextureRef {
+                entity_name: model.entity_name.clone(),
+                pdxmesh_name: model.pdxmesh_name.clone(),
+                source_mesh: model.source_mesh.clone(),
+                slot: slot.to_string(),
+                texture_name: texture.clone(),
+                resolved_rel: hit
+                    .unwrap_or_else(|| candidates.first().cloned().unwrap_or(normalized)),
+                resolved: is_resolved,
+            });
+        }
+    }
+    Ok(BuildingMaterialTextureReport {
+        total: refs.len(),
+        resolved,
+        refs,
     })
 }
 
@@ -811,12 +1014,70 @@ fn parse_building_pdxmesh_binding_block(
         name,
         mesh,
         scale: scale.unwrap_or(1.0),
+        mesh_settings: parse_mesh_settings(block),
         source: source.to_string(),
         block_line,
         name_line: name_line.unwrap_or(block_line),
         file_line: file_line.unwrap_or(block_line),
         scale_line,
     })
+}
+
+/// Parse the `meshsettings` sub-blocks (per-shape texture overrides) out of a
+/// pdxmesh block's lines. Brace-depth tracked so nested settings close
+/// correctly; each block yields one [`MeshSettingTexture`].
+fn parse_mesh_settings(block: &[(usize, String)]) -> Vec<MeshSettingTexture> {
+    let mut out = Vec::new();
+    let mut current: Option<MeshSettingTexture> = None;
+    let mut depth = 0i32;
+    for (_, line) in block {
+        if current.is_none() {
+            if find_assignment(line, "meshsettings", 0).is_some() {
+                current = Some(MeshSettingTexture::default());
+                depth = line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                if depth <= 0 {
+                    // Single-line meshsettings would be unusual; close it out.
+                    out.push(current.take().expect("just set"));
+                }
+            }
+            continue;
+        }
+        if let Some(ms) = current.as_mut() {
+            if ms.index.is_none() {
+                if let Some(value) = parse_token_value(line, "index") {
+                    ms.index = value.parse::<u32>().ok();
+                }
+            }
+            if ms.texture_diffuse.is_none() {
+                if let Some(value) = parse_quoted_value(line, "texture_diffuse") {
+                    ms.texture_diffuse = Some(value.replace('\\', "/"));
+                }
+            }
+            if ms.texture_normal.is_none() {
+                if let Some(value) = parse_quoted_value(line, "texture_normal") {
+                    ms.texture_normal = Some(value.replace('\\', "/"));
+                }
+            }
+            if ms.texture_specular.is_none() {
+                if let Some(value) = parse_quoted_value(line, "texture_specular") {
+                    ms.texture_specular = Some(value.replace('\\', "/"));
+                }
+            }
+            if ms.shader.is_none() {
+                if let Some(value) = parse_quoted_value(line, "shader") {
+                    ms.shader = Some(value);
+                }
+            }
+        }
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        if depth <= 0 {
+            out.push(current.take().expect("open meshsettings"));
+        }
+    }
+    if let Some(ms) = current.take() {
+        out.push(ms);
+    }
+    out
 }
 
 fn candidate_entity_names(building: &ShowOnMapBuilding) -> Vec<String> {
@@ -927,6 +1188,7 @@ mod tests {
             name: "building_arms_factory".to_string(),
             mesh: "gfx/models/buildings/factory.mesh".to_string(),
             scale: 1.0,
+            mesh_settings: Vec::new(),
             source: BUILDINGS_GFX_SOURCE.to_string(),
             block_line: 1,
             name_line: 1,
@@ -988,6 +1250,7 @@ mod tests {
             name: "building_other".to_string(),
             mesh: "gfx/models/buildings/missing.mesh".to_string(),
             scale: 1.0,
+            mesh_settings: Vec::new(),
             source: BUILDINGS_GFX_SOURCE.to_string(),
             block_line: 1,
             name_line: 1,
@@ -1044,6 +1307,70 @@ mod tests {
         );
         assert_eq!(resolved["air_base"][0].entity.scale, 1.25);
         assert_eq!(resolved["air_base"][0].pdxmesh.scale, 0.5);
+    }
+
+    #[test]
+    fn pdxmesh_parser_captures_meshsettings_texture_overrides() {
+        let meshes = parse_building_pdxmesh_bindings(
+            r#"
+            objectTypes = {
+                pdxmesh = {
+                    name = "building_nuclear_facility"
+                    file = "gfx\models\buildings\facility_nuclear.mesh"
+                    scale = 0.6
+                    meshsettings = {
+                        name = "facility_nuclearShape"
+                        index = 0
+                        texture_diffuse = "facility_diffuse.dds"
+                        texture_normal = "facility_normal.dds"
+                        texture_specular = "facility_specular.dds"
+                        shader = "PdxMeshAdvancedSnow"
+                    }
+                    meshsettings = {
+                        name = "facility_nuclearShape"
+                        index = 1
+                        texture_diffuse = "nuclearreactor_diffuse.dds"
+                        texture_normal = "nuclearreactor_normal.dds"
+                        texture_specular = "nuclearreactor_specular.dds"
+                        shader = "PdxMeshAdvanced"
+                    }
+                }
+                pdxmesh = {
+                    name = "building_rocket_site"
+                    file = "gfx\models\buildings\rocket_site.mesh"
+                    scale = 0.1
+                }
+            }
+            "#,
+            BUILDINGS_GFX_SOURCE,
+        )
+        .expect("pdxmesh parse");
+        let facility = meshes
+            .iter()
+            .find(|binding| binding.name == "building_nuclear_facility")
+            .expect("facility binding");
+        assert_eq!(facility.mesh_settings.len(), 2);
+        assert_eq!(facility.mesh_settings[0].index, Some(0));
+        assert_eq!(
+            facility.mesh_settings[0].texture_diffuse.as_deref(),
+            Some("facility_diffuse.dds")
+        );
+        assert_eq!(
+            facility.mesh_settings[1].texture_diffuse.as_deref(),
+            Some("nuclearreactor_diffuse.dds")
+        );
+        assert_eq!(
+            facility.mesh_settings[1].shader.as_deref(),
+            Some("PdxMeshAdvanced")
+        );
+        let rocket = meshes
+            .iter()
+            .find(|binding| binding.name == "building_rocket_site")
+            .expect("rocket binding");
+        assert!(
+            rocket.mesh_settings.is_empty(),
+            "rocket_site has no meshsettings; baked material applies"
+        );
     }
 
     #[test]
@@ -1164,6 +1491,106 @@ mod tests {
             ],
             "unexpected show_on_map building binding gaps"
         );
+    }
+
+    #[test]
+    fn material_textures_resolve_relative_to_mesh_directory() {
+        let models = vec![BuildingMeshVertexBuffer {
+            source_mesh: "gfx/models/buildings/bunker.mesh".to_string(),
+            entity_name: "building_bunker".to_string(),
+            pdxmesh_name: "building_bunker".to_string(),
+            total_scale: 1.0,
+            material_shader: "PdxMeshSnow".to_string(),
+            material_diffuse: Some("bunkercomplex_diffuse.dds".to_string()),
+            material_normal_map: Some("bunkercomplex_normal.dds".to_string()),
+            material_specular: None,
+            vertex_stride_bytes: BUILDING_MESH_VERTEX_STRIDE_BYTES,
+            vertex_count: 0,
+            index_count: 0,
+            vertices: Vec::new(),
+            indices: Vec::new(),
+        }];
+        let root = crate::test_support::temp_test_dir("building_material_textures_meshdir");
+        let vanilla = root.join("vanilla");
+        write_text(
+            &vanilla,
+            "gfx/models/buildings/bunkercomplex_diffuse.dds",
+            "x",
+        );
+        // normal map intentionally absent -> must be reported unresolved.
+        let resolver = GameFileResolver::vanilla(vanilla).expect("resolver");
+        let report =
+            resolve_building_material_textures(&resolver, &models, &[]).expect("textures");
+        assert_eq!(report.total, 2);
+        assert_eq!(report.resolved, 1);
+        let diffuse = report
+            .refs
+            .iter()
+            .find(|row| row.slot == "diffuse")
+            .expect("diffuse row");
+        assert!(diffuse.resolved);
+        assert_eq!(
+            diffuse.resolved_rel,
+            "gfx/models/buildings/bunkercomplex_diffuse.dds"
+        );
+        let unresolved = report.unresolved().collect::<Vec<_>>();
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].slot, "normal");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gate_vanilla_building_material_textures_resolve() {
+        let game_dir = PathBuf::from(VANILLA_GAME_DIR);
+        if !game_dir.is_dir() {
+            eprintln!("skipping vanilla building material texture gate: {VANILLA_GAME_DIR} is absent");
+            return;
+        }
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let layer = building_file_derived_layer_from_resolver(&resolver, false).expect("layer");
+        let pdxmeshes =
+            building_pdxmesh_bindings_from_resolver(&resolver).expect("pdxmesh bindings");
+        let report = resolve_building_material_textures(&resolver, &layer.models, &pdxmeshes)
+            .expect("texture report");
+        println!(
+            "gate_building_material_textures: {} models, {} texture refs, {} resolved, {} \
+             unresolved",
+            layer.models.len(),
+            report.total,
+            report.resolved,
+            report.total - report.resolved
+        );
+        for row in report.unresolved() {
+            println!(
+                "  UNRESOLVED {} {} {} (looked up {})",
+                row.entity_name, row.slot, row.texture_name, row.resolved_rel
+            );
+        }
+        assert!(
+            !layer.models.is_empty(),
+            "expected loaded building meshes for the resolved bindings"
+        );
+        assert!(
+            report.total >= layer.models.len(),
+            "every loaded mesh should reference at least one material texture"
+        );
+        // FILE gate: every diffuse/normal/specular texture on a resolved
+        // vanilla building mesh resolves through the resolver, mesh-dir first.
+        assert_eq!(
+            report.resolved, report.total,
+            "unresolved building material textures: {:?}",
+            report
+                .unresolved()
+                .map(|row| format!("{} {} {}", row.entity_name, row.slot, row.texture_name))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            layer.stats.material_texture_unresolved.is_empty(),
+            "layer stats should carry no unresolved-texture gaps: {:?}",
+            layer.stats.material_texture_unresolved
+        );
+        assert_eq!(layer.stats.material_texture_count, report.total);
+        assert_eq!(layer.stats.material_texture_resolved_count, report.resolved);
     }
 
     fn write_text(root: &std::path::Path, rel: &str, text: &str) {
