@@ -355,6 +355,25 @@ full re-emit); genuinely-changed subset emits exactly the changed rows.
   replay_decoder (D1). Session tooling: --replay-zstd-level plumbed (validation uses 3);
   emit-mode-full stage optional.
 
+## CORPUS RETENTION (2026-07-10 — disk cleanup, user-authorized)
+
+Deleted, to reclaim ~83 GB: the orphaned partial-fold snapshot temp dir (34.6 GB, regenerable
+from the stream), seven merged-lane worktrees (15.9 GB, recoverable from git), the
+**morning-baseline stream** (26.2 GB), and **all `live_perf_20260708/09` streams** (11.5 GB).
+
+**All 54 run manifests were retained and are now the numbers of record for those runs.** Read the
+manifest; there is no `.bin`. Morning baseline stays quotable as 69.9 ms avg / 82.4 p95 / 3,897
+skipped / 28.15 GB — but remember it was a *lighter world* and is **not** directly comparable to
+the deep-war run.
+
+**Surviving stream corpus (the only one):**
+`runs/live_validation_20260709_221706/stage2_shortspeed5/collector_stream.bin` — deep-war,
+~12 GB, 1421 hours. Reference fold chain hash over its first 600 MiB:
+`bc517771692b2052122fd1f83e6fda1c29c84b49c536cf058d8935997c1c63f7` (198 hours, 22,059 records),
+reproduced identically by sequential and 4-worker parallel folds. **There is no backup, and
+re-capturing any deleted stream requires a live game session.** Read it in place; never copy or
+modify it.
+
 ## DEEP-WAR LEVER RANKING (2026-07-09 night corpus)
 
 Source: `runs/live_validation_20260709_221706/stage2_shortspeed5` — manifest per-domain

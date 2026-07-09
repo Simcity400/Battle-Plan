@@ -144,10 +144,21 @@ Workspace: `extractor/native` (Rust). Key crates:
   lanes conflict on it. Instead write **`extractor/documents/lane_reports/<lane>.md`** — a new
   file, no conflict possible. The orchestrator folds it into the plan.
 - **Never push.** Commit on your lane branch only.
-- Corpora are read **in place, never copied** (they are 12–26 GB):
-  - deep-war: `extractor/native/runs/live_validation_20260709_221706/stage2_shortspeed5/collector_stream.bin`
-  - morning baseline: `extractor/native/runs/production_speed5_ShortSpeed5_20260709_124210/collector_stream.bin`
-  Delete any benchmark intermediates you create; verify free disk before large writes.
+- **The only surviving stream corpus** (read **in place, never copy** — it is ~12 GB):
+  `extractor/native/runs/live_validation_20260709_221706/stage2_shortspeed5/collector_stream.bin`
+  (deep-war, 1421 hours). Reference fold chain hash over its first 600 MiB:
+  `bc517771692b2052122fd1f83e6fda1c29c84b49c536cf058d8935997c1c63f7` (198 hours, 22,059 records)
+  — sequential and parallel folds must both reproduce it.
+- **Deleted 2026-07-10 for disk space** (user-authorized): the morning-baseline stream and all
+  `live_perf_20260708/09` streams. **Their manifests were kept** and remain the numbers of
+  record — read the manifest, do not look for the `.bin`. Morning baseline: 69.9 ms avg /
+  82.4 p95 / 3,897 skipped hours / 28.15 GB (a *lighter* world — **not** directly comparable to
+  the deep-war run). Re-capturing any deleted stream requires a live game session, so treat the
+  deep-war stream as precious: never move, modify, or copy it.
+- Delete any benchmark intermediates you create; verify free disk before large writes, **and
+  after cleanup** (some deletions fail silently on locked/long paths).
+- Orphaned `.native_session_snapshots-*` temp dirs are partial fold output and are safe to
+  delete; per-hour snapshots regenerate deterministically from the stream.
 - Report **numbers, not adjectives.** Cite `file:line` for code claims and addresses for RE
   claims.
 
