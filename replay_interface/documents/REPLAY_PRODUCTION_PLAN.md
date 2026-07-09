@@ -285,9 +285,36 @@ See the **UI derivation wave plan** in §6a for how the long tail is batched.
 | D3 | Outliner (army/navy/air lists) populated from unit views | listbox law gates + fixture population counts | OPEN |
 | D4 | Country/diplomacy panels (read-only): relations, wars, factions from 8/8b views | fixture war-matrix renders correct rows | OPEN |
 | D5 | Scrollbar thumb-travel law (UNTRACED, fail-closed) + any remaining widget primitives (checkbox/tab states as static chrome) | RE citation or capture (§4-CAP7 open-panel frame) | OPEN |
-| D6 | Date/speed clock — replay-native (shows recording time; speed = playback speed) | unit gates | PARTIAL (freeze-clock tooling exists) |
-| D7 | Remaining UI production surface per UI_LAYOUT_LAW §6.3: map-mode bar active state, tooltip content bindings, scripted-GUI visibility rules, and population of the major views (rows/progress/counts) — each view either implemented or **explicitly descoped for v1 in this table** | per-view fixture population gates; layout law gates held | OPEN (added per Codex review 2026-07-09) |
+| D6 | Date/speed clock — replay-native (shows recording time; speed = playback speed) | unit gates | **DONE 2026-07-09 (D-UI lane)** — FILE clock format (`interface/topbar.gui` DateText placeholder `"7:00 29, September 1939"` + `core_l_english.yml` months) in `topbar::format_topbar_datetime`/`binding::format_topbar_date{,_english}`; `binding::clock_binding_from_frame` binds the recording date + playback `speed_step` (mapped onto the five topbar buttons); wired into `replay_app` overlay `hour_label` (raw-date GAP closed). Gates: `binding::tests::topbar_date_*`, `ui_completion_binding::clock_binding_matches_recording_date_and_playback_speed` |
+| D7 | Remaining UI production surface per UI_LAYOUT_LAW §6.3: map-mode bar active state, tooltip content bindings, scripted-GUI visibility rules, and population of the major views (rows/progress/counts) — each view either implemented or **explicitly descoped for v1 in this table** | per-view fixture population gates; layout law gates held | **DONE 2026-07-09 (D-UI lane) — populate-or-descope sweep complete, see D7 table below** |
 | D8 | Localisation-language + DLC-gated identity binding: label/UI text keyed by the recording's language + DLC set (requirements items 4/9; ledger language-selection UNKNOWN) | A2 DLC/language fixtures render correct variants | OPEN |
+
+#### D7 populate-or-descope sweep (UI_LAYOUT_LAW §6.3/§6.4 surfaces)
+
+Every §6.3/§6.4 UI surface is accounted for below: **implemented** = a
+fixture-gated `game_ui::binding` population seam exists; **descoped** = a named
+v1-descope row (what is missing, why acceptable for v1, what closes it). The
+static layout of every surface already composes (probe: all 453 `.gui`, 0
+failures; 8 major views composited) — this table is only about *dynamic
+population*.
+
+| §6.4 surface | Disposition | Binding / evidence, or descope rationale + closer |
+|---|---|---|
+| Topbar chrome — scalars | **IMPLEMENTED (D1)** | `binding::topbar_binding_from_frame` (scalars raw; formatting UNKNOWN except date) — `topbar_binding.rs` sweep gate |
+| Topbar chrome — flag/name/ideology | **IMPLEMENTED (D2)** | `binding::{topbar_flag_key_candidates,country_name_key_candidates}` — `topbar_binding.rs` ideology-flip gate |
+| Topbar chrome — date/speed clock | **IMPLEMENTED (D6)** | `binding::clock_binding_from_frame` — FILE date format; playback speed step. `ui_completion_binding` clock gate |
+| Outliner (army/navy/air rows) | **IMPLEMENTED (D3)** | `binding::outliner_binding_from_frame` — `outliner_binding.rs` population gate |
+| Country/diplomacy panel | **IMPLEMENTED (D4)** | `binding::diplomacy_panel_from_frame` — `diplomacy_binding.rs` war/faction gate |
+| Tooltip frame — data (state owner/controller) | **IMPLEMENTED (D7)** | `binding::state_tooltip_from_frame` — owner/controller from the timeline, fail-closed. `ui_completion_binding` tooltip flip gate |
+| Tooltip frame — localised sentence + breakdown | **DESCOPE (v1)** | *Missing:* the composed localised tooltip text (e.g. "Owned by X, controlled by Y", building/supply breakdowns). *Why acceptable:* computed-not-stored (UI_LAYOUT_LAW §6.4 gap-class 2) — the engine builds these at runtime from scripted data functions; the underlying data (owner/controller) IS surfaced above. *Closes it:* a bounded data-function/`[expr]` evaluator + the loc format grammar, or an unavailable badge. |
+| Minimap / map-mode bar — active state | **IMPLEMENTED (D7, viewer-state)** | `binding::observer_default_mapmode` — political (`game_map_mode_country`, button 1); the map-mode bar highlights the viewer's mode. Gate `binding::tests::observer_default_mapmode_is_political_button_one` |
+| Minimap / map-mode bar — *recorded* active mode | **DESCOPE (v1)** | *Missing:* a per-tick recorded active map mode. *Why acceptable:* the active mode is player UI state, NOT world state (UI_LAYOUT_LAW §6.2 "active mode/tick = runtime"); the observer picks the mode, so there is nothing to bind. *Closes it:* only if a recording ever captures the player's selected mode (not in REPLAY_DATA_REQUIREMENTS). |
+| Menubar | **DESCOPE (v1)** | *Missing:* nothing dynamic. *Why acceptable:* every menubar control is a mutating action; a read-only replay renders it as inert static chrome (UI_LAYOUT_LAW §6.4 gap-class 3 — intentional read-only divergence). *Closes it:* n/a (by design). |
+| 8 major views — diplomacy content | **PARTIAL (D4 seam exists; composition deferred)** | The timeline data (relations/wars/factions) is bound by `binding::diplomacy_panel_from_frame`; wiring those rows into the `major_views.rs` compositor (which today overlays static sample text) is a compositor task deferred to Phase E product wiring. |
+| 8 major views — production/construction/research/trade/focus/division-designer content | **DESCOPE (v1)** | *Missing:* rows/progress/counts for these views. *Why acceptable:* recording-gated + computed-not-stored (UI_LAYOUT_LAW §6.4) — production lines, research slots, trade rows, focus progress, division designer stats are not in REPLAY_DATA_REQUIREMENTS' current schema and are largely player-facing derived state. *Closes it:* extractor feeds for the specific view + a value-format law; each view's static chrome already composes. |
+| Listbox/gridbox/scrollbar — row population | **DESCOPE (v1)** | *Missing:* runtime item rows + population order + autoscroll. *Why acceptable:* missing live replay state; the declared row/slot geometry law is already FILE (UI_LAYOUT_LAW §6.3, `widget_layout.rs`). *Closes it:* per-panel recording feeds + the open-panel capture (CAP7) for the pixel referee. |
+| Scrollbar thumb travel | **DESCOPE (v1) — capture-gated (= D5)** | *Missing:* value→thumb-position law. *Why acceptable:* UNTRACED, fails closed (UI_LAYOUT_LAW §6.3); no thumb is fabricated from min/max/start. *Closes it:* §4-CAP7 open-scrollable-panel capture. |
+| Scripted-GUI visibility rules | **DESCOPE (v1)** | *Missing:* per-element visibility from scripted triggers. *Why acceptable:* computed-not-stored (UI_LAYOUT_LAW §6.4 gap-class 2); a read-only replay cannot evaluate live scripted GUI triggers without a bounded evaluator. *Closes it:* a bounded trigger evaluator over recorded scope state, or an unavailable badge per element. |
 
 ### Phase E — Playback UX (the product shell)
 

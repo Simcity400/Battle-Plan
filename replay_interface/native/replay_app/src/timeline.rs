@@ -207,8 +207,16 @@ impl OwnerProvider for RecordingTimeline {
     }
 
     fn hour_label(&self, hour: i64) -> String {
+        // D6 replay-native clock: format the recording date with the FILE
+        // topbar clock law (`interface/topbar.gui` DateText placeholder +
+        // `core_l_english.yml` months) via game_ui; fall back to the raw
+        // Clausewitz string when it does not parse (fail-closed, never a
+        // fabricated date). Closes the former raw-date GAP note in app.rs.
         match self.frame_maps(hour).2 {
-            Some(date) => format!("{date} (hour {hour})"),
+            Some(date) => match game_ui::binding::format_topbar_date_english(&date) {
+                Some(formatted) => format!("{formatted} (hour {hour})"),
+                None => format!("{date} (hour {hour})"),
+            },
             None => format!("hour {hour}"),
         }
     }

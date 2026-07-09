@@ -139,23 +139,38 @@ impl FactoryCounts {
     }
 }
 
+/// FILE — the topbar clock string. Source: `interface/topbar.gui` `DateText`
+/// placeholder `text = "7:00 29, September 1939"` (the exact shape the engine
+/// fills at runtime) + the shipped full month names in
+/// `localisation/english/core_l_english.yml` (`January`..`December`). Format:
+/// `{hour}:00 {day}, {MonthName} {year}` — hour and day with NO leading zero,
+/// full month name, 4-digit year. (The prior `"{h}:00, {d} {Mon}, {y}"` with
+/// an abbreviated month was a FIT and disagreed with the shipped placeholder.)
 pub fn format_topbar_datetime(hour: u8, day: u8, month: u8, year: i32) -> String {
-    let month = match month {
-        1 => "Jan",
-        2 => "Feb",
-        3 => "Mar",
-        4 => "Apr",
+    format!("{hour}:00 {day}, {} {year}", month_name_english(month))
+}
+
+/// The full English month names — identical to the shipped
+/// `localisation/english/core_l_english.yml` `January`..`December` values
+/// (FILE). `month` is 1..=12; any other value yields `"???"` (never a
+/// fabricated month). Used by the topbar clock formatter and the replay-native
+/// clock binding (see `binding::format_topbar_date`).
+pub fn month_name_english(month: u8) -> &'static str {
+    match month {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
         5 => "May",
-        6 => "Jun",
-        7 => "Jul",
-        8 => "Aug",
-        9 => "Sep",
-        10 => "Oct",
-        11 => "Nov",
-        12 => "Dec",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
         _ => "???",
-    };
-    format!("{}:00, {} {}, {}", hour, day, month, year)
+    }
 }
 
 pub fn format_percent(value: f32) -> String {
@@ -1064,7 +1079,13 @@ mod tests {
 
     #[test]
     fn formats_topbar_date_like_hoi4() {
-        assert_eq!(format_topbar_datetime(2, 1, 7, 1944), "2:00, 1 Jul, 1944");
+        // Reproduces the shipped `interface/topbar.gui` DateText placeholder
+        // byte-exact: `text = "7:00 29, September 1939"`.
+        assert_eq!(
+            format_topbar_datetime(7, 29, 9, 1939),
+            "7:00 29, September 1939"
+        );
+        assert_eq!(format_topbar_datetime(2, 1, 7, 1944), "2:00 1, July 1944");
     }
 
     #[test]

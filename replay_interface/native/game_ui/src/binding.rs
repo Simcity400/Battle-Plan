@@ -21,8 +21,11 @@
 //! found, replace the raw renderer for that field and cite it. See
 //! `LANE_REPORT.md` for the per-field FILE/UNKNOWN table.
 
-use crate::hud::{OutlinerBinding, OutlinerRowBinding};
-use crate::topbar::{flag_candidates_for_size, FactoryCounts, FlagSizeFolder, TopbarBinding};
+use crate::hud::{MapmodeBinding, OutlinerBinding, OutlinerRowBinding};
+use crate::loc::Localisation;
+use crate::topbar::{
+    flag_candidates_for_size, month_name_english, FactoryCounts, FlagSizeFolder, TopbarBinding,
+};
 use replay_core::{
     CountryIdentity, DiplomacyView, Leaf, TopbarScalars, ViewStatus, WorldFrame,
 };
@@ -480,6 +483,211 @@ pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> Diplomac
     }
 }
 
+// ===========================================================================
+// D6 — Replay-native date/speed clock
+// ===========================================================================
+//
+// The topbar clock shows the RECORDING's current time (from the frame's own
+// `date` string) plus the replay app's PLAYBACK speed (the transport step). It
+// parses no recording bytes: the date is a typed `WorldFrame::date()` view.
+//
+// Format law (FILE): `topbar::format_topbar_datetime` — the shipped
+// `interface/topbar.gui` `DateText` placeholder `"7:00 29, September 1939"`
+// (`{hour}:00 {day}, {MonthName} {year}`) + the `core_l_english.yml` month
+// names. The month name is resolved through the recording's localisation so a
+// non-English recording renders its own month names.
+//
+// The speed is the transport `speed_step` (a *playback* control) mapped onto
+// the five topbar speed-step buttons; it is **FIT (product UX)**, not the
+// engine game-speed law (see `replay_app::transport`). It is NOT the
+// recording's own `world.scenario.speed` — that is the game's recorded speed,
+// a separate datum this clock deliberately does not display.
+
+/// Month-name localisation keys the clock resolves, index 0..=11 == the shipped
+/// `core_l_english.yml` `January`..`December` keys (FILE). The key IS the
+/// English display value, so a missing loc entry falls back to the key itself.
+pub const TOPBAR_CLOCK_MONTH_LOC_KEYS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// A parsed Clausewitz `Y.M.D[.H]` recording date.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockDate {
+    pub year: i64,
+    pub month: u32,
+    pub day: u32,
+    pub hour: u32,
+}
+
+/// Parse a Clausewitz date string (`Y.M.D` or `Y.M.D.H`). Fail-closed: returns
+/// `None` unless year/month/day parse, `month` is 1..=12, `day` is 1..=31, and
+/// (when present) `hour` is 0..=23. Never fabricates a date.
+pub fn parse_clock_date(date: &str) -> Option<ClockDate> {
+    let mut parts = date.trim().split('.');
+    let year: i64 = parts.next()?.trim().parse().ok()?;
+    let month: u32 = parts.next()?.trim().parse().ok()?;
+    let day: u32 = parts.next()?.trim().parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let hour: u32 = match parts.next() {
+        Some(h) => h.trim().parse().ok()?,
+        None => 0,
+    };
+    if hour > 23 {
+        return None;
+    }
+    Some(ClockDate {
+        year,
+        month,
+        day,
+        hour,
+    })
+}
+
+/// FILE clock format `{hour}:00 {day}, {MonthName} {year}` (see the module note
+/// and `topbar::format_topbar_datetime`).
+fn format_clock_date(date: ClockDate, month_name: &str) -> String {
+    format!(
+        "{}:00 {}, {} {}",
+        date.hour, date.day, month_name, date.year
+    )
+}
+
+/// Format a recording date string for the topbar clock using the recording's
+/// localisation for the month name. Fail-closed `None` on an unparseable date.
+pub fn format_topbar_date(date: &str, loc: &Localisation) -> Option<String> {
+    let parsed = parse_clock_date(date)?;
+    let key = TOPBAR_CLOCK_MONTH_LOC_KEYS[(parsed.month - 1) as usize];
+    let month = loc.get(key).unwrap_or(key);
+    Some(format_clock_date(parsed, month))
+}
+
+/// English-month variant needing no `Localisation`: the month names are the
+/// shipped `core_l_english.yml` values (FILE, via `topbar::month_name_english`).
+/// Used by the product overlay where a full localisation is not threaded.
+pub fn format_topbar_date_english(date: &str) -> Option<String> {
+    let parsed = parse_clock_date(date)?;
+    Some(format_clock_date(
+        parsed,
+        month_name_english(parsed.month as u8),
+    ))
+}
+
+/// Replay-native clock binding (D6): the recording's current time (FILE-
+/// formatted) + the replay app's playback speed step, ready to merge onto a
+/// [`TopbarBinding`]. Fail-closed: a frame with no/unparseable date leaves
+/// `date_time` `None`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClockBinding {
+    pub date_time: Option<String>,
+    pub speed: Option<u8>,
+}
+
+/// Map the replay transport's 0-based `speed_step` onto the topbar's five
+/// speed-step buttons: step `i` lights buttons `1..=i+1`. Clamped to 1..=5.
+/// (Playback control — FIT product UX; see the module note.)
+pub fn playback_speed_button(speed_step: usize) -> u8 {
+    (speed_step + 1).min(5) as u8
+}
+
+/// Build the clock binding for one world frame + the current playback speed
+/// step (D6). The date uses the recording's localisation month names.
+pub fn clock_binding_from_frame(
+    frame: &WorldFrame,
+    playback_speed_step: usize,
+    loc: &Localisation,
+) -> ClockBinding {
+    ClockBinding {
+        date_time: frame.date().and_then(|date| format_topbar_date(date, loc)),
+        speed: Some(playback_speed_button(playback_speed_step)),
+    }
+}
+
+/// Merge a [`ClockBinding`] onto a [`TopbarBinding`] (D6 population seam). The
+/// layout is untouched; this only fills the `date_time`/`speed` fields the
+/// existing `compose_topbar` consumes.
+pub fn apply_clock(binding: &mut TopbarBinding, clock: &ClockBinding) {
+    binding.date_time = clock.date_time.clone();
+    binding.speed = clock.speed;
+}
+
+// ===========================================================================
+// D7 — Map-mode bar active state (observer default)
+// ===========================================================================
+//
+// The active map mode is NOT recorded — it is viewer UI state (UI_LAYOUT_LAW
+// §6.2: "active mode per tick = runtime/recording-gated"). The observer app
+// CHOOSES the mode; the replay's default is political (`game_map_mode_country`,
+// the first map-mode button). A recorded active-mode is descoped (plan D7).
+
+/// The observer default map-mode bar state (D7): political
+/// (`game_map_mode_country`), button 1, four-button layout. There is no
+/// recorded active mode to bind (UI_LAYOUT_LAW §6.2); this is the viewer
+/// default the map-mode bar highlights.
+pub fn observer_default_mapmode() -> MapmodeBinding {
+    MapmodeBinding {
+        selected_button: 1,
+        use_four_button_layout: true,
+    }
+}
+
+// ===========================================================================
+// D7 — Tile (state) tooltip content binding
+// ===========================================================================
+//
+// the game's state tooltip is computed-not-stored (a localised sentence + building
+// breakdown). Only the *data* it keys on — the state's owner and controller
+// tags — is timeline-derived; this seam surfaces exactly that, fail-closed, and
+// leaves the localised sentence composition descoped (plan D7 / LANE_REPORT).
+// Row text formatting is UNKNOWN → the raw stable tag is carried, never a
+// fabricated localised phrase (Constraint 3).
+
+/// Read-only state tooltip data bound from the timeline (D7). `owner` comes
+/// from `owner_by_state`, `controller` from `control_by_state`; each is `Some`
+/// only when the map leaf is `Measured` (fail-closed, never a fabricated tag).
+/// `available` mirrors the owner-view status for this frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StateTooltipBinding {
+    pub state_id: u32,
+    pub owner: Option<String>,
+    pub controller: Option<String>,
+    pub available: bool,
+}
+
+/// Build the read-only state tooltip binding for `state_id` at one world frame
+/// (D7). A state absent from the map layers yields `owner`/`controller` `None`
+/// (fail-closed) while still reporting the frame's view availability.
+pub fn state_tooltip_from_frame(frame: &WorldFrame, state_id: u32) -> StateTooltipBinding {
+    let owner = frame
+        .owner_by_state()
+        .get(&state_id)
+        .and_then(Leaf::measured)
+        .cloned();
+    let controller = frame
+        .control_by_state()
+        .get(&state_id)
+        .and_then(Leaf::measured)
+        .cloned();
+    StateTooltipBinding {
+        state_id,
+        owner,
+        controller,
+        available: frame.owner_by_state_status() == ViewStatus::Present,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +755,65 @@ mod tests {
             "gfx/flags/medium/GER_civil_war_democratic_democratic.tga"
         );
         assert!(cands.iter().all(|c| c.starts_with("gfx/flags/medium/")));
+    }
+
+    #[test]
+    fn topbar_date_reproduces_shipped_gui_placeholder() {
+        // interface/topbar.gui DateText placeholder is "7:00 29, September 1939".
+        assert_eq!(
+            format_topbar_date_english("1939.9.29.7").as_deref(),
+            Some("7:00 29, September 1939")
+        );
+        // Midnight on new year, no leading zeros.
+        assert_eq!(
+            format_topbar_date_english("1936.1.1.0").as_deref(),
+            Some("0:00 1, January 1936")
+        );
+        // Date-only (no hour) defaults the hour to 0.
+        assert_eq!(
+            format_topbar_date_english("1944.12.25").as_deref(),
+            Some("0:00 25, December 1944")
+        );
+    }
+
+    #[test]
+    fn topbar_date_fail_closed_on_bad_input() {
+        assert_eq!(format_topbar_date_english(""), None);
+        assert_eq!(format_topbar_date_english("hour:5"), None);
+        assert_eq!(format_topbar_date_english("1936.13.1.0"), None); // month OOR
+        assert_eq!(format_topbar_date_english("1936.1.0.0"), None); // day 0
+        assert_eq!(format_topbar_date_english("1936.1.1.24"), None); // hour OOR
+    }
+
+    #[test]
+    fn topbar_date_uses_localisation_month_name() {
+        let mut loc = Localisation::default();
+        loc.entries
+            .insert("September".to_string(), "Septembre".to_string());
+        assert_eq!(
+            format_topbar_date("1939.9.29.7", &loc).as_deref(),
+            Some("7:00 29, Septembre 1939")
+        );
+        // A month with no loc entry falls back to the (English) key.
+        assert_eq!(
+            format_topbar_date("1939.1.1.0", &loc).as_deref(),
+            Some("0:00 1, January 1939")
+        );
+    }
+
+    #[test]
+    fn playback_speed_button_maps_and_clamps() {
+        assert_eq!(playback_speed_button(0), 1);
+        assert_eq!(playback_speed_button(1), 2);
+        assert_eq!(playback_speed_button(4), 5);
+        assert_eq!(playback_speed_button(7), 5); // clamp at 5 buttons
+    }
+
+    #[test]
+    fn observer_default_mapmode_is_political_button_one() {
+        let m = observer_default_mapmode();
+        assert_eq!(m.selected_button, 1);
+        assert!(m.use_four_button_layout);
     }
 
     fn all_absent_scalars() -> TopbarScalars {
