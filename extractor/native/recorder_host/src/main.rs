@@ -518,12 +518,17 @@ const COMPACT_PROJECT_SOURCE_BRIDGE: u32 = 2;
 const COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE: u32 = 1;
 const COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST: u32 = 1 << 1;
 const COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING: u32 = 1 << 2;
+const COMPACT_PROJECT_FACILITY_ROW_FLAG_DELETED: u32 = 1 << 31;
 const COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY: u32 = 1;
+const COMPACT_PROJECT_ROW_FLAG_DELETED: u32 = 1 << 31;
 const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN: u32 = 1;
 const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME: u32 = 1 << 1;
 const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT: u32 = 1 << 2;
 const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS: u32 = 1 << 3;
+const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DELETED: u32 = 1 << 31;
 const COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED: u32 = 1;
+const COMPACT_PROJECT_STATE_ROW_FLAG_DELETED: u32 = 1 << 31;
+const COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED: u32 = 1 << 31;
 const COMPACT_PROJECT_MAX_ID: u32 = 10_000_000;
 const COMPACT_PROJECT_MAX_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_PROJECT_MAX_HANDLE: u32 = 10_000_000;
@@ -695,6 +700,7 @@ struct Config {
     /// driven (debug on, production off). Never gates data-loss detection.
     sidecar_log: bool,
     extraction_perf_gate: bool,
+    d41_emit_mode: D41EmitMode,
     /// Plan-v2 P2b lever A: bound the collector's per-frame reader fan-out to at
     /// most this many concurrently-running domain workers (0 = unbounded = legacy).
     /// Passed through the JSON control block to the injected DLL as
@@ -760,6 +766,29 @@ impl StreamFormat {
         match self {
             StreamFormat::Json => "collector_frames.jsonl",
             StreamFormat::Compact => "collector_stream.bin",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum D41EmitMode {
+    Delta,
+    Full,
+}
+
+impl D41EmitMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "delta" => Some(Self::Delta),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Delta => "delta",
+            Self::Full => "full",
         }
     }
 }
@@ -943,6 +972,7 @@ fn run() -> Result<(), String> {
                     "projects_root_discovery_debt": "not_applicable_json_debug_stream",
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
+                    "d41_emit_mode": cfg.d41_emit_mode.as_str(),
                     "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
@@ -1032,6 +1062,7 @@ fn run() -> Result<(), String> {
                     "projects_root_discovery_debt": projects_root_discovery_debt,
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
+                    "d41_emit_mode": cfg.d41_emit_mode.as_str(),
                     "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
@@ -1295,6 +1326,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut stream_format: Option<StreamFormat> = None;
     let mut sidecar_log: Option<bool> = None;
     let mut extraction_perf_gate: Option<bool> = None;
+    let mut d41_emit_mode = D41EmitMode::Delta;
     let mut reader_concurrency = None;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
@@ -1393,6 +1425,13 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 stream_format = Some(parse_stream_format(args.get(i), "--stream-format")?);
             }
             "--extraction-perf-gate" => extraction_perf_gate = Some(true),
+            "--d41-emit-mode" => {
+                i += 1;
+                let value = required(args.get(i), "--d41-emit-mode")?;
+                d41_emit_mode = D41EmitMode::parse(&value).ok_or_else(|| {
+                    format!("invalid --d41-emit-mode {value}; expected delta|full")
+                })?;
+            }
             "--reader-concurrency" => {
                 i += 1;
                 reader_concurrency = Some(parse_u32(args.get(i), "--reader-concurrency")?);
@@ -1540,6 +1579,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         profile,
         sidecar_log,
         extraction_perf_gate,
+        d41_emit_mode,
         reader_concurrency,
         static_artifacts: {
             let mut requested = Vec::new();
@@ -1701,7 +1741,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d41-emit-mode delta|full] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -3584,6 +3624,7 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "compact_country_frame": cfg.compact_country_frame,
         "stream_format": cfg.stream_format.as_str(),
         "extraction_perf_gate": cfg.extraction_perf_gate,
+        "d41_emit_mode": cfg.d41_emit_mode.as_str(),
         "reader_concurrency": cfg.reader_concurrency,
         // Cadence thinning is FORBIDDEN (zero-data-loss): every scheduled domain
         // is captured hourly. This is always 1 and never a profile choice.
@@ -10402,6 +10443,7 @@ fn decode_compact_projects_data_payload(
         }
     }
     summary.status_flags_or |= status_flags;
+    let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
     if row_count
         != facility_count
             .saturating_add(project_count)
@@ -10418,27 +10460,32 @@ fn decode_compact_projects_data_payload(
             "offset {offset}: projects changed_rows {changed_rows} > row_count {row_count}"
         ));
     }
-    if facility_count > observed_facility_rows {
+    if delta_data && changed_rows != row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects delta changed_rows {changed_rows} != emitted row_count {row_count}"
+        ));
+    }
+    if !delta_data && facility_count > observed_facility_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: projects facility_count {facility_count} > observed_facility_rows {observed_facility_rows}"
         ));
     }
-    if project_count > observed_project_rows {
+    if !delta_data && project_count > observed_project_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: projects project_count {project_count} > observed_project_rows {observed_project_rows}"
         ));
     }
-    if scientist_count > observed_scientist_rows {
+    if !delta_data && scientist_count > observed_scientist_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: projects scientist_count {scientist_count} > observed_scientist_rows {observed_scientist_rows}"
         ));
     }
-    if project_state_count > observed_project_state_rows {
+    if !delta_data && project_state_count > observed_project_state_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: projects project_state_count {project_state_count} > observed_project_state_rows {observed_project_state_rows}"
         ));
     }
-    if breakthrough_count > observed_breakthrough_rows {
+    if !delta_data && breakthrough_count > observed_breakthrough_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: projects breakthrough_count {breakthrough_count} > observed_breakthrough_rows {observed_breakthrough_rows}"
         ));
@@ -10664,7 +10711,9 @@ fn decode_compact_projects_data_payload(
 
     let mut cursor = project_header_len;
     let mut facility_flags = Vec::with_capacity(facility_count);
+    let mut facility_deleted_flags = Vec::with_capacity(facility_count);
     let mut seen_facilities = BTreeSet::new();
+    let mut deleted_facility_rows = 0usize;
     for row_index in 0..facility_count {
         let id = read_u32_le(payload, cursor);
         let province = read_u32_le(payload, cursor + 4);
@@ -10684,17 +10733,41 @@ fn decode_compact_projects_data_payload(
                 "offset {offset}: projects facility row {row_index} duplicates id {id}"
             ));
         }
-        if province == 0 || province > COMPACT_PROJECT_MAX_PROVINCE_ID {
-            summary.parse_errors.push(format!(
-                "offset {offset}: projects facility row {row_index} has invalid province {province}"
-            ));
-        }
         let known_flags = COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE
             | COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST
-            | COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING;
+            | COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING
+            | COMPACT_PROJECT_FACILITY_ROW_FLAG_DELETED;
         if flags & !known_flags != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects facility row {row_index} has unknown flags {flags}"
+            ));
+        }
+        let deleted = flags & COMPACT_PROJECT_FACILITY_ROW_FLAG_DELETED != 0;
+        if deleted {
+            deleted_facility_rows = deleted_facility_rows.saturating_add(1);
+            if flags != COMPACT_PROJECT_FACILITY_ROW_FLAG_DELETED {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects facility deleted row {row_index} has live flags"
+                ));
+            }
+            if province != 0
+                || active_project_handle != 0
+                || scientist_char_id != 0
+                || unread_rewards != 0
+                || reserved0 != 0
+                || reserved1 != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects facility deleted row {row_index} has live fields"
+                ));
+            }
+            facility_flags.push(flags);
+            facility_deleted_flags.push(true);
+            continue;
+        }
+        if province == 0 || province > COMPACT_PROJECT_MAX_PROVINCE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has invalid province {province}"
             ));
         }
         if active_project_handle > COMPACT_PROJECT_MAX_HANDLE {
@@ -10728,9 +10801,11 @@ fn decode_compact_projects_data_payload(
             ));
         }
         facility_flags.push(flags);
+        facility_deleted_flags.push(false);
     }
 
     let mut seen_projects = BTreeSet::new();
+    let mut deleted_project_rows = 0usize;
     for row_index in 0..project_count {
         let id = read_u32_le(payload, cursor);
         let static_def_handle = read_u32_le(payload, cursor + 4);
@@ -10748,6 +10823,32 @@ fn decode_compact_projects_data_payload(
                 "offset {offset}: projects row {row_index} duplicates id {id}"
             ));
         }
+        let known_flags =
+            COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY | COMPACT_PROJECT_ROW_FLAG_DELETED;
+        if flags & !known_flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} has unknown flags {flags}"
+            ));
+        }
+        let deleted = flags & COMPACT_PROJECT_ROW_FLAG_DELETED != 0;
+        if deleted {
+            deleted_project_rows = deleted_project_rows.saturating_add(1);
+            if flags != COMPACT_PROJECT_ROW_FLAG_DELETED {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects deleted row {row_index} has live flags"
+                ));
+            }
+            if static_def_handle != 0
+                || iterations != 0
+                || worked_at_facility != 0
+                || reserved0 != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects deleted row {row_index} has live fields"
+                ));
+            }
+            continue;
+        }
         if static_def_handle == 0 || static_def_handle > COMPACT_PROJECT_MAX_HANDLE {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects row {row_index} has invalid static_def_handle {static_def_handle}"
@@ -10756,11 +10857,6 @@ fn decode_compact_projects_data_payload(
         if iterations > COMPACT_PROJECT_MAX_ITERATIONS {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects row {row_index} has invalid iterations {iterations}"
-            ));
-        }
-        if flags & !COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: projects row {row_index} has unknown flags {flags}"
             ));
         }
         if worked_at_facility == 0 && flags & COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY != 0 {
@@ -10781,7 +10877,9 @@ fn decode_compact_projects_data_payload(
     }
 
     let mut scientist_flags = Vec::with_capacity(scientist_count);
+    let mut scientist_deleted_flags = Vec::with_capacity(scientist_count);
     let mut seen_scientists = BTreeSet::new();
+    let mut deleted_scientist_rows = 0usize;
     for row_index in 0..scientist_count {
         let char_id = read_u32_le(payload, cursor);
         let flags = read_u32_le(payload, cursor + 4);
@@ -10806,11 +10904,29 @@ fn decode_compact_projects_data_payload(
         let known_flags = COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN
             | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME
             | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT
-            | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS;
+            | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS
+            | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DELETED;
         if flags & !known_flags != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects scientist row {row_index} has unknown flags {flags}"
             ));
+        }
+        let deleted = flags & COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DELETED != 0;
+        if deleted {
+            deleted_scientist_rows = deleted_scientist_rows.saturating_add(1);
+            if flags != COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DELETED {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects scientist deleted row {row_index} has live flags"
+                ));
+            }
+            if trait_count != 0 || skills != [0, 0, 0, 0] || reserved0 != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects scientist deleted row {row_index} has live fields"
+                ));
+            }
+            scientist_flags.push(flags);
+            scientist_deleted_flags.push(true);
+            continue;
         }
         if trait_count != u32::MAX && trait_count > COMPACT_PROJECT_MAX_TRAITS {
             summary.parse_errors.push(format!(
@@ -10835,9 +10951,11 @@ fn decode_compact_projects_data_payload(
             ));
         }
         scientist_flags.push(flags);
+        scientist_deleted_flags.push(false);
     }
 
     let mut seen_project_states = BTreeSet::new();
+    let mut deleted_project_state_rows = 0usize;
     for row_index in 0..project_state_count {
         let id = read_u32_le(payload, cursor);
         let static_def_handle = read_u32_le(payload, cursor + 4);
@@ -10856,10 +10974,35 @@ fn decode_compact_projects_data_payload(
             summary.parse_errors.push(format!(
                 "offset {offset}: projects state row {row_index} has invalid id {id}"
             ));
-        } else if !seen_project_states.insert((id, static_def_handle)) {
+        } else if !seen_project_states.insert(id) {
             summary.parse_errors.push(format!(
-                "offset {offset}: projects state row {row_index} duplicates id/static_def_handle {id}/{static_def_handle}"
+                "offset {offset}: projects state row {row_index} duplicates id {id}"
             ));
+        }
+        let deleted = state_flags_or_reserved & COMPACT_PROJECT_STATE_ROW_FLAG_DELETED != 0;
+        if deleted {
+            deleted_project_state_rows = deleted_project_state_rows.saturating_add(1);
+            if state_flags_or_reserved != COMPACT_PROJECT_STATE_ROW_FLAG_DELETED {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects state deleted row {row_index} has live flags"
+                ));
+            }
+            if static_def_handle != 0
+                || current_state_offset != 0
+                || current_state_enum != 0
+                || prototype_state_enum != 0
+                || simple_state_1_enum != 0
+                || simple_state_2_enum != 0
+                || simple_state_3_enum != 0
+                || prototype_iterations != 0
+                || phase_progress_raw != 0
+                || phase_target_raw != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects state deleted row {row_index} has live fields"
+                ));
+            }
+            continue;
         }
         if static_def_handle == 0 || static_def_handle > COMPACT_PROJECT_MAX_HANDLE {
             summary.parse_errors.push(format!(
@@ -10900,7 +11043,11 @@ fn decode_compact_projects_data_payload(
             ));
         }
         if header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2 {
-            if state_flags_or_reserved & !COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED != 0 {
+            if state_flags_or_reserved
+                & !(COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED
+                    | COMPACT_PROJECT_STATE_ROW_FLAG_DELETED)
+                != 0
+            {
                 summary.parse_errors.push(format!(
                     "offset {offset}: projects state row {row_index} has unknown state_flags {state_flags_or_reserved:#x}"
                 ));
@@ -10923,11 +11070,12 @@ fn decode_compact_projects_data_payload(
     );
 
     let mut seen_breakthrough = BTreeSet::new();
+    let mut deleted_breakthrough_rows = 0usize;
     for row_index in 0..breakthrough_count {
         let tag_db_id = read_u32_le(payload, cursor);
         let specialization_handle = read_u32_le(payload, cursor + 4);
         let points_raw = read_u32_le(payload, cursor + 8);
-        let reserved0 = read_u32_le(payload, cursor + 12);
+        let flags = read_u32_le(payload, cursor + 12);
         cursor += COMPACT_PROJECT_BREAKTHROUGH_ROW_LEN;
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
@@ -10943,19 +11091,60 @@ fn decode_compact_projects_data_payload(
                 "offset {offset}: projects breakthrough row {row_index} duplicates tag/specialization {tag_db_id}/{specialization_handle}"
             ));
         }
+        if flags & !COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects breakthrough row {row_index} has unknown flags {flags:#x}"
+            ));
+        }
+        let deleted = flags & COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED != 0;
+        if deleted {
+            deleted_breakthrough_rows = deleted_breakthrough_rows.saturating_add(1);
+            if points_raw != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects breakthrough deleted row {row_index} has live fields"
+                ));
+            }
+            continue;
+        }
         if points_raw > COMPACT_PROJECT_MAX_BREAKTHROUGH_POINTS {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects breakthrough row {row_index} has invalid points_raw {points_raw}"
             ));
         }
-        if reserved0 != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: projects breakthrough row {row_index} reserved field is nonzero"
-            ));
-        }
     }
 
-    for (row_index, flags) in facility_flags.iter().copied().enumerate() {
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_facility_deleted_rows",
+        deleted_facility_rows,
+    );
+    add_compact_domain_data_unit(summary, 41, "project_deleted_rows", deleted_project_rows);
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_scientist_deleted_rows",
+        deleted_scientist_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_state_deleted_rows",
+        deleted_project_state_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_breakthrough_deleted_rows",
+        deleted_breakthrough_rows,
+    );
+
+    for (row_index, (flags, deleted)) in facility_flags
+        .iter()
+        .copied()
+        .zip(facility_deleted_flags.iter().copied())
+        .enumerate()
+    {
         let len = match skip_compact_string_len(payload, &mut cursor, "projects facility building")
         {
             Ok(len) => len,
@@ -10969,6 +11158,11 @@ fn decode_compact_projects_data_payload(
                 "offset {offset}: projects facility row {row_index} building token is too long ({len})"
             ));
         }
+        if deleted && len != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility deleted row {row_index} has live building string"
+            ));
+        }
         if len == 0 && flags & COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects facility row {row_index} has building flag with empty string"
@@ -10980,7 +11174,12 @@ fn decode_compact_projects_data_payload(
             ));
         }
     }
-    for (row_index, flags) in scientist_flags.iter().copied().enumerate() {
+    for (row_index, (flags, deleted)) in scientist_flags
+        .iter()
+        .copied()
+        .zip(scientist_deleted_flags.iter().copied())
+        .enumerate()
+    {
         let token_len =
             match skip_compact_string_len(payload, &mut cursor, "projects scientist token") {
                 Ok(len) => len,
@@ -10992,6 +11191,11 @@ fn decode_compact_projects_data_payload(
         if token_len > COMPACT_PROJECT_MAX_SCIENTIST_TOKEN_LEN {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects scientist row {row_index} token is too long ({token_len})"
+            ));
+        }
+        if deleted && token_len != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist deleted row {row_index} has live token string"
             ));
         }
         if token_len == 0 && flags & COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN != 0 {
@@ -11015,6 +11219,11 @@ fn decode_compact_projects_data_payload(
         if display_len > COMPACT_PROJECT_MAX_SCIENTIST_DISPLAY_LEN {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects scientist row {row_index} display name is too long ({display_len})"
+            ));
+        }
+        if deleted && display_len != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist deleted row {row_index} has live display string"
             ));
         }
         if display_len == 0 && flags & COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME != 0 {
@@ -11052,6 +11261,7 @@ fn decode_compact_project_lifecycle_trailer(
     const ROW_LEN: usize = 12;
     const FLAG_STARTED: u32 = 1;
     const FLAG_COMPLETED: u32 = 1 << 1;
+    const FLAG_DELETED: u32 = 1 << 31;
     let Some(trailer) = payload.get(trailer_offset..) else {
         summary.parse_errors.push(format!(
             "offset {offset}: project lifecycle trailer offset {trailer_offset} beyond payload"
@@ -11094,6 +11304,7 @@ fn decode_compact_project_lifecycle_trailer(
     let mut seen = BTreeSet::new();
     let mut started_rows = 0usize;
     let mut completed_rows = 0usize;
+    let mut deleted_rows = 0usize;
     for row_index in 0..row_count {
         let tag_db_id = read_u32_le(trailer, cursor);
         let local_id = read_u32_le(trailer, cursor + 4);
@@ -11109,7 +11320,7 @@ fn decode_compact_project_lifecycle_trailer(
                 "offset {offset}: project lifecycle row {row_index} has zero local_id"
             ));
         }
-        if flags & !(FLAG_STARTED | FLAG_COMPLETED) != 0 {
+        if flags & !(FLAG_STARTED | FLAG_COMPLETED | FLAG_DELETED) != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: project lifecycle row {row_index} has unknown flags {flags:#x}"
             ));
@@ -11118,6 +11329,16 @@ fn decode_compact_project_lifecycle_trailer(
             summary.parse_errors.push(format!(
                 "offset {offset}: project lifecycle row {row_index} duplicates (tag {tag_db_id}, local_id {local_id})"
             ));
+        }
+        let deleted = flags & FLAG_DELETED != 0;
+        if deleted {
+            deleted_rows = deleted_rows.saturating_add(1);
+            if flags != FLAG_DELETED {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: project lifecycle deleted row {row_index} has live flags"
+                ));
+            }
+            continue;
         }
         if flags & FLAG_STARTED != 0 {
             started_rows = started_rows.saturating_add(1);
@@ -11134,6 +11355,7 @@ fn decode_compact_project_lifecycle_trailer(
         "project_lifecycle_completed_rows",
         completed_rows,
     );
+    add_compact_domain_data_unit(summary, 41, "project_lifecycle_deleted_rows", deleted_rows);
     add_compact_domain_data_unit(
         summary,
         41,
@@ -15528,7 +15750,7 @@ fn track_delta_baseline_for_summary(
     domain_id: u16,
     payload: &[u8],
 ) {
-    if !matches!(domain_id, 20 | 22) {
+    if !matches!(domain_id, 20 | 22 | 41) {
         return;
     }
     let Some(status_flags) = compact_payload_status_flags(domain_id, payload) else {
@@ -20310,9 +20532,496 @@ mod tests {
     }
 
     #[test]
+    fn compact_projects_delta_lossless_gate_matches_full_snapshots() {
+        fn with_observed_from(
+            mut frame: TestProjectsFrame,
+            full_state: &TestProjectsFrame,
+        ) -> TestProjectsFrame {
+            frame.observed_facilities = full_state.facilities.len() as u32;
+            frame.observed_projects = full_state.projects.len() as u32;
+            frame.observed_scientists = full_state.scientists.len() as u32;
+            frame.observed_states = full_state.states.len() as u32;
+            frame.observed_breakthroughs = full_state.breakthroughs.len() as u32;
+            frame
+        }
+
+        fn full_state(mut frame: TestProjectsFrame) -> TestProjectsFrame {
+            frame.status_flags = 0;
+            let clone = frame.clone();
+            with_observed_from(frame, &clone)
+        }
+
+        fn tombstone_facility(id: u32) -> TestProjectFacility {
+            TestProjectFacility {
+                id,
+                province: 0,
+                building: None,
+                active_project_handle: 0,
+                scientist_char_id: None,
+                unread_rewards: 0,
+                deleted: true,
+            }
+        }
+
+        fn tombstone_project(id: u32) -> TestProjectRow {
+            TestProjectRow {
+                id,
+                static_def_handle: 0,
+                iterations: 0,
+                worked_at_facility: None,
+                deleted: true,
+            }
+        }
+
+        fn tombstone_scientist(char_id: u32) -> TestProjectScientist {
+            TestProjectScientist {
+                char_id,
+                token: None,
+                display: None,
+                trait_count: None,
+                skills: [0, 0, 0, 0],
+                deleted: true,
+            }
+        }
+
+        fn tombstone_state(id: u32) -> TestProjectState {
+            TestProjectState {
+                id,
+                static_def_handle: 0,
+                phase_progress_raw: 0,
+                completed: false,
+                deleted: true,
+            }
+        }
+
+        fn tombstone_breakthrough(
+            tag_db_id: u32,
+            specialization_handle: u32,
+        ) -> TestProjectBreakthrough {
+            TestProjectBreakthrough {
+                tag_db_id,
+                specialization_handle,
+                points_raw: 0,
+                deleted: true,
+            }
+        }
+
+        fn tombstone_lifecycle(tag_db_id: u32, local_id: u32) -> TestProjectLifecycle {
+            TestProjectLifecycle {
+                tag_db_id,
+                local_id,
+                started: false,
+                completed: false,
+                deleted: true,
+            }
+        }
+
+        fn emitted_base_rows(frame: &TestProjectsFrame) -> u32 {
+            frame
+                .facilities
+                .len()
+                .saturating_add(frame.projects.len())
+                .saturating_add(frame.scientists.len())
+                .saturating_add(frame.states.len())
+                .saturating_add(frame.breakthroughs.len()) as u32
+        }
+
+        fn append_projects_frame(
+            raw: &mut Vec<u8>,
+            next_sequence: &mut u64,
+            game_hour_raw: i32,
+            frame: &TestProjectsFrame,
+        ) {
+            let emitted_rows = emitted_base_rows(frame);
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                41,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(
+                    500,
+                    emitted_rows,
+                    emitted_rows,
+                    emitted_rows,
+                    emitted_rows,
+                    frame.status_flags,
+                ),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                41,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &test_projects_delta_payload(frame),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *next_sequence += 1;
+        }
+
+        fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
+            fold_compact_snapshots(raw)
+                .into_iter()
+                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .collect()
+        }
+
+        let full0 = full_state(TestProjectsFrame {
+            facilities: vec![TestProjectFacility {
+                id: 118,
+                province: 341,
+                building: Some("facility_laboratory"),
+                active_project_handle: 91_234,
+                scientist_char_id: Some(44),
+                unread_rewards: 2,
+                deleted: false,
+            }],
+            projects: vec![TestProjectRow {
+                id: 91_234,
+                static_def_handle: 6_655,
+                iterations: 7,
+                worked_at_facility: Some(118),
+                deleted: false,
+            }],
+            scientists: vec![TestProjectScientist {
+                char_id: 44,
+                token: Some("POR_scientist"),
+                display: Some("Ana Ferreira"),
+                trait_count: Some(3),
+                skills: [4, 0, 1, 2],
+                deleted: false,
+            }],
+            states: vec![TestProjectState {
+                id: 91_234,
+                static_def_handle: 6_655,
+                phase_progress_raw: 3_000_000,
+                completed: false,
+                deleted: false,
+            }],
+            breakthroughs: vec![TestProjectBreakthrough {
+                tag_db_id: 1,
+                specialization_handle: 22_214,
+                points_raw: 12_345,
+                deleted: false,
+            }],
+            lifecycle: vec![TestProjectLifecycle {
+                tag_db_id: 1,
+                local_id: 1,
+                started: true,
+                completed: false,
+                deleted: false,
+            }],
+            lifecycle_countries: 1,
+            ..Default::default()
+        });
+        let full1 = full_state(TestProjectsFrame {
+            facilities: vec![
+                TestProjectFacility {
+                    id: 118,
+                    province: 341,
+                    building: Some("facility_laboratory_b"),
+                    active_project_handle: 91_234,
+                    scientist_char_id: Some(44),
+                    unread_rewards: 3,
+                    deleted: false,
+                },
+                TestProjectFacility {
+                    id: 119,
+                    province: 342,
+                    building: Some("facility_reactor"),
+                    active_project_handle: 91_235,
+                    scientist_char_id: Some(45),
+                    unread_rewards: 1,
+                    deleted: false,
+                },
+            ],
+            projects: vec![
+                TestProjectRow {
+                    id: 91_234,
+                    static_def_handle: 6_655,
+                    iterations: 8,
+                    worked_at_facility: Some(118),
+                    deleted: false,
+                },
+                TestProjectRow {
+                    id: 91_235,
+                    static_def_handle: 6_656,
+                    iterations: 1,
+                    worked_at_facility: Some(119),
+                    deleted: false,
+                },
+            ],
+            scientists: vec![
+                TestProjectScientist {
+                    char_id: 44,
+                    token: Some("POR_scientist"),
+                    display: Some("Ana Ferreira II"),
+                    trait_count: Some(3),
+                    skills: [4, 0, 1, 2],
+                    deleted: false,
+                },
+                TestProjectScientist {
+                    char_id: 45,
+                    token: Some("POR_scientist_two"),
+                    display: Some("Beatriz Costa"),
+                    trait_count: Some(1),
+                    skills: [1, 2, 3, 4],
+                    deleted: false,
+                },
+            ],
+            states: vec![
+                TestProjectState {
+                    id: 91_234,
+                    static_def_handle: 6_655,
+                    phase_progress_raw: 3_250_000,
+                    completed: true,
+                    deleted: false,
+                },
+                TestProjectState {
+                    id: 91_235,
+                    static_def_handle: 6_656,
+                    phase_progress_raw: 1_000_000,
+                    completed: false,
+                    deleted: false,
+                },
+            ],
+            breakthroughs: vec![
+                TestProjectBreakthrough {
+                    tag_db_id: 1,
+                    specialization_handle: 22_214,
+                    points_raw: 12_500,
+                    deleted: false,
+                },
+                TestProjectBreakthrough {
+                    tag_db_id: 1,
+                    specialization_handle: 333,
+                    points_raw: 777,
+                    deleted: false,
+                },
+            ],
+            lifecycle: vec![
+                TestProjectLifecycle {
+                    tag_db_id: 1,
+                    local_id: 1,
+                    started: true,
+                    completed: true,
+                    deleted: false,
+                },
+                TestProjectLifecycle {
+                    tag_db_id: 1,
+                    local_id: 2,
+                    started: true,
+                    completed: false,
+                    deleted: false,
+                },
+            ],
+            lifecycle_countries: 1,
+            ..Default::default()
+        });
+        let full2 = full_state(TestProjectsFrame {
+            facilities: vec![TestProjectFacility {
+                id: 119,
+                province: 342,
+                building: Some("facility_reactor"),
+                active_project_handle: 91_235,
+                scientist_char_id: Some(45),
+                unread_rewards: 5,
+                deleted: false,
+            }],
+            projects: vec![TestProjectRow {
+                id: 91_235,
+                static_def_handle: 6_656,
+                iterations: 2,
+                worked_at_facility: Some(119),
+                deleted: false,
+            }],
+            scientists: vec![TestProjectScientist {
+                char_id: 45,
+                token: Some("POR_scientist_two"),
+                display: Some("Beatriz Costa"),
+                trait_count: Some(1),
+                skills: [1, 2, 3, 4],
+                deleted: false,
+            }],
+            states: vec![TestProjectState {
+                id: 91_235,
+                static_def_handle: 6_656,
+                phase_progress_raw: 2_500_000,
+                completed: true,
+                deleted: false,
+            }],
+            breakthroughs: vec![TestProjectBreakthrough {
+                tag_db_id: 1,
+                specialization_handle: 333,
+                points_raw: 800,
+                deleted: false,
+            }],
+            lifecycle: vec![TestProjectLifecycle {
+                tag_db_id: 1,
+                local_id: 2,
+                started: true,
+                completed: false,
+                deleted: false,
+            }],
+            lifecycle_countries: 1,
+            ..Default::default()
+        });
+        let full3 = full2.clone();
+        let full4 = full_state(TestProjectsFrame {
+            facilities: vec![TestProjectFacility {
+                id: 130,
+                province: 400,
+                building: Some("facility_wind_tunnel"),
+                active_project_handle: 93_000,
+                scientist_char_id: Some(50),
+                unread_rewards: 4,
+                deleted: false,
+            }],
+            projects: vec![TestProjectRow {
+                id: 93_000,
+                static_def_handle: 7_000,
+                iterations: 1,
+                worked_at_facility: Some(130),
+                deleted: false,
+            }],
+            scientists: vec![TestProjectScientist {
+                char_id: 50,
+                token: Some("POR_scientist_three"),
+                display: Some("Carolina Sousa"),
+                trait_count: Some(2),
+                skills: [2, 2, 2, 2],
+                deleted: false,
+            }],
+            states: vec![TestProjectState {
+                id: 93_000,
+                static_def_handle: 7_000,
+                phase_progress_raw: 1_500_000,
+                completed: false,
+                deleted: false,
+            }],
+            breakthroughs: vec![TestProjectBreakthrough {
+                tag_db_id: 2,
+                specialization_handle: 444,
+                points_raw: 900,
+                deleted: false,
+            }],
+            lifecycle: vec![TestProjectLifecycle {
+                tag_db_id: 2,
+                local_id: 1,
+                started: true,
+                completed: true,
+                deleted: false,
+            }],
+            lifecycle_countries: 1,
+            ..Default::default()
+        });
+
+        let mut delta1 = full1.clone();
+        delta1.status_flags = COMPACT_STATUS_DELTA_DATA;
+        let delta1 = with_observed_from(delta1, &full1);
+
+        let delta2 = with_observed_from(
+            TestProjectsFrame {
+                facilities: vec![full2.facilities[0].clone(), tombstone_facility(118)],
+                projects: vec![full2.projects[0].clone(), tombstone_project(91_234)],
+                scientists: vec![tombstone_scientist(44)],
+                states: vec![full2.states[0].clone(), tombstone_state(91_234)],
+                breakthroughs: vec![
+                    full2.breakthroughs[0].clone(),
+                    tombstone_breakthrough(1, 22_214),
+                ],
+                lifecycle: vec![tombstone_lifecycle(1, 1)],
+                lifecycle_countries: 1,
+                status_flags: COMPACT_STATUS_DELTA_DATA,
+                ..Default::default()
+            },
+            &full2,
+        );
+        let delta3 = with_observed_from(
+            TestProjectsFrame {
+                lifecycle_countries: 1,
+                status_flags: COMPACT_STATUS_DELTA_DATA,
+                ..Default::default()
+            },
+            &full3,
+        );
+
+        let mut full_raw = Vec::new();
+        let mut full_seq = 1u64;
+        let mut delta_raw = Vec::new();
+        let mut delta_seq = 1u64;
+        let game_hour_raw = 60_759_360;
+        for (index, full) in [&full0, &full1, &full2, &full3, &full4].iter().enumerate() {
+            append_projects_frame(
+                &mut full_raw,
+                &mut full_seq,
+                game_hour_raw + index as i32,
+                full,
+            );
+        }
+        for (index, delta) in [&full0, &delta1, &delta2, &delta3, &full4]
+            .iter()
+            .enumerate()
+        {
+            append_projects_frame(
+                &mut delta_raw,
+                &mut delta_seq,
+                game_hour_raw + index as i32,
+                delta,
+            );
+        }
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        let delta_summary = summarize_compact_stream(&delta_raw);
+        let full_coverage = compact_domain_coverage_errors(&full_summary, &[41]);
+        let delta_coverage = compact_domain_coverage_errors(&delta_summary, &[41]);
+        assert!(
+            full_summary.parse_errors.is_empty(),
+            "{:?}",
+            full_summary.parse_errors
+        );
+        assert!(
+            delta_summary.parse_errors.is_empty(),
+            "{:?}",
+            delta_summary.parse_errors
+        );
+        assert!(full_coverage.is_empty(), "{full_coverage:?}");
+        assert!(delta_coverage.is_empty(), "{delta_coverage:?}");
+        assert_eq!(
+            delta_summary
+                .per_hour_data_domain_counts
+                .get(&(game_hour_raw + 3))
+                .and_then(|domains| domains.get(&41))
+                .copied(),
+            Some(1),
+            "zero-change delta frame must still count as a covered data record"
+        );
+        assert_ne!(delta_summary.status_flags_or & COMPACT_STATUS_DELTA_DATA, 0);
+        assert!(
+            delta_raw.len() < full_raw.len(),
+            "delta stream should be smaller than the equivalent full snapshots"
+        );
+
+        assert_eq!(
+            canonical_snapshots(&delta_raw),
+            canonical_snapshots(&full_raw)
+        );
+    }
+
+    #[test]
     fn compact_summary_rejects_unknown_project_state_flags() {
         let mut payload = test_projects_data_payload(0);
-        payload[284..288].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        payload[284..288].copy_from_slice(&0x4000_0000u32.to_le_bytes());
 
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -22636,6 +23345,7 @@ mod tests {
             profile: None,
             sidecar_log: false,
             extraction_perf_gate: true,
+            d41_emit_mode: D41EmitMode::Delta,
             reader_concurrency: 0,
             static_artifacts: Vec::new(),
         };
@@ -22909,6 +23619,8 @@ mod tests {
             "--stream-format".to_string(),
             "compact".to_string(),
             "--extraction-perf-gate".to_string(),
+            "--d41-emit-mode".to_string(),
+            "full".to_string(),
         ])
         .unwrap();
 
@@ -22925,6 +23637,7 @@ mod tests {
         );
         assert_eq!(cfg.stream_format, StreamFormat::Compact);
         assert!(cfg.extraction_perf_gate);
+        assert_eq!(cfg.d41_emit_mode, D41EmitMode::Full);
         assert_eq!(cfg.scheduled_domains, vec!["projects_live".to_string()]);
         assert_eq!(
             cfg.idea_group_filter.as_deref(),
@@ -23231,6 +23944,7 @@ mod tests {
         );
         assert!(control.contains("\"sidecar_log\":true"));
         assert!(control.contains("\"extraction_perf_gate\":true"));
+        assert!(control.contains("\"d41_emit_mode\":\"delta\""));
         assert!(control.contains("\"compact_country_frame\":false"));
         assert!(control.contains("\"stream_format\":\"compact\""));
         assert!(control.contains("\"scheduled_snapshot_step_hours\":1"));
@@ -23367,6 +24081,7 @@ mod tests {
             profile: None,
             sidecar_log: false,
             extraction_perf_gate: true,
+            d41_emit_mode: D41EmitMode::Delta,
             reader_concurrency: 0,
             static_artifacts: Vec::new(),
         }
@@ -24930,6 +25645,304 @@ mod tests {
         append_test_compact_string(&mut payload, "facility_laboratory");
         append_test_compact_string(&mut payload, "POR_scientist");
         append_test_compact_string(&mut payload, "Ana Ferreira");
+        payload
+    }
+
+    #[derive(Clone)]
+    struct TestProjectFacility {
+        id: u32,
+        province: u32,
+        building: Option<&'static str>,
+        active_project_handle: u32,
+        scientist_char_id: Option<u32>,
+        unread_rewards: u32,
+        deleted: bool,
+    }
+
+    #[derive(Clone)]
+    struct TestProjectRow {
+        id: u32,
+        static_def_handle: u32,
+        iterations: u32,
+        worked_at_facility: Option<u32>,
+        deleted: bool,
+    }
+
+    #[derive(Clone)]
+    struct TestProjectScientist {
+        char_id: u32,
+        token: Option<&'static str>,
+        display: Option<&'static str>,
+        trait_count: Option<u32>,
+        skills: [i32; 4],
+        deleted: bool,
+    }
+
+    #[derive(Clone)]
+    struct TestProjectState {
+        id: u32,
+        static_def_handle: u32,
+        phase_progress_raw: u32,
+        completed: bool,
+        deleted: bool,
+    }
+
+    #[derive(Clone)]
+    struct TestProjectBreakthrough {
+        tag_db_id: u32,
+        specialization_handle: u32,
+        points_raw: u32,
+        deleted: bool,
+    }
+
+    #[derive(Clone)]
+    struct TestProjectLifecycle {
+        tag_db_id: u32,
+        local_id: u32,
+        started: bool,
+        completed: bool,
+        deleted: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct TestProjectsFrame {
+        facilities: Vec<TestProjectFacility>,
+        projects: Vec<TestProjectRow>,
+        scientists: Vec<TestProjectScientist>,
+        states: Vec<TestProjectState>,
+        breakthroughs: Vec<TestProjectBreakthrough>,
+        lifecycle: Vec<TestProjectLifecycle>,
+        lifecycle_countries: u32,
+        lifecycle_aborted_countries: u32,
+        observed_facilities: u32,
+        observed_projects: u32,
+        observed_scientists: u32,
+        observed_states: u32,
+        observed_breakthroughs: u32,
+        status_flags: u32,
+    }
+
+    fn test_projects_delta_payload(frame: &TestProjectsFrame) -> Vec<u8> {
+        let facility_count = frame.facilities.len() as u32;
+        let project_count = frame.projects.len() as u32;
+        let scientist_count = frame.scientists.len() as u32;
+        let state_count = frame.states.len() as u32;
+        let breakthrough_count = frame.breakthroughs.len() as u32;
+        let row_count = facility_count
+            .saturating_add(project_count)
+            .saturating_add(scientist_count)
+            .saturating_add(state_count)
+            .saturating_add(breakthrough_count);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&row_count.to_le_bytes());
+        payload.extend_from_slice(&row_count.to_le_bytes());
+        payload.extend_from_slice(&frame.status_flags.to_le_bytes());
+        payload.extend_from_slice(&facility_count.to_le_bytes());
+        payload.extend_from_slice(&project_count.to_le_bytes());
+        payload.extend_from_slice(&scientist_count.to_le_bytes());
+        payload.extend_from_slice(&frame.observed_facilities.to_le_bytes());
+        payload.extend_from_slice(&frame.observed_projects.to_le_bytes());
+        payload.extend_from_slice(&frame.observed_scientists.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PROJECT_SOURCE_SCAN.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        for _ in 0..18 {
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&breakthrough_count.to_le_bytes());
+        payload.extend_from_slice(&frame.observed_states.to_le_bytes());
+        payload.extend_from_slice(&frame.observed_breakthroughs.to_le_bytes());
+
+        for row in &frame.facilities {
+            let flags = if row.deleted {
+                COMPACT_PROJECT_FACILITY_ROW_FLAG_DELETED
+            } else {
+                let mut flags = 0u32;
+                if row.active_project_handle != 0 {
+                    flags |= COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE;
+                }
+                if row.scientist_char_id.is_some() {
+                    flags |= COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST;
+                }
+                if row.building.is_some() {
+                    flags |= COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING;
+                }
+                flags
+            };
+            payload.extend_from_slice(&row.id.to_le_bytes());
+            payload.extend_from_slice(&if row.deleted { 0 } else { row.province }.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(
+                &if row.deleted {
+                    0
+                } else {
+                    row.active_project_handle
+                }
+                .to_le_bytes(),
+            );
+            payload.extend_from_slice(&row.scientist_char_id.unwrap_or(0).to_le_bytes());
+            payload
+                .extend_from_slice(&if row.deleted { 0 } else { row.unread_rewards }.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for row in &frame.projects {
+            let flags = if row.deleted {
+                COMPACT_PROJECT_ROW_FLAG_DELETED
+            } else if row.worked_at_facility.is_some() {
+                COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY
+            } else {
+                0
+            };
+            payload.extend_from_slice(&row.id.to_le_bytes());
+            payload.extend_from_slice(
+                &if row.deleted {
+                    0
+                } else {
+                    row.static_def_handle
+                }
+                .to_le_bytes(),
+            );
+            payload.extend_from_slice(&if row.deleted { 0 } else { row.iterations }.to_le_bytes());
+            payload.extend_from_slice(&row.worked_at_facility.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for row in &frame.scientists {
+            let flags = if row.deleted {
+                COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DELETED
+            } else {
+                let mut flags = COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS;
+                if row.token.is_some() {
+                    flags |= COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN;
+                }
+                if row.display.is_some() {
+                    flags |= COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME;
+                }
+                if row.trait_count.is_some() {
+                    flags |= COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT;
+                }
+                flags
+            };
+            payload.extend_from_slice(&row.char_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(
+                &if row.deleted {
+                    0
+                } else {
+                    row.trait_count.unwrap_or(u32::MAX)
+                }
+                .to_le_bytes(),
+            );
+            for skill in if row.deleted {
+                [0, 0, 0, 0]
+            } else {
+                row.skills
+            } {
+                payload.extend_from_slice(&skill.to_le_bytes());
+            }
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for row in &frame.states {
+            payload.extend_from_slice(&row.id.to_le_bytes());
+            payload.extend_from_slice(
+                &if row.deleted {
+                    0
+                } else {
+                    row.static_def_handle
+                }
+                .to_le_bytes(),
+            );
+            payload.extend_from_slice(&if row.deleted { 0 } else { 0x18u32 }.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&if row.deleted { 0 } else { 1u32 }.to_le_bytes());
+            payload.extend_from_slice(&if row.deleted { 0 } else { 2u32 }.to_le_bytes());
+            payload.extend_from_slice(&if row.deleted { 0 } else { 3u32 }.to_le_bytes());
+            payload.extend_from_slice(&if row.deleted { 0 } else { 1u32 }.to_le_bytes());
+            payload.extend_from_slice(
+                &if row.deleted {
+                    0
+                } else {
+                    row.phase_progress_raw
+                }
+                .to_le_bytes(),
+            );
+            payload.extend_from_slice(&if row.deleted { 0 } else { 60u32 }.to_le_bytes());
+            let flags = if row.deleted {
+                COMPACT_PROJECT_STATE_ROW_FLAG_DELETED
+            } else if row.completed {
+                COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED
+            } else {
+                0
+            };
+            payload.extend_from_slice(&flags.to_le_bytes());
+        }
+        for row in &frame.breakthroughs {
+            payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&row.specialization_handle.to_le_bytes());
+            payload.extend_from_slice(&if row.deleted { 0 } else { row.points_raw }.to_le_bytes());
+            payload.extend_from_slice(
+                &if row.deleted {
+                    COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED
+                } else {
+                    0
+                }
+                .to_le_bytes(),
+            );
+        }
+        for row in &frame.facilities {
+            append_test_compact_string(
+                &mut payload,
+                if row.deleted {
+                    ""
+                } else {
+                    row.building.unwrap_or("")
+                },
+            );
+        }
+        for row in &frame.scientists {
+            append_test_compact_string(
+                &mut payload,
+                if row.deleted {
+                    ""
+                } else {
+                    row.token.unwrap_or("")
+                },
+            );
+            append_test_compact_string(
+                &mut payload,
+                if row.deleted {
+                    ""
+                } else {
+                    row.display.unwrap_or("")
+                },
+            );
+        }
+        if !frame.lifecycle.is_empty()
+            || frame.lifecycle_countries != 0
+            || frame.lifecycle_aborted_countries != 0
+        {
+            payload.extend_from_slice(b"PLCF");
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&20u16.to_le_bytes());
+            payload.extend_from_slice(&(frame.lifecycle.len() as u32).to_le_bytes());
+            payload.extend_from_slice(&frame.lifecycle_countries.to_le_bytes());
+            payload.extend_from_slice(&frame.lifecycle_aborted_countries.to_le_bytes());
+            for row in &frame.lifecycle {
+                let flags = if row.deleted {
+                    1u32 << 31
+                } else {
+                    (row.started as u32) | ((row.completed as u32) << 1)
+                };
+                payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+                payload.extend_from_slice(&row.local_id.to_le_bytes());
+                payload.extend_from_slice(&flags.to_le_bytes());
+            }
+        }
         payload
     }
 

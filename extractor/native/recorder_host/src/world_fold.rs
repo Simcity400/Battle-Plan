@@ -465,19 +465,26 @@ const SPECIAL_PROJECTS_BREAKTHROUGH_ROW_LEN: usize = 16;
 const SPECIAL_PROJECTS_FACILITY_ACTIVE_PROJECT: u32 = 1;
 const SPECIAL_PROJECTS_FACILITY_SCIENTIST: u32 = 1 << 1;
 const SPECIAL_PROJECTS_FACILITY_BUILDING: u32 = 1 << 2;
+const SPECIAL_PROJECTS_FACILITY_DELETED: u32 = 1 << 31;
 const SPECIAL_PROJECTS_FACILITY_KNOWN_FLAGS: u32 = SPECIAL_PROJECTS_FACILITY_ACTIVE_PROJECT
     | SPECIAL_PROJECTS_FACILITY_SCIENTIST
-    | SPECIAL_PROJECTS_FACILITY_BUILDING;
+    | SPECIAL_PROJECTS_FACILITY_BUILDING
+    | SPECIAL_PROJECTS_FACILITY_DELETED;
 const SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY: u32 = 1;
+const SPECIAL_PROJECTS_PROJECT_DELETED: u32 = 1 << 31;
 const SPECIAL_PROJECTS_SCIENTIST_NAME_TOKEN: u32 = 1;
 const SPECIAL_PROJECTS_SCIENTIST_DISPLAY_NAME: u32 = 1 << 1;
 const SPECIAL_PROJECTS_SCIENTIST_TRAIT_COUNT: u32 = 1 << 2;
 const SPECIAL_PROJECTS_SCIENTIST_SKILLS: u32 = 1 << 3;
+const SPECIAL_PROJECTS_SCIENTIST_DELETED: u32 = 1 << 31;
 const SPECIAL_PROJECTS_SCIENTIST_KNOWN_FLAGS: u32 = SPECIAL_PROJECTS_SCIENTIST_NAME_TOKEN
     | SPECIAL_PROJECTS_SCIENTIST_DISPLAY_NAME
     | SPECIAL_PROJECTS_SCIENTIST_TRAIT_COUNT
-    | SPECIAL_PROJECTS_SCIENTIST_SKILLS;
+    | SPECIAL_PROJECTS_SCIENTIST_SKILLS
+    | SPECIAL_PROJECTS_SCIENTIST_DELETED;
 const SPECIAL_PROJECTS_PROJECT_STATE_COMPLETED: u32 = 1;
+const SPECIAL_PROJECTS_PROJECT_STATE_DELETED: u32 = 1 << 31;
+const SPECIAL_PROJECTS_BREAKTHROUGH_DELETED: u32 = 1 << 31;
 
 const FRD_HEADER_LEN_V1: usize = 48;
 const FRD_HEADER_LEN: usize = 56;
@@ -8316,6 +8323,7 @@ impl WorldFold {
             "special_projects header",
         )?;
         let status_flags = read_u32(payload, 16);
+        let delta = status_flags & COMPACT_STATUS_DELTA_DATA != 0;
         let facility_count = read_u32(payload, 20) as usize;
         let project_count = read_u32(payload, 24) as usize;
         let scientist_count = read_u32(payload, 28) as usize;
@@ -8363,9 +8371,17 @@ impl WorldFold {
             );
             return Ok(());
         }
-        if facility_count > active_facility_count
-            || project_count > active_project_count
-            || scientist_count > active_scientist_count
+        if self.reject_delta_before_baseline(
+            SPECIAL_PROJECTS_DOMAIN_ID,
+            "special_projects",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if !delta
+            && (facility_count > active_facility_count
+                || project_count > active_project_count
+                || scientist_count > active_scientist_count)
         {
             return Err("special_projects emitted row count exceeds active count".to_string());
         }
@@ -8385,7 +8401,16 @@ impl WorldFold {
         );
         need(payload, string_start, "special_projects rows")?;
 
-        let mut facilities = BTreeMap::new();
+        let mut facilities = if delta {
+            self.special_projects
+                .as_ref()
+                .map(|state| state.facilities.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let mut seen_facility_rows = BTreeSet::new();
+        let mut facility_string_targets = Vec::with_capacity(facility_count);
         for index in 0..facility_count {
             let base = facilities_start + index * SPECIAL_PROJECTS_FACILITY_ROW_LEN;
             let id = read_u32(payload, base);
@@ -8396,13 +8421,35 @@ impl WorldFold {
             let unread_rewards = read_u32(payload, base + 20);
             let reserved0 = read_u32(payload, base + 24);
             let reserved1 = read_u32(payload, base + 28);
-            if id == 0 || facilities.contains_key(&id) {
+            if id == 0 || !seen_facility_rows.insert(id) {
                 return Err(format!("special_projects duplicate/zero facility id {id}"));
             }
             if flags & !SPECIAL_PROJECTS_FACILITY_KNOWN_FLAGS != 0 {
                 return Err(format!(
                     "special_projects facility row {index} unknown flags {flags}"
                 ));
+            }
+            let deleted = flags & SPECIAL_PROJECTS_FACILITY_DELETED != 0;
+            if deleted {
+                if flags != SPECIAL_PROJECTS_FACILITY_DELETED {
+                    return Err(format!(
+                        "special_projects facility deleted row {index} has live flags"
+                    ));
+                }
+                if province != 0
+                    || active_project_handle != 0
+                    || scientist_char_id != 0
+                    || unread_rewards != 0
+                    || reserved0 != 0
+                    || reserved1 != 0
+                {
+                    return Err(format!(
+                        "special_projects facility deleted row {index} has live fields"
+                    ));
+                }
+                facilities.remove(&id);
+                facility_string_targets.push((id, flags, true));
+                continue;
             }
             if flags & SPECIAL_PROJECTS_FACILITY_ACTIVE_PROJECT == 0 && active_project_handle != 0 {
                 return Err(format!(
@@ -8432,9 +8479,18 @@ impl WorldFold {
                     building: None,
                 },
             );
+            facility_string_targets.push((id, flags, false));
         }
 
-        let mut projects = BTreeMap::new();
+        let mut projects = if delta {
+            self.special_projects
+                .as_ref()
+                .map(|state| state.projects.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let mut seen_project_rows = BTreeSet::new();
         for index in 0..project_count {
             let base = projects_start + index * SPECIAL_PROJECTS_PROJECT_ROW_LEN;
             let id = read_u32(payload, base);
@@ -8443,13 +8499,35 @@ impl WorldFold {
             let worked_at_facility = read_u32(payload, base + 12);
             let flags = read_u32(payload, base + 16);
             let reserved = read_u32(payload, base + 20);
-            if id == 0 || projects.contains_key(&id) {
+            if id == 0 || !seen_project_rows.insert(id) {
                 return Err(format!("special_projects duplicate/zero project id {id}"));
             }
-            if flags & !SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY != 0 {
+            if flags
+                & !(SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY | SPECIAL_PROJECTS_PROJECT_DELETED)
+                != 0
+            {
                 return Err(format!(
                     "special_projects project row {index} unknown flags {flags}"
                 ));
+            }
+            let deleted = flags & SPECIAL_PROJECTS_PROJECT_DELETED != 0;
+            if deleted {
+                if flags != SPECIAL_PROJECTS_PROJECT_DELETED {
+                    return Err(format!(
+                        "special_projects project deleted row {index} has live flags"
+                    ));
+                }
+                if static_def_handle != 0
+                    || iterations != 0
+                    || worked_at_facility != 0
+                    || reserved != 0
+                {
+                    return Err(format!(
+                        "special_projects project deleted row {index} has live fields"
+                    ));
+                }
+                projects.remove(&id);
+                continue;
             }
             if flags & SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY == 0 && worked_at_facility != 0 {
                 return Err(format!(
@@ -8473,7 +8551,16 @@ impl WorldFold {
             );
         }
 
-        let mut scientists = BTreeMap::new();
+        let mut scientists = if delta {
+            self.special_projects
+                .as_ref()
+                .map(|state| state.scientists.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let mut seen_scientist_rows = BTreeSet::new();
+        let mut scientist_string_targets = Vec::with_capacity(scientist_count);
         for index in 0..scientist_count {
             let base = scientists_start + index * SPECIAL_PROJECTS_SCIENTIST_ROW_LEN;
             let char_id = read_u32(payload, base);
@@ -8486,7 +8573,7 @@ impl WorldFold {
                 read_i32(payload, base + 24),
             ];
             let reserved = read_u32(payload, base + 28);
-            if char_id == 0 || scientists.contains_key(&char_id) {
+            if char_id == 0 || !seen_scientist_rows.insert(char_id) {
                 return Err(format!(
                     "special_projects duplicate/zero scientist id {char_id}"
                 ));
@@ -8495,6 +8582,22 @@ impl WorldFold {
                 return Err(format!(
                     "special_projects scientist row {index} unknown flags {flags}"
                 ));
+            }
+            let deleted = flags & SPECIAL_PROJECTS_SCIENTIST_DELETED != 0;
+            if deleted {
+                if flags != SPECIAL_PROJECTS_SCIENTIST_DELETED {
+                    return Err(format!(
+                        "special_projects scientist deleted row {index} has live flags"
+                    ));
+                }
+                if trait_count != 0 || skill_values != [0, 0, 0, 0] || reserved != 0 {
+                    return Err(format!(
+                        "special_projects scientist deleted row {index} has live fields"
+                    ));
+                }
+                scientists.remove(&char_id);
+                scientist_string_targets.push((char_id, flags, true));
+                continue;
             }
             if flags & SPECIAL_PROJECTS_SCIENTIST_TRAIT_COUNT == 0 && trait_count != 0 {
                 return Err(format!(
@@ -8523,22 +8626,60 @@ impl WorldFold {
                     display_name: None,
                 },
             );
+            scientist_string_targets.push((char_id, flags, false));
         }
 
-        let mut project_states = BTreeMap::new();
+        let mut project_states = if delta {
+            self.special_projects
+                .as_ref()
+                .map(|state| state.project_states.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let mut seen_project_state_rows = BTreeSet::new();
         for index in 0..project_state_count {
             let base = project_states_start + index * SPECIAL_PROJECTS_PROJECT_STATE_ROW_LEN;
             let id = read_u32(payload, base);
             let flags = read_u32(payload, base + 44);
-            if id == 0 || project_states.contains_key(&id) {
+            if id == 0 || !seen_project_state_rows.insert(id) {
                 return Err(format!(
                     "special_projects duplicate/zero project state id {id}"
                 ));
             }
-            if flags & !SPECIAL_PROJECTS_PROJECT_STATE_COMPLETED != 0 {
+            if flags
+                & !(SPECIAL_PROJECTS_PROJECT_STATE_COMPLETED
+                    | SPECIAL_PROJECTS_PROJECT_STATE_DELETED)
+                != 0
+            {
                 return Err(format!(
                     "special_projects project state row {index} unknown flags {flags}"
                 ));
+            }
+            let deleted = flags & SPECIAL_PROJECTS_PROJECT_STATE_DELETED != 0;
+            if deleted {
+                if flags != SPECIAL_PROJECTS_PROJECT_STATE_DELETED {
+                    return Err(format!(
+                        "special_projects project state deleted row {index} has live flags"
+                    ));
+                }
+                let live_fields = read_u32(payload, base + 4) != 0
+                    || read_u32(payload, base + 8) != 0
+                    || read_u32(payload, base + 12) != 0
+                    || read_u32(payload, base + 16) != 0
+                    || read_u32(payload, base + 20) != 0
+                    || read_u32(payload, base + 24) != 0
+                    || read_u32(payload, base + 28) != 0
+                    || read_u32(payload, base + 32) != 0
+                    || read_u32(payload, base + 36) != 0
+                    || read_u32(payload, base + 40) != 0;
+                if live_fields {
+                    return Err(format!(
+                        "special_projects project state deleted row {index} has live fields"
+                    ));
+                }
+                project_states.remove(&id);
+                continue;
             }
             project_states.insert(
                 id,
@@ -8560,48 +8701,149 @@ impl WorldFold {
             );
         }
 
-        let mut breakthroughs = Vec::with_capacity(breakthrough_count);
+        let mut breakthroughs = if delta {
+            self.special_projects
+                .as_ref()
+                .map(|state| state.breakthroughs.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let mut seen_breakthrough_rows = BTreeSet::new();
         for index in 0..breakthrough_count {
             let base = breakthroughs_start + index * SPECIAL_PROJECTS_BREAKTHROUGH_ROW_LEN;
             let tag_db_id = read_u32(payload, base);
             let specialization_handle = read_u32(payload, base + 4);
             let points_raw = read_u32(payload, base + 8);
-            let reserved = read_u32(payload, base + 12);
-            if reserved != 0 {
+            let flags = read_u32(payload, base + 12);
+            if tag_db_id == 0
+                || specialization_handle == 0
+                || !seen_breakthrough_rows.insert((tag_db_id, specialization_handle))
+            {
                 return Err(format!(
-                    "special_projects breakthrough row {index} reserved field is nonzero"
+                    "special_projects duplicate/zero breakthrough key {tag_db_id}/{specialization_handle}"
                 ));
             }
-            breakthroughs.push(SpecialProjectBreakthroughState {
-                tag_db_id,
-                specialization_handle,
-                points_raw,
-            });
+            if flags & !SPECIAL_PROJECTS_BREAKTHROUGH_DELETED != 0 {
+                return Err(format!(
+                    "special_projects breakthrough row {index} unknown flags {flags:#x}"
+                ));
+            }
+            let deleted = flags & SPECIAL_PROJECTS_BREAKTHROUGH_DELETED != 0;
+            if deleted {
+                if points_raw != 0 {
+                    return Err(format!(
+                        "special_projects breakthrough deleted row {index} has live fields"
+                    ));
+                }
+                breakthroughs.remove(&(tag_db_id, specialization_handle));
+                continue;
+            }
+            breakthroughs.insert(
+                (tag_db_id, specialization_handle),
+                SpecialProjectBreakthroughState {
+                    tag_db_id,
+                    specialization_handle,
+                    points_raw,
+                },
+            );
         }
 
         let mut cursor = string_start;
-        for facility in facilities.values_mut() {
+        for (facility_id, flags, deleted) in facility_string_targets {
             let building = read_string(payload, &mut cursor, "special_projects facility building")?;
+            if deleted {
+                if !building.is_empty() {
+                    return Err(
+                        "special_projects facility deleted row has live building string"
+                            .to_string(),
+                    );
+                }
+                continue;
+            }
+            if building.is_empty() && flags & SPECIAL_PROJECTS_FACILITY_BUILDING != 0 {
+                return Err(
+                    "special_projects facility row has building flag with empty string".to_string(),
+                );
+            }
+            if !building.is_empty() && flags & SPECIAL_PROJECTS_FACILITY_BUILDING == 0 {
+                return Err(
+                    "special_projects facility row has building string without flag".to_string(),
+                );
+            }
             if !building.is_empty() {
-                facility.building = Some(building);
+                if let Some(facility) = facilities.get_mut(&facility_id) {
+                    facility.building = Some(building);
+                }
             }
         }
-        for scientist in scientists.values_mut() {
+        for (scientist_id, flags, deleted) in scientist_string_targets {
             let name_token = read_string(payload, &mut cursor, "special_projects scientist token")?;
             let display_name =
                 read_string(payload, &mut cursor, "special_projects scientist display")?;
-            if !name_token.is_empty() {
-                scientist.name_token = Some(name_token);
+            if deleted {
+                if !name_token.is_empty() || !display_name.is_empty() {
+                    return Err(
+                        "special_projects scientist deleted row has live string fields".to_string(),
+                    );
+                }
+                continue;
             }
-            if !display_name.is_empty() {
-                scientist.display_name = Some(display_name);
+            if name_token.is_empty() && flags & SPECIAL_PROJECTS_SCIENTIST_NAME_TOKEN != 0 {
+                return Err(
+                    "special_projects scientist row has token flag with empty string".to_string(),
+                );
+            }
+            if !name_token.is_empty() && flags & SPECIAL_PROJECTS_SCIENTIST_NAME_TOKEN == 0 {
+                return Err(
+                    "special_projects scientist row has token string without flag".to_string(),
+                );
+            }
+            if display_name.is_empty() && flags & SPECIAL_PROJECTS_SCIENTIST_DISPLAY_NAME != 0 {
+                return Err(
+                    "special_projects scientist row has display flag with empty string".to_string(),
+                );
+            }
+            if !display_name.is_empty() && flags & SPECIAL_PROJECTS_SCIENTIST_DISPLAY_NAME == 0 {
+                return Err(
+                    "special_projects scientist row has display string without flag".to_string(),
+                );
+            }
+            if let Some(scientist) = scientists.get_mut(&scientist_id) {
+                if !name_token.is_empty() {
+                    scientist.name_token = Some(name_token);
+                }
+                if !display_name.is_empty() {
+                    scientist.display_name = Some(display_name);
+                }
             }
         }
         // Wave-5 project lifecycle: any bytes after the self-delimiting base
         // payload are the `PLCF` lifecycle trailer; anything else is a
         // trailing-byte error exactly as before.
+        let previous_lifecycle = if delta {
+            self.special_projects
+                .as_ref()
+                .and_then(|state| state.lifecycle.clone())
+        } else {
+            None
+        };
         let lifecycle = if cursor != payload.len() {
-            parse_project_lifecycle_trailer(payload, cursor)?
+            let trailer = parse_project_lifecycle_trailer(payload, cursor)?;
+            if delta {
+                apply_project_lifecycle_delta(previous_lifecycle, trailer)?
+            } else {
+                if let Some(trailer) = trailer.as_ref() {
+                    if trailer.rows.iter().any(|row| row.deleted) {
+                        return Err(
+                            "special_projects lifecycle baseline carries deleted rows".to_string()
+                        );
+                    }
+                }
+                trailer
+            }
+        } else if delta {
+            previous_lifecycle
         } else {
             // No trailer this frame: lifecycle not measured (absent, never
             // "all-empty").
@@ -8619,11 +8861,14 @@ impl WorldFold {
             scientists,
             project_states,
             breakthroughs,
-            count: project_count as u32,
+            count: active_project_count as u32,
             source,
             header_extension,
             lifecycle,
         });
+        if !delta {
+            self.delta_baselines_seen.insert(SPECIAL_PROJECTS_DOMAIN_ID);
+        }
         self.mark_fold_domain_success(SPECIAL_PROJECTS_DOMAIN_ID);
         Ok(())
     }
@@ -12250,12 +12495,13 @@ impl WeatherProvinceState {
     }
 }
 
+#[derive(Clone)]
 struct SpecialProjectsState {
     facilities: BTreeMap<u32, SpecialProjectFacilityState>,
     projects: BTreeMap<u32, SpecialProjectState>,
     scientists: BTreeMap<u32, SpecialProjectScientistState>,
     project_states: BTreeMap<u32, SpecialProjectProgressState>,
-    breakthroughs: Vec<SpecialProjectBreakthroughState>,
+    breakthroughs: BTreeMap<(u32, u32), SpecialProjectBreakthroughState>,
     count: u32,
     source: String,
     header_extension: u32,
@@ -12267,17 +12513,20 @@ struct SpecialProjectsState {
 
 /// Wave-5 project lifecycle fold payload: per-project started/completed rows
 /// plus the country counters (validated + fail-closed-aborted).
+#[derive(Clone)]
 struct ProjectLifecycleFold {
     rows: Vec<ProjectLifecycleFoldRow>,
     countries: u32,
     aborted_countries: u32,
 }
 
+#[derive(Clone)]
 struct ProjectLifecycleFoldRow {
     tag_db_id: u32,
     local_id: u32,
     started: bool,
     completed: bool,
+    deleted: bool,
 }
 
 impl SpecialProjectsState {
@@ -12343,11 +12592,12 @@ impl SpecialProjectsState {
             "project_lifecycle": project_lifecycle,
             "_r2_header_extension": self.header_extension,
             "_r2_project_states": project_states,
-            "_r2_breakthroughs": self.breakthroughs.iter().map(|row| row.to_json(fold, unresolved)).collect::<Vec<_>>(),
+            "_r2_breakthroughs": self.breakthroughs.values().map(|row| row.to_json(fold, unresolved)).collect::<Vec<_>>(),
         })
     }
 }
 
+#[derive(Clone)]
 struct SpecialProjectFacilityState {
     id: u32,
     province: u32,
@@ -12371,6 +12621,7 @@ impl SpecialProjectFacilityState {
     }
 }
 
+#[derive(Clone)]
 struct SpecialProjectState {
     id: u32,
     static_def_handle: u32,
@@ -12390,6 +12641,7 @@ impl SpecialProjectState {
     }
 }
 
+#[derive(Clone)]
 struct SpecialProjectScientistState {
     char_id: u32,
     trait_count: Option<u32>,
@@ -12410,6 +12662,7 @@ impl SpecialProjectScientistState {
     }
 }
 
+#[derive(Clone)]
 struct SpecialProjectProgressState {
     id: u32,
     static_def_handle: u32,
@@ -12446,6 +12699,7 @@ impl SpecialProjectProgressState {
     }
 }
 
+#[derive(Clone)]
 struct SpecialProjectBreakthroughState {
     tag_db_id: u32,
     specialization_handle: u32,
@@ -13322,6 +13576,7 @@ fn parse_project_lifecycle_trailer(
     const ROW_LEN: usize = 12;
     const FLAG_STARTED: u32 = 1;
     const FLAG_COMPLETED: u32 = 1 << 1;
+    const FLAG_DELETED: u32 = 1 << 31;
     let trailer = payload
         .get(trailer_offset..)
         .ok_or_else(|| "project lifecycle trailer offset beyond payload".to_string())?;
@@ -13365,10 +13620,14 @@ fn parse_project_lifecycle_trailer(
         if local_id == 0 {
             return Err("project lifecycle row has zero local_id".to_string());
         }
-        if flags & !(FLAG_STARTED | FLAG_COMPLETED) != 0 {
+        if flags & !(FLAG_STARTED | FLAG_COMPLETED | FLAG_DELETED) != 0 {
             return Err(format!(
                 "project lifecycle row has unknown flags {flags:#x}"
             ));
+        }
+        let deleted = flags & FLAG_DELETED != 0;
+        if deleted && flags != FLAG_DELETED {
+            return Err("project lifecycle deleted row has live flags".to_string());
         }
         if !seen.insert((tag_db_id, local_id)) {
             return Err(format!(
@@ -13380,12 +13639,41 @@ fn parse_project_lifecycle_trailer(
             local_id,
             started: flags & FLAG_STARTED != 0,
             completed: flags & FLAG_COMPLETED != 0,
+            deleted,
         });
     }
     Ok(Some(ProjectLifecycleFold {
         rows,
         countries,
         aborted_countries,
+    }))
+}
+
+fn apply_project_lifecycle_delta(
+    previous: Option<ProjectLifecycleFold>,
+    delta: Option<ProjectLifecycleFold>,
+) -> Result<Option<ProjectLifecycleFold>, String> {
+    let Some(delta) = delta else {
+        return Ok(previous);
+    };
+    let mut rows_by_key = BTreeMap::new();
+    if let Some(previous) = previous {
+        for row in previous.rows {
+            rows_by_key.insert((row.tag_db_id, row.local_id), row);
+        }
+    }
+    for row in delta.rows {
+        let key = (row.tag_db_id, row.local_id);
+        if row.deleted {
+            rows_by_key.remove(&key);
+        } else {
+            rows_by_key.insert(key, row);
+        }
+    }
+    Ok(Some(ProjectLifecycleFold {
+        rows: rows_by_key.into_values().collect(),
+        countries: delta.countries,
+        aborted_countries: delta.aborted_countries,
     }))
 }
 
