@@ -76,12 +76,15 @@ mod-aware resolver into the captured 128-aligned 54-subresource layout
 `with_reflection_resolver` from `cli.rs` / `replay_app/render.rs` into
 `d3d11_device.rs` `prepare_shader_resources`), and byte-verifies the decode
 against the captured payload whenever one is on disk — a mismatch is FATAL,
-never a silent fallback to captured bytes. Byte-noop PROVEN for vanilla:
-`gate_vanilla_reflection_dds_decodes_to_captured_payload_fnv` decodes the real
-shipped DDS and reproduces the captured upload byte stream exactly
-(2,112,768 B, FNV-1a64 `e267c5bfc5d499c8`, all 54 subresources), and
-`resolver_decode_byte_equals_captured_payload_from_assets` performs full
-byte-equality when the captured payload is available. The shape-contract check
+never a silent fallback to captured bytes. Proof status (Codex-review-
+corrected 2026-07-09): the always-on
+`gate_vanilla_reflection_dds_decodes_to_captured_payload_fnv` is a REGRESSION
+gate — it checks the shipped-DDS decode (2,112,768 B, all 54 subresources)
+against the FNV-1a64 `e267c5bfc5d499c8` recorded from the 2026-07-08
+captured-upload byte proof, not against captured bytes directly. Independent
+captured-byte equality is `resolver_decode_byte_equals_captured_payload_from_assets`
+(opt-in, `REFLECTION_CUBE_PROOF_DIR`, corpus machines) plus the runtime
+byte-verify whenever a captured payload is present. The shape-contract check
 (`native_d3d11_validate_shipped_reflection_cube_contract`) is retained. A mod
 that retextures `reflection.dds` (same shape) now renders ITS cube pixels; the
 ledger row is **FILE**, no longer CAPTURE(file-equivalent).
