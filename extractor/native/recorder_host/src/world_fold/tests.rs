@@ -929,7 +929,7 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
 }
 
 #[test]
-fn chunk3_d53_failure_and_delta_are_not_successful_folds() {
+fn chunk3_d53_failure_delta_before_baseline_and_delta_after_baseline() {
     let failure_payload =
         diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
             status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
@@ -949,19 +949,99 @@ fn chunk3_d53_failure_and_delta_are_not_successful_folds() {
         .iter()
         .any(|value| value == "diplomacy_intel_operatives_live"));
 
-    let delta_payload =
+    let delta_before_baseline_payload =
         diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
             status_flags: COMPACT_STATUS_DELTA_DATA,
             ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
         });
-    let delta = snapshot_for_domain_records(vec![(53, delta_payload)]);
-    assert!(delta["provenance"]["collector"]["domain_problems"]
+    let delta_before_baseline =
+        snapshot_for_domain_records(vec![(53, delta_before_baseline_payload)]);
+    assert!(
+        delta_before_baseline["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(53)
+                && problem["problem"] == json!("delta_before_baseline"))
+    );
+    assert!(!delta_before_baseline["provenance"]["collector"]["domains"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|problem| problem["domain_id"] == json!(53)
-            && problem["problem"] == json!("delta_unsupported")));
-    assert!(!delta["provenance"]["collector"]["domains"]
+        .any(|value| value == "diplomacy_intel_operatives_live"));
+
+    let baseline_payload =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            countries: vec![diplomacy53::compact::CountryDiplomacyRow {
+                tag_db_id: 1,
+                faction_group: 10,
+                at_war_count: 0,
+                casualties: 0,
+            }],
+            changed_rows: Some(1),
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let delta_payload =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            countries: vec![diplomacy53::compact::CountryDiplomacyRow {
+                tag_db_id: 1,
+                faction_group: 11,
+                at_war_count: 0,
+                casualties: 0,
+            }],
+            status_flags: COMPACT_STATUS_DELTA_DATA,
+            changed_rows: Some(1),
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let raw0 = raw_for(16_959_360);
+    let raw1 = raw_for(16_959_361);
+    let mut stream = Vec::new();
+    let mut seq = 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        53,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &baseline_payload,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        53,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &delta_payload,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("chunk3_d53_delta_after_baseline");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let delta_after_baseline = parse(&snaps[1].2);
+    assert_eq!(
+        delta_after_baseline["countries"]["1"]["diplomacy"][DOMAIN53_EXTRA_KEY]["faction_group"],
+        json!(11)
+    );
+    assert!(delta_after_baseline["provenance"]["collector"]["domains"]
         .as_array()
         .unwrap()
         .iter()

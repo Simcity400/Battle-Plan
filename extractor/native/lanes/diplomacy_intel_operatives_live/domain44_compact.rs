@@ -37,6 +37,7 @@ pub const STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 = 1 << 19;
 pub const STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 = 1 << 20;
 pub const STATUS_FACTION_GROUP_UNVALIDATED: u32 = 1 << 21;
 pub const STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED: u32 = 1 << 22;
+pub const ROW_ID_DELETED: u32 = 1 << 31;
 
 pub const KNOWN_STATUS_FLAGS: u32 = STATUS_STATE_UNAVAILABLE
     | STATUS_BRIDGE_UNAVAILABLE
@@ -547,12 +548,15 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
     payload.extend_from_slice(&(snapshot.agency_capacity_clusters.len() as u32).to_le_bytes());
 
     for row in &snapshot.countries {
-        let mut flags = COUNTRY_FLAG_FACTION_GROUP;
-        if row.at_war_count > 0 {
-            flags |= COUNTRY_FLAG_AT_WAR;
-        }
-        if row.casualties != 0 {
-            flags |= COUNTRY_FLAG_CASUALTIES;
+        let mut flags = 0u16;
+        if !row_id_deleted(row.tag_db_id) {
+            flags |= COUNTRY_FLAG_FACTION_GROUP;
+            if row.at_war_count > 0 {
+                flags |= COUNTRY_FLAG_AT_WAR;
+            }
+            if row.casualties != 0 {
+                flags |= COUNTRY_FLAG_CASUALTIES;
+            }
         }
         payload.extend_from_slice(&KIND_COUNTRY_DIPLOMACY.to_le_bytes());
         payload.extend_from_slice(&flags.to_le_bytes());
@@ -617,8 +621,13 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         payload.extend_from_slice(&row.icon_hash.to_le_bytes());
     }
     for row in &snapshot.agency_capacity_clusters {
+        let flags = if row_id_deleted(row.owner_tag_db_id) {
+            0
+        } else {
+            AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4
+        };
         payload.extend_from_slice(&KIND_AGENCY_CAPACITY_CLUSTER.to_le_bytes());
-        payload.extend_from_slice(&AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
         payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
         payload.extend_from_slice(&row.value_0xe4.to_le_bytes());
         payload.extend_from_slice(&row.value_0xf0.to_le_bytes());
@@ -801,6 +810,8 @@ pub fn summarize_snapshot_instrumented(
     // Per-kind decoded counts (== snapshot vec lens on a valid encode) and the
     // flag-derived tallies the status-vs-row block reads.
     let mut country_war_projection_rows = 0usize;
+    let mut live_country_rows = 0usize;
+    let mut live_war_rows = 0usize;
     let mut operation_detail_resisted_rows = 0usize;
     let mut intel_map_resisted_rows = 0usize;
     let mut operative_lifecycle_rows = 0usize;
@@ -835,35 +846,92 @@ pub fn summarize_snapshot_instrumented(
     let base_rows_started = std::time::Instant::now();
     let mut row_index = 0usize;
     for row in &snapshot.countries {
-        if row.at_war_count > 0 || row.casualties != 0 {
+        let deleted = row_id_deleted(row.tag_db_id);
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            deleted,
+            &mut summary,
+        );
+        if !deleted {
+            live_country_rows = live_country_rows.saturating_add(1);
+        }
+        if !deleted && (row.at_war_count > 0 || row.casualties != 0) {
             country_war_projection_rows = country_war_projection_rows.saturating_add(1);
         }
         summarize_country_row(offset, row_index, row, &mut seen_countries, &mut summary);
         row_index += 1;
     }
     for row in &snapshot.wars {
+        let deleted = row_id_deleted(row.first_tag_db_id);
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            deleted,
+            &mut summary,
+        );
+        if !deleted {
+            live_war_rows = live_war_rows.saturating_add(1);
+        }
         summarize_war_row(offset, row_index, row, &mut seen_wars, &mut summary);
         row_index += 1;
     }
     let opinions_started = std::time::Instant::now();
     for row in &snapshot.opinions {
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            row_id_deleted(row.src_tag_db_id),
+            &mut summary,
+        );
         summarize_opinion_row(offset, row_index, row, &mut seen_opinions, &mut summary);
         row_index += 1;
     }
     phase.opinions_us = micros_u64(opinions_started.elapsed());
     for row in &snapshot.relation_flags {
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            row_id_deleted(row.src_tag_db_id),
+            &mut summary,
+        );
         summarize_relation_flag_row(offset, row_index, row, &mut seen_flags, &mut summary);
         row_index += 1;
     }
     for row in &snapshot.subjects {
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            row_id_deleted(row.overlord_tag_db_id),
+            &mut summary,
+        );
         summarize_subject_row(offset, row_index, row, &mut seen_subjects, &mut summary);
         row_index += 1;
     }
     for row in &snapshot.agencies {
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            row_id_deleted(row.owner_tag_db_id),
+            &mut summary,
+        );
         summarize_agency_row(offset, row_index, row, &mut seen_agencies, &mut summary);
         row_index += 1;
     }
     for row in &snapshot.agency_capacity_clusters {
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            row_id_deleted(row.owner_tag_db_id),
+            &mut summary,
+        );
         summarize_agency_capacity_cluster_row(
             offset,
             row_index,
@@ -874,6 +942,13 @@ pub fn summarize_snapshot_instrumented(
         row_index += 1;
     }
     for row in &snapshot.operatives {
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            row_id_deleted(row.op_id),
+            &mut summary,
+        );
         if row.lifecycle_flag.is_some() {
             operative_lifecycle_rows = operative_lifecycle_rows.saturating_add(1);
         }
@@ -881,6 +956,13 @@ pub fn summarize_snapshot_instrumented(
         row_index += 1;
     }
     for row in &snapshot.cryptology {
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            row_id_deleted(row.owner_tag_db_id),
+            &mut summary,
+        );
         summarize_crypto_row(offset, row_index, row, &mut seen_crypto, &mut summary);
         row_index += 1;
     }
@@ -900,7 +982,17 @@ pub fn summarize_snapshot_instrumented(
     }
     let state_events_started = std::time::Instant::now();
     for row in &snapshot.state_events {
-        state_event_source_counts.add(row.source_kind);
+        let deleted = row_id_deleted(row.owner_tag_db_id);
+        reject_snapshot_tombstone_outside_delta(
+            offset,
+            row_index,
+            status_flags,
+            deleted,
+            &mut summary,
+        );
+        if !deleted {
+            state_event_source_counts.add(row.source_kind);
+        }
         summarize_state_event_row(offset, row_index, row, &mut seen_state_events, &mut summary);
         row_index += 1;
     }
@@ -1007,22 +1099,20 @@ pub fn summarize_snapshot_instrumented(
     // strings. Base counts come from snapshot vec lens; the graph count comes from
     // the DECODED trailer rows above.
     phase.trailers_us = micros_u64(trailers_started.elapsed());
-    let war_count = snapshot.wars.len();
-    let country_count = snapshot.countries.len();
     if status_flags & STATUS_WAR_ROOT_UNVALIDATED != 0
-        && (war_count != 0 || country_war_projection_rows != 0)
+        && (live_war_rows != 0 || country_war_projection_rows != 0)
     {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel badges war root unvalidated but emits {} war relation row(s) and {} country war projection row(s)",
-            war_count, country_war_projection_rows
+            live_war_rows, country_war_projection_rows
         ));
     }
     if status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
-        && (war_count != 0 || country_war_projection_rows != 0)
+        && (live_war_rows != 0 || country_war_projection_rows != 0)
     {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel emits {} war relation row(s) and {} country war projection row(s) without STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED; schema v{SCHEMA_VERSION} has no war name/grouping/start-date fields",
-            war_count, country_war_projection_rows
+            live_war_rows, country_war_projection_rows
         ));
     }
     if operation_detail_resisted_rows != 0 && status_flags & STATUS_OPERATIONS_DETAIL_RESISTED == 0
@@ -1037,11 +1127,11 @@ pub fn summarize_snapshot_instrumented(
         ));
     }
     if status_flags & STATUS_FACTION_GROUP_UNVALIDATED != 0
-        && (country_count != 0 || state_event_source_counts.country_faction_group != 0)
+        && (live_country_rows != 0 || state_event_source_counts.country_faction_group != 0)
     {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel badges faction group unvalidated but emits {} country diplomacy row(s) and {} faction state event row(s)",
-            country_count, state_event_source_counts.country_faction_group
+            live_country_rows, state_event_source_counts.country_faction_group
         ));
     }
     if status_flags & STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED != 0 && intel_network_graph_rows != 0 {
@@ -1800,6 +1890,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut seen_intel_map = BTreeSet::new();
     let mut seen_state_events = StateEventSeenSet::default();
     let mut country_war_projection_rows = 0usize;
+    let mut live_country_rows = 0usize;
+    let mut live_war_rows = 0usize;
     let mut operation_detail_resisted_rows = 0usize;
     let mut intel_map_resisted_rows = 0usize;
     let mut operative_lifecycle_rows = 0usize;
@@ -1832,11 +1924,21 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             ));
             return summary;
         }
+        if domain53_base_row_deleted(kind, payload, cursor) && status_flags & STATUS_DELTA_DATA == 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy/intel row {row_index} tombstone appears outside delta frame"
+            ));
+        }
         match kind {
             KIND_COUNTRY_DIPLOMACY => {
                 decoded_counts.country += 1;
                 let flags = read_u16_le(payload, cursor + 2);
-                if flags & (COUNTRY_FLAG_AT_WAR | COUNTRY_FLAG_CASUALTIES) != 0 {
+                let deleted = domain53_base_row_deleted(kind, payload, cursor);
+                if !deleted {
+                    live_country_rows = live_country_rows.saturating_add(1);
+                }
+                if !deleted && flags & (COUNTRY_FLAG_AT_WAR | COUNTRY_FLAG_CASUALTIES) != 0 {
                     country_war_projection_rows = country_war_projection_rows.saturating_add(1);
                 }
                 validate_country_row(
@@ -1850,6 +1952,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             }
             KIND_WAR_RELATION => {
                 decoded_counts.war += 1;
+                if !domain53_base_row_deleted(kind, payload, cursor) {
+                    live_war_rows = live_war_rows.saturating_add(1);
+                }
                 validate_war_row(
                     offset,
                     row_index,
@@ -1973,7 +2078,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             }
             KIND_COMPACT_STATE_EVENT => {
                 decoded_counts.compact_state_event += 1;
-                state_event_source_counts.add(read_u16_le(payload, cursor + 14));
+                if !domain53_base_row_deleted(kind, payload, cursor) {
+                    state_event_source_counts.add(read_u16_le(payload, cursor + 14));
+                }
                 validate_state_event_row(
                     offset,
                     row_index,
@@ -2077,19 +2184,19 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         ));
     }
     if status_flags & STATUS_WAR_ROOT_UNVALIDATED != 0
-        && (decoded_counts.war != 0 || country_war_projection_rows != 0)
+        && (live_war_rows != 0 || country_war_projection_rows != 0)
     {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel badges war root unvalidated but emits {} war relation row(s) and {} country war projection row(s)",
-            decoded_counts.war, country_war_projection_rows
+            live_war_rows, country_war_projection_rows
         ));
     }
     if status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
-        && (decoded_counts.war != 0 || country_war_projection_rows != 0)
+        && (live_war_rows != 0 || country_war_projection_rows != 0)
     {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel emits {} war relation row(s) and {} country war projection row(s) without STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED; schema v{SCHEMA_VERSION} has no war name/grouping/start-date fields",
-            decoded_counts.war, country_war_projection_rows
+            live_war_rows, country_war_projection_rows
         ));
     }
     if operation_detail_resisted_rows != 0 && status_flags & STATUS_OPERATIONS_DETAIL_RESISTED == 0
@@ -2104,11 +2211,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         ));
     }
     if status_flags & STATUS_FACTION_GROUP_UNVALIDATED != 0
-        && (decoded_counts.country != 0 || state_event_source_counts.country_faction_group != 0)
+        && (live_country_rows != 0 || state_event_source_counts.country_faction_group != 0)
     {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel badges faction group unvalidated but emits {} country diplomacy row(s) and {} faction state event row(s)",
-            decoded_counts.country, state_event_source_counts.country_faction_group
+            live_country_rows, state_event_source_counts.country_faction_group
         ));
     }
     if status_flags & STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED != 0 && intel_network_graph_rows != 0 {
@@ -2499,9 +2606,28 @@ fn validate_country_row(
 ) {
     let flags = read_u16_le(payload, cursor + 2);
     let tag_db_id = read_u32_le(payload, cursor + 4);
+    let deleted = row_id_deleted(tag_db_id);
+    let tag_key = row_id_clear_deleted(tag_db_id);
     let faction_group = read_i32_le(payload, cursor + 8);
     let at_war_count = read_u32_le(payload, cursor + 12);
     let casualties = read_i64_le(payload, cursor + 16);
+    if deleted {
+        if !valid_tag(tag_key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country diplomacy tombstone row {row_index} has invalid tag_db_id {tag_key}"
+            ));
+        } else if !seen.insert(tag_key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country diplomacy row {row_index} duplicates tag_db_id {tag_key}"
+            ));
+        }
+        if flags != 0 || faction_group != 0 || at_war_count != 0 || casualties != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country diplomacy tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
+    }
     if !valid_tag(tag_db_id) {
         summary.parse_errors.push(format!(
             "offset {offset}: country diplomacy row {row_index} has invalid tag_db_id {tag_db_id}"
@@ -2544,6 +2670,8 @@ fn validate_war_row(
 ) {
     let flags = read_u16_le(payload, cursor + 2);
     let first = read_u32_le(payload, cursor + 4);
+    let deleted = row_id_deleted(first);
+    let first_key = row_id_clear_deleted(first);
     let second = read_u32_le(payload, cursor + 8);
     let first_casualties = read_i64_le(payload, cursor + 12);
     let second_casualties = read_i64_le(payload, cursor + 20);
@@ -2553,16 +2681,29 @@ fn validate_war_row(
             "offset {offset}: war relation row {row_index} has unknown flags {flags}"
         ));
     }
-    validate_pair(offset, "war relation", row_index, first, second, summary);
-    let key = if first <= second {
-        (first, second)
+    validate_pair(
+        offset,
+        "war relation",
+        row_index,
+        first_key,
+        second,
+        summary,
+    );
+    let key = if first_key <= second {
+        (first_key, second)
     } else {
-        (second, first)
+        (second, first_key)
     };
-    if valid_tag(first) && valid_tag(second) && !seen.insert(key) {
+    if valid_tag(first_key) && valid_tag(second) && !seen.insert(key) {
         summary.parse_errors.push(format!(
-            "offset {offset}: war relation row {row_index} duplicates pair {first}/{second}"
+            "offset {offset}: war relation row {row_index} duplicates pair {first_key}/{second}"
         ));
+    }
+    if deleted && (first_casualties != 0 || second_casualties != 0 || reserved != 0) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: war relation tombstone row {row_index} has live fields"
+        ));
+        return;
     }
     for (label, value) in [
         ("first_casualties", first_casualties),
@@ -2591,6 +2732,8 @@ fn validate_opinion_row(
 ) {
     let flags = read_u16_le(payload, cursor + 2);
     let src = read_u32_le(payload, cursor + 4);
+    let deleted = row_id_deleted(src);
+    let src_key = row_id_clear_deleted(src);
     let target = read_u32_le(payload, cursor + 8);
     let opinion = read_i32_le(payload, cursor + 12);
     if flags != 0 {
@@ -2598,11 +2741,19 @@ fn validate_opinion_row(
             "offset {offset}: opinion row {row_index} has unknown flags {flags}"
         ));
     }
-    validate_pair(offset, "opinion", row_index, src, target, summary);
-    if valid_tag(src) && valid_tag(target) && !seen.insert(src, target) {
+    validate_pair(offset, "opinion", row_index, src_key, target, summary);
+    if valid_tag(src_key) && valid_tag(target) && !seen.insert(src_key, target) {
         summary.parse_errors.push(format!(
-            "offset {offset}: opinion row {row_index} duplicates ordered pair {src}/{target}"
+            "offset {offset}: opinion row {row_index} duplicates ordered pair {src_key}/{target}"
         ));
+    }
+    if deleted {
+        if opinion != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: opinion tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
     }
     if !(-MAX_OPINION_ABS..=MAX_OPINION_ABS).contains(&opinion) {
         summary.parse_errors.push(format!(
@@ -2622,24 +2773,26 @@ fn validate_relation_flag_row(
     let flag_kind = read_u16_le(payload, cursor + 2);
     let flags = read_u32_le(payload, cursor + 4);
     let src = read_u32_le(payload, cursor + 8);
+    let deleted = row_id_deleted(src);
+    let src_key = row_id_clear_deleted(src);
     let target = read_u32_le(payload, cursor + 12);
-    validate_pair(offset, "relation flag", row_index, src, target, summary);
+    validate_pair(offset, "relation flag", row_index, src_key, target, summary);
     if !known_relation_kind(flag_kind) {
         summary.parse_errors.push(format!(
             "offset {offset}: relation flag row {row_index} has unknown flag_kind {flag_kind}"
         ));
     }
-    if flags & !REL_FLAG_DIRECTED != 0 {
+    if flags & !REL_FLAG_DIRECTED != 0 || (deleted && flags != 0) {
         summary.parse_errors.push(format!(
             "offset {offset}: relation flag row {row_index} has unknown flags {flags}"
         ));
     }
-    let key = if flags & REL_FLAG_DIRECTED != 0 || src <= target {
-        (src, target, flag_kind)
+    let key = if flags & REL_FLAG_DIRECTED != 0 || src_key <= target {
+        (src_key, target, flag_kind)
     } else {
-        (target, src, flag_kind)
+        (target, src_key, flag_kind)
     };
-    if valid_tag(src) && valid_tag(target) && !seen.insert(key) {
+    if valid_tag(src_key) && valid_tag(target) && !seen.insert(key) {
         summary.parse_errors.push(format!(
             "offset {offset}: relation flag row {row_index} duplicates relation flag"
         ));
@@ -2656,6 +2809,8 @@ fn validate_subject_row(
 ) {
     let flags = read_u16_le(payload, cursor + 2);
     let overlord = read_u32_le(payload, cursor + 4);
+    let deleted = row_id_deleted(overlord);
+    let overlord_key = row_id_clear_deleted(overlord);
     let subject = read_u32_le(payload, cursor + 8);
     let autonomy_state_hash = read_u32_le(payload, cursor + 12);
     let autonomy_ratio_raw = read_i32_le(payload, cursor + 16);
@@ -2665,11 +2820,19 @@ fn validate_subject_row(
             "offset {offset}: subject row {row_index} has unknown flags {flags}"
         ));
     }
-    validate_pair(offset, "subject", row_index, overlord, subject, summary);
-    if valid_tag(overlord) && valid_tag(subject) && !seen.insert((overlord, subject)) {
+    validate_pair(offset, "subject", row_index, overlord_key, subject, summary);
+    if valid_tag(overlord_key) && valid_tag(subject) && !seen.insert((overlord_key, subject)) {
         summary.parse_errors.push(format!(
             "offset {offset}: subject row {row_index} duplicates subject pair"
         ));
+    }
+    if deleted {
+        if autonomy_state_hash != 0 || autonomy_ratio_raw != 0 || start_date_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: subject tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
     }
     if autonomy_state_hash == 0 {
         summary.parse_errors.push(format!(
@@ -2700,6 +2863,8 @@ fn validate_agency_row(
 ) {
     let flags = read_u16_le(payload, cursor + 2);
     let owner = read_u32_le(payload, cursor + 4);
+    let deleted = row_id_deleted(owner);
+    let owner_key = row_id_clear_deleted(owner);
     let max_operatives = read_u32_le(payload, cursor + 8);
     let usable_slots = read_u32_le(payload, cursor + 12);
     let operative_count = read_u32_le(payload, cursor + 16);
@@ -2708,6 +2873,32 @@ fn validate_agency_row(
     let upgrade_progress_raw = read_i32_le(payload, cursor + 28);
     let name_hash = read_u64_le(payload, cursor + 32);
     let icon_hash = read_u64_le(payload, cursor + 40);
+    if deleted {
+        if !valid_tag(owner_key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency tombstone row {row_index} has invalid owner {owner_key}"
+            ));
+        } else if !seen.insert(owner_key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency row {row_index} duplicates owner {owner_key}"
+            ));
+        }
+        if flags != 0
+            || max_operatives != 0
+            || usable_slots != 0
+            || operative_count != 0
+            || cryptology_target_count != 0
+            || defense_raw != 0
+            || upgrade_progress_raw != 0
+            || name_hash != 0
+            || icon_hash != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
+    }
     if !valid_tag(owner) {
         summary.parse_errors.push(format!(
             "offset {offset}: agency row {row_index} has invalid owner {owner}"
@@ -2770,10 +2961,29 @@ fn validate_agency_capacity_cluster_row(
 ) {
     let flags = read_u16_le(payload, cursor + 2);
     let owner = read_u32_le(payload, cursor + 4);
+    let deleted = row_id_deleted(owner);
+    let owner_key = row_id_clear_deleted(owner);
     let value_0xe4 = read_u32_le(payload, cursor + 8);
     let value_0xf0 = read_u32_le(payload, cursor + 12);
     let value_0xf4 = read_u32_le(payload, cursor + 16);
     let proof_hash = read_u32_le(payload, cursor + 20);
+    if deleted {
+        if !valid_tag(owner_key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency capacity cluster tombstone row {row_index} has invalid owner {owner_key}"
+            ));
+        } else if !seen.insert(owner_key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency capacity cluster row {row_index} duplicates owner {owner_key}"
+            ));
+        }
+        if flags != 0 || value_0xe4 != 0 || value_0xf0 != 0 || value_0xf4 != 0 || proof_hash != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency capacity cluster tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
+    }
     if !valid_tag(owner) {
         summary.parse_errors.push(format!(
             "offset {offset}: agency capacity cluster row {row_index} has invalid owner {owner}"
@@ -2827,11 +3037,37 @@ fn validate_operative_row(
     let flags = read_u16_le(payload, cursor + 2);
     let owner = read_u32_le(payload, cursor + 4);
     let op_id = read_u32_le(payload, cursor + 8);
+    let deleted = row_id_deleted(op_id);
+    let op_id_key = row_id_clear_deleted(op_id);
     let skill = read_u32_le(payload, cursor + 12);
     let experience_raw = read_i64_le(payload, cursor + 16);
     let name_hash = read_u64_le(payload, cursor + 24);
     let state_hash = read_u32_le(payload, cursor + 32);
     let lifecycle_flag = read_u32_le(payload, cursor + 36);
+    if deleted {
+        if flags != 0
+            || owner != 0
+            || skill != 0
+            || experience_raw != 0
+            || name_hash != 0
+            || state_hash != 0
+            || lifecycle_flag != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative tombstone row {row_index} has live fields"
+            ));
+        }
+        if op_id_key == 0 || op_id_key > MAX_OPERATIVE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative tombstone row {row_index} has invalid op_id {op_id_key}"
+            ));
+        } else if !seen.insert(op_id_key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative row {row_index} duplicates op_id {op_id_key}"
+            ));
+        }
+        return;
+    }
     if !valid_tag(owner) {
         summary.parse_errors.push(format!(
             "offset {offset}: operative row {row_index} has invalid owner {owner}"
@@ -2914,20 +3150,30 @@ fn validate_crypto_row(
 ) {
     let flags = read_u16_le(payload, cursor + 2);
     let owner = read_u32_le(payload, cursor + 4);
+    let deleted = row_id_deleted(owner);
+    let owner_key = row_id_clear_deleted(owner);
     let target = read_u32_le(payload, cursor + 8);
     let amount_raw = read_i64_le(payload, cursor + 12);
     let reserved0 = read_u64_le(payload, cursor + 20);
     let reserved1 = read_u32_le(payload, cursor + 28);
-    validate_pair(offset, "cryptology", row_index, owner, target, summary);
-    if flags & !CRYPTO_FLAG_DECRYPTING != 0 {
+    validate_pair(offset, "cryptology", row_index, owner_key, target, summary);
+    if flags & !CRYPTO_FLAG_DECRYPTING != 0 || (deleted && flags != 0) {
         summary.parse_errors.push(format!(
             "offset {offset}: cryptology row {row_index} has unknown flags {flags}"
         ));
     }
-    if valid_tag(owner) && valid_tag(target) && !seen.insert((owner, target)) {
+    if valid_tag(owner_key) && valid_tag(target) && !seen.insert((owner_key, target)) {
         summary.parse_errors.push(format!(
             "offset {offset}: cryptology row {row_index} duplicates owner/target"
         ));
+    }
+    if deleted {
+        if amount_raw != 0 || reserved0 != 0 || reserved1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: cryptology tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
     }
     if !(1..MAX_CRYPTO_AMOUNT_RAW).contains(&amount_raw) {
         summary.parse_errors.push(format!(
@@ -3069,6 +3315,8 @@ fn validate_state_event_row(
 ) {
     let flags = read_u16_le(payload, cursor + 2);
     let owner = read_u32_le(payload, cursor + 4);
+    let deleted = row_id_deleted(owner);
+    let owner_key = row_id_clear_deleted(owner);
     let target = read_u32_le(payload, cursor + 8);
     let event_kind = read_u16_le(payload, cursor + 12);
     let source_kind = read_u16_le(payload, cursor + 14);
@@ -3076,9 +3324,9 @@ fn validate_state_event_row(
     let value_hash = read_u32_le(payload, cursor + 20);
     let value_raw = read_i64_le(payload, cursor + 24);
 
-    if !valid_tag(owner) {
+    if !valid_tag(owner_key) {
         summary.parse_errors.push(format!(
-            "offset {offset}: compact state event row {row_index} has invalid owner {owner}"
+            "offset {offset}: compact state event row {row_index} has invalid owner {owner_key}"
         ));
     }
     if flags & !STATE_EVENT_FLAG_TARGET_PRESENT != 0 {
@@ -3087,7 +3335,7 @@ fn validate_state_event_row(
         ));
     }
     if flags & STATE_EVENT_FLAG_TARGET_PRESENT != 0 {
-        if !valid_tag(target) || target == owner {
+        if !valid_tag(target) || target == owner_key {
             summary.parse_errors.push(format!(
                 "offset {offset}: compact state event row {row_index} has invalid target {target}"
             ));
@@ -3112,18 +3360,24 @@ fn validate_state_event_row(
             "offset {offset}: compact state event row {row_index} has zero object_hash"
         ));
     }
-    if value_hash == 0 {
+    if deleted {
+        if value_hash != 0 || value_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: compact state event tombstone row {row_index} has live fields"
+            ));
+        }
+    } else if value_hash == 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: compact state event row {row_index} has zero value_hash"
         ));
     }
-    if !(-MAX_STATE_EVENT_VALUE_RAW..=MAX_STATE_EVENT_VALUE_RAW).contains(&value_raw) {
+    if !deleted && !(-MAX_STATE_EVENT_VALUE_RAW..=MAX_STATE_EVENT_VALUE_RAW).contains(&value_raw) {
         summary.parse_errors.push(format!(
             "offset {offset}: compact state event row {row_index} has invalid value_raw {value_raw}"
         ));
     }
 
-    if object_hash != 0 && !seen.insert(event_kind, source_kind, owner, target, object_hash) {
+    if object_hash != 0 && !seen.insert(event_kind, source_kind, owner_key, target, object_hash) {
         summary.parse_errors.push(format!(
             "offset {offset}: compact state event row {row_index} duplicates state event key"
         ));
@@ -3153,14 +3407,35 @@ fn summarize_country_row(
     // Encoder flags (encode_payload:458..): FACTION_GROUP always; AT_WAR iff
     // at_war_count>0; CASUALTIES iff casualties!=0. So the unknown-flags and
     // "without flag" checks never fire, but we keep them for lock-step.
-    let mut flags = COUNTRY_FLAG_FACTION_GROUP;
-    if row.at_war_count > 0 {
-        flags |= COUNTRY_FLAG_AT_WAR;
+    let deleted = row_id_deleted(row.tag_db_id);
+    let mut flags = 0u16;
+    if !deleted {
+        flags |= COUNTRY_FLAG_FACTION_GROUP;
+        if row.at_war_count > 0 {
+            flags |= COUNTRY_FLAG_AT_WAR;
+        }
+        if row.casualties != 0 {
+            flags |= COUNTRY_FLAG_CASUALTIES;
+        }
     }
-    if row.casualties != 0 {
-        flags |= COUNTRY_FLAG_CASUALTIES;
+    let tag_db_id = row_id_clear_deleted(row.tag_db_id);
+    if deleted {
+        if !valid_tag(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country diplomacy tombstone row {row_index} has invalid tag_db_id {tag_db_id}"
+            ));
+        } else if !seen.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country diplomacy row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags != 0 || row.faction_group != 0 || row.at_war_count != 0 || row.casualties != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country diplomacy tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
     }
-    let tag_db_id = row.tag_db_id;
     if !valid_tag(tag_db_id) {
         summary.parse_errors.push(format!(
             "offset {offset}: country diplomacy row {row_index} has invalid tag_db_id {tag_db_id}"
@@ -3201,7 +3476,8 @@ fn summarize_war_row(
 ) {
     // Encoder writes flags=0 and reserved=0 (encode_payload:474/479).
     let flags = 0u16;
-    let first = row.first_tag_db_id;
+    let deleted = row_id_deleted(row.first_tag_db_id);
+    let first = row_id_clear_deleted(row.first_tag_db_id);
     let second = row.second_tag_db_id;
     if flags != 0 {
         summary.parse_errors.push(format!(
@@ -3218,6 +3494,12 @@ fn summarize_war_row(
         summary.parse_errors.push(format!(
             "offset {offset}: war relation row {row_index} duplicates pair {first}/{second}"
         ));
+    }
+    if deleted && (row.first_casualties != 0 || row.second_casualties != 0) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: war relation tombstone row {row_index} has live fields"
+        ));
+        return;
     }
     for (label, value) in [
         ("first_casualties", row.first_casualties),
@@ -3240,7 +3522,8 @@ fn summarize_opinion_row(
     summary: &mut Domain53GateSummary,
 ) {
     let flags = 0u16; // encode_payload:483
-    let src = row.src_tag_db_id;
+    let deleted = row_id_deleted(row.src_tag_db_id);
+    let src = row_id_clear_deleted(row.src_tag_db_id);
     let target = row.target_tag_db_id;
     if flags != 0 {
         summary.parse_errors.push(format!(
@@ -3252,6 +3535,14 @@ fn summarize_opinion_row(
         summary.parse_errors.push(format!(
             "offset {offset}: opinion row {row_index} duplicates ordered pair {src}/{target}"
         ));
+    }
+    if deleted {
+        if row.opinion != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: opinion tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
     }
     if !(-MAX_OPINION_ABS..=MAX_OPINION_ABS).contains(&row.opinion) {
         let opinion = row.opinion;
@@ -3269,9 +3560,14 @@ fn summarize_relation_flag_row(
     summary: &mut Domain53GateSummary,
 ) {
     // Encoder flags (encode_payload:489): DIRECTED iff row.directed, else 0.
-    let flags = if row.directed { REL_FLAG_DIRECTED } else { 0 };
+    let deleted = row_id_deleted(row.src_tag_db_id);
+    let flags = if !deleted && row.directed {
+        REL_FLAG_DIRECTED
+    } else {
+        0
+    };
     let flag_kind = row.flag_kind;
-    let src = row.src_tag_db_id;
+    let src = row_id_clear_deleted(row.src_tag_db_id);
     let target = row.target_tag_db_id;
     validate_pair(offset, "relation flag", row_index, src, target, summary);
     if !known_relation_kind(flag_kind) {
@@ -3279,7 +3575,7 @@ fn summarize_relation_flag_row(
             "offset {offset}: relation flag row {row_index} has unknown flag_kind {flag_kind}"
         ));
     }
-    if flags & !REL_FLAG_DIRECTED != 0 {
+    if flags & !REL_FLAG_DIRECTED != 0 || (deleted && flags != 0) {
         summary.parse_errors.push(format!(
             "offset {offset}: relation flag row {row_index} has unknown flags {flags}"
         ));
@@ -3304,7 +3600,8 @@ fn summarize_subject_row(
     summary: &mut Domain53GateSummary,
 ) {
     let flags = 0u16; // encode_payload has no subject flags field (KIND + reserved 0)
-    let overlord = row.overlord_tag_db_id;
+    let deleted = row_id_deleted(row.overlord_tag_db_id);
+    let overlord = row_id_clear_deleted(row.overlord_tag_db_id);
     let subject = row.subject_tag_db_id;
     if flags != 0 {
         summary.parse_errors.push(format!(
@@ -3316,6 +3613,14 @@ fn summarize_subject_row(
         summary.parse_errors.push(format!(
             "offset {offset}: subject row {row_index} duplicates subject pair"
         ));
+    }
+    if deleted {
+        if row.autonomy_state_hash != 0 || row.autonomy_ratio_raw != 0 || row.start_date_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: subject tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
     }
     if row.autonomy_state_hash == 0 {
         summary.parse_errors.push(format!(
@@ -3345,14 +3650,43 @@ fn summarize_agency_row(
 ) {
     // Encoder flags (encode_payload:508..): NAME_HASH iff name_hash!=0; ICON_HASH
     // iff icon_hash!=0.
+    let deleted = row_id_deleted(row.owner_tag_db_id);
     let mut flags = 0u16;
-    if row.name_hash != 0 {
-        flags |= AGENCY_FLAG_NAME_HASH;
+    if !deleted {
+        if row.name_hash != 0 {
+            flags |= AGENCY_FLAG_NAME_HASH;
+        }
+        if row.icon_hash != 0 {
+            flags |= AGENCY_FLAG_ICON_HASH;
+        }
     }
-    if row.icon_hash != 0 {
-        flags |= AGENCY_FLAG_ICON_HASH;
+    let owner = row_id_clear_deleted(row.owner_tag_db_id);
+    if deleted {
+        if !valid_tag(owner) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency tombstone row {row_index} has invalid owner {owner}"
+            ));
+        } else if !seen.insert(owner) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency row {row_index} duplicates owner {owner}"
+            ));
+        }
+        if flags != 0
+            || row.max_operatives != 0
+            || row.usable_slots != 0
+            || row.operative_count != 0
+            || row.cryptology_target_count != 0
+            || row.defense_raw != 0
+            || row.upgrade_progress_raw != 0
+            || row.name_hash != 0
+            || row.icon_hash != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
     }
-    let owner = row.owner_tag_db_id;
     if !valid_tag(owner) {
         summary.parse_errors.push(format!(
             "offset {offset}: agency row {row_index} has invalid owner {owner}"
@@ -3414,8 +3748,35 @@ fn summarize_agency_capacity_cluster_row(
     summary: &mut Domain53GateSummary,
 ) {
     // Encoder always writes AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4 (encode_payload:529).
-    let flags = AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4;
-    let owner = row.owner_tag_db_id;
+    let deleted = row_id_deleted(row.owner_tag_db_id);
+    let flags = if deleted {
+        0
+    } else {
+        AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4
+    };
+    let owner = row_id_clear_deleted(row.owner_tag_db_id);
+    if deleted {
+        if !valid_tag(owner) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency capacity cluster tombstone row {row_index} has invalid owner {owner}"
+            ));
+        } else if !seen.insert(owner) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency capacity cluster row {row_index} duplicates owner {owner}"
+            ));
+        }
+        if flags != 0
+            || row.value_0xe4 != 0
+            || row.value_0xf0 != 0
+            || row.value_0xf4 != 0
+            || row.proof_hash != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency capacity cluster tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
+    }
     if !valid_tag(owner) {
         summary.parse_errors.push(format!(
             "offset {offset}: agency capacity cluster row {row_index} has invalid owner {owner}"
@@ -3471,32 +3832,59 @@ fn summarize_operative_row(
     // SKILL/EXPERIENCE/LIFECYCLE presence from Option::is_some; NAME_HASH iff
     // name_hash!=0. Encoded scalar values are the Option's unwrap_or(0), matching
     // decode's flag-gated read; validation reads the encoded scalar.
+    let deleted = row_id_deleted(row.op_id);
     let mut flags = 0u16;
-    if row.detected {
-        flags |= OPERATIVE_FLAG_DETECTED;
-    }
-    if row.captured {
-        flags |= OPERATIVE_FLAG_CAPTURED;
-    }
-    if row.skill.is_some() {
-        flags |= OPERATIVE_FLAG_SKILL_PRESENT;
-    }
-    if row.experience_raw.is_some() {
-        flags |= OPERATIVE_FLAG_EXPERIENCE_PRESENT;
-    }
-    if row.name_hash != 0 {
-        flags |= OPERATIVE_FLAG_NAME_HASH;
-    }
-    if row.lifecycle_flag.is_some() {
-        flags |= OPERATIVE_FLAG_LIFECYCLE_PRESENT;
+    if !deleted {
+        if row.detected {
+            flags |= OPERATIVE_FLAG_DETECTED;
+        }
+        if row.captured {
+            flags |= OPERATIVE_FLAG_CAPTURED;
+        }
+        if row.skill.is_some() {
+            flags |= OPERATIVE_FLAG_SKILL_PRESENT;
+        }
+        if row.experience_raw.is_some() {
+            flags |= OPERATIVE_FLAG_EXPERIENCE_PRESENT;
+        }
+        if row.name_hash != 0 {
+            flags |= OPERATIVE_FLAG_NAME_HASH;
+        }
+        if row.lifecycle_flag.is_some() {
+            flags |= OPERATIVE_FLAG_LIFECYCLE_PRESENT;
+        }
     }
     let owner = row.owner_tag_db_id;
-    let op_id = row.op_id;
+    let op_id = row_id_clear_deleted(row.op_id);
     let skill = row.skill.unwrap_or(0);
     let experience_raw = row.experience_raw.unwrap_or(0);
     let name_hash = row.name_hash;
     let state_hash = row.state_hash;
     let lifecycle_flag = row.lifecycle_flag.unwrap_or(0);
+    if deleted {
+        if flags != 0
+            || owner != 0
+            || skill != 0
+            || experience_raw != 0
+            || name_hash != 0
+            || state_hash != 0
+            || lifecycle_flag != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative tombstone row {row_index} has live fields"
+            ));
+        }
+        if op_id == 0 || op_id > MAX_OPERATIVE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative tombstone row {row_index} has invalid op_id {op_id}"
+            ));
+        } else if !seen.insert(op_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative row {row_index} duplicates op_id {op_id}"
+            ));
+        }
+        return;
+    }
     if !valid_tag(owner) {
         summary.parse_errors.push(format!(
             "offset {offset}: operative row {row_index} has invalid owner {owner}"
@@ -3577,15 +3965,16 @@ fn summarize_crypto_row(
     summary: &mut Domain53GateSummary,
 ) {
     // Encoder flags (encode_payload:567): DECRYPTING iff row.decrypting; reserved 0.
-    let flags = if row.decrypting {
+    let deleted = row_id_deleted(row.owner_tag_db_id);
+    let flags = if !deleted && row.decrypting {
         CRYPTO_FLAG_DECRYPTING
     } else {
         0
     };
-    let owner = row.owner_tag_db_id;
+    let owner = row_id_clear_deleted(row.owner_tag_db_id);
     let target = row.target_tag_db_id;
     validate_pair(offset, "cryptology", row_index, owner, target, summary);
-    if flags & !CRYPTO_FLAG_DECRYPTING != 0 {
+    if flags & !CRYPTO_FLAG_DECRYPTING != 0 || (deleted && flags != 0) {
         summary.parse_errors.push(format!(
             "offset {offset}: cryptology row {row_index} has unknown flags {flags}"
         ));
@@ -3594,6 +3983,14 @@ fn summarize_crypto_row(
         summary.parse_errors.push(format!(
             "offset {offset}: cryptology row {row_index} duplicates owner/target"
         ));
+    }
+    if deleted {
+        if row.amount_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: cryptology tombstone row {row_index} has live fields"
+            ));
+        }
+        return;
     }
     if !(1..MAX_CRYPTO_AMOUNT_RAW).contains(&row.amount_raw) {
         let amount_raw = row.amount_raw;
@@ -3727,12 +4124,13 @@ fn summarize_state_event_row(
 ) {
     // Encoder flags (encode_payload:614): TARGET_PRESENT iff target is Some;
     // encoded target is unwrap_or(0).
+    let deleted = row_id_deleted(row.owner_tag_db_id);
     let flags = if row.target_tag_db_id.is_some() {
         STATE_EVENT_FLAG_TARGET_PRESENT
     } else {
         0
     };
-    let owner = row.owner_tag_db_id;
+    let owner = row_id_clear_deleted(row.owner_tag_db_id);
     let target = row.target_tag_db_id.unwrap_or(0);
     let event_kind = row.event_kind;
     let source_kind = row.source_kind;
@@ -3775,12 +4173,18 @@ fn summarize_state_event_row(
             "offset {offset}: compact state event row {row_index} has zero object_hash"
         ));
     }
-    if value_hash == 0 {
+    if deleted {
+        if value_hash != 0 || value_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: compact state event tombstone row {row_index} has live fields"
+            ));
+        }
+    } else if value_hash == 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: compact state event row {row_index} has zero value_hash"
         ));
     }
-    if !(-MAX_STATE_EVENT_VALUE_RAW..=MAX_STATE_EVENT_VALUE_RAW).contains(&value_raw) {
+    if !deleted && !(-MAX_STATE_EVENT_VALUE_RAW..=MAX_STATE_EVENT_VALUE_RAW).contains(&value_raw) {
         summary.parse_errors.push(format!(
             "offset {offset}: compact state event row {row_index} has invalid value_raw {value_raw}"
         ));
@@ -3862,6 +4266,44 @@ fn validate_pair(
             "offset {offset}: {label} row {row_index} has invalid tag pair {first}/{second}"
         ));
     }
+}
+
+fn reject_snapshot_tombstone_outside_delta(
+    offset: usize,
+    row_index: usize,
+    status_flags: u32,
+    deleted: bool,
+    summary: &mut Domain53GateSummary,
+) {
+    if deleted && status_flags & STATUS_DELTA_DATA == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel row {row_index} tombstone appears outside delta frame"
+        ));
+    }
+}
+
+fn domain53_base_row_deleted(kind: u16, payload: &[u8], cursor: usize) -> bool {
+    match kind {
+        KIND_COUNTRY_DIPLOMACY
+        | KIND_WAR_RELATION
+        | KIND_OPINION
+        | KIND_SUBJECT
+        | KIND_AGENCY
+        | KIND_AGENCY_CAPACITY_CLUSTER
+        | KIND_CRYPTOLOGY
+        | KIND_COMPACT_STATE_EVENT => row_id_deleted(read_u32_le(payload, cursor + 4)),
+        KIND_RELATION_FLAG => row_id_deleted(read_u32_le(payload, cursor + 8)),
+        KIND_OPERATIVE => row_id_deleted(read_u32_le(payload, cursor + 8)),
+        _ => false,
+    }
+}
+
+fn row_id_deleted(value: u32) -> bool {
+    value & ROW_ID_DELETED != 0
+}
+
+fn row_id_clear_deleted(value: u32) -> u32 {
+    value & !ROW_ID_DELETED
 }
 
 fn valid_tag(value: u32) -> bool {

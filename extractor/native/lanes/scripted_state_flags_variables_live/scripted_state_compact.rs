@@ -49,6 +49,7 @@ pub const ROW_FLAG_TOKEN_PRESENT: u32 = 1 << 1;
 pub const ROW_FLAG_VALUE_PRESENT: u32 = 1 << 2;
 pub const ROW_FLAG_DATE_PRESENT: u32 = 1 << 3;
 pub const ROW_FLAG_DELETED: u32 = 1 << 4;
+pub const ROW_VALUE_KIND_DELETED: u32 = 1 << 31;
 /// Wave-3 delayed-event due-remaining-hours present (rides the previously
 /// reserved row u32 at cursor+40). Absent when a torn/out-of-bounds due read
 /// was badged absent (absent != 0).
@@ -113,16 +114,17 @@ pub fn encode_payload(header: &ScriptedStateHeader, rows: &[ScriptedStateRow]) -
     let mut token_only_rows = 0u32;
 
     for row in rows {
-        if row.value_kind == VALUE_VARIABLE_FIXED_I64 {
+        let value_kind = row.value_kind & !ROW_VALUE_KIND_DELETED;
+        if value_kind == VALUE_VARIABLE_FIXED_I64 {
             variable_rows = variable_rows.saturating_add(1);
         }
-        if row.value_kind == VALUE_FLAG_NAMED || row.value_kind == VALUE_FLAG_TOKEN_ONLY {
+        if value_kind == VALUE_FLAG_NAMED || value_kind == VALUE_FLAG_TOKEN_ONLY {
             flag_rows = flag_rows.saturating_add(1);
         }
         // Delayed-event rows carry the event id in token_id but are NOT
         // token-only flags; exclude them from that counter (keeps the
         // STATUS_FLAG_NAMES_PARTIAL gate coupled to real flags only).
-        if row.key.is_none() && row.token_id.is_some() && row.value_kind != VALUE_DELAYED_EVENT {
+        if row.key.is_none() && row.token_id.is_some() && value_kind != VALUE_DELAYED_EVENT {
             token_only_rows = token_only_rows.saturating_add(1);
         }
         if let Some(key) = row.key.as_ref() {
@@ -329,7 +331,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
         let cursor = HEADER_LEN + row_index * ROW_LEN;
         let scope_kind = read_u32_le(payload, cursor);
         let owner_id = read_u32_le(payload, cursor + 4);
-        let value_kind = read_u32_le(payload, cursor + 8);
+        let raw_value_kind = read_u32_le(payload, cursor + 8);
+        let deleted_by_value_kind = raw_value_kind & ROW_VALUE_KIND_DELETED != 0;
+        let value_kind = raw_value_kind & !ROW_VALUE_KIND_DELETED;
         let flags = read_u32_le(payload, cursor + 12);
         let key_offset = read_u32_le(payload, cursor + 16) as usize;
         let key_len = read_u32_le(payload, cursor + 20) as usize;
@@ -344,8 +348,16 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
                 "offset {offset}: scripted state row {row_index} has unknown flags {flags}"
             ));
         }
+        let deleted = deleted_by_value_kind || flags & ROW_FLAG_DELETED != 0;
         validate_scope(offset, row_index, scope_kind, owner_id, &mut summary);
-        validate_value_kind(offset, row_index, value_kind, flags, token_id, &mut summary);
+        if !deleted {
+            validate_value_kind(offset, row_index, value_kind, flags, token_id, &mut summary);
+        }
+        if deleted_by_value_kind && status_flags & STATUS_DELTA_DATA == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: scripted state row {row_index} tombstone appears outside delta frame"
+            ));
+        }
         // Reserved slot 0 (cursor+40) now carries the delayed-event due hours
         // when ROW_FLAG_DELAYED_DUE_PRESENT is set; otherwise it must be 0.
         let has_delayed_due = flags & ROW_FLAG_DELAYED_DUE_PRESENT != 0;
@@ -371,6 +383,20 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
                     "offset {offset}: delayed-event row {row_index} due hours {reserved_row0} out of range"
                 ));
             }
+        }
+        if deleted {
+            validate_tombstone_row(
+                offset,
+                row_index,
+                value_kind,
+                flags,
+                token_id,
+                date_hour_raw,
+                value_raw,
+                reserved_row0,
+                reserved_row1,
+                &mut summary,
+            );
         }
         if flags & ROW_FLAG_KEY_PRESENT != 0 {
             if key_len == 0 {
@@ -711,6 +737,45 @@ fn validate_value_kind(
         _ => summary.parse_errors.push(format!(
             "offset {offset}: scripted state row {row_index} has unknown value_kind {value_kind}"
         )),
+    }
+}
+
+fn validate_tombstone_row(
+    offset: usize,
+    row_index: usize,
+    value_kind: u32,
+    flags: u32,
+    token_id: u32,
+    date_hour_raw: i32,
+    value_raw: i64,
+    reserved_row0: u32,
+    reserved_row1: u32,
+    summary: &mut Domain51GateSummary,
+) {
+    let allowed_flags = match value_kind {
+        VALUE_VARIABLE_FIXED_I64 | VALUE_FLAG_NAMED => ROW_FLAG_KEY_PRESENT | ROW_FLAG_DELETED,
+        VALUE_FLAG_TOKEN_ONLY => ROW_FLAG_TOKEN_PRESENT | ROW_FLAG_DELETED,
+        _ => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: scripted state tombstone row {row_index} has unsupported value_kind {value_kind}"
+            ));
+            0
+        }
+    };
+    if flags & !allowed_flags != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: scripted state tombstone row {row_index} has live flags {flags}"
+        ));
+    }
+    if matches!(value_kind, VALUE_VARIABLE_FIXED_I64 | VALUE_FLAG_NAMED) && token_id != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: scripted state tombstone row {row_index} has live token_id {token_id}"
+        ));
+    }
+    if date_hour_raw != 0 || value_raw != 0 || reserved_row0 != 0 || reserved_row1 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: scripted state tombstone row {row_index} has live fields"
+        ));
     }
 }
 

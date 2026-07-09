@@ -128,7 +128,9 @@ pub struct Domain51FrameInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Domain51CollectedFrame {
     pub domain_id: u16,
+    pub elapsed_wall_ms: u64,
     pub payload: Vec<u8>,
+    pub rows: Vec<compact::ScriptedStateRow>,
     pub row_count: u32,
     pub status_flags: u32,
     pub observed_scopes: u32,
@@ -294,7 +296,9 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
 
     Domain51CollectedFrame {
         domain_id: compact::DOMAIN_ID,
+        elapsed_wall_ms: input.elapsed_wall_ms,
         payload,
+        rows,
         row_count,
         status_flags,
         observed_scopes,

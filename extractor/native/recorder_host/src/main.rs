@@ -701,6 +701,8 @@ struct Config {
     /// driven (debug on, production off). Never gates data-loss detection.
     sidecar_log: bool,
     extraction_perf_gate: bool,
+    d53_emit_mode: D53EmitMode,
+    d51_emit_mode: D51EmitMode,
     d41_emit_mode: D41EmitMode,
     d44_emit_mode: D44EmitMode,
     d48_emit_mode: D48EmitMode,
@@ -769,6 +771,52 @@ impl StreamFormat {
         match self {
             StreamFormat::Json => "collector_frames.jsonl",
             StreamFormat::Compact => "collector_stream.bin",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum D53EmitMode {
+    Delta,
+    Full,
+}
+
+impl D53EmitMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "delta" => Some(Self::Delta),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Delta => "delta",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum D51EmitMode {
+    Delta,
+    Full,
+}
+
+impl D51EmitMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "delta" => Some(Self::Delta),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Delta => "delta",
+            Self::Full => "full",
         }
     }
 }
@@ -1021,6 +1069,8 @@ fn run() -> Result<(), String> {
                     "projects_root_discovery_debt": "not_applicable_json_debug_stream",
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
+                    "d53_emit_mode": cfg.d53_emit_mode.as_str(),
+                    "d51_emit_mode": cfg.d51_emit_mode.as_str(),
                     "d41_emit_mode": cfg.d41_emit_mode.as_str(),
                     "d44_emit_mode": cfg.d44_emit_mode.as_str(),
                     "d48_emit_mode": cfg.d48_emit_mode.as_str(),
@@ -1113,6 +1163,8 @@ fn run() -> Result<(), String> {
                     "projects_root_discovery_debt": projects_root_discovery_debt,
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
+                    "d53_emit_mode": cfg.d53_emit_mode.as_str(),
+                    "d51_emit_mode": cfg.d51_emit_mode.as_str(),
                     "d41_emit_mode": cfg.d41_emit_mode.as_str(),
                     "d44_emit_mode": cfg.d44_emit_mode.as_str(),
                     "d48_emit_mode": cfg.d48_emit_mode.as_str(),
@@ -1379,6 +1431,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut stream_format: Option<StreamFormat> = None;
     let mut sidecar_log: Option<bool> = None;
     let mut extraction_perf_gate: Option<bool> = None;
+    let mut d53_emit_mode = D53EmitMode::Delta;
+    let mut d51_emit_mode = D51EmitMode::Delta;
     let mut d41_emit_mode = D41EmitMode::Delta;
     let mut d44_emit_mode = D44EmitMode::Delta;
     let mut d48_emit_mode = D48EmitMode::Delta;
@@ -1480,6 +1534,20 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 stream_format = Some(parse_stream_format(args.get(i), "--stream-format")?);
             }
             "--extraction-perf-gate" => extraction_perf_gate = Some(true),
+            "--d53-emit-mode" => {
+                i += 1;
+                let value = required(args.get(i), "--d53-emit-mode")?;
+                d53_emit_mode = D53EmitMode::parse(&value).ok_or_else(|| {
+                    format!("invalid --d53-emit-mode {value}; expected delta|full")
+                })?;
+            }
+            "--d51-emit-mode" => {
+                i += 1;
+                let value = required(args.get(i), "--d51-emit-mode")?;
+                d51_emit_mode = D51EmitMode::parse(&value).ok_or_else(|| {
+                    format!("invalid --d51-emit-mode {value}; expected delta|full")
+                })?;
+            }
             "--d41-emit-mode" => {
                 i += 1;
                 let value = required(args.get(i), "--d41-emit-mode")?;
@@ -1648,6 +1716,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         profile,
         sidecar_log,
         extraction_perf_gate,
+        d53_emit_mode,
+        d51_emit_mode,
         d41_emit_mode,
         d44_emit_mode,
         d48_emit_mode,
@@ -1812,7 +1882,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -3695,6 +3765,8 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "compact_country_frame": cfg.compact_country_frame,
         "stream_format": cfg.stream_format.as_str(),
         "extraction_perf_gate": cfg.extraction_perf_gate,
+        "d53_emit_mode": cfg.d53_emit_mode.as_str(),
+        "d51_emit_mode": cfg.d51_emit_mode.as_str(),
         "d41_emit_mode": cfg.d41_emit_mode.as_str(),
         "d44_emit_mode": cfg.d44_emit_mode.as_str(),
         "d48_emit_mode": cfg.d48_emit_mode.as_str(),
@@ -20688,6 +20760,737 @@ mod tests {
     }
 
     #[test]
+    fn compact_diplomacy_intel_operatives_delta_lossless_gate_matches_full_snapshots() {
+        use diplomacy_intel_operatives_live::compact as d53;
+
+        fn country(
+            tag_db_id: u32,
+            faction_group: i32,
+            at_war_count: u32,
+        ) -> d53::CountryDiplomacyRow {
+            d53::CountryDiplomacyRow {
+                tag_db_id,
+                faction_group,
+                at_war_count,
+                casualties: i64::from(at_war_count) * 10,
+            }
+        }
+
+        fn war(first: u32, second: u32, first_casualties: i64) -> d53::WarRelationRow {
+            d53::WarRelationRow {
+                first_tag_db_id: first,
+                second_tag_db_id: second,
+                first_casualties,
+                second_casualties: first_casualties / 2,
+            }
+        }
+
+        fn opinion(src: u32, target: u32, value: i32) -> d53::OpinionRow {
+            d53::OpinionRow {
+                src_tag_db_id: src,
+                target_tag_db_id: target,
+                opinion: value,
+            }
+        }
+
+        fn relation_flag(src: u32, target: u32, kind: u16, directed: bool) -> d53::RelationFlagRow {
+            d53::RelationFlagRow {
+                src_tag_db_id: src,
+                target_tag_db_id: target,
+                flag_kind: kind,
+                directed,
+            }
+        }
+
+        fn subject(overlord: u32, subject: u32, ratio: i32) -> d53::SubjectRow {
+            d53::SubjectRow {
+                overlord_tag_db_id: overlord,
+                subject_tag_db_id: subject,
+                autonomy_state_hash: 0xA11CE,
+                autonomy_ratio_raw: ratio,
+                start_date_raw: 10,
+            }
+        }
+
+        fn agency(owner: u32, operatives: u32, defense_raw: i32) -> d53::AgencyRow {
+            d53::AgencyRow {
+                owner_tag_db_id: owner,
+                max_operatives: 5,
+                usable_slots: 3,
+                operative_count: operatives,
+                cryptology_target_count: 1,
+                defense_raw,
+                upgrade_progress_raw: 10_000,
+                name_hash: 0x1000 + u64::from(owner),
+                icon_hash: 0,
+            }
+        }
+
+        fn agency_capacity(owner: u32, value: u32) -> d53::AgencyCapacityClusterRow {
+            d53::AgencyCapacityClusterRow {
+                owner_tag_db_id: owner,
+                value_0xe4: value,
+                value_0xf0: value.saturating_add(1),
+                value_0xf4: value,
+                proof_hash: 0xCAFE_0000 | owner,
+            }
+        }
+
+        fn operative(owner: u32, op_id: u32, skill: u32) -> d53::OperativeRow {
+            d53::OperativeRow {
+                owner_tag_db_id: owner,
+                op_id,
+                detected: true,
+                captured: false,
+                skill: Some(skill),
+                experience_raw: Some(50_000),
+                name_hash: 0x5000 + u64::from(op_id),
+                state_hash: 0x6000 + op_id,
+                lifecycle_flag: Some(2),
+            }
+        }
+
+        fn cryptology(owner: u32, target: u32, amount_raw: i64) -> d53::CryptologyRow {
+            d53::CryptologyRow {
+                owner_tag_db_id: owner,
+                target_tag_db_id: target,
+                amount_raw,
+                decrypting: amount_raw % 2 == 0,
+            }
+        }
+
+        fn state_event(
+            owner: u32,
+            target: Option<u32>,
+            value_hash: u32,
+            value_raw: i64,
+        ) -> d53::StateEventRow {
+            d53::StateEventRow {
+                owner_tag_db_id: owner,
+                target_tag_db_id: target,
+                event_kind: d53::STATE_EVENT_KIND_OBSERVED,
+                source_kind: d53::STATE_EVENT_SOURCE_RELATION_OPINION,
+                object_hash: d53::stable_hash32("relation_opinion"),
+                value_hash,
+                value_raw,
+            }
+        }
+
+        fn deleted_id(id: u32) -> u32 {
+            id | d53::ROW_ID_DELETED
+        }
+
+        fn tombstone_country(tag_db_id: u32) -> d53::CountryDiplomacyRow {
+            d53::CountryDiplomacyRow {
+                tag_db_id: deleted_id(tag_db_id),
+                faction_group: 0,
+                at_war_count: 0,
+                casualties: 0,
+            }
+        }
+
+        fn tombstone_war(first: u32, second: u32) -> d53::WarRelationRow {
+            d53::WarRelationRow {
+                first_tag_db_id: deleted_id(first),
+                second_tag_db_id: second,
+                first_casualties: 0,
+                second_casualties: 0,
+            }
+        }
+
+        fn tombstone_opinion(src: u32, target: u32) -> d53::OpinionRow {
+            d53::OpinionRow {
+                src_tag_db_id: deleted_id(src),
+                target_tag_db_id: target,
+                opinion: 0,
+            }
+        }
+
+        fn tombstone_relation_flag(src: u32, target: u32, flag_kind: u16) -> d53::RelationFlagRow {
+            d53::RelationFlagRow {
+                src_tag_db_id: deleted_id(src),
+                target_tag_db_id: target,
+                flag_kind,
+                directed: false,
+            }
+        }
+
+        fn tombstone_subject(overlord: u32, subject: u32) -> d53::SubjectRow {
+            d53::SubjectRow {
+                overlord_tag_db_id: deleted_id(overlord),
+                subject_tag_db_id: subject,
+                autonomy_state_hash: 0,
+                autonomy_ratio_raw: 0,
+                start_date_raw: 0,
+            }
+        }
+
+        fn tombstone_agency_capacity(owner: u32) -> d53::AgencyCapacityClusterRow {
+            d53::AgencyCapacityClusterRow {
+                owner_tag_db_id: deleted_id(owner),
+                value_0xe4: 0,
+                value_0xf0: 0,
+                value_0xf4: 0,
+                proof_hash: 0,
+            }
+        }
+
+        fn tombstone_operative(op_id: u32) -> d53::OperativeRow {
+            d53::OperativeRow {
+                owner_tag_db_id: 0,
+                op_id: deleted_id(op_id),
+                detected: false,
+                captured: false,
+                skill: None,
+                experience_raw: None,
+                name_hash: 0,
+                state_hash: 0,
+                lifecycle_flag: None,
+            }
+        }
+
+        fn tombstone_cryptology(owner: u32, target: u32) -> d53::CryptologyRow {
+            d53::CryptologyRow {
+                owner_tag_db_id: deleted_id(owner),
+                target_tag_db_id: target,
+                amount_raw: 0,
+                decrypting: false,
+            }
+        }
+
+        fn tombstone_state_event(owner: u32, target: Option<u32>) -> d53::StateEventRow {
+            d53::StateEventRow {
+                owner_tag_db_id: deleted_id(owner),
+                target_tag_db_id: target,
+                event_kind: d53::STATE_EVENT_KIND_OBSERVED,
+                source_kind: d53::STATE_EVENT_SOURCE_RELATION_OPINION,
+                object_hash: d53::stable_hash32("relation_opinion"),
+                value_hash: 0,
+                value_raw: 0,
+            }
+        }
+
+        fn frame(
+            mut snapshot: d53::DiplomacyIntelSnapshot,
+            delta: bool,
+        ) -> d53::DiplomacyIntelSnapshot {
+            snapshot.status_flags = d53::STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
+                | if delta { COMPACT_STATUS_DELTA_DATA } else { 0 };
+            snapshot.changed_rows = Some(snapshot.row_count());
+            snapshot
+        }
+
+        fn append_d53_frame(
+            raw: &mut Vec<u8>,
+            next_sequence: &mut u64,
+            game_hour_raw: i32,
+            frame: &d53::DiplomacyIntelSnapshot,
+        ) {
+            let row_count = frame.row_count();
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                53,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(
+                    900,
+                    row_count,
+                    row_count,
+                    row_count,
+                    row_count,
+                    frame.status_flags,
+                ),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                53,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d53::encode_payload(frame),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *next_sequence += 1;
+        }
+
+        fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
+            fold_compact_snapshots(raw)
+                .into_iter()
+                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .collect()
+        }
+
+        let full0 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(1, 10, 1), country(2, 20, 0)],
+                wars: vec![war(1, 2, 100)],
+                opinions: vec![opinion(1, 2, 10)],
+                relation_flags: vec![relation_flag(1, 2, d53::REL_KIND_IMPROVE_RELATIONS, true)],
+                subjects: vec![subject(1, 2, 300_000)],
+                agencies: vec![agency(1, 1, 25_000)],
+                agency_capacity_clusters: vec![agency_capacity(1, 2)],
+                operatives: vec![operative(1, 100, 3)],
+                cryptology: vec![cryptology(1, 2, 120_000)],
+                state_events: vec![state_event(1, Some(2), 0xABCD, 10)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            false,
+        );
+        let full1 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(1, 11, 1), country(2, 20, 0), country(3, 30, 0)],
+                wars: vec![war(1, 2, 100)],
+                opinions: vec![opinion(1, 2, 20)],
+                relation_flags: vec![relation_flag(1, 2, d53::REL_KIND_IMPROVE_RELATIONS, true)],
+                subjects: vec![subject(1, 2, 350_000)],
+                agencies: vec![agency(1, 2, 30_000), agency(3, 1, 5_000)],
+                agency_capacity_clusters: vec![agency_capacity(1, 3)],
+                operatives: vec![operative(1, 100, 4), operative(3, 101, 2)],
+                cryptology: vec![cryptology(1, 2, 120_000)],
+                state_events: vec![state_event(1, Some(2), 0xBCDE, 20)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            false,
+        );
+        let full2 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(1, 12, 0), country(3, 30, 0)],
+                agencies: vec![agency(1, 1, 35_000), agency(3, 1, 5_000)],
+                operatives: vec![operative(3, 101, 2)],
+                cryptology: vec![cryptology(1, 3, 220_000)],
+                state_events: vec![state_event(1, Some(3), 0xCDEF, 30)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            false,
+        );
+        let full3 = full2.clone();
+        let full4 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(4, 40, 0)],
+                opinions: vec![opinion(4, 1, -10)],
+                agencies: vec![agency(4, 1, 15_000)],
+                operatives: vec![operative(4, 200, 1)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            false,
+        );
+
+        let delta1 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(1, 11, 1), country(3, 30, 0)],
+                opinions: vec![opinion(1, 2, 20)],
+                subjects: vec![subject(1, 2, 350_000)],
+                agencies: vec![agency(1, 2, 30_000), agency(3, 1, 5_000)],
+                agency_capacity_clusters: vec![agency_capacity(1, 3)],
+                operatives: vec![operative(1, 100, 4), operative(3, 101, 2)],
+                state_events: vec![state_event(1, Some(2), 0xBCDE, 20)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            true,
+        );
+        let delta2 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(1, 12, 0), tombstone_country(2)],
+                wars: vec![tombstone_war(1, 2)],
+                opinions: vec![tombstone_opinion(1, 2)],
+                relation_flags: vec![tombstone_relation_flag(
+                    1,
+                    2,
+                    d53::REL_KIND_IMPROVE_RELATIONS,
+                )],
+                subjects: vec![tombstone_subject(1, 2)],
+                agencies: vec![agency(1, 1, 35_000)],
+                agency_capacity_clusters: vec![tombstone_agency_capacity(1)],
+                operatives: vec![tombstone_operative(100)],
+                cryptology: vec![tombstone_cryptology(1, 2), cryptology(1, 3, 220_000)],
+                state_events: vec![
+                    tombstone_state_event(1, Some(2)),
+                    state_event(1, Some(3), 0xCDEF, 30),
+                ],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            true,
+        );
+        let delta3 = frame(d53::DiplomacyIntelSnapshot::default(), true);
+
+        let mut full_raw = Vec::new();
+        let mut full_seq = 1u64;
+        let mut delta_raw = Vec::new();
+        let mut delta_seq = 1u64;
+        let game_hour_raw = 60_759_360;
+        for (index, full) in [&full0, &full1, &full2, &full3, &full4].iter().enumerate() {
+            append_d53_frame(
+                &mut full_raw,
+                &mut full_seq,
+                game_hour_raw + index as i32,
+                full,
+            );
+        }
+        for (index, delta) in [&full0, &delta1, &delta2, &delta3, &full4]
+            .iter()
+            .enumerate()
+        {
+            append_d53_frame(
+                &mut delta_raw,
+                &mut delta_seq,
+                game_hour_raw + index as i32,
+                delta,
+            );
+        }
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        let delta_summary = summarize_compact_stream(&delta_raw);
+        let full_coverage = compact_domain_coverage_errors(&full_summary, &[53]);
+        let delta_coverage = compact_domain_coverage_errors(&delta_summary, &[53]);
+        assert!(
+            full_summary.parse_errors.is_empty(),
+            "{:?}",
+            full_summary.parse_errors
+        );
+        assert!(
+            delta_summary.parse_errors.is_empty(),
+            "{:?}",
+            delta_summary.parse_errors
+        );
+        assert!(full_coverage.is_empty(), "{full_coverage:?}");
+        assert!(delta_coverage.is_empty(), "{delta_coverage:?}");
+        assert_eq!(
+            delta_summary
+                .per_hour_data_domain_counts
+                .get(&(game_hour_raw + 3))
+                .and_then(|domains| domains.get(&53))
+                .copied(),
+            Some(1),
+            "zero-change delta frame must still count as a covered data record"
+        );
+        assert_ne!(delta_summary.status_flags_or & COMPACT_STATUS_DELTA_DATA, 0);
+        assert!(
+            delta_raw.len() < full_raw.len(),
+            "delta stream should be smaller than the equivalent full snapshots"
+        );
+        let delta_snapshots = canonical_snapshots(&delta_raw);
+        let full_snapshots = canonical_snapshots(&full_raw);
+        assert_eq!(delta_snapshots.len(), full_snapshots.len());
+        for (index, (delta, full)) in delta_snapshots
+            .iter()
+            .zip(full_snapshots.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                delta,
+                full,
+                "snapshot {index} mismatch\nDELTA: {}\nFULL: {}",
+                String::from_utf8_lossy(delta),
+                String::from_utf8_lossy(full)
+            );
+        }
+    }
+
+    #[test]
+    fn compact_scripted_state_delta_lossless_gate_matches_full_snapshots() {
+        use scripted_state_flags_variables_live_lane::scripted_state_domain51_gate::compact as d51;
+
+        #[derive(Clone)]
+        struct TestD51Frame {
+            rows: Vec<d51::ScriptedStateRow>,
+            status_flags: u32,
+            observed_scopes: u32,
+            measured_scopes: u32,
+            rejected_scopes: u32,
+        }
+
+        fn variable(
+            scope_kind: u32,
+            owner_id: u32,
+            key: &str,
+            value_raw: i64,
+        ) -> d51::ScriptedStateRow {
+            d51::ScriptedStateRow {
+                scope_kind,
+                owner_id,
+                value_kind: d51::VALUE_VARIABLE_FIXED_I64,
+                key: Some(key.to_string()),
+                token_id: None,
+                value_raw: Some(value_raw),
+                date_hour_raw: None,
+                deleted: false,
+                delayed_due_hours: None,
+            }
+        }
+
+        fn named_flag(
+            scope_kind: u32,
+            owner_id: u32,
+            key: &str,
+            value_raw: Option<i64>,
+            date_hour_raw: Option<i32>,
+        ) -> d51::ScriptedStateRow {
+            d51::ScriptedStateRow {
+                scope_kind,
+                owner_id,
+                value_kind: d51::VALUE_FLAG_NAMED,
+                key: Some(key.to_string()),
+                token_id: None,
+                value_raw,
+                date_hour_raw,
+                deleted: false,
+                delayed_due_hours: None,
+            }
+        }
+
+        fn tombstone_named(
+            scope_kind: u32,
+            owner_id: u32,
+            value_kind: u32,
+            key: &str,
+        ) -> d51::ScriptedStateRow {
+            d51::ScriptedStateRow {
+                scope_kind,
+                owner_id,
+                value_kind: value_kind | d51::ROW_VALUE_KIND_DELETED,
+                key: Some(key.to_string()),
+                token_id: None,
+                value_raw: None,
+                date_hour_raw: None,
+                deleted: false,
+                delayed_due_hours: None,
+            }
+        }
+
+        fn full_frame(rows: Vec<d51::ScriptedStateRow>) -> TestD51Frame {
+            TestD51Frame {
+                rows,
+                status_flags: 0,
+                observed_scopes: 3,
+                measured_scopes: 3,
+                rejected_scopes: 0,
+            }
+        }
+
+        fn delta_frame(
+            rows: Vec<d51::ScriptedStateRow>,
+            full_state: &TestD51Frame,
+        ) -> TestD51Frame {
+            TestD51Frame {
+                rows,
+                status_flags: COMPACT_STATUS_DELTA_DATA,
+                observed_scopes: full_state.observed_scopes,
+                measured_scopes: full_state.measured_scopes,
+                rejected_scopes: full_state.rejected_scopes,
+            }
+        }
+
+        fn d51_payload(frame: &TestD51Frame) -> Vec<u8> {
+            let row_count = frame.rows.len().min(u32::MAX as usize) as u32;
+            let header = d51::ScriptedStateHeader {
+                elapsed_wall_ms: 0,
+                status_flags: frame.status_flags,
+                changed_rows: row_count,
+                observed_scopes: frame.observed_scopes,
+                measured_scopes: frame.measured_scopes,
+                rejected_scopes: frame.rejected_scopes,
+            };
+            d51::encode_payload(&header, &frame.rows)
+        }
+
+        fn append_d51_frame(
+            raw: &mut Vec<u8>,
+            next_sequence: &mut u64,
+            game_hour_raw: i32,
+            frame: &TestD51Frame,
+        ) {
+            let row_count = frame.rows.len().min(u32::MAX as usize) as u32;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                51,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(
+                    500,
+                    frame.observed_scopes,
+                    row_count,
+                    row_count,
+                    row_count,
+                    frame.status_flags,
+                ),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                51,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d51_payload(frame),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *next_sequence += 1;
+        }
+
+        fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
+            fold_compact_snapshots(raw)
+                .into_iter()
+                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .collect()
+        }
+
+        let full0 = full_frame(vec![
+            variable(d51::SCOPE_GLOBAL, 0, "global_var", 100_000),
+            named_flag(
+                d51::SCOPE_COUNTRY,
+                1,
+                "country_flag",
+                Some(7),
+                Some(60_759_360),
+            ),
+        ]);
+        let full1 = full_frame(vec![
+            variable(d51::SCOPE_GLOBAL, 0, "global_var", 200_000),
+            named_flag(
+                d51::SCOPE_COUNTRY,
+                1,
+                "country_flag",
+                Some(8),
+                Some(60_759_361),
+            ),
+            variable(d51::SCOPE_COUNTRY, 1, "country_var", 300_000),
+            variable(d51::SCOPE_STATE, 42, "state_var", 400_000),
+        ]);
+        let full2 = full_frame(vec![
+            named_flag(
+                d51::SCOPE_COUNTRY,
+                1,
+                "country_flag",
+                Some(9),
+                Some(60_759_362),
+            ),
+            variable(d51::SCOPE_COUNTRY, 1, "country_var", 300_000),
+            variable(d51::SCOPE_STATE, 42, "state_var", 500_000),
+        ]);
+        let full3 = full2.clone();
+        let full4 = full_frame(vec![
+            variable(d51::SCOPE_GLOBAL, 0, "global_rebaseline", 600_000),
+            named_flag(d51::SCOPE_COUNTRY, 2, "other_flag", None, Some(60_759_364)),
+            variable(d51::SCOPE_STATE, 77, "state_rebaseline", 700_000),
+        ]);
+
+        let delta1 = delta_frame(
+            vec![
+                variable(d51::SCOPE_GLOBAL, 0, "global_var", 200_000),
+                named_flag(
+                    d51::SCOPE_COUNTRY,
+                    1,
+                    "country_flag",
+                    Some(8),
+                    Some(60_759_361),
+                ),
+                variable(d51::SCOPE_COUNTRY, 1, "country_var", 300_000),
+                variable(d51::SCOPE_STATE, 42, "state_var", 400_000),
+            ],
+            &full1,
+        );
+        let delta2 = delta_frame(
+            vec![
+                tombstone_named(
+                    d51::SCOPE_GLOBAL,
+                    0,
+                    d51::VALUE_VARIABLE_FIXED_I64,
+                    "global_var",
+                ),
+                named_flag(
+                    d51::SCOPE_COUNTRY,
+                    1,
+                    "country_flag",
+                    Some(9),
+                    Some(60_759_362),
+                ),
+                variable(d51::SCOPE_STATE, 42, "state_var", 500_000),
+            ],
+            &full2,
+        );
+        let delta3 = delta_frame(Vec::new(), &full3);
+
+        let mut full_raw = Vec::new();
+        let mut full_seq = 1u64;
+        let mut delta_raw = Vec::new();
+        let mut delta_seq = 1u64;
+        let game_hour_raw = 60_759_360;
+        for (index, full) in [&full0, &full1, &full2, &full3, &full4].iter().enumerate() {
+            append_d51_frame(
+                &mut full_raw,
+                &mut full_seq,
+                game_hour_raw + index as i32,
+                full,
+            );
+        }
+        for (index, delta) in [&full0, &delta1, &delta2, &delta3, &full4]
+            .iter()
+            .enumerate()
+        {
+            append_d51_frame(
+                &mut delta_raw,
+                &mut delta_seq,
+                game_hour_raw + index as i32,
+                delta,
+            );
+        }
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        let delta_summary = summarize_compact_stream(&delta_raw);
+        let full_coverage = compact_domain_coverage_errors(&full_summary, &[51]);
+        let delta_coverage = compact_domain_coverage_errors(&delta_summary, &[51]);
+        assert!(
+            full_summary.parse_errors.is_empty(),
+            "{:?}",
+            full_summary.parse_errors
+        );
+        assert!(
+            delta_summary.parse_errors.is_empty(),
+            "{:?}",
+            delta_summary.parse_errors
+        );
+        assert!(full_coverage.is_empty(), "{full_coverage:?}");
+        assert!(delta_coverage.is_empty(), "{delta_coverage:?}");
+        assert_eq!(
+            delta_summary
+                .per_hour_data_domain_counts
+                .get(&(game_hour_raw + 3))
+                .and_then(|domains| domains.get(&51))
+                .copied(),
+            Some(1),
+            "zero-change delta frame must still count as a covered data record"
+        );
+        assert_ne!(delta_summary.status_flags_or & COMPACT_STATUS_DELTA_DATA, 0);
+        assert!(
+            delta_raw.len() < full_raw.len(),
+            "delta stream should be smaller than the equivalent full snapshots"
+        );
+        assert_eq!(
+            canonical_snapshots(&delta_raw),
+            canonical_snapshots(&full_raw)
+        );
+    }
+
+    #[test]
     fn compact_projects_delta_lossless_gate_matches_full_snapshots() {
         fn with_observed_from(
             mut frame: TestProjectsFrame,
@@ -24233,6 +25036,8 @@ mod tests {
             profile: None,
             sidecar_log: false,
             extraction_perf_gate: true,
+            d53_emit_mode: D53EmitMode::Delta,
+            d51_emit_mode: D51EmitMode::Delta,
             d41_emit_mode: D41EmitMode::Delta,
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
@@ -24509,6 +25314,10 @@ mod tests {
             "--stream-format".to_string(),
             "compact".to_string(),
             "--extraction-perf-gate".to_string(),
+            "--d53-emit-mode".to_string(),
+            "full".to_string(),
+            "--d51-emit-mode".to_string(),
+            "full".to_string(),
             "--d41-emit-mode".to_string(),
             "full".to_string(),
             "--d44-emit-mode".to_string(),
@@ -24531,6 +25340,8 @@ mod tests {
         );
         assert_eq!(cfg.stream_format, StreamFormat::Compact);
         assert!(cfg.extraction_perf_gate);
+        assert_eq!(cfg.d53_emit_mode, D53EmitMode::Full);
+        assert_eq!(cfg.d51_emit_mode, D51EmitMode::Full);
         assert_eq!(cfg.d41_emit_mode, D41EmitMode::Full);
         assert_eq!(cfg.d44_emit_mode, D44EmitMode::Full);
         assert_eq!(cfg.d48_emit_mode, D48EmitMode::Full);
@@ -24840,6 +25651,8 @@ mod tests {
         );
         assert!(control.contains("\"sidecar_log\":true"));
         assert!(control.contains("\"extraction_perf_gate\":true"));
+        assert!(control.contains("\"d53_emit_mode\":\"delta\""));
+        assert!(control.contains("\"d51_emit_mode\":\"delta\""));
         assert!(control.contains("\"d41_emit_mode\":\"delta\""));
         assert!(control.contains("\"d44_emit_mode\":\"delta\""));
         assert!(control.contains("\"d48_emit_mode\":\"delta\""));
@@ -24979,6 +25792,8 @@ mod tests {
             profile: None,
             sidecar_log: false,
             extraction_perf_gate: true,
+            d53_emit_mode: D53EmitMode::Delta,
+            d51_emit_mode: D51EmitMode::Delta,
             d41_emit_mode: D41EmitMode::Delta,
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,

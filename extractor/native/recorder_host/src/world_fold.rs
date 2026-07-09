@@ -386,6 +386,30 @@ fn domain53_upsert_by_key<T, K: PartialEq>(vec: &mut Vec<T>, row: T, key: impl F
     }
 }
 
+fn domain53_remove_by_key<T, K: PartialEq>(vec: &mut Vec<T>, key_value: K, key: impl Fn(&T) -> K) {
+    vec.retain(|row| key(row) != key_value);
+}
+
+fn domain53_row_deleted(value: u32) -> bool {
+    value & diplomacy53::compact::ROW_ID_DELETED != 0
+}
+
+fn domain53_row_key(value: u32) -> u32 {
+    value & !diplomacy53::compact::ROW_ID_DELETED
+}
+
+fn domain53_war_key(first: u32, second: u32) -> (u32, u32) {
+    if first <= second {
+        (first, second)
+    } else {
+        (second, first)
+    }
+}
+
+fn domain53_projected_status_flags(status_flags: u32) -> u32 {
+    status_flags & !COMPACT_STATUS_DELTA_DATA
+}
+
 const DOMAIN47_R2_KEY: &str = "_r2_characters_leaders_cabinet_live";
 /// Wave-4 ace lifecycle: per-country ace-roster sidecar (domain 46 `ACE1`
 /// trailer; full-replace each trailer-bearing hour).
@@ -543,6 +567,7 @@ const SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE: u32 = 5;
 // random seed; due-date absent, a documented residual). Same ceilings as the
 // collector emit and the payload gate.
 const SCRIPTED_STATE_VALUE_DELAYED_EVENT: u32 = 6;
+const SCRIPTED_STATE_VALUE_KIND_DELETED: u32 = 1 << 31;
 const SCRIPTED_STATE_MIN_DELAYED_EVENT_ID: u32 = 100_000;
 const SCRIPTED_STATE_MAX_DELAYED_EVENT_ID: u32 = 100_000 * 42_949;
 const SCRIPTED_STATE_ROW_FLAG_KEY_PRESENT: u32 = 1;
@@ -734,6 +759,8 @@ pub struct WorldFold {
     domain53_known_this_hour: bool,
     domain53_country_overlays_this_hour: BTreeMap<u32, Domain53CountryOverlay>,
     domain53_world_overlay_this_hour: Domain53WorldOverlay,
+    domain53_delta_country_overlays: BTreeMap<u32, Domain53CountryOverlay>,
+    domain53_delta_world_overlay: Domain53WorldOverlay,
     /// D60 capitulation/war state. Per-country capitulation is a PERSISTENT
     /// full-replace map (cosmetic-tag pattern: last proven frame wins; a
     /// country absent from the map gets NO capitulation key — absent != false).
@@ -942,6 +969,19 @@ struct Domain53CountryOverlay {
     state_events: Vec<diplomacy53::compact::StateEventRow>,
 }
 
+impl Domain53CountryOverlay {
+    fn is_empty(&self) -> bool {
+        self.country.is_none()
+            && self.opinions.is_empty()
+            && self.relation_flags.is_empty()
+            && self.agency.is_none()
+            && self.agency_capacity.is_none()
+            && self.operatives.is_empty()
+            && self.cryptology.is_empty()
+            && self.state_events.is_empty()
+    }
+}
+
 #[derive(Default, Clone)]
 struct Domain53WorldOverlay {
     status_flags: u32,
@@ -1029,6 +1069,8 @@ impl WorldFold {
             domain53_known_this_hour: false,
             domain53_country_overlays_this_hour: BTreeMap::new(),
             domain53_world_overlay_this_hour: Domain53WorldOverlay::default(),
+            domain53_delta_country_overlays: BTreeMap::new(),
+            domain53_delta_world_overlay: Domain53WorldOverlay::default(),
             capitulation_by_db_id: BTreeMap::new(),
             capitulation_war_state_known_this_hour: false,
             war_state_wars_this_hour: Vec::new(),
@@ -2758,6 +2800,9 @@ impl WorldFold {
         unresolved: &mut BTreeSet<u32>,
     ) {
         for (tag_db_id, overlay) in &self.domain53_country_overlays_this_hour {
+            if overlay.is_empty() {
+                continue;
+            }
             let key = self.resolve_country_key(&tag_db_id.to_string(), unresolved);
             let entry = countries
                 .entry(key)
@@ -9069,7 +9114,8 @@ impl WorldFold {
             let base = SCRIPTED_STATE_HEADER_LEN + index * SCRIPTED_STATE_ROW_LEN;
             let scope_kind = read_u32(payload, base);
             let owner_id = read_u32(payload, base + 4);
-            let value_kind = read_u32(payload, base + 8);
+            let raw_value_kind = read_u32(payload, base + 8);
+            let value_kind = raw_value_kind & !SCRIPTED_STATE_VALUE_KIND_DELETED;
             let flags = read_u32(payload, base + 12);
             if flags & !SCRIPTED_STATE_ROW_KNOWN_FLAGS != 0 {
                 return Err(format!("scripted_state row {index} unknown flags {flags}"));
@@ -9104,6 +9150,9 @@ impl WorldFold {
             let has_delayed_due = flags & SCRIPTED_STATE_ROW_FLAG_DELAYED_DUE_PRESENT != 0;
             let reserved0 = read_u32(payload, base + 40);
             let reserved1 = read_u32(payload, base + 44);
+            let token_id_raw = read_u32(payload, base + 24);
+            let date_hour_raw = read_i32(payload, base + 28);
+            let value_raw = read_i64(payload, base + 32);
             if !has_delayed_due && reserved0 != 0 {
                 return Err(format!(
                     "scripted_state row {index} has due hours without the due flag"
@@ -9114,20 +9163,57 @@ impl WorldFold {
                     "scripted_state row {index} reserved field is nonzero"
                 ));
             }
+            let deleted = raw_value_kind & SCRIPTED_STATE_VALUE_KIND_DELETED != 0
+                || flags & SCRIPTED_STATE_ROW_FLAG_DELETED != 0;
+            if deleted {
+                let allowed_flags = match value_kind {
+                    SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64 | SCRIPTED_STATE_VALUE_FLAG_NAMED => {
+                        SCRIPTED_STATE_ROW_FLAG_KEY_PRESENT | SCRIPTED_STATE_ROW_FLAG_DELETED
+                    }
+                    SCRIPTED_STATE_VALUE_FLAG_TOKEN_ONLY => {
+                        SCRIPTED_STATE_ROW_FLAG_TOKEN_PRESENT | SCRIPTED_STATE_ROW_FLAG_DELETED
+                    }
+                    _ => 0,
+                };
+                if flags & !allowed_flags != 0 {
+                    return Err(format!(
+                        "scripted_state tombstone row {index} has live flags"
+                    ));
+                }
+                if matches!(
+                    value_kind,
+                    SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64 | SCRIPTED_STATE_VALUE_FLAG_NAMED
+                ) && token_id_raw != 0
+                {
+                    return Err(format!(
+                        "scripted_state tombstone row {index} has live token_id"
+                    ));
+                }
+                if date_hour_raw != 0 || value_raw != 0 || reserved0 != 0 || reserved1 != 0 {
+                    return Err(format!(
+                        "scripted_state tombstone row {index} has live fields"
+                    ));
+                }
+            }
             let row = ScriptedStateRow {
                 scope_kind,
                 owner_id,
                 value_kind,
                 key,
                 token_id: (flags & SCRIPTED_STATE_ROW_FLAG_TOKEN_PRESENT != 0)
-                    .then_some(read_u32(payload, base + 24)),
+                    .then_some(token_id_raw),
                 date_hour_raw: (flags & SCRIPTED_STATE_ROW_FLAG_DATE_PRESENT != 0)
-                    .then_some(read_i32(payload, base + 28)),
+                    .then_some(date_hour_raw),
                 value_raw: (flags & SCRIPTED_STATE_ROW_FLAG_VALUE_PRESENT != 0)
-                    .then_some(read_i64(payload, base + 32)),
-                deleted: flags & SCRIPTED_STATE_ROW_FLAG_DELETED != 0,
+                    .then_some(value_raw),
+                deleted,
                 delayed_due_hours: has_delayed_due.then_some(reserved0),
             };
+            if raw_value_kind & SCRIPTED_STATE_VALUE_KIND_DELETED != 0 && !is_delta {
+                return Err(format!(
+                    "scripted_state row {index} tombstone appears outside delta frame"
+                ));
+            }
             validate_scripted_state_row(&row)?;
             rows.push(row);
         }
@@ -9135,6 +9221,9 @@ impl WorldFold {
         if !is_delta {
             self.clear_scripted_state_accumulators();
             self.delta_baselines_seen.insert(SCRIPTED_STATE_DOMAIN_ID);
+        } else {
+            self.scripted_world_opaque_badges.clear();
+            self.scripted_world_delayed_events.clear();
         }
         for row in rows {
             self.apply_scripted_state_row(&row, fixed_scale)?;
@@ -10380,6 +10469,7 @@ impl WorldFold {
         // `is_partial` is only ever true here for the expected-partial-tolerated
         // PARTIAL bit — a genuine failure bit is rejected by the gate below.
         let is_partial = (status_flags & COMPACT_STATUS_PARTIAL_DATA) != 0;
+        let is_delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
 
         // Gates run FIRST, without mutating the accumulator. EVERY rejection sets
         // `domain53_known_this_hour = false` — projection gates purely on that
@@ -10402,16 +10492,27 @@ impl WorldFold {
             );
             return Err("compact_status_failure".to_string());
         }
-        if status_flags & COMPACT_STATUS_DELTA_DATA != 0 {
+        if is_delta && is_partial {
             self.domain53_known_this_hour = false;
             self.mark_fold_domain_unknown(
                 DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
-                "delta_unsupported",
-                "diplomacy_intel_operatives_live DELTA_DATA is unsupported; domain53 extras omitted",
+                "delta_partial_unsupported",
+                "diplomacy_intel_operatives_live DELTA_DATA with PARTIAL_DATA is unsupported; domain53 extras omitted",
             );
-            return Err("delta_unsupported".to_string());
+            return Err("delta_partial_unsupported".to_string());
         }
-        if !decoded.wars.is_empty()
+        if self.reject_delta_before_baseline(
+            DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+            "diplomacy_intel_operatives_live",
+            status_flags,
+        ) {
+            self.domain53_known_this_hour = false;
+            return Err("delta_before_baseline".to_string());
+        }
+        if decoded
+            .wars
+            .iter()
+            .any(|row| !domain53_row_deleted(row.first_tag_db_id))
             && status_flags & diplomacy53::compact::STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
         {
             self.domain53_known_this_hour = false;
@@ -10441,9 +10542,24 @@ impl WorldFold {
         // behavior); a tolerated-PARTIAL frame keeps the accumulator and merges.
         // The clear happens HERE (not at the top) so a failed frame above never
         // wipes a good accumulator before returning (Codex).
-        if !is_partial {
+        if !is_partial && !is_delta {
             self.domain53_country_overlays_this_hour.clear();
             self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
+            self.delta_baselines_seen
+                .insert(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);
+        } else if is_delta {
+            self.domain53_country_overlays_this_hour = self.domain53_delta_country_overlays.clone();
+            self.domain53_world_overlay_this_hour = self.domain53_delta_world_overlay.clone();
+            self.domain53_world_overlay_this_hour
+                .operation_instances
+                .clear();
+            self.domain53_world_overlay_this_hour
+                .incoming_actions
+                .clear();
+            self.domain53_world_overlay_this_hour
+                .intel_network_graphs
+                .clear();
+            self.domain53_world_overlay_this_hour.factions.clear();
         } else {
             // Tolerated per-row skips: record the (non-fatal) partial-data problem
             // for manifest visibility, mirroring the generic expected-partial
@@ -10459,88 +10575,169 @@ impl WorldFold {
         // /`agency_capacity` are per-country Option leaves: set for the countries
         // present this frame, retained for those absent.
         for row in decoded.countries {
-            let tag_db_id = row.tag_db_id;
-            self.domain53_country_overlays_this_hour
+            let tag_db_id = domain53_row_key(row.tag_db_id);
+            let overlay = self
+                .domain53_country_overlays_this_hour
                 .entry(tag_db_id)
-                .or_default()
-                .country = Some(row);
+                .or_default();
+            if domain53_row_deleted(row.tag_db_id) {
+                overlay.country = None;
+            } else {
+                overlay.country = Some(row);
+            }
         }
         for row in decoded.opinions {
+            let src_tag_db_id = domain53_row_key(row.src_tag_db_id);
             let overlay = self
                 .domain53_country_overlays_this_hour
-                .entry(row.src_tag_db_id)
+                .entry(src_tag_db_id)
                 .or_default();
-            domain53_upsert_by_key(&mut overlay.opinions, row, |r| {
-                (r.src_tag_db_id, r.target_tag_db_id)
-            });
+            let key = (src_tag_db_id, row.target_tag_db_id);
+            if domain53_row_deleted(row.src_tag_db_id) {
+                domain53_remove_by_key(&mut overlay.opinions, key, |r| {
+                    (r.src_tag_db_id, r.target_tag_db_id)
+                });
+            } else {
+                domain53_upsert_by_key(&mut overlay.opinions, row, |r| {
+                    (r.src_tag_db_id, r.target_tag_db_id)
+                });
+            }
         }
         for row in decoded.relation_flags {
+            let src_tag_db_id = domain53_row_key(row.src_tag_db_id);
             let overlay = self
                 .domain53_country_overlays_this_hour
-                .entry(row.src_tag_db_id)
+                .entry(src_tag_db_id)
                 .or_default();
-            domain53_upsert_by_key(&mut overlay.relation_flags, row, |r| {
-                (r.src_tag_db_id, r.target_tag_db_id, r.flag_kind)
-            });
+            let key = (src_tag_db_id, row.target_tag_db_id, row.flag_kind);
+            if domain53_row_deleted(row.src_tag_db_id) {
+                domain53_remove_by_key(&mut overlay.relation_flags, key, |r| {
+                    (r.src_tag_db_id, r.target_tag_db_id, r.flag_kind)
+                });
+            } else {
+                domain53_upsert_by_key(&mut overlay.relation_flags, row, |r| {
+                    (r.src_tag_db_id, r.target_tag_db_id, r.flag_kind)
+                });
+            }
         }
         for row in decoded.agencies {
-            let owner_tag_db_id = row.owner_tag_db_id;
-            self.domain53_country_overlays_this_hour
+            let owner_tag_db_id = domain53_row_key(row.owner_tag_db_id);
+            let overlay = self
+                .domain53_country_overlays_this_hour
                 .entry(owner_tag_db_id)
-                .or_default()
-                .agency = Some(row);
+                .or_default();
+            if domain53_row_deleted(row.owner_tag_db_id) {
+                overlay.agency = None;
+            } else {
+                overlay.agency = Some(row);
+            }
         }
         for row in decoded.agency_capacity_clusters {
-            let owner_tag_db_id = row.owner_tag_db_id;
-            self.domain53_country_overlays_this_hour
+            let owner_tag_db_id = domain53_row_key(row.owner_tag_db_id);
+            let overlay = self
+                .domain53_country_overlays_this_hour
                 .entry(owner_tag_db_id)
-                .or_default()
-                .agency_capacity = Some(row);
+                .or_default();
+            if domain53_row_deleted(row.owner_tag_db_id) {
+                overlay.agency_capacity = None;
+            } else {
+                overlay.agency_capacity = Some(row);
+            }
         }
         for row in decoded.operatives {
-            let overlay = self
-                .domain53_country_overlays_this_hour
-                .entry(row.owner_tag_db_id)
-                .or_default();
-            domain53_upsert_by_key(&mut overlay.operatives, row, |r| r.op_id);
+            if domain53_row_deleted(row.op_id) {
+                let op_id = domain53_row_key(row.op_id);
+                for overlay in self.domain53_country_overlays_this_hour.values_mut() {
+                    domain53_remove_by_key(&mut overlay.operatives, op_id, |r| r.op_id);
+                }
+            } else {
+                let overlay = self
+                    .domain53_country_overlays_this_hour
+                    .entry(row.owner_tag_db_id)
+                    .or_default();
+                domain53_upsert_by_key(&mut overlay.operatives, row, |r| r.op_id);
+            }
         }
         for row in decoded.cryptology {
+            let owner_tag_db_id = domain53_row_key(row.owner_tag_db_id);
             let overlay = self
                 .domain53_country_overlays_this_hour
-                .entry(row.owner_tag_db_id)
+                .entry(owner_tag_db_id)
                 .or_default();
-            domain53_upsert_by_key(&mut overlay.cryptology, row, |r| r.target_tag_db_id);
+            if domain53_row_deleted(row.owner_tag_db_id) {
+                domain53_remove_by_key(&mut overlay.cryptology, row.target_tag_db_id, |r| {
+                    r.target_tag_db_id
+                });
+            } else {
+                domain53_upsert_by_key(&mut overlay.cryptology, row, |r| r.target_tag_db_id);
+            }
         }
         for row in decoded.state_events {
+            let owner_tag_db_id = domain53_row_key(row.owner_tag_db_id);
             let overlay = self
                 .domain53_country_overlays_this_hour
-                .entry(row.owner_tag_db_id)
+                .entry(owner_tag_db_id)
                 .or_default();
             // State-event identity = which object + which signal (NOT the value),
             // so a value change updates the same slot instead of accumulating.
-            domain53_upsert_by_key(&mut overlay.state_events, row, |r| {
-                (
-                    r.target_tag_db_id,
-                    r.event_kind,
-                    r.source_kind,
-                    r.object_hash,
-                )
-            });
+            let key = (
+                row.target_tag_db_id,
+                row.event_kind,
+                row.source_kind,
+                row.object_hash,
+            );
+            if domain53_row_deleted(row.owner_tag_db_id) {
+                domain53_remove_by_key(&mut overlay.state_events, key, |r| {
+                    (
+                        r.target_tag_db_id,
+                        r.event_kind,
+                        r.source_kind,
+                        r.object_hash,
+                    )
+                });
+            } else {
+                domain53_upsert_by_key(&mut overlay.state_events, row, |r| {
+                    (
+                        r.target_tag_db_id,
+                        r.event_kind,
+                        r.source_kind,
+                        r.object_hash,
+                    )
+                });
+            }
         }
-        if is_partial {
+        if is_partial || is_delta {
             // Sparse-merge the world-scoped families by their stable keys into the
             // hour's accumulator (retain any this frame omits); update the status.
             let world = &mut self.domain53_world_overlay_this_hour;
-            world.status_flags = status_flags;
+            world.status_flags = domain53_projected_status_flags(status_flags);
             for row in decoded.wars {
-                domain53_upsert_by_key(&mut world.wars, row, |r| {
-                    (r.first_tag_db_id, r.second_tag_db_id)
-                });
+                let key =
+                    domain53_war_key(domain53_row_key(row.first_tag_db_id), row.second_tag_db_id);
+                if domain53_row_deleted(row.first_tag_db_id) {
+                    domain53_remove_by_key(&mut world.wars, key, |r| {
+                        domain53_war_key(r.first_tag_db_id, r.second_tag_db_id)
+                    });
+                } else {
+                    domain53_upsert_by_key(&mut world.wars, row, |r| {
+                        domain53_war_key(r.first_tag_db_id, r.second_tag_db_id)
+                    });
+                }
             }
             for row in decoded.subjects {
-                domain53_upsert_by_key(&mut world.subjects, row, |r| {
-                    (r.overlord_tag_db_id, r.subject_tag_db_id)
-                });
+                let key = (
+                    domain53_row_key(row.overlord_tag_db_id),
+                    row.subject_tag_db_id,
+                );
+                if domain53_row_deleted(row.overlord_tag_db_id) {
+                    domain53_remove_by_key(&mut world.subjects, key, |r| {
+                        (r.overlord_tag_db_id, r.subject_tag_db_id)
+                    });
+                } else {
+                    domain53_upsert_by_key(&mut world.subjects, row, |r| {
+                        (r.overlord_tag_db_id, r.subject_tag_db_id)
+                    });
+                }
             }
             for row in decoded.operation_instances {
                 domain53_upsert_by_key(&mut world.operation_instances, row, |r| r.instance_id);
@@ -10563,7 +10760,7 @@ impl WorldFold {
         } else {
             // CLEAN frame: authoritative full-replace (byte-identical).
             self.domain53_world_overlay_this_hour = Domain53WorldOverlay {
-                status_flags,
+                status_flags: domain53_projected_status_flags(status_flags),
                 wars: decoded.wars,
                 subjects: decoded.subjects,
                 // Wave-5 running-operation instances (world-scoped: the +0x10
@@ -10573,6 +10770,12 @@ impl WorldFold {
                 intel_network_graphs: decoded.intel_network_graphs,
                 factions: decoded.factions,
             };
+        }
+        self.domain53_country_overlays_this_hour
+            .retain(|_, overlay| !overlay.is_empty());
+        if !is_partial || is_delta {
+            self.domain53_delta_country_overlays = self.domain53_country_overlays_this_hour.clone();
+            self.domain53_delta_world_overlay = self.domain53_world_overlay_this_hour.clone();
         }
         self.domain53_known_this_hour = true;
         self.mark_fold_domain_success(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);
@@ -14832,6 +15035,34 @@ fn validate_scripted_state_row(row: &ScriptedStateRow) -> Result<(), String> {
             }
         }
         other => return Err(format!("scripted_state unsupported scope {other}")),
+    }
+    if row.deleted {
+        match row.value_kind {
+            SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64 | SCRIPTED_STATE_VALUE_FLAG_NAMED => {
+                if row.key.as_ref().map_or(true, String::is_empty) {
+                    return Err("scripted_state tombstone row missing key".to_string());
+                }
+                if row.token_id.is_some()
+                    || row.date_hour_raw.is_some()
+                    || row.value_raw.is_some()
+                    || row.delayed_due_hours.is_some()
+                {
+                    return Err("scripted_state tombstone row has live fields".to_string());
+                }
+            }
+            SCRIPTED_STATE_VALUE_FLAG_TOKEN_ONLY => {
+                if row.key.is_some()
+                    || row.token_id.is_none()
+                    || row.date_hour_raw.is_some()
+                    || row.value_raw.is_some()
+                    || row.delayed_due_hours.is_some()
+                {
+                    return Err("scripted_state token tombstone row has live fields".to_string());
+                }
+            }
+            _ => return Err("scripted_state unsupported tombstone value_kind".to_string()),
+        }
+        return Ok(());
     }
     match row.value_kind {
         SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64 => {
