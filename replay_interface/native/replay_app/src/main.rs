@@ -33,6 +33,8 @@ mod blockers;
 mod bundle;
 mod camera;
 mod clausewitz;
+#[cfg(test)]
+mod e2e_playback;
 mod font;
 mod grading_law;
 mod observer;
