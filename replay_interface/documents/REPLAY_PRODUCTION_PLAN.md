@@ -78,8 +78,8 @@ spec may introduce a bare vanilla path join.
 
 - **Tests:** 820 passed / 0 failed across `map_viewer`, `replay_app`,
   `game_ui` (incl. all pool/oracle gate suites).
-- **Fidelity ledger** (`FIDELITY_LEDGER.md` §1): **76 FILE / 23 CAPTURE /
-  38 FIT / 43 UNKNOWN** parameter rows. FIT+UNKNOWN = the burn-down (§3 there).
+- **Fidelity ledger** (`FIDELITY_LEDGER.md` §1): **78 FILE / 24 CAPTURE /
+  38 FIT / 46 UNKNOWN** parameter rows. FIT+UNKNOWN = the burn-down (§3 there).
 - **Parity oracle:** 38 vanilla political RenderDoc frames mined
   (zoom ladder); scoreboard mean |err| 0.014–0.03 at h>500, degrading to 0.135
   at h=50 — the close-zoom gap **is** the unrendered dynamic content (units,
@@ -203,7 +203,7 @@ extractor-independent.
 | C5 | Rail/supply overlay | RE + defines | parity gate | OPEN |
 | C6 | Sea-zone naval-supremacy tint (recording R6/D56 shaped) | GB-field law + fixtures | parity vs captured supremacy frame | OPEN |
 | C7 | Close-zoom 3D pass completion (units/buildings/rails/shadows) measured by the existing oracle: h=50 scoreboard mean |err| 0.135 → ≤0.03 | all of C1–C6 + B3/B4 + **B6 shadow/PCF path** + an explicit **particles decision** (descope candidate — if descoped, restate the h=50 target on particle-free frames or a documented delta) | RenderDoc-oracle scoreboard at low h | OPEN — **this is the definition-of-done metric for Phase C** |
-| C8 | **FoW visual law (observer country-POV)**: RE the fog-of-war terrain transform (darkening/desaturation mask path in the map shaders) + hidden-unit culling; known anchors: scene-CB0 `FoW.w` gate (LIGHT_LAW — our omniscient baseline runs `FoW.w=1`), FoW mask texture inputs in pdxmap shader chain, and the existing "FOW-contaminated" captures which are ground truth for the FoW-ON look | installed content first (shader sources), then §4-CAP10 paired frames | fogged-vs-clear pixel parity vs the capture pair; POV-fixture unit-hiding gates | OPEN — NEW 2026-07-09 (observer directive) |
+| C8 | **FoW visual law (observer country-POV)**: terrain shader transform is now mined: CAP4 proves the carrier is the screen-space `ShadowMap` SRV, with FoW color/alpha packed in `.g/.b`; shipped `fow.fxh` / `pdxmap.shader` define the final blend and producer packing. Remaining scope: regenerate the producer inputs (`IntelTex`/`ExtraFOW`/visibility state) for arbitrary camera/time and mine hidden-unit culling from a labelled counter/UI pair. Scene-CB0 FoW gate did not change in CAP4, so C8 is texture/draw-state driven for this pair. | installed content first (shader sources) + CAP4 pair; follow-up §4-CAP10 for producer/counter residuals | `map_viewer` FoW gate: identical terrain draw sets, only `ShadowMap` terrain SRV differs; clear-region parity plus adversarial mismatch; future POV-fixture unit-hiding gates | PARTIAL — carrier + shader law implemented/gated in tooling (`fow_law.rs`); product path still blocked by producer-input + hidden-unit evidence |
 
 ### Phase D — UI chrome completion (game_ui)
 
@@ -277,7 +277,7 @@ Phase B/C/D closures but nothing in Phase A/E/F.
 | CAP7 | Frame with an open scrollable panel (thumb positions at known content sizes) | D5: scrollbar thumb travel |
 | CAP8 | No-FOW sea frame | B12: sea base look referee |
 | CAP9 | Tree instance buffer + cities_pass (standing ledger asks) | B3/B4 |
-| CAP10 | Paired same-camera frames: observe-as-country (FoW ON, fogged provinces + hidden units in view) vs observer world view (FoW OFF), same hour/zoom — isolates the FoW visual transform byte-for-byte | C8: FoW visual law referee (also strengthens B12) |
+| CAP10 | Follow-up FoW pair: same-camera/same-clock observe-as-country (FoW ON) vs observer world view (FoW OFF), with ShadowMap producer inputs or pre-FoW intermediate captured, and a labelled unit/counter/UI draw pass containing hidden enemy units | C8 residuals: producer-input parity + hidden-unit culling referee |
 
 ---
 

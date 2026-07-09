@@ -349,6 +349,15 @@ What the replay needs, per POV country, per hour:
   and tell us — the replay can apply engine rules replay-side given the
   inputs. Whichever representation is cheaper on your end wins.
 
+**FoW render-law note (CAP4, 2026-07-09):** the terrain pass consumes a
+screen-space 1920x1080 BGRA8 `ShadowMap`; shader `.g/.b` are final FoW
+color/alpha factors generated from map-space `IntelTex` / `ExtraFOW` /
+noise inputs (`fow.fxh`), then sampled by `pdxmap.shader`. Do **not** record a
+camera-space ShadowMap as the durable replay data. Record the stable
+world/province visibility/intel input needed to regenerate it for any replay
+camera. Province-level-or-finer is the minimum; state-level visibility is not
+enough because the shader samples by world position.
+
 **Scope bound (keeps this affordable):** POV candidates are only the
 *player-controlled* countries in the session (item 4 session metadata already
 names them) — typically far under 32 tags. A per-province visibility bitset
@@ -393,7 +402,7 @@ cadence — otherwise record at the engine's cadence (zero-data-loss rule).
 | 10 | building levels live | largely LANDED (D48 incl. damage); replay ingest deferred |
 | 11 | rail/supply state | deferred |
 | 12 | battle plans | deferred — do not build yet |
-| 13 | per-country FoW / visibility | **PROMOTED 2026-07-09** (observer country-POV is now core UX); per-player-country province visibility + spotted-units per hour; OPEN on both sides |
+| 13 | per-country FoW / visibility | **PROMOTED 2026-07-09** (observer country-POV is now core UX); per-player-country province-level-or-finer visibility/intel + spotted-units per hour; OPEN on both sides |
 
 The replay layer keeps this file current; anything new the replay needs
 from memory gets added HERE (nowhere else).

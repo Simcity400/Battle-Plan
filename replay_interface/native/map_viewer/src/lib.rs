@@ -17,6 +17,7 @@ mod constants;
 mod cpu_terrain;
 mod d3d11_device;
 mod d3d11_replay;
+mod fow_law;
 mod frame_bundle;
 mod game_data;
 mod image_load;
@@ -146,6 +147,14 @@ pub use d3d11_replay::{
     NativeD3d11ReplayResult, NativeD3d11ReplaySummary, NativeD3d11TerrainBundle,
     NativeD3d11TerrainRenderer, ProductionMapD3d11ReplayRequest, TerrainD3d11AcceptanceReport,
     TerrainD3d11AcceptanceRequest, UnderwaterValidationRender,
+};
+pub use fow_law::{
+    analyze_fow_capture_pair, analyze_wave1_cap4_fow_pair, pdxmap_fow_effective_alpha,
+    shadow_map_bgra8_unorm_sample, FowCapturePairReport, FowChannelDiffCounts, FowFogFactors,
+    FowPairDrawDiffReport, FowParityStats, FowShadowMapReport, ShadowMapFogSample, FOW_COLOR_MAX,
+    FOW_COLOR_MIN, FOW_NOISE_SPEED, FOW_NOISE_TILING, FOW_SHADER_SOURCE, FOW_TRANSPARENCY_MAX,
+    FOW_TRANSPARENCY_MIN, PDXMAP_SHADER_SOURCE, SHADOW_MAP_DXGI_FORMAT,
+    WAVE1_CAP4_FOW_OFF_SHADOWMAP_FNV1A64, WAVE1_CAP4_FOW_ON_SHADOWMAP_FNV1A64,
 };
 pub use frame_bundle::{
     validate_borders_map_frame_bundle, validate_rivers_map_frame_bundle,
