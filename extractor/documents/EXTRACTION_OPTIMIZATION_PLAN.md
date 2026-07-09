@@ -181,9 +181,22 @@ offsets|scan|shadow, shadow mismatches fail-close the frame as partial).
 **PENDING before next production capture: live shadow A/B for d53** (protocol: one capture
 with `"d53_relation_read_mode":"shadow"`, require domain53_relation_shadow_mismatches == 0
 on every d53 frame; any mismatch is a blocker; only then consider deleting the scan path).
-Remaining in Phase 2: d51 (frozen-lane waiver granted), delta emission for
-d53/d41/d44/d48/d51 (the 10-15x stream-size lever), then live paired A/B vs the 07-09
-baseline.
+**Delta-emission wave COMPLETE 2026-07-09** (merge a299d9cc8): all five fat domains now emit
+baseline+delta+tombstone — d41 (8fa005b30), d44 (da29ceb90), d48 (963449eb6), d51
+(fcb39d4b9, freeze waiver), d53 (75e3419b7). Shared architecture: COMPACT_STATUS_DELTA_DATA
+flag, high-bit tombstones carrying only the identity key, per-domain `dNN_emit_mode`
+delta|full runtime override, tracker never advances on failure/partial frames (d53: partial
+frames emit no deltas at all — no tombstone storms), fold treats non-delta records as full
+baselines (old recordings unaffected). Every domain has a lossless gate test folding full vs
+delta streams to byte-identical per-hour state; all five pass together. Honest residuals
+(stay full-emission, no safe identity): d44 computed badges; d51 delayed-event/scripted-GUI
+opaque rows; d53 operation_instances/incoming_actions/intel_network_graphs/factions.
+
+**Remaining in Phase 2:** LIVE validation session — (1) d53 shadow gate
+(`d53_relation_read_mode:"shadow"`, zero mismatches required), (2) paired speed-5 A/B vs the
+07-09 baseline (frame avg/p95, skipped hours, bytes/game-hour, host_finalize peak RAM),
+optionally with per-domain emit-mode full/delta A/B for size attribution. d51 bulk-read
+collapse (read-side) is still open if the A/B shows it matters.
 
 Per lane (order: d48 → d44 → d41 → d53 → d51), two changes, each gated by G1:
 
