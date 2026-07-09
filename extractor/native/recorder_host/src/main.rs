@@ -23281,6 +23281,197 @@ mod tests {
         assert_eq!(delta_snapshots, full_snapshots);
     }
 
+    // Gate (a) for the d48 churn fix (lane/d48-partial). The collector now emits a
+    // tolerated-partial frame as the CHANGED SUBSET of its read rows (diffed against
+    // the projected state) instead of the full read set, to stop a chronically-
+    // partial d48 from re-emitting ~its whole row set every hour (the 79.2%-churn
+    // pathology). This gate proves that reduction is LOSSLESS at the fold: folding
+    // the reduced-partial delta stream is byte-identical to folding both the full-
+    // emission stream AND the legacy full-read-partial delta stream, hour for hour.
+    #[test]
+    fn compact_d48_reduced_partial_folds_identically_to_full_emission() {
+        fn source_flags() -> u32 {
+            domain48::SOURCE_FLAG_DLL_NATIVE
+                | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+                | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+                | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+        }
+        fn construction_row(line_id: u32, produced_raw: i32) -> domain48::ConstructionQueueRow {
+            domain48::ConstructionQueueRow {
+                tag_db_id: 1,
+                line_id,
+                template_id: Some(20_013),
+                active_factories: 5,
+                cost_raw: 10_000_000,
+                produced_raw,
+                priority: 0,
+                target_state_id: Some(42),
+                created_date_raw: Some(60_827_043 + line_id),
+            }
+        }
+        fn state_building(type_id: u32, level: u32) -> domain48::BuildingRow {
+            domain48::BuildingRow {
+                scope: domain48::SCOPE_STATE,
+                location_id: 42,
+                state_id: 42,
+                type_id,
+                level,
+                healthy_level: Some(level),
+            }
+        }
+        fn resource_row(resource_id: u32, amount_raw: i32) -> domain48::StateResourceRow {
+            domain48::StateResourceRow {
+                state_id: 42,
+                resource_id,
+                amount_raw,
+            }
+        }
+        fn frame(
+            status_flags: u32,
+            construction_rows: Vec<domain48::ConstructionQueueRow>,
+            building_rows: Vec<domain48::BuildingRow>,
+            resource_rows: Vec<domain48::StateResourceRow>,
+        ) -> domain48::LaneFrame {
+            domain48::LaneFrame {
+                game_hour_raw: 0,
+                status_flags,
+                source_flags: source_flags(),
+                observed_country_roots: 1,
+                observed_state_roots: 1,
+                observed_province_roots: 1,
+                construction_rows,
+                building_rows,
+                resource_rows,
+            }
+        }
+        fn append_domain48_frame(
+            raw: &mut Vec<u8>,
+            next_sequence: &mut u64,
+            game_hour_raw: i32,
+            frame: &domain48::LaneFrame,
+        ) {
+            let row_count = frame
+                .construction_rows
+                .len()
+                .saturating_add(frame.building_rows.len())
+                .saturating_add(frame.resource_rows.len())
+                .min(u32::MAX as usize) as u32;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                48,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(
+                    500,
+                    row_count,
+                    row_count,
+                    row_count,
+                    row_count,
+                    frame.status_flags,
+                ),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                48,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &domain48::encode_lane_frame(frame),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *next_sequence += 1;
+        }
+        fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
+            fold_compact_snapshots(raw)
+                .into_iter()
+                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .collect()
+        }
+
+        // Hour 0: clean baseline (two construction lines, two buildings, one
+        // resource).
+        let base = frame(
+            0,
+            vec![construction_row(77, 5_000_000), construction_row(88, 2_000_000)],
+            vec![state_building(0x2fab, 5), state_building(0x3000, 7)],
+            vec![resource_row(0x3e03, 2_500_000)],
+        );
+        // Hour 1 tolerated-PARTIAL. The read observed line 77 changed (6M), line 88
+        // unchanged (2M) and building 0x2fab unchanged (5); it did NOT read building
+        // 0x3000 or resource 0x3e03 (unread, must be retained).
+        //   * full-emission / legacy delta: emit the FULL read set.
+        let partial_full = frame(
+            COMPACT_STATUS_PARTIAL_DATA,
+            vec![construction_row(77, 6_000_000), construction_row(88, 2_000_000)],
+            vec![state_building(0x2fab, 5)],
+            Vec::new(),
+        );
+        //   * new collector: emit ONLY the changed subset (line 77). Lines/buildings
+        //     equal to the projection are dropped; the fold retains them unchanged.
+        let partial_reduced = frame(
+            COMPACT_STATUS_PARTIAL_DATA,
+            vec![construction_row(77, 6_000_000)],
+            Vec::new(),
+            Vec::new(),
+        );
+        // Hour 2 in-game truth == hour 1 projection EXCEPT building 0x2fab -> level 6.
+        let full2 = frame(
+            0,
+            vec![construction_row(77, 6_000_000), construction_row(88, 2_000_000)],
+            vec![state_building(0x2fab, 6), state_building(0x3000, 7)],
+            vec![resource_row(0x3e03, 2_500_000)],
+        );
+        // Delta vs the PINNED hour-0 baseline (the partial never advanced it): line
+        // 77 5M->6M and building 0x2fab 5->6. Identical for the legacy and reduced
+        // streams because both leave the delta baseline pinned across the partial.
+        let delta2 = frame(
+            COMPACT_STATUS_DELTA_DATA,
+            vec![construction_row(77, 6_000_000)],
+            vec![state_building(0x2fab, 6)],
+            Vec::new(),
+        );
+
+        let build = |frames: &[&domain48::LaneFrame]| -> Vec<u8> {
+            let mut raw = Vec::new();
+            let mut seq = 1u64;
+            let game_hour_raw = 60_759_360;
+            for (index, f) in frames.iter().enumerate() {
+                append_domain48_frame(&mut raw, &mut seq, game_hour_raw + index as i32, f);
+            }
+            raw
+        };
+
+        let full_raw = build(&[&base, &partial_full, &full2]);
+        let legacy_delta_raw = build(&[&base, &partial_full, &delta2]);
+        let reduced_delta_raw = build(&[&base, &partial_reduced, &delta2]);
+
+        for raw in [&full_raw, &legacy_delta_raw, &reduced_delta_raw] {
+            let summary = summarize_compact_stream(raw);
+            assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+            assert!(compact_domain_coverage_errors(&summary, &[48]).is_empty());
+        }
+
+        let full_snapshots = canonical_snapshots(&full_raw);
+        let legacy_snapshots = canonical_snapshots(&legacy_delta_raw);
+        let reduced_snapshots = canonical_snapshots(&reduced_delta_raw);
+        assert_eq!(full_snapshots.len(), 3);
+        // Legacy full-read partial == full emission (the a1c787a4a guarantee).
+        assert_eq!(legacy_snapshots, full_snapshots);
+        // The fix's guarantee: the reduced-partial delta stream folds byte-identically
+        // to full emission at every hour — the churn reduction is lossless.
+        assert_eq!(reduced_snapshots, full_snapshots);
+    }
+
     #[test]
     fn compact_summary_rejects_unknown_project_state_flags() {
         let mut payload = test_projects_data_payload(0);

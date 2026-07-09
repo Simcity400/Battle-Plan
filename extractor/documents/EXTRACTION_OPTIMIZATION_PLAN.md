@@ -262,11 +262,42 @@ Run: runs/live_validation_20260709_221706 (+ probe in live_validation_20260709_2
   worlds. CONCLUSION: **Phase 4 (lossless change-driven capture) is formally necessary**
   for deep-war sub-20 ms; read-collapse+delta alone do not defeat work-scales-with-world.
 - Delta effectiveness on deep war: d51 0.3% changed, d41 8.3%, d44 10.0% (all working);
-  **d48 79.2%** — suspect tolerated-partial tracker stalls re-emitting vs stale baselines
-  (INVESTIGATE; possible fix = collector sparse-merge advance on tolerated-partial,
-  keeping fold identical); **d53 ~full-churn** — genuine hourly opinion drift; the zstd-93
-  container layer (163x measured on this redundancy class) is the intended absorber, and
-  per-field delta encoding is a candidate follow-up.
+  **d48 79.2% — ROOT-CAUSED + FIXED (lane/d48-partial, see below)**; **d53 ~full-churn** —
+  genuine hourly opinion drift; the zstd-93 container layer (163x measured on this redundancy
+  class) is the intended absorber, and per-field delta encoding is a candidate follow-up.
+
+### d48 tolerated-partial churn — RESOLVED (lane/d48-partial)
+Root cause (CONFIRMED from code, not a stall): `COMPACT_STATUS_PARTIAL_DATA` is in
+`COMPACT_STATUS_FAILURE_MASK` (compact_contract/src/lib.rs:186), so a tolerated-partial d48
+frame (gate.ok, no hard failure, PARTIAL_DATA set) hit the early return in
+`compact_domain48_apply_emit_mode` (collector/src/lib.rs ~21038) and emitted its **entire read
+row set** — delta was bypassed on every partial hour. d48 was in the run's tolerated-partial
+set, so ~every hour re-emitted ~its full rows (the 79.2%). NOT a stale-baseline diff; the delta
+baseline was correct — it was simply never consulted on partials.
+Manifest evidence (live_validation_20260709_221706): d48 `expected_partial_tolerances_applied`
+`frames_affected = 1421` — d48 was tolerated-partial on essentially EVERY captured hour, and the
+tolerance reason confirms the partial reads are accurate-but-incomplete ("valid
+construction/building/resource rows retained… omitted siblings preserved"), i.e. the retained
+rows are unchanged hour-to-hour — the ideal case for the projection-diff reduction below.
+Fix (COLLECTOR side, composes with fold fix a1c787a4a): added a second collector accumulator
+`partial_projection` mirroring the fold's `domain48_state`. A tolerated-partial frame now emits
+only the read rows that differ from the projection (upserts only, **no tombstones** — an omitted
+row may be unread, not deleted), and sparse-merges the read rows into the projection. The DELTA
+baseline (`last_*`) is left pinned across partials (unchanged, still mirrors the fold's
+`domain48_delta_state`), so the next real delta and the fold stay byte-identical. The projection
+is diffed against (not the pinned baseline) so a value that a prior partial pushed and then
+reverted is still corrected (no data loss). The overlay is `None` on the common all-clean/delta
+path (no per-frame clone; one clone per partial run, cleared by every clean/delta frame).
+Gates (all automated, all green): collector unit tests
+(`attach_log::domain48_partial_emit_tests::*`, 7) — churn mutation (unchanged partial emits 0
+rows vs legacy 3; one-change partial emits 1), baseline never advanced on partial, reverted-to-
+baseline value re-emitted via projection diff, partial never tombstones, delta still tombstones
+real removals, projection reset, full-mode intact. Fold identity test
+(`compact_d48_reduced_partial_folds_identically_to_full_emission`) proves the reduced-partial
+delta stream folds byte-identically to full emission AND to the legacy full-read-partial stream.
+The a1c787a4a phantom-row/reverted-value regression still passes unchanged.
+Measured churn on the synthetic fixture: unchanged tolerated-partial hour 3 rows → **0** (was 3,
+full re-emit); genuinely-changed subset emits exactly the changed rows.
 - **New bottleneck of record: the post-capture fold** (~5 MB/s single-threaded serde_json)
   — 12.9 GB folds for ~40 min. Validation sessions killed it after manifest write (numbers
   live in the manifest). Fix candidates: parallel per-hour fold, faster canonical
