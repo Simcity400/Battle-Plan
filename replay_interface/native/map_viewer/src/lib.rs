@@ -42,6 +42,7 @@ mod snow_law;
 mod terrain_chunk_library;
 mod terrain_chunk_synthesis;
 mod terrain_id_map_synthesis;
+mod terrain_lod_law;
 mod terrain_mesh_law;
 #[cfg(test)]
 mod test_support;
@@ -295,6 +296,15 @@ pub use terrain_id_map_synthesis::{
     TerrainIdMapComparisonReport, TerrainIdMapDescriptor, TerrainIdMapMismatchBounds,
     TerrainIdMapMismatchSample, TerrainIdMapOrientationEvidence, TerrainIdMapPackingLaw,
     TerrainIdMapSamplerDescriptor, TerrainIdMapSynthesisSource,
+};
+pub use terrain_lod_law::{
+    terrain_lod_map_validate_corpus, terrain_lod_map_validate_corpus_with_resolver,
+    terrain_lod_stride_map, terrain_lod_tiles, terrain_vsnap_from_neighbour_lods,
+    terrain_vsnap_law_validate_corpus, terrain_vsnap_law_validate_corpus_with_resolver,
+    TerrainLodCorpusReport, TerrainLodStrideMap, TerrainLodTile, TerrainTileEdge,
+    TerrainVsnapCorpusReport, TerrainVsnapEdgeCheck, TerrainVsnapEdgeClass,
+    TERRAIN_LOD_BASE_TILE_SIZE, TERRAIN_LOD_EDGE_COUNT, TERRAIN_LOD_REFERENCE_HEIGHT,
+    TERRAIN_LOD_THRESHOLDS_SQ,
 };
 pub use terrain_mesh_law::{
     generate_terrain_chunk_cb1, generate_terrain_chunk_index, generate_terrain_chunk_slot0,

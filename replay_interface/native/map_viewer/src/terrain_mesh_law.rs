@@ -55,9 +55,20 @@
 //! `heightmap.bmp` + law (the two height streams / the CB1 offset+scale). The
 //! only field that is genuinely runtime-LOD state, not a file, is `vSnap`
 //! (detail edge flags); for a uniform-LOD offline synthesis every interior edge
-//! borders a same-size neighbour so there is no T-junction and `vSnap = 0` — the
-//! mixed-LOD quadtree mask is the sole extrapolated-not-file field, and callers
-//! that need it must supply the captured per-tile mask.
+//! borders a same-size neighbour so there is no T-junction and `vSnap = 0`.
+//!
+//! The mixed-LOD `vSnap` mask is no longer a bare capture dependency: it is
+//! DERIVED from the per-tile LOD map by [`crate::terrain_lod_law`] (LODSNAP) —
+//! `vSnap[edge] = 1` iff the neighbour across that edge is coarser. That law is
+//! validated byte-exact against the captured corpus (see
+//! `terrain_vsnap_law_validate_corpus`), so a caller with the LOD map computes
+//! `vSnap` without reading captured CB1. The LOD LEVEL ASSIGNMENT upstream of
+//! `vSnap` (which world tile size each region gets as a function of camera) is
+//! also derived now — [`crate::terrain_lod_law::terrain_lod_stride_map`]
+//! (LODRING), ported from the decompiled `CPdxMap::UpdateTerrainTessellation`
+//! and byte-exact on the captured self-LOD (44/44, 47/47, 7/7). So the full
+//! terrain draw set is camera-derivable; the one open residual is the engine's
+//! frustum coarsening of off-screen neighbours (ledger §2.9 LODRING row).
 
 use crate::*;
 use std::collections::BTreeMap;
