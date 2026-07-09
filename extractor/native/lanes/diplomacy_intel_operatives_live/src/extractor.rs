@@ -1740,17 +1740,29 @@ fn read_relation_rows_impl<M: Domain53Memory>(
 ) -> Result<(), ExtractError> {
     // The relation-flag vtables (13 kinds) used to classify each sub-object found in
     // the per-pair `pdx::vector<CRelation*>` container (see `read_relation_container`).
+    // Needed by BOTH passes (`read_relation_container_with_count` classifies through
+    // it), so it is resolved unconditionally; the empty-map guard is likewise
+    // pass-independent.
     let relation_vtables = relation_vtable_kinds(module_base)?;
-    let (vtable_min, vtable_max) = match (
-        relation_vtables.keys().next().copied(),
-        relation_vtables.keys().next_back().copied(),
-    ) {
-        (Some(min), Some(max)) => (min, max),
-        _ => {
-            return Err(ExtractError::InvalidRoot(
-                "domain53_relation_vtable_map_empty",
-            ));
-        }
+    if relation_vtables.is_empty() {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_relation_vtable_map_empty",
+        ));
+    }
+    // TASK 1 (d53-perfield): `vtable_min`/`vtable_max` bound the LEGACY inline
+    // `[rel, rel+0x340)` blob scan, which is exercised ONLY by the Scan pass (the
+    // shadow re-validation referee). The default Offsets hot path never scans, so
+    // the bounds — and the scan buffer allocated below — are computed ONLY under
+    // Scan. Offsets therefore pays zero scan-setup cost per frame. See
+    // EXTRACTION_OPTIMIZATION_PLAN.md (d53-perfield TASK 1).
+    let scan_bounds: Option<(u64, u64)> = if pass == RelationReadPass::Scan {
+        relation_vtables
+            .keys()
+            .next()
+            .copied()
+            .zip(relation_vtables.keys().next_back().copied())
+    } else {
+        None
     };
     // T2 deliverable (c): `seen_opinions` REMOVED. `resolve_country_roots`
     // dedups countries by `tag_db_id` (its `seen.insert(tag_db_id)` gate, only
@@ -1811,7 +1823,14 @@ fn read_relation_rows_impl<M: Domain53Memory>(
     // `prefetch_read` is issued). Default (no env) == 16, identical to before.
     let prefetch_dist_relation = prefetch_dist_relation();
     let mut relation_hot_buf = [0u8; RELATION_HOT_FIELD_LEN];
-    let mut relation_scan_buf = [0u8; profile::DOMAIN53_RELATION_SCAN_BYTES];
+    // TASK 1 (d53-perfield): the legacy blob-scan buffer is allocated ONLY for the
+    // Scan pass (shadow referee). The default Offsets hot path leaves it `None`, so
+    // no per-frame scan buffer is zero-initialized.
+    let mut relation_scan_buf = if pass == RelationReadPass::Scan {
+        Some([0u8; profile::DOMAIN53_RELATION_SCAN_BYTES])
+    } else {
+        None
+    };
 
     for src in countries {
         let manager_addr = add_addr(src.country_ptr, profile::DOMAIN53_RELATION_MANAGER)?;
@@ -2041,11 +2060,15 @@ fn read_relation_rows_impl<M: Domain53Memory>(
                 ),
                 Err(_) => acc.skip(),
             }
-            if pass == RelationReadPass::Scan {
+            if let (Some(scan_buf), Some((vtable_min, vtable_max))) =
+                (relation_scan_buf.as_mut(), scan_bounds)
+            {
+                // Scan pass only (relation_scan_buf/scan_bounds are Some iff
+                // `pass == Scan`): the legacy blob scan, the shadow referee.
                 legacy_scan_relation_blob(
                     mem,
                     relation_entry,
-                    &mut relation_scan_buf,
+                    scan_buf,
                     &relation_vtables,
                     vtable_min,
                     vtable_max,

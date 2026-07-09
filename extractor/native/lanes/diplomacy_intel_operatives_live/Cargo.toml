@@ -15,3 +15,7 @@ snapshot = { path = "../../snapshot" }
 [[bin]]
 name = "domain53_proof"
 path = "src/bin/domain53_proof.rs"
+
+[[bin]]
+name = "d53_field_delta_measure"
+path = "src/bin/d53_field_delta_measure.rs"

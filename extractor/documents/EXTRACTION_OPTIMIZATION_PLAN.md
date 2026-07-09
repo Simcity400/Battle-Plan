@@ -566,3 +566,87 @@ lossy relative to today's decoded state.
   3.17 M-read volume IS expensive at ~34–320 ns/read, which is why bulk-collapse works).
 - Read-primitive swaps (SEH + region cache already banked, 3.57×).
 - JSON stream format as a debug profile (divergent dead path).
+
+## lane/d53-perfield — 2026-07-09 (TASK 1 shipped; TASK 2/3 numbers-driven DEFER)
+
+Assigned: (1) make d53 exact-offset relation reader the unconditional default and strip
+per-frame scan cost; (2) per-field delta for relation rows; (3) row-level delta for the d53
+full-emit residual subdomains. Measurement on the REAL deep-war stream re-scoped 2 and 3.
+
+**TASK 1 — SHIPPED.** `offsets` is already the default in the collector, host
+(`recorder_host` default `Offsets`), and lane (`DOMAIN53_RELATION_READ_MODE` AtomicU8
+default `Offsets`); `scan`/`shadow` stay compiled + runtime-selectable. Removed the last
+per-frame scan cost from the default Offsets path: `read_relation_rows_impl` now allocates
+the 832-byte legacy blob-scan buffer and computes the vtable min/max scan bounds ONLY under
+the Scan pass (shadow referee). Offsets pays zero scan setup. Byte-identity preserved:
+`relation_offsets_mode_rows_are_byte_identical_to_scan_mode` + shadow tests green (lane
+113/113). **Shadow re-validation is REQUIRED after any hoi4.exe patch** (run
+`d53_relation_read_mode:"shadow"`, require `domain53_relation_shadow_mismatches == 0` on
+every frame) before trusting offsets on the new build — the scan path is retired from the
+hot loop but retained as the re-validation oracle.
+
+**DECISIVE MEASUREMENT (reframes TASK 2 + TASK 3).** Tool
+`diplomacy_intel_operatives_live` bin `d53_field_delta_measure` decoded the first 400 d53
+DOMAIN_DATA frames of
+`runs/live_validation_20260709_221706/stage2_shortspeed5/collector_stream.bin` (400 distinct
+game-hours, 254 non-empty, `d53_emit_mode=delta`, `d53_relation_read_mode=offsets`), read in
+place via the authoritative `decode_snapshot_payload`:
+
+- **The d53 delta path NEVER FIRES in deep war.** All 400 frames carry `PARTIAL_DATA` and
+  ZERO carry `DELTA_DATA` — avg **5.92 MB/frame FULL re-emit every game-hour**. Mechanism:
+  a single torn per-row read across ~245 k rows/frame sets `PARTIAL_DATA`; the collector
+  then skips delta (`collector/src/lib.rs` ~18081 `if PARTIAL { return full }`) and the fold
+  **rejects `DELTA|PARTIAL` outright** (`recorder_host/src/world_fold.rs:10530`
+  `delta_partial_unsupported`). Deep-war frames are ~always partial, so delta is
+  architecturally disabled there. (This is the true cause of the plan's line-85 "855.9 M
+  changed rows / delta path effectively full-replace" — NOT genuine opinion churn.)
+- **Row-to-row hourly change is negligible.** Of re-emitted rows, the value field changed
+  hour-to-hour in: opinion **~0.0 %** (48.1 M rows), state_event value **~0.0 %** (49.0 M),
+  country casualties 0.7 %, war casualties 0.2 %, operative experience 3.9 %, cryptology
+  amount 3.6 %, agency/cluster/subject fields ~0 %. The prompt's premise ("opinion values
+  drift hourly across most pairs") is **refuted by the data** — opinions are static in this
+  settled deep-war state. If row-level delta FIRED, >99 % of the 5.9 MB/frame would vanish.
+
+**TASK 2 (per-field delta) — DEFER, documented with numbers.** Per-field delta only applies
+on delta frames, which never fire in deep war, so in production it saves **0 bytes** today.
+Even hypothetically (if delta fired): per-field would omit the unchanged non-key field bytes
+= **33.6 % of changed-row bytes** (opinion 25 %, state_event 37.5 %, agency 83 %, operative
+79 %, cluster/subject 50–67 %). But d53's dominant rows are key-dominated — OpinionRow is
+key(8)+opinion(4) and StateEventRow's two value fields co-change — and changed rows are ~0 %
+of the frame, so per-field's ABSOLUTE contribution to d53 volume is ~0. Implementing a
+versioned per-field wire format across encoder/decoder/fold/collector would add per-frame
+field-compare CPU (violating the portability law) for ~0 production benefit and expand the
+losslessness attack surface. **Not implemented; it is strictly downstream of enabling delta
+on partial frames (below), and marginal even then.**
+
+**TASK 3 (row-level delta for full-emit subdomains) — DEFER, "not worth it" with numbers.**
+Per-frame wire volume of the named residuals: `factions` **~408 B/frame** (changes only
+2/254 frames), `operation_instances` **~77 B/frame** (3/254), `incoming_actions` ~0,
+`intel_network_graphs` / `operation_anchors` / `intel_map` **EMPTY** (0 frames present).
+Combined **<500 B/frame vs a 5.9 MB frame = 0.008 %**. Row-level delta would save ~99 % of
+that (~480 B/frame) but only on delta frames, which never fire. Absolute saving is
+negligible; not implemented.
+
+**REAL LEVER (correctly-scoped follow-up): enable delta on tolerated-PARTIAL frames.** This
+is the only change that saves real d53 bytes. It is a SEMANTICS redesign, not a plumbing
+toggle — the current partial-frame fold semantics must change with it:
+`domain53_country_overlays_this_hour` is CLEARED at every hour reset (`world_fold.rs:1431`),
+so in a deep-war hour (one partial frame) today's snapshot = that frame's observed set:
+torn rows are silently DROPPED from the hour, and in-game deletions are conveyed only
+implicitly by the full re-emit. A baseline-seeded delta variant must therefore define, and
+prove, per-key semantics: (a) collector diffs observed rows vs the last non-partial
+baseline (two-accumulator: the baseline does NOT advance on partial frames) and emits
+`DELTA|PARTIAL` with changed/new observed rows; (b) POSITIVE-absence tombstones only — the
+relation walk distinguishes slot==0 (positively absent → tombstone is safe) from a torn
+read (unknown → NO tombstone; fold retains baseline value, which is BETTER than today's
+drop-for-the-hour but is a deliberate semantics change to document); (c) fold accepts
+`DELTA|PARTIAL` by seeding the hour from the delta baseline + upserting, WITHOUT advancing
+the baseline (replaces the `delta_partial_unsupported` rejection at `world_fold.rs:10530`);
+(d) automated gate: fold(delta stream) byte-identical to fold(full stream) under the SAME
+new partial semantics, plus randomized-sequence round-trip property tests. Projected from
+the measured stream: d53 **~5.9 MB/hour → tens of KB/hour (>99 % reduction)** at zero data
+loss, and it also deletes most of the ~39 ms/frame payload-encode CPU (the W1.1
+`seg_payload` residual) since only changed rows are encoded. This is a losslessness-
+critical redesign of the fattest domain and must be its own gated lane (the losslessness
+proof is offline — fold-identity over recorded/synthetic streams, no live capture needed).
+Per-field delta (TASK 2) becomes a marginal add-on only after this lands.
