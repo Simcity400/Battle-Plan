@@ -192,6 +192,13 @@ delta streams to byte-identical per-hour state; all five pass together. Honest r
 (stay full-emission, no safe identity): d44 computed badges; d51 delayed-event/scripted-GUI
 opaque rows; d53 operation_instances/incoming_actions/intel_network_graphs/factions.
 
+**Adversarial review wave 2026-07-09 night (Opus reviewers):** bulk-collapse sweep
+certified SOUND across all 12 lanes; delta-emission review found and FIXED two real defects
+(merge a1c787a4a): d48 tolerated-partial baseline leak (two-accumulator split + phantom-row/
+reverted-value regression tests) and d53 operative owner-change duplication
+(relocate-on-upsert). Coverage gate verified fail-closed on missing/duplicate per-hour data
+records. Live session is now one command: scripts/Invoke-LiveValidationSession.ps1.
+
 **Remaining in Phase 2:** LIVE validation session — (1) d53 shadow gate
 (`d53_relation_read_mode:"shadow"`, zero mismatches required), (2) paired speed-5 A/B vs the
 07-09 baseline (frame avg/p95, skipped hours, bytes/game-hour, host_finalize peak RAM),

@@ -12,6 +12,7 @@ mod building_files;
 mod bundle_gen;
 mod camera;
 mod cap4_sea_referee;
+mod camera_interp_law;
 mod cli;
 mod color_lut;
 mod constants;
@@ -32,6 +33,7 @@ mod map_static_data;
 mod map_text;
 mod mod_resolver;
 mod naval_supremacy_tint;
+mod occupation_stripe_law;
 mod pass_graph;
 mod pdx_mesh;
 mod political_color_synthesis;
@@ -43,6 +45,7 @@ mod river_world_synthesis;
 mod seasons;
 mod shader_compile;
 mod shader_meta;
+mod shadow_law;
 mod snow_law;
 mod snow_mud_feed;
 mod terrain_chunk_library;
@@ -140,6 +143,11 @@ pub use camera::{
 };
 pub use cap4_sea_referee::{
     find_unique_payload, mine_sea_base_referee, mine_sea_base_referee_round_dir, SeaBaseReferee,
+};
+pub use camera_interp_law::{
+    camera_interp_step, clamp_height, interp_remaining_fraction, zoom_step_speed,
+    CAMERA_INTERPOLATION_SPEED, CAMERA_MAX_HEIGHT, CAMERA_MIN_HEIGHT, CAMERA_ZOOM_SPEED,
+    CAMERA_ZOOM_SPEED_DISTANCE_MULT,
 };
 pub use cli::run_cli;
 pub use color_lut::{
@@ -265,6 +273,10 @@ pub use pdx_mesh::{
     PdxMeshValidationRow, PdxModel, PdxNode, PdxProperty, PdxShape, PdxSkin, PdxValues,
     PDX_ASSET_BINARY_MAGIC, PDX_ASSET_SUPPORTED_VERSION, PDX_ASSET_TEXT_MAGIC, PDX_MODELS_ROOT,
 };
+pub use occupation_stripe_law::{
+    apply_secondary_color, cam_distance as occupation_cam_distance, occupation_stripe_mask,
+    smoothstep as occupation_smoothstep, SEC_MAP_TILE, STRIPE_ANGLE,
+};
 pub use political_color_synthesis::{
     compare_political_colors_to_capture, dump_political_color_comparison,
     political_color_composition_law, synthesize_political_colors,
@@ -310,6 +322,11 @@ pub use seasons::{
     SeasonDateRange, SeasonId, SeasonsTable, TreeSeasonId,
 };
 pub use shader_meta::PoliticalSceneCb0;
+pub use shadow_law::{
+    calculate_shadow, get_shadow_scaled, pcf_tap_offsets, shadow_blur_3tap, shadow_fade_factor,
+    shadow_gated_by_daynight, terrain_shadow_term, DRAW_SHADOWS_CUTOFF, DRAW_SHADOWS_FADE_LENGTH,
+    LIGHT_SHADOW_DIRECTION, PCF_BIAS, SHADOW_MAP_SIZE, SHADOW_WEIGHT_TERRAIN, SHADOW_WEIGHT_WATER,
+};
 
 pub use shader_compile::{
     build_stage_hlsl, effect_file_from_resolver, parse_dxbc_reflection, parse_effect_file,
