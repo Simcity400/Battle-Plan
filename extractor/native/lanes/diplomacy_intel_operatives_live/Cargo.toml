@@ -19,3 +19,7 @@ path = "src/bin/domain53_proof.rs"
 [[bin]]
 name = "d53_field_delta_measure"
 path = "src/bin/d53_field_delta_measure.rs"
+
+[[bin]]
+name = "prefetch_model_bench"
+path = "src/bin/prefetch_model_bench.rs"
