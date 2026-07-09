@@ -42,7 +42,8 @@ use crate::bundle::{MapBundle, PRODUCT_MAP_WIDTH};
 use crate::camera::Camera;
 use crate::d3d::{hr_ok, ComPtr, Gfx};
 use crate::grading_law::{
-    file_derived_grade, load_graphics_grading_defines, GradingSelectionState,
+    file_derived_grade, file_derived_grade_per_frame, load_graphics_grading_defines,
+    FileDerivedGrade, GradingSelectionState,
 };
 use crate::Result;
 
@@ -380,6 +381,30 @@ struct RestoreColorCubeGpu {
     srv: ComPtr<ID3D11ShaderResourceView>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RestoreGradeKey {
+    camera: [u32; 3],
+    night: bool,
+    winter: bool,
+}
+
+impl RestoreGradeKey {
+    fn from_state(state: GradingSelectionState) -> Self {
+        Self {
+            camera: state.camera.map(f32::to_bits),
+            night: state.night,
+            winter: state.winter,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RestoreGradeCpuUpdate {
+    constants_changed: bool,
+    color_cube_changed: bool,
+    bloom_changed: bool,
+}
+
 /// GPU resources for the files-first bloom chain: a half-resolution bright-pass
 /// target and a ping-pong pair for the two separable blur passes, plus the
 /// bright-pass / blur shaders and the kernel constant buffer. All are created
@@ -559,6 +584,7 @@ struct CapturedPassLayer {
     layer_gaps: Vec<String>,
     postfx_enabled: bool,
     restore_postfx: RestoreFullPostfx,
+    restore_grade_resolver: Option<GameFileResolver>,
     restore_postfx_cb: Option<ComPtr<ID3D11Buffer>>,
     restore_color_cube: Option<RestoreColorCubeGpu>,
     restore_bloom: Option<RestoreBloomGpu>,
@@ -569,6 +595,7 @@ struct CapturedPassLayer {
     /// `map_viewer::PoliticalSceneCb0`.
     political_cb0: map_viewer::PoliticalSceneCb0,
     last_camera: Option<CapturedCameraKey>,
+    last_restore_grade_key: Option<RestoreGradeKey>,
     dirty: bool,
     last_render: Option<Duration>,
 }
@@ -712,6 +739,17 @@ impl CapturedPassLayer {
         hr_ok(hr, "CreatePixelShader for captured-pass compositor")?;
         let composite_ps = ComPtr::from_raw(composite_ps, "captured-pass composite pixel shader")?;
         let composite_sampler = create_linear_clamp_sampler(gfx)?;
+        let restore_grade_resolver = if restore_postfx.enabled {
+            Some(
+                game_resolver
+                    .ok_or(
+                        "--postfx-restore-full needs --game <the game install dir> (or BATTLE_PLAN_VANILLA) for per-frame GRADE2 LUT recomposition",
+                    )?
+                    .clone(),
+            )
+        } else {
+            None
+        };
         let restore_postfx_cb = if restore_postfx.enabled {
             Some(create_restore_postfx_constant_buffer(
                 gfx,
@@ -781,11 +819,13 @@ impl CapturedPassLayer {
             layer_gaps,
             postfx_enabled,
             restore_postfx,
+            restore_grade_resolver,
             restore_postfx_cb,
             restore_color_cube,
             restore_bloom,
             political_cb0,
             last_camera: None,
+            last_restore_grade_key: None,
             dirty: true,
             last_render: None,
         })
@@ -825,6 +865,9 @@ impl CapturedPassLayer {
                 camera,
                 gfx.width,
             )?;
+            unsafe {
+                self.recompose_restore_grade_for_frame(gfx, production_camera, day_night_hour)?;
+            }
             let cull_world_rect =
                 camera_ground_cull_rect(&production_camera, gfx.width, gfx.height);
             let wrap_offsets = if let Some(rect) = cull_world_rect {
@@ -895,6 +938,84 @@ impl CapturedPassLayer {
             self.dirty = false;
         }
         self.composite(gfx)
+    }
+
+    /// GRADE2 render wiring: recompose the files-first grade for the actual
+    /// frame camera/night state, then upload only the resources whose bytes or
+    /// constants changed. The LUT texture is DEFAULT so it can be updated with
+    /// `UpdateSubresource`; unchanged grade keys short-circuit before touching
+    /// D3D state.
+    unsafe fn recompose_restore_grade_for_frame(
+        &mut self,
+        gfx: &Gfx,
+        production_camera: ProductionMapCamera,
+        day_night_hour: Option<f32>,
+    ) -> Result<Option<RestoreGradeCpuUpdate>> {
+        if !(self.postfx_enabled && self.restore_postfx.enabled) {
+            return Ok(None);
+        }
+        let night = day_night_hour
+            .map(|hour| !(0.25..0.75).contains(&hour))
+            .unwrap_or(false);
+        let state = GradingSelectionState {
+            camera: production_camera.position,
+            night,
+            winter: false,
+        };
+        let key = RestoreGradeKey::from_state(state);
+        if self.last_restore_grade_key == Some(key) {
+            return Ok(Some(RestoreGradeCpuUpdate::default()));
+        }
+        let resolver = self.restore_grade_resolver.as_ref().ok_or(
+            "--postfx-restore-full GRADE2 blocked: missing game-file resolver for per-frame grade recomposition",
+        )?;
+        let grade = file_derived_grade_per_frame(resolver, state, None).map_err(|err| {
+            format!(
+                "--postfx-restore-full GRADE2 blocked: per-frame grade recomposition failed: {err}"
+            )
+        })?;
+        let bloom = restore_bloom_law_for_volume(resolver, &grade.resolved.value_name)?;
+        let update = apply_restore_grade_cpu(&mut self.restore_postfx, &grade, bloom);
+
+        if update.constants_changed {
+            if let Some(cb) = self.restore_postfx_cb.as_ref() {
+                write_restore_postfx_constants(
+                    gfx,
+                    cb,
+                    self.restore_postfx.constants,
+                    "Map restore-postfx CB for per-frame GRADE2 constants",
+                )?;
+            }
+        }
+        if update.color_cube_changed {
+            if let Some(color_cube) = self.restore_color_cube.as_ref() {
+                update_restore_color_cube_texture(
+                    gfx,
+                    color_cube,
+                    &self.restore_postfx.color_cube_rgba8,
+                )?;
+            }
+        }
+        if update.bloom_changed {
+            self.restore_bloom = create_restore_bloom_gpu(
+                gfx,
+                &self.restore_postfx,
+                self.prepared.target_width(),
+                self.prepared.target_height(),
+                self.prepared.target_format(),
+            )?;
+        }
+        self.last_restore_grade_key = Some(key);
+        if update.constants_changed || update.color_cube_changed || update.bloom_changed {
+            eprintln!(
+                "replay_app: GRADE2 per-frame grade recomposed: {}; uploads constants={}, LUT={}, bloom={}",
+                grade.source_note,
+                update.constants_changed,
+                update.color_cube_changed,
+                update.bloom_changed,
+            );
+        }
+        Ok(Some(update))
     }
 
     fn composite(&self, gfx: &Gfx) -> Result<()> {
@@ -1108,21 +1229,12 @@ impl CapturedPassLayer {
         constants.exposure[1] = reduction.r16_quantized;
         constants.exposure[2] = 1.0;
 
-        let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
-        let hr = (*context).Map(
-            cb.as_raw() as *mut _,
-            0,
-            D3D11_MAP_WRITE_DISCARD,
-            0,
-            &mut mapped,
-        );
-        hr_ok(hr, "Map restore-postfx CB to update measured exposure")?;
-        ptr::copy_nonoverlapping(
-            &constants as *const RestorePostfxConstants as *const u8,
-            mapped.pData as *mut u8,
-            mem::size_of::<RestorePostfxConstants>(),
-        );
-        (*context).Unmap(cb.as_raw() as *mut _, 0);
+        write_restore_postfx_constants(
+            gfx,
+            cb,
+            constants,
+            "Map restore-postfx CB to update measured exposure",
+        )?;
         eprintln!(
             "replay_app: per-frame exposure adaptation: scene geo-mean luminance {:.6}, clamp[{:.3},{:.3}] -> AvgLum {:.6} (R16 {:#06x}, {}); exposure scale MiddleGrey/AvgLum = {:.4}",
             reduction.geometric_mean_luminance,
@@ -1262,6 +1374,60 @@ impl CapturedPassLayer {
             .map(|(x, z)| (f64::from(x), map_h - f64::from(z))))
     }
 
+    #[allow(dead_code)]
+    fn production_camera_height(&self, camera: &Camera, screen_w: f64) -> Result<f32> {
+        let production_camera = production_camera_from_app_camera(
+            self.camera_projection,
+            self.camera_defines,
+            camera,
+            screen_w.max(1.0) as u32,
+        )?;
+        Ok(production_camera.position[1])
+    }
+
+    #[allow(dead_code)]
+    fn map_to_screen_3d(
+        &self,
+        camera: &Camera,
+        map_x: f64,
+        map_y: f64,
+        elevation: f32,
+        screen_w: f64,
+        screen_h: f64,
+    ) -> Result<Option<(f64, f64)>> {
+        self.map_to_screen_3d_at(
+            camera, map_x, map_y, elevation, screen_w, screen_w, screen_h,
+        )
+    }
+
+    #[allow(dead_code)]
+    fn map_to_screen_3d_at(
+        &self,
+        camera: &Camera,
+        map_x: f64,
+        map_y: f64,
+        elevation: f32,
+        cam_screen_w: f64,
+        out_screen_w: f64,
+        out_screen_h: f64,
+    ) -> Result<Option<(f64, f64)>> {
+        let production_camera = production_camera_from_app_camera(
+            self.camera_projection,
+            self.camera_defines,
+            camera,
+            cam_screen_w.max(1.0) as u32,
+        )?;
+        Ok(project_map_point_3d(
+            &production_camera,
+            camera.map_h(),
+            map_x,
+            map_y,
+            elevation,
+            out_screen_w,
+            out_screen_h,
+        ))
+    }
+
     fn stats(&self) -> CapturedPassStats {
         CapturedPassStats {
             session_dir: self.session_dir.clone(),
@@ -1377,6 +1543,25 @@ impl MapRenderer {
     ) -> Result<Option<(f64, f64)>> {
         self.captured
             .screen_to_map(camera, screen_x, screen_y, screen_w, screen_h)
+    }
+
+    #[allow(dead_code)]
+    pub fn production_camera_height(&self, camera: &Camera, screen_w: f64) -> Result<f32> {
+        self.captured.production_camera_height(camera, screen_w)
+    }
+
+    #[allow(dead_code)]
+    pub fn map_to_screen_3d(
+        &self,
+        camera: &Camera,
+        map_x: f64,
+        map_y: f64,
+        elevation: f32,
+        screen_w: f64,
+        screen_h: f64,
+    ) -> Result<Option<(f64, f64)>> {
+        self.captured
+            .map_to_screen_3d(camera, map_x, map_y, elevation, screen_w, screen_h)
     }
 
     pub fn captured_pass_stats(&self) -> Option<CapturedPassStats> {
@@ -1588,18 +1773,68 @@ unsafe fn create_restore_color_cube_texture(
     if !restore.enabled {
         return Ok(None);
     }
-    let (texture, srv) = create_immutable_texture(
-        gfx,
-        1024,
-        32,
-        DXGI_FORMAT_R8G8B8A8_UNORM,
-        &restore.color_cube_rgba8,
-        "RestoreScene ColorCube",
-    )?;
+    validate_restore_color_cube_bytes(&restore.color_cube_rgba8, "RestoreScene ColorCube")?;
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: 1024,
+        Height: 32,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    let init = D3D11_SUBRESOURCE_DATA {
+        pSysMem: restore.color_cube_rgba8.as_ptr() as *const _,
+        SysMemPitch: 1024 * 4,
+        SysMemSlicePitch: 0,
+    };
+    let mut texture: *mut ID3D11Texture2D = ptr::null_mut();
+    let hr = (*gfx.device.as_raw()).CreateTexture2D(&desc, &init, &mut texture);
+    hr_ok(hr, "CreateTexture2D for RestoreScene ColorCube")?;
+    let texture = ComPtr::from_raw(texture, "RestoreScene ColorCube")?;
+    let mut srv: *mut ID3D11ShaderResourceView = ptr::null_mut();
+    let hr = (*gfx.device.as_raw()).CreateShaderResourceView(
+        texture.as_raw() as *mut _,
+        ptr::null(),
+        &mut srv,
+    );
+    hr_ok(hr, "CreateShaderResourceView for RestoreScene ColorCube")?;
+    let srv = ComPtr::from_raw(srv, "RestoreScene ColorCube")?;
     Ok(Some(RestoreColorCubeGpu {
         _texture: texture,
         srv,
     }))
+}
+
+fn validate_restore_color_cube_bytes(bytes: &[u8], role: &str) -> Result<()> {
+    let expected = 1024 * 32 * 4;
+    if bytes.len() != expected {
+        return Err(format!("{role} has {} bytes, expected {expected}", bytes.len()).into());
+    }
+    Ok(())
+}
+
+unsafe fn update_restore_color_cube_texture(
+    gfx: &Gfx,
+    cube: &RestoreColorCubeGpu,
+    bytes: &[u8],
+) -> Result<()> {
+    validate_restore_color_cube_bytes(bytes, "RestoreScene ColorCube update")?;
+    (*gfx.context.as_raw()).UpdateSubresource(
+        cube._texture.as_raw() as *mut _,
+        0,
+        ptr::null(),
+        bytes.as_ptr() as *const _,
+        1024 * 4,
+        0,
+    );
+    Ok(())
 }
 
 /// Create a half-res `R16G16B16A16_FLOAT` render target with an RTV and SRV,
@@ -2059,6 +2294,68 @@ impl RestorePostfxConstants {
     }
 }
 
+fn restore_bloom_law_for_volume(
+    resolver: &GameFileResolver,
+    value_name: &str,
+) -> Result<RestoreBloomLaw> {
+    let params = resolve_bloom_params_for_volume(resolver, value_name).map_err(|err| {
+        format!(
+            "--postfx-restore-full bloom blocked: could not resolve files-first bloom params for volume '{value_name}': {err}"
+        )
+    })?;
+    let kernel = BloomBlurKernel::from_gaussian(params.bloom_width, params.bloom_scale)?;
+    Ok(RestoreBloomLaw { params, kernel })
+}
+
+fn apply_restore_grade_cpu(
+    restore: &mut RestoreFullPostfx,
+    grade: &FileDerivedGrade,
+    bloom: RestoreBloomLaw,
+) -> RestoreGradeCpuUpdate {
+    let constants = RestorePostfxConstants::from_file_grade(
+        grade.resolved.middle_grey,
+        grade.average_luminance,
+    );
+    let update = RestoreGradeCpuUpdate {
+        constants_changed: restore.constants != constants
+            || restore.middle_grey.to_bits() != grade.resolved.middle_grey.to_bits(),
+        color_cube_changed: restore.color_cube_rgba8 != grade.color_cube_rgba8,
+        bloom_changed: restore.bloom != Some(bloom),
+    };
+    restore.constants = constants;
+    restore.middle_grey = grade.resolved.middle_grey;
+    if update.color_cube_changed {
+        restore.color_cube_rgba8 = grade.color_cube_rgba8.clone();
+    }
+    restore.bloom = Some(bloom);
+    update
+}
+
+unsafe fn write_restore_postfx_constants(
+    gfx: &Gfx,
+    cb: &ComPtr<ID3D11Buffer>,
+    constants: RestorePostfxConstants,
+    role: &str,
+) -> Result<()> {
+    let context = gfx.context.as_raw();
+    let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+    let hr = (*context).Map(
+        cb.as_raw() as *mut _,
+        0,
+        D3D11_MAP_WRITE_DISCARD,
+        0,
+        &mut mapped,
+    );
+    hr_ok(hr, role)?;
+    ptr::copy_nonoverlapping(
+        &constants as *const RestorePostfxConstants as *const u8,
+        mapped.pData as *mut u8,
+        mem::size_of::<RestorePostfxConstants>(),
+    );
+    (*context).Unmap(cb.as_raw() as *mut _, 0);
+    Ok(())
+}
+
 unsafe fn create_captured_output_srv(
     gfx: &Gfx,
     target_format: u32,
@@ -2107,6 +2404,25 @@ fn shifted_cull_world_rect(rect: Option<[f32; 4]>, wrap_offset: f32) -> Option<[
     rect.map(|[min_x, min_z, max_x, max_z]| {
         [min_x - wrap_offset, min_z, max_x - wrap_offset, max_z]
     })
+}
+
+fn project_map_point_3d(
+    production_camera: &ProductionMapCamera,
+    map_h: f64,
+    map_x: f64,
+    map_y: f64,
+    elevation: f32,
+    out_screen_w: f64,
+    out_screen_h: f64,
+) -> Option<(f64, f64)> {
+    let ground_z = map_h as f32 - map_y as f32;
+    production_camera
+        .world_to_screen(
+            [map_x as f32, elevation, ground_z],
+            out_screen_w.max(1.0) as f32,
+            out_screen_h.max(1.0) as f32,
+        )
+        .map(|(sx, sy)| (f64::from(sx), f64::from(sy)))
 }
 
 fn production_camera_for_wrap_copy(
@@ -2162,6 +2478,46 @@ mod tests {
     }
 
     #[test]
+    fn map_to_screen_3d_round_trips_camdef1_projection() {
+        let projection = ProductionMapCameraProjection::from_engine_constants(1408.0 / 512.0)
+            .expect("projection");
+        let camera = projection
+            .camera_for_ground_center(2816.0, 1024.0, 905.0)
+            .expect("production camera");
+        let screen_w = 1408.0;
+        let screen_h = 512.0;
+        let map_h = 2048.0;
+        let center = project_map_point_3d(&camera, map_h, 2816.0, 1024.0, 0.0, screen_w, screen_h)
+            .expect("center projects");
+        assert!(
+            (center.0 - screen_w * 0.5).abs() < 1.0e-3
+                && (center.1 - screen_h * 0.5).abs() < 1.0e-3,
+            "ground center projects without half-pixel bias: {center:?}"
+        );
+
+        for &(map_x, map_y) in &[
+            (2816.0, 1024.0),
+            (2890.25, 970.5),
+            (2700.75, 1110.25),
+            (3000.0, 880.0),
+        ] {
+            let (sx, sy) =
+                project_map_point_3d(&camera, map_h, map_x, map_y, 0.0, screen_w, screen_h)
+                    .expect("point projects");
+            let (ground_x, ground_z) = camera
+                .screen_to_ground_y0(sx as f32, sy as f32, screen_w as f32, screen_h as f32)
+                .expect("screen-to-ground")
+                .expect("ground hit");
+            let expected_z = map_h as f32 - map_y as f32;
+            assert!(
+                (ground_x - map_x as f32).abs() < 0.02
+                    && (ground_z - expected_z).abs() < 0.02,
+                "round-trip ({map_x},{map_y}) -> ({sx},{sy}) -> ({ground_x},{ground_z}), expected z {expected_z}"
+            );
+        }
+    }
+
+    #[test]
     fn restore_full_postfx_disabled_is_inert_validation_path() {
         // The product CLI blocks `--no-postfx-restore-full`; this disabled
         // constructor path is retained only to prove the composer is inert when
@@ -2189,6 +2545,178 @@ mod tests {
         assert!(
             err.to_string().contains("--game") || err.to_string().contains("BATTLE_PLAN_VANILLA"),
             "error must name the missing game install: {err}"
+        );
+    }
+
+    fn write_color_cube_tga(path: &Path, rgb: [u8; 3]) {
+        let mut tga = vec![0u8; 18];
+        tga[2] = 2; // uncompressed true-color
+        tga[12..14].copy_from_slice(&1024u16.to_le_bytes());
+        tga[14..16].copy_from_slice(&32u16.to_le_bytes());
+        tga[16] = 24;
+        tga[17] = 0x20; // top-left origin, matching the parser's top-down path
+        for _ in 0..(1024 * 32) {
+            // TGA stores BGR; the parser converts to RGB before RGBA upload.
+            tga.push(rgb[2]);
+            tga.push(rgb[1]);
+            tga.push(rgb[0]);
+        }
+        std::fs::write(path, tga).expect("write color-cube tga");
+    }
+
+    fn write_grade2_fixture_game_dir(tag: &str) -> PathBuf {
+        let dir = crate::bundle::tests::unique_temp_dir(tag);
+        let gfx = dir.join("gfx");
+        let world = gfx.join("world");
+        let defines = dir.join("common").join("defines");
+        std::fs::create_dir_all(&world).expect("create gfx/world");
+        std::fs::create_dir_all(&defines).expect("create common/defines");
+        std::fs::write(
+            gfx.join("posteffect_volumes.txt"),
+            r#"
+posteffect_values = {
+    name = standard
+    lut = "gfx/world/colorcorrection_standard.tga"
+    tonemap_middlegrey = 0.55
+}
+posteffect_values = {
+    name = default
+    inherit = standard
+    lut = "gfx/world/colorcorrection_standard.tga"
+}
+posteffect_values = {
+    name = mid_distance
+    inherit = standard
+    lut = "gfx/world/colorcorrection_midrange.tga"
+    tonemap_middlegrey = 0.45
+}
+posteffect_values = {
+    name = max_distance
+    inherit = standard
+    lut = "gfx/world/colorcorrection_farrange.tga"
+}
+posteffect_volumes = {
+    posteffect_height_volume = {
+        name = "Base Highest"
+        posteffect_values_day = max_distance
+        height = 1600
+        fade_distance = 200
+    }
+    posteffect_height_volume = {
+        name = "Base Medium"
+        posteffect_values_day = mid_distance
+        height = 900
+        fade_distance = 200
+    }
+    posteffect_height_volume = {
+        name = "Base"
+        posteffect_values_day = default
+        height = 0
+        fade_distance = 0
+    }
+}
+"#,
+        )
+        .expect("write posteffect volumes");
+        std::fs::write(
+            defines.join("00_graphics.lua"),
+            r#"
+TONE_MAP_MIDDLE_GREY = 0.5,
+TONE_MAP_LUMINANCE_WHITE = 1.0,
+MIN_HDR_ADJUSTMENT = 0.5,
+MAX_HDR_ADJUSTMENT = 1.0,
+"#,
+        )
+        .expect("write graphics defines");
+        write_color_cube_tga(&world.join("colorcorrection_standard.tga"), [16, 24, 32]);
+        write_color_cube_tga(&world.join("colorcorrection_midrange.tga"), [96, 24, 32]);
+        write_color_cube_tga(&world.join("colorcorrection_farrange.tga"), [176, 24, 32]);
+        dir
+    }
+
+    fn test_bloom_law() -> RestoreBloomLaw {
+        let params = BloomParams {
+            bloom_width: 2.0,
+            bloom_scale: 1.0,
+            bright_threshold: 0.4,
+            emissive_bloom_strength: 0.2,
+        };
+        RestoreBloomLaw {
+            params,
+            kernel: BloomBlurKernel::from_gaussian(params.bloom_width, params.bloom_scale)
+                .expect("test bloom kernel"),
+        }
+    }
+
+    #[test]
+    fn gate_grade2_changed_input_changes_lut_and_same_input_skips_upload() {
+        let game_dir = write_grade2_fixture_game_dir("grade2_render_upload");
+        let resolver = GameFileResolver::vanilla(game_dir).expect("fixture resolver");
+        let bloom = test_bloom_law();
+        let mut restore = RestoreFullPostfx {
+            enabled: true,
+            evidence_found: true,
+            constants: RestorePostfxConstants::identity(),
+            color_cube_rgba8: restore_identity_color_cube_rgba8(),
+            bloom: Some(bloom),
+            luminance_bounds: None,
+            middle_grey: 1.0,
+        };
+        let high_state = GradingSelectionState {
+            camera: [2816.0, 2958.0, 1400.0],
+            night: false,
+            winter: false,
+        };
+        let high = file_derived_grade_per_frame(&resolver, high_state, None).expect("high grade");
+        let mut lut_uploads = 0u32;
+        let first = apply_restore_grade_cpu(&mut restore, &high, bloom);
+        if first.color_cube_changed {
+            lut_uploads += 1;
+        }
+        assert!(
+            first.color_cube_changed,
+            "initial frame must upload the files-derived LUT"
+        );
+        let high_bytes = restore.color_cube_rgba8.clone();
+
+        let high_again =
+            file_derived_grade_per_frame(&resolver, high_state, None).expect("same high grade");
+        assert_eq!(
+            high_again.color_cube_rgba8, high_bytes,
+            "unchanged grade input must compose byte-identical LUT bytes"
+        );
+        let stable = apply_restore_grade_cpu(&mut restore, &high_again, bloom);
+        if stable.color_cube_changed {
+            lut_uploads += 1;
+        }
+        assert_eq!(
+            stable,
+            RestoreGradeCpuUpdate::default(),
+            "unchanged grade input must not request constants/LUT/bloom uploads"
+        );
+
+        let faded_state = GradingSelectionState {
+            camera: [2816.0, 1700.0, 1400.0],
+            night: false,
+            winter: false,
+        };
+        let faded =
+            file_derived_grade_per_frame(&resolver, faded_state, None).expect("faded grade");
+        assert_ne!(
+            faded.color_cube_rgba8, high_bytes,
+            "changed camera height inside the file fade window must change LUT bytes"
+        );
+        let changed = apply_restore_grade_cpu(&mut restore, &faded, bloom);
+        if changed.color_cube_changed {
+            lut_uploads += 1;
+        }
+        assert!(
+            changed.color_cube_changed && changed.constants_changed,
+            "changed grade input must request LUT and constants uploads"
+        );
+        assert_eq!(
+            lut_uploads, 2,
+            "only first frame and changed-input frame may upload the LUT"
         );
     }
 

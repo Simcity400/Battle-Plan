@@ -103,6 +103,12 @@ viewers and is not the product surface.
    interim base layer.
 3. Nothing invented: colors, icons, fonts, layouts come from installed content or the
    recording. Gaps are badged unavailable, never faked.
+4. Derived overlay laws graduate into `replay_app` only with their remaining
+   residuals still fail-closed. RINT1 wires GRADE2 per-frame postfx recompose
+   into the default render path, adds a world-space country-label glyph-VB
+   module that calls `map_viewer` mapname geometry, and restores a map-furniture
+   bridge plus 3D projection helpers. Labels/furniture still reject their CLI
+   flags until the runtime inputs named in `FIDELITY_LEDGER.md` are captured.
 
 ## Sequencing decision (supersedes the old gate)
 

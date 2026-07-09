@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use game_ui::assets::normalize_rel_path;
 use game_ui::dds::{self, RgbaImage};
 use game_ui::tga;
-use map_viewer::GameFileResolver;
+use map_viewer::{GameFileResolver, LabelTextMetrics};
 
 use crate::Result;
 
@@ -85,7 +85,6 @@ pub enum AtlasMode {
     /// White RGB, alpha = extracted glyph coverage.
     Coverage,
     /// Native atlas RGBA passed straight through (pre-coloured, outlined glyphs).
-    #[cfg(test)]
     PreservedColor,
 }
 
@@ -181,6 +180,13 @@ pub fn load_game_font(game_root: &Path, font_name: &str) -> Result<Font> {
 
 pub fn load_game_font_from_resolver(resolver: &GameFileResolver, font_name: &str) -> Result<Font> {
     load_game_font_with_mode(resolver, font_name, AtlasMode::Coverage)
+}
+
+pub fn load_game_font_preserving_color(
+    resolver: &GameFileResolver,
+    font_name: &str,
+) -> Result<Font> {
+    load_game_font_with_mode(resolver, font_name, AtlasMode::PreservedColor)
 }
 
 fn load_game_font_with_mode(
@@ -573,7 +579,6 @@ impl Font {
     /// only ~65% of the law's size; consumers of the cap-height law must
     /// divide by THIS metric. Derived from the loaded font, so mods with
     /// different metrics are honoured.
-    #[cfg(test)]
     pub fn cap_height(&self) -> i32 {
         let mut counts: HashMap<u32, u32> = HashMap::new();
         for id in b'A'..=b'Z' {
@@ -588,6 +593,44 @@ impl Font {
             .max_by_key(|&(height, count)| (count, height))
             .map(|(height, _)| height as i32)
             .unwrap_or(self.line_height)
+    }
+
+    /// Extract the font metrics the engine label law consumes. Missing glyphs
+    /// fail closed for product label generation; the mapname VB has no fallback
+    /// substitute box, so silently dropping a character would move every later
+    /// glyph station.
+    pub fn label_text_metrics(&self, text: &str) -> Result<LabelTextMetrics> {
+        let mut advances = Vec::with_capacity(text.chars().count());
+        let mut missing = Vec::new();
+        for ch in text.chars() {
+            let Some(glyph) = self.glyphs.get(&(ch as u32)) else {
+                missing.push(ch);
+                continue;
+            };
+            advances.push((glyph.xadvance as f32, ch == ' '));
+        }
+        if !missing.is_empty() {
+            return Err(format!(
+                "font {} is missing glyphs needed for map label {:?}: {:?}",
+                self.name, text, missing
+            )
+            .into());
+        }
+        let space_advance_px = self
+            .glyphs
+            .get(&(' ' as u32))
+            .map(|glyph| glyph.xadvance as f32)
+            .ok_or_else(|| {
+                format!(
+                    "font {} has no space glyph for map label tracking",
+                    self.name
+                )
+            })?;
+        Ok(LabelTextMetrics {
+            advances,
+            line_height_px: self.line_height as f32,
+            space_advance_px,
+        })
     }
 
     /// Lay out one line of text with the pen starting at (`origin_x`,
