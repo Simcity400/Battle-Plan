@@ -181,6 +181,25 @@ region intensity/phenomenon fields) -- replay-side ingest pending. The
 ACCUMULATED snow/mud ground state (the SnowMudData ask above, incl. the
 R-SNOWMUD texture-snapshot alternative) remains OPEN.
 
+**Refined 2026-07-09 (lane/c-weather B13 wiring — `snow_mud_feed.rs` +
+`weather_law::from_recording_kind`):**
+- **weather_kind vocabulary.** The WEATHER1 render law binds the airborne
+  overlay through the `common/weather.txt` `weather_effects` KEYS
+  (`no_phenomenon / rain_light / rain_heavy / snow / blizzard / sandstorm`).
+  The friendly names above (`clear / rain / storm`) are aliased in the
+  replay by an INFERENCE map (`clear→no_phenomenon`, `rain→rain_light`,
+  `storm→rain_heavy`); `snow/blizzard/sandstorm` coincide. **Preferred:
+  the recording emits the engine `weather_effects` key directly** so no
+  friendly-name inference is needed. Emit both if convenient.
+- **snow/mud fade endpoints.** With only ONE current
+  `{snow_level_0_255, mud_level_0_255}` per province, the replay writes it
+  into BOTH fade endpoints, so the displayed value is exact but the
+  `SnowMudFade` phase becomes display-irrelevant (no second keyframe to
+  blend toward). The fade phase/window only becomes visually meaningful if
+  the extractor also emits the DISTINCT fade-0/fade-1 endpoint levels (the
+  "if obtainable" ask above). Until then, one level per province is the
+  lossless-w.r.t.-recording feed.
+
 ## 7. Cosmetic-tag stream (MID-GAME COLOR/NAME/FLAG CHANGES)
 
 `cosmetic_tag` exists in the schema (§3.12) but is save-sourced today.

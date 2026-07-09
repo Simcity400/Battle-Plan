@@ -182,6 +182,42 @@ impl WeatherType {
             Self::Sandstorm => "sandstorm",
         }
     }
+
+    /// Map a recording's `weather_kind` string (`replay_core`'s
+    /// `WeatherRegionRow.weather_kind`, requirements item 6) onto the engine
+    /// weather type this render law draws. This is the wiring point between the
+    /// recorded per-region phenomenon and the file-derived overlay chain.
+    ///
+    /// Two naming families are accepted:
+    /// * The **file-derived** `common/weather.txt` `weather_effects` keys
+    ///   (`no_phenomenon`, `rain_light`, `rain_heavy`, `snow`, `blizzard`,
+    ///   `sandstorm`) — these are authoritative (via [`from_key`]).
+    /// * The **friendly aliases** the current fixtures / a friendlier extractor
+    ///   emit (`clear`, `rain`, `storm`) — these are an **inference** about the
+    ///   recording's naming convention, NOT a shipped-file key. They are mapped
+    ///   here so the overlay resolves, but the mapping is flagged: the honest
+    ///   fix is for the recording to emit the engine `weather_effects` key
+    ///   directly (see the lane report's gap table). `snow`/`blizzard`/
+    ///   `sandstorm` coincide in both families.
+    ///
+    /// Returns `None` for an unrecognised kind (fail-closed: draw nothing rather
+    /// than guess a phenomenon).
+    ///
+    /// [`from_key`]: WeatherType::from_key
+    pub fn from_recording_kind(kind: &str) -> Option<Self> {
+        let k = kind.trim();
+        if let Some(ty) = Self::from_key(k) {
+            return Some(ty);
+        }
+        // Friendly aliases (INFERENCE — recording naming convention, not a
+        // weather.txt key).
+        match k.to_ascii_lowercase().as_str() {
+            "clear" | "none" | "no_weather" => Some(Self::NoPhenomenon),
+            "rain" => Some(Self::RainLight),
+            "storm" | "thunderstorm" | "lightning" => Some(Self::RainHeavy),
+            _ => None,
+        }
+    }
 }
 
 /// The `big`/`small` variant of a weather emitter position
@@ -1193,6 +1229,44 @@ mod tests {
     use crate::test_support::temp_test_dir;
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn from_recording_kind_maps_fx_weather_sweep_phenomena() {
+        // The kinds fx_weather_sweep (replay_fixture_gen) emits as
+        // weather.regions.*.phenom_name, in tick order, plus the expected
+        // engine WeatherType each must resolve to and whether it draws a cloud
+        // overlay (NoPhenomenon / Sandstorm have no fading_entity).
+        let cases = [
+            ("clear", WeatherType::NoPhenomenon, false),
+            ("rain", WeatherType::RainLight, true),
+            ("storm", WeatherType::RainHeavy, true),
+            ("snow", WeatherType::Snow, true),
+            ("blizzard", WeatherType::Blizzard, true),
+            ("sandstorm", WeatherType::Sandstorm, false),
+        ];
+        for (kind, expect_ty, expect_cloud) in cases {
+            let ty = WeatherType::from_recording_kind(kind)
+                .unwrap_or_else(|| panic!("kind {kind:?} must map"));
+            assert_eq!(ty, expect_ty, "kind {kind:?}");
+            // Resolve the cloud binding through the shipped-file chain to prove
+            // the wired type reaches (or correctly declines) an overlay.
+            let effects = weather_effects_from_source(WEATHER_TXT).expect("weather.txt");
+            let binding = effects.binding(ty, WeatherPositionSize::Big);
+            let has_cloud = binding.map(|b| b.fading_entity.is_some()).unwrap_or(false);
+            assert_eq!(has_cloud, expect_cloud, "cloud overlay for {kind:?}");
+        }
+        // Engine keys still work (the recording SHOULD emit these).
+        assert_eq!(
+            WeatherType::from_recording_kind("rain_light"),
+            Some(WeatherType::RainLight)
+        );
+        assert_eq!(
+            WeatherType::from_recording_kind("no_phenomenon"),
+            Some(WeatherType::NoPhenomenon)
+        );
+        // Fail-closed on nonsense.
+        assert_eq!(WeatherType::from_recording_kind("volcano"), None);
+    }
 
     // --- Real vanilla-file fixtures (verbatim excerpts from the shipped game). ---
 

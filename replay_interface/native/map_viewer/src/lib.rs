@@ -41,6 +41,7 @@ mod seasons;
 mod shader_compile;
 mod shader_meta;
 mod snow_law;
+mod snow_mud_feed;
 mod terrain_chunk_library;
 mod terrain_chunk_synthesis;
 mod terrain_id_map_synthesis;
@@ -313,6 +314,10 @@ pub use snow_law::{
     SNOW_MUD_SOURCE_DXGI_FORMAT, SNOW_MUD_TEXTURE_BYTE_LEN, SNOW_MUD_TEXTURE_HEIGHT,
     SNOW_MUD_TEXTURE_WIDTH, SNOW_PROVINCES_BMP_SOURCE, STRATEGIC_REGIONS_DIR, VANILLA_MAP_SIZE_X,
     VANILLA_MAP_SIZE_Y,
+};
+pub use snow_mud_feed::{
+    synthesize_snow_mud_from_levels, synthesize_snow_mud_from_resolver, RecordedSnowMudLevel,
+    RecordedSnowMudTexture, SnowMudFeedInputs,
 };
 pub use terrain_chunk_library::NativeD3d11TerrainChunkLibrary;
 pub use terrain_chunk_synthesis::{
