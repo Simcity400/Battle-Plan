@@ -706,6 +706,10 @@ struct Config {
     d41_emit_mode: D41EmitMode,
     d44_emit_mode: D44EmitMode,
     d48_emit_mode: D48EmitMode,
+    /// d53 relation-flag reader path (offsets|scan|shadow). Written verbatim into
+    /// the DLL control file; `offsets` (the default) preserves current behavior.
+    /// `shadow` is the live-validation gate path.
+    d53_relation_read_mode: D53RelationReadMode,
     /// Plan-v2 P2b lever A: bound the collector's per-frame reader fan-out to at
     /// most this many concurrently-running domain workers (0 = unbounded = legacy).
     /// Passed through the JSON control block to the injected DLL as
@@ -887,6 +891,38 @@ impl D48EmitMode {
         match self {
             Self::Delta => "delta",
             Self::Full => "full",
+        }
+    }
+}
+
+/// Runtime override for the d53 (diplomacy/intel/operatives) relation-flag reader
+/// path, mirrored verbatim into `collector_control.json` as `d53_relation_read_mode`.
+/// The DLL defaults to `offsets` when the field is absent, so the shadow gate MUST
+/// write an explicit value. `shadow` runs BOTH the offsets and legacy-scan paths and
+/// fail-closes any mismatching frame as partial (surfaced as
+/// `domain53_relation_shadow_mismatches` in the manifest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum D53RelationReadMode {
+    Offsets,
+    Scan,
+    Shadow,
+}
+
+impl D53RelationReadMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "offsets" => Some(Self::Offsets),
+            "scan" => Some(Self::Scan),
+            "shadow" => Some(Self::Shadow),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Offsets => "offsets",
+            Self::Scan => "scan",
+            Self::Shadow => "shadow",
         }
     }
 }
@@ -1075,6 +1111,7 @@ fn run() -> Result<(), String> {
                     "d41_emit_mode": cfg.d41_emit_mode.as_str(),
                     "d44_emit_mode": cfg.d44_emit_mode.as_str(),
                     "d48_emit_mode": cfg.d48_emit_mode.as_str(),
+                    "d53_relation_read_mode": cfg.d53_relation_read_mode.as_str(),
                     "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
@@ -1169,6 +1206,7 @@ fn run() -> Result<(), String> {
                     "d41_emit_mode": cfg.d41_emit_mode.as_str(),
                     "d44_emit_mode": cfg.d44_emit_mode.as_str(),
                     "d48_emit_mode": cfg.d48_emit_mode.as_str(),
+                    "d53_relation_read_mode": cfg.d53_relation_read_mode.as_str(),
                     "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
@@ -1437,6 +1475,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut d41_emit_mode = D41EmitMode::Delta;
     let mut d44_emit_mode = D44EmitMode::Delta;
     let mut d48_emit_mode = D48EmitMode::Delta;
+    let mut d53_relation_read_mode = D53RelationReadMode::Offsets;
     let mut reader_concurrency = None;
     let mut static_templates_equipment_catalog: Option<PathBuf> = None;
     let mut static_localisation_join: Option<PathBuf> = None;
@@ -1570,6 +1609,15 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 let value = required(args.get(i), "--d48-emit-mode")?;
                 d48_emit_mode = D48EmitMode::parse(&value).ok_or_else(|| {
                     format!("invalid --d48-emit-mode {value}; expected delta|full")
+                })?;
+            }
+            "--d53-relation-read-mode" => {
+                i += 1;
+                let value = required(args.get(i), "--d53-relation-read-mode")?;
+                d53_relation_read_mode = D53RelationReadMode::parse(&value).ok_or_else(|| {
+                    format!(
+                        "invalid --d53-relation-read-mode {value}; expected offsets|scan|shadow"
+                    )
                 })?;
             }
             "--reader-concurrency" => {
@@ -1740,6 +1788,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         d41_emit_mode,
         d44_emit_mode,
         d48_emit_mode,
+        d53_relation_read_mode,
         reader_concurrency,
         compression_profile,
         static_artifacts: {
@@ -1902,7 +1951,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--replay-zstd-level N] [--replay-zstd-window-log N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--replay-zstd-level N] [--replay-zstd-window-log N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -3796,6 +3845,7 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "d41_emit_mode": cfg.d41_emit_mode.as_str(),
         "d44_emit_mode": cfg.d44_emit_mode.as_str(),
         "d48_emit_mode": cfg.d48_emit_mode.as_str(),
+        "d53_relation_read_mode": cfg.d53_relation_read_mode.as_str(),
         "reader_concurrency": cfg.reader_concurrency,
         // Cadence thinning is FORBIDDEN (zero-data-loss): every scheduled domain
         // is captured hourly. This is always 1 and never a profile choice.
@@ -25067,6 +25117,7 @@ mod tests {
             d41_emit_mode: D41EmitMode::Delta,
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
+            d53_relation_read_mode: D53RelationReadMode::Offsets,
             reader_concurrency: 0,
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
@@ -25724,6 +25775,9 @@ mod tests {
         assert!(control.contains("\"d41_emit_mode\":\"delta\""));
         assert!(control.contains("\"d44_emit_mode\":\"delta\""));
         assert!(control.contains("\"d48_emit_mode\":\"delta\""));
+        // Default (no explicit flag) resolves to `offsets`, matching the DLL's
+        // implicit default, so production behavior is unchanged.
+        assert!(control.contains("\"d53_relation_read_mode\":\"offsets\""));
         assert!(control.contains("\"compact_country_frame\":false"));
         assert!(control.contains("\"stream_format\":\"compact\""));
         assert!(control.contains("\"scheduled_snapshot_step_hours\":1"));
@@ -25734,6 +25788,61 @@ mod tests {
         let legacy = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(legacy.contains("\"profile\":null"), "legacy: {legacy}");
         assert!(legacy.contains("\"sidecar_log\":false"));
+        assert!(legacy.contains("\"d53_relation_read_mode\":\"offsets\""));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn d53_relation_read_mode_parses_and_writes_shadow() {
+        assert_eq!(
+            D53RelationReadMode::parse("offsets"),
+            Some(D53RelationReadMode::Offsets)
+        );
+        assert_eq!(
+            D53RelationReadMode::parse("scan"),
+            Some(D53RelationReadMode::Scan)
+        );
+        assert_eq!(
+            D53RelationReadMode::parse("shadow"),
+            Some(D53RelationReadMode::Shadow)
+        );
+        assert_eq!(D53RelationReadMode::parse("bogus"), None);
+        assert_eq!(D53RelationReadMode::Shadow.as_str(), "shadow");
+
+        // Default when the flag is absent stays `offsets`.
+        let dir =
+            std::env::temp_dir().join(format!("battle-plan-recorder_host_d53rrm_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg_default = parse_args(profile_test_args(&dir, &[])).unwrap();
+        assert_eq!(
+            cfg_default.d53_relation_read_mode,
+            D53RelationReadMode::Offsets
+        );
+
+        // Explicit --d53-relation-read-mode shadow flows into the control file.
+        let cfg_shadow = parse_args(profile_test_args(
+            &dir,
+            &["--d53-relation-read-mode", "shadow"],
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg_shadow.d53_relation_read_mode,
+            D53RelationReadMode::Shadow
+        );
+        write_control_file(&cfg_shadow, "tok").unwrap();
+        let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
+        assert!(
+            control.contains("\"d53_relation_read_mode\":\"shadow\""),
+            "control: {control}"
+        );
+
+        // An invalid value is a hard parse error, never a silent fallback.
+        assert!(parse_args(profile_test_args(
+            &dir,
+            &["--d53-relation-read-mode", "nope"],
+        ))
+        .is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -25865,6 +25974,7 @@ mod tests {
             d41_emit_mode: D41EmitMode::Delta,
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
+            d53_relation_read_mode: D53RelationReadMode::Offsets,
             reader_concurrency: 0,
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),

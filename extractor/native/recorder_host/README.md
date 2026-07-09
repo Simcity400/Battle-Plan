@@ -210,7 +210,56 @@ profile, enables the extraction perf gate, includes `--compact-country-frame`,
 sets the tuned production reader concurrency, and passes every required static
 artifact from `extractor/game_defs/out`. `-Mode FullGame` defaults to a long run
 and performs a conservative disk-space estimate; use `-OutDir` on a large drive
-for full-game speed-five capture.
+for full-game speed-five capture. Two control-field pass-throughs feed the live
+validation session: `-D53RelationReadMode offsets|scan|shadow` (writes
+`d53_relation_read_mode` into the DLL control file) and `-EmitModeAll delta|full`
+(forces all five delta domains `--d41/44/48/51/53-emit-mode`). Both default to
+the production behavior when omitted.
+
+## Live validation session
+
+`Invoke-LiveValidationSession.ps1` runs the next speed-5 deep-war validation
+runsheet end to end against a running `hoi4.exe`, with zero manual steps. One
+command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Invoke-LiveValidationSession.ps1
+```
+
+What it does (all captures reuse `Start-Hoi4ProductionSpeed5Capture.ps1`):
+
+1. **Preflight** — require exactly one `hoi4.exe`, build release
+   collector + recorder_host, and run a ~12 s probe capture that must show
+   `game_hours_advanced > 0` (else it aborts with an "unpause / set speed 5"
+   message). Coarse disk-space floor check.
+2. **Stage 1 — d53 shadow gate** — a ~75 s capture with
+   `-D53RelationReadMode shadow`. **PASS iff
+   `domain53_relation_shadow_mismatches == 0` (absent counts as 0) on every d53
+   frame** and the run actually ran in shadow mode. Any mismatch is a HARD BLOCKER
+   (the offsets relation reader diverged from the legacy scan) and the session
+   stops before the production capture.
+3. **Stage 2 — paired A/B** — a `-Mode ShortSpeed5` capture at head, compared
+   against the recorded 2026-07-09 baseline (`-BaselineManifest`, default
+   `runs/production_speed5_ShortSpeed5_20260709_124210/native_session_manifest.json`).
+   Writes `live_validation_report.md` (+ a compact console table): frame
+   avg/p95/max, game-hours advanced, skipped hours + %, stream bytes +
+   bytes/captured-hour, per-domain `read_time_us` top-10 vs baseline, the five
+   delta domains' emitted-vs-observed rows, `host_finalize` peak RAM + finalize
+   seconds, and a VERDICT block (skipped==0, frame avg vs the 20 ms / 45 ms
+   targets, size-reduction factor vs baseline).
+4. **Stage 3 (optional, `-IncludeEmitModeAB`)** — a short capture with all five
+   delta domains forced to `emit_mode=full`, to attribute the size reduction.
+
+Pass criteria: Stage 1 zero shadow mismatches (blocker on any mismatch); Stage 2
+zero skipped hours (zero-data-loss); the report's VERDICT block reports frame
+avg vs targets and size reduction vs baseline.
+
+Modes for testing without the game:
+
+- `-DryRun` — validates argument assembly + baseline parsing and prints the exact
+  launcher invocations + a comparison skeleton, without attaching to `hoi4.exe`.
+- `-SelfTest` — exercises the pure manifest-parsing / verdict functions against
+  the real baseline manifest plus synthetic improved/shadow fixtures.
 
 Example:
 

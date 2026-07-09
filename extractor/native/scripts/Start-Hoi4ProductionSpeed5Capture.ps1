@@ -26,6 +26,20 @@ param(
 
     [switch]$SkipDiskSpaceCheck,
 
+    # d53 relation-flag reader path override, passed straight through to
+    # recorder_host as --d53-relation-read-mode. Empty = launcher does not pass
+    # the flag (recorder_host default = offsets = current production behavior).
+    # "shadow" runs both offsets and legacy-scan paths and fail-closes mismatching
+    # d53 frames as partial (the live-validation d53 shadow gate).
+    [ValidateSet("", "offsets", "scan", "shadow")]
+    [string]$D53RelationReadMode = "",
+
+    # When set, forces ALL FIVE fat-domain delta emitters (d41/d44/d48/d51/d53) to
+    # the given mode via --dNN-emit-mode. Empty = launcher passes nothing (each
+    # defaults to delta). "full" is used by the emit-mode A/B size-attribution run.
+    [ValidateSet("", "delta", "full")]
+    [string]$EmitModeAll = "",
+
     [switch]$DryRun
 )
 
@@ -263,6 +277,18 @@ $runArgs = @(
     "--static-gfx-icon-manifest", $staticGfxIconManifest
 )
 
+if ($D53RelationReadMode.Length -gt 0) {
+    $runArgs += "--d53-relation-read-mode"
+    $runArgs += $D53RelationReadMode
+}
+
+if ($EmitModeAll.Length -gt 0) {
+    foreach ($emitFlag in @("--d41-emit-mode", "--d44-emit-mode", "--d48-emit-mode", "--d51-emit-mode", "--d53-emit-mode")) {
+        $runArgs += $emitFlag
+        $runArgs += $EmitModeAll
+    }
+}
+
 $commandLine = "& `"$collectorRecord`" " + ($runArgs | ForEach-Object {
     if ($_ -match "\s") { "`"$_`"" } else { $_ }
 }) -join " "
@@ -270,7 +296,9 @@ $commandLine = "& `"$collectorRecord`" " + ($runArgs | ForEach-Object {
 $commandPath = Join-Path $OutDir "production_command.ps1"
 Set-Content -LiteralPath $commandPath -Value $commandLine -Encoding UTF8
 
-Write-Host "mode=$Mode profile=$CaptureProfile pid=$Hoi4Pid duration_s=$durationArg min_game_hours=$MinGameHours sample_ms=$SampleMs reader_concurrency=$ReaderConcurrency"
+$d53RelationDisplay = if ($D53RelationReadMode.Length -gt 0) { $D53RelationReadMode } else { "(default)" }
+$emitModeDisplay = if ($EmitModeAll.Length -gt 0) { $EmitModeAll } else { "(default)" }
+Write-Host "mode=$Mode profile=$CaptureProfile pid=$Hoi4Pid duration_s=$durationArg min_game_hours=$MinGameHours sample_ms=$SampleMs reader_concurrency=$ReaderConcurrency d53_relation_read_mode=$d53RelationDisplay emit_mode_all=$emitModeDisplay"
 Write-Host "out_dir=$OutDir"
 Write-Host "command_file=$commandPath"
 
