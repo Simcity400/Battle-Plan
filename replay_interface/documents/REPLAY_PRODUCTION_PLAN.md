@@ -40,7 +40,13 @@ layer must therefore be finished **completely independently**:
 - **Integration is a separate, final phase** (Phase H) that begins only when
   the user hands over a recording worth using. If the fixtures are faithful to
   the schema, integration is a data-source swap at the `ReplaySource` seam in
-  `replay_core`, not a rewrite.
+  `replay_core`, not a rewrite. **Precondition (Codex review 2026-07-09):**
+  the swap promise holds only for **snapshot-flavor** containers — `source.rs`
+  fail-closed refuses compact-stream-only recordings (`snapshots: []`) by
+  design, requiring per-hour snapshot entries per HOI4REPLAY_CONTAINER_SPEC.md
+  or a shared decoder crate from the extraction layer. Requirements **item 1**
+  (hourly decoded snapshots in the container) is exactly this precondition;
+  fixtures must therefore be packed snapshot-flavor containers too.
 
 **Constraint 2 — fixture-first, seam-respecting design.** All consumers read
 world state through `replay_core` (`ReplaySource` → `WorldTimeline` →
@@ -49,8 +55,9 @@ parse recording bytes directly. Fixtures and real recordings are
 indistinguishable to consumers.
 
 **Constraint 3 — fail-closed honesty (standing).** `replay_app` blocks any
-product path whose law has FIT/UNKNOWN residuals (13 `*_product_path_blocked`
-gates in `main.rs` today). Production ≠ "unblock everything"; production =
+product path whose law has FIT/UNKNOWN residuals (10 `*_product_path_blocked`
+gates in `main.rs` today, plus the blocked CLI switches and env-override
+rejections in `main.rs`/startup — G3 enumerates the canonical list). Production ≠ "unblock everything"; production =
 close residuals with evidence until the blocks are *earned* off, and keep
 fail-closed behavior for genuinely absent data. **No-eyeball rule:** only
 pixel/byte parity vs engine-mined frames or oracle gates counts as verified.
@@ -123,9 +130,14 @@ spec may introduce a bare vanilla path join.
 2. Every fixture exercises a *specific consumer contract* and carries a
    scenario name (e.g. `fx_owner_flip_barbarossa`, `fx_cosmetic_raj`,
    `fx_war_matrix_1941`, `fx_topbar_scalars_sweep`).
-3. A fixture is only trusted after a **schema-conformance gate**: the same
-   validation code that will later reject a malformed real recording must
-   accept every fixture (shared validator, not parallel implementations).
+3. A fixture is only trusted after a **conformance gate at BOTH levels**: the
+   same validation code that will later reject a malformed real recording must
+   accept every fixture (shared validator, not parallel implementations), and
+   fixtures are **packed snapshot-flavor `.battleplan` containers** validated
+   at the container level too — manifest/container version, required-features,
+   identity consistency, digests, per-entry snapshot hashes per
+   HOI4REPLAY_CONTAINER_SPEC.md — with malformed-manifest / bad-hash / wrong
+   modset negative fixtures alongside the positive set.
 4. When REPLAY_DATA_REQUIREMENTS.md gains a field, the generator + a fixture +
    a conformance test gain it in the same commit.
 
@@ -145,7 +157,7 @@ the trichotomy (value / inherited / unavailable) preserved.
 | # | Item | Gate | Status |
 |---|---|---|---|
 | A1 | Fixture generator v1: extend `replay_interface/replay/` to emit schema-complete synthetic recordings (hourly snapshots + compact deltas, all container roles) | shared-validator conformance pass on every fixture | OPEN |
-| A2 | Scenario fixture set: owner/controller flips, cosmetic-tag + ideology changes, war/faction matrix evolution, capital moves, weather sweep, topbar scalar sweep, division movement, naval/air activity, building damage, **per-POV visibility evolution (FoW flips + unit spot/lose events)** | one named fixture per consumer contract; enumerated in a manifest | OPEN |
+| A2 | Scenario fixture set: owner/controller flips, cosmetic-tag + ideology changes, war/faction matrix evolution, capital moves, weather sweep, **snow/mud accumulator evolution (SnowMudData texture + fade phase per requirements item 6)**, topbar scalar sweep, division movement, naval/air activity, building damage, **per-POV visibility evolution (FoW flips + unit spot/lose events)**, **DLC-set variation (NAME1b DLC-gated cosmetics) + localisation-language selection** | one named fixture per consumer contract; enumerated in a manifest | OPEN |
 | A3 | `replay_core` ingest of every requirements item (1–10 + 7b/8b/9b/**13**): parse, index by time, expose typed views (incl. `visibility_for(pov_tag)` province view + spotted-units view) | round-trip gates: generator value == view value at every probed hour, incl. delta-reconstruction == snapshot cross-check | PARTIAL (owner/controller views exist, world_timeline tests green; most fields unserved) |
 | A4 | Time semantics: hourly resolution, seek/scrub to arbitrary hour, forward/backward, mid-file start (snapshot + delta replay) | seek(h) == linear-play-to(h) equality gate on all fixtures | PARTIAL (timeline.rs scrub exists for captured moments) |
 | A5 | Renderer keying swap: political fill/borders/labels/furniture read owner+controller+cosmetic from WorldTimeline instead of static history parse | pixel-identical output at t0 vs current static path on the 1936 baseline; then divergence gates on flip fixtures (expected-diff oracles) | OPEN — **this is the single highest-leverage item in the plan** |
@@ -190,7 +202,7 @@ extractor-independent.
 | C4 | Front lines + movement/plan arrows (or explicit descope for v1 if not in recording — arrows are player-plan state; **decision needed, tracked in REPLAY_DATA_REQUIREMENTS**) | RE + requirements | parity or descope note | OPEN |
 | C5 | Rail/supply overlay | RE + defines | parity gate | OPEN |
 | C6 | Sea-zone naval-supremacy tint (recording R6/D56 shaped) | GB-field law + fixtures | parity vs captured supremacy frame | OPEN |
-| C7 | Close-zoom 3D pass completion (units/buildings/rails/shadows) measured by the existing oracle: h=50 scoreboard mean |err| 0.135 → ≤0.03 | all of C1–C6 + B3/B4 | RenderDoc-oracle scoreboard at low h | OPEN — **this is the definition-of-done metric for Phase C** |
+| C7 | Close-zoom 3D pass completion (units/buildings/rails/shadows) measured by the existing oracle: h=50 scoreboard mean |err| 0.135 → ≤0.03 | all of C1–C6 + B3/B4 + **B6 shadow/PCF path** + an explicit **particles decision** (descope candidate — if descoped, restate the h=50 target on particle-free frames or a documented delta) | RenderDoc-oracle scoreboard at low h | OPEN — **this is the definition-of-done metric for Phase C** |
 | C8 | **FoW visual law (observer country-POV)**: RE the fog-of-war terrain transform (darkening/desaturation mask path in the map shaders) + hidden-unit culling; known anchors: scene-CB0 `FoW.w` gate (LIGHT_LAW — our omniscient baseline runs `FoW.w=1`), FoW mask texture inputs in pdxmap shader chain, and the existing "FOW-contaminated" captures which are ground truth for the FoW-ON look | installed content first (shader sources), then §4-CAP10 paired frames | fogged-vs-clear pixel parity vs the capture pair; POV-fixture unit-hiding gates | OPEN — NEW 2026-07-09 (observer directive) |
 
 ### Phase D — UI chrome completion (game_ui)
@@ -207,6 +219,8 @@ law); the gap is bindings + population + remaining widgets.
 | D4 | Country/diplomacy panels (read-only): relations, wars, factions from 8/8b views | fixture war-matrix renders correct rows | OPEN |
 | D5 | Scrollbar thumb-travel law (UNTRACED, fail-closed) + any remaining widget primitives (checkbox/tab states as static chrome) | RE citation or capture (§4-CAP7 open-panel frame) | OPEN |
 | D6 | Date/speed clock — replay-native (shows recording time; speed = playback speed) | unit gates | PARTIAL (freeze-clock tooling exists) |
+| D7 | Remaining UI production surface per UI_LAYOUT_LAW §6.3: map-mode bar active state, tooltip content bindings, scripted-GUI visibility rules, and population of the major views (rows/progress/counts) — each view either implemented or **explicitly descoped for v1 in this table** | per-view fixture population gates; layout law gates held | OPEN (added per Codex review 2026-07-09) |
+| D8 | Localisation-language + DLC-gated identity binding: label/UI text keyed by the recording's language + DLC set (requirements items 4/9; ledger language-selection UNKNOWN) | A2 DLC/language fixtures render correct variants | OPEN |
 
 ### Phase E — Playback UX (the product shell)
 
@@ -223,7 +237,7 @@ law); the gap is bindings + population + remaining widgets.
 
 | # | Item | Gate | Status |
 |---|---|---|---|
-| F1 | Playback frame budget on the weak-PC mandate: full political map + labels + furniture + counters at interactive rates; measure, then optimize (no speculative work) | frame-time budget gate in headless bench | OPEN |
+| F1 | Playback frame budget on the weak-PC mandate: full political map + labels + furniture + counters at interactive rates; measure, then optimize (no speculative work). **Budget: ≤33 ms/frame (30 FPS floor) at 1920×1080, p99 over a scripted 5-minute play+scrub run, on a named weak-PC reference config (pick the reference machine/GPU class with the user before F1 starts; the number is the gate, the reference is the contract)** | frame-time budget gate in headless bench | OPEN |
 | F2 | Timeline memory: bounded working set for multi-year hourly recordings (snapshot spine + delta windows, LRU) | synthetic 3-year fixture under memory ceiling | OPEN |
 | F3 | Long-run soak: 8-hour scrub/play loop, zero leaks/device-removed | soak harness | OPEN |
 | F4 | Crash/error policy: fail-closed startup diagnostics already exist; extend to mid-playback data anomalies (log + hold-last-good, never invent) | anomaly-injection fixtures | OPEN |
@@ -283,26 +297,35 @@ schema drift is caught by the shared validator, not by integration day.
 - B capture items (B7–B12) wait on §4 sessions — schedule the session early;
   the closing jobs are quick once evidence exists.
 - C needs A3 (unit views) + its own RE lanes; C7 (the h=50 oracle metric)
-  additionally needs B3/B4.
+  additionally needs B3/B4 + B6 (shadow/PCF) + the particles decision.
 - D needs A3 (scalar/diplomacy/ideology views); D5 needs §4-CAP7.
 - E6 (observer POV) needs A3 (`visibility_for` views) + C8 (FoW law); the UX
   shell and world-view default need neither and can land first.
 - E needs A4 (seek) and is otherwise independent; F needs A+C volume to be
   meaningful; G last; H deferred.
-- Suggested wave 1 (now): A1+A2 (one Codex lane), A3 unit/scalar views
-  (second lane), B1 water residuals (third lane), C1 counter RE prep from
-  installed content (fourth lane) — all disjoint files.
+- Suggested wave 1 (now): A1+A2 (one Codex lane), A3 **design + ingest
+  skeleton only** (second lane — its fixture-gated round-trip implementation
+  waits for A1/A2 output, per the critical path), B1 water residuals (third
+  lane), C1 counter RE prep from installed content (fourth lane) — all disjoint
+  files.
 
 ## 7. Definition of production
 
 1. All Phase G gates green on synthetic recordings.
-2. Every `*_product_path_blocked` gate either earned off with cited law or
-   documented here as a v1 descope with the block retained.
+2. Every blocker in the **canonical blocker list** (the 10
+   `*_product_path_blocked` gates + the blocked CLI switches + env-override
+   rejections in `replay_app/src/main.rs` — G3 emits the enumerated list)
+   either earned off with cited law or documented here as a v1 descope with
+   the block retained. **Descope acceptance = a named row in this doc stating
+   what is missing, why it is acceptable for v1, and what would close it.**
 3. Ledger: 0 unlabelled FIT on product paths; UNKNOWN only where descoped or
    recording-fed-and-fixture-proven.
-4. Weak-PC frame budget met (F1) and 8-hour soak clean (F3).
-5. REPLAY_DATA_REQUIREMENTS.md current — so Phase H can start the day a real
-   recording lands.
+4. Weak-PC frame budget met per F1's numeric gate (≤33 ms p99 on the reference
+   config) and 8-hour soak clean (F3).
+5. REPLAY_DATA_REQUIREMENTS.md current, enforced mechanically: the shared
+   validator's schema version is pinned to the doc revision, and a drift check
+   fails CI/tests when the generator, validator, or doc diverge — so Phase H
+   can start the day a real recording lands.
 
 ## 8. Top risks
 
