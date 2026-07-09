@@ -29,6 +29,7 @@ mod map_label_law;
 mod map_static_data;
 mod map_text;
 mod mod_resolver;
+mod naval_supremacy_tint;
 mod pass_graph;
 mod pdx_mesh;
 mod political_color_synthesis;
@@ -230,6 +231,15 @@ pub use map_text::{
 pub use mod_resolver::{
     sensitive_file_overrides, GameFileResolver, GameFileResolverOptions, GameFileResolverStats,
     SensitiveFileOverrideReport,
+};
+pub use naval_supremacy_tint::{
+    classify_naval_regions, naval_region_set_from_resolver, naval_supremacy_tints,
+    naval_tint_defines_from_resolver, naval_tint_defines_from_source, pov_stripe_color,
+    province_is_sea, supremacy_alpha, supremacy_ratio, zone_supremacy_status, zone_tint,
+    NavalRegionSet, NavalTintDefines, PovNavalRelation, SeaZone, ZoneSupremacyInput,
+    ZoneSupremacyStatus, ZoneTint, NAVAL_SUPREMACY_DEFINITION_CSV_SOURCE,
+    NAVAL_SUPREMACY_GRAPHICS_DEFINES_SOURCE, NAVAL_SUPREMACY_STRATEGIC_REGIONS_DIR,
+    VANILLA_NAVAL_TINT_DEFINES,
 };
 pub use pass_graph::{
     ProductionMapPassGraph, ProductionMapPassKind, ProductionMapPassPlan, ProductionMapPassStatus,

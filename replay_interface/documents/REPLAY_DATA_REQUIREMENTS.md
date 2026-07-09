@@ -130,6 +130,25 @@ supremacy rows fold into `map._r2_naval_supremacy`
 (`world_fold.rs:3950`, contract registers domain 56). Replay-side ingest +
 join against `map/strategicregions` pending.
 
+**CONSUMER LANDED 2026-07-09 (plan C6, `map_viewer::naval_supremacy_tint`).**
+The replay-side tint law is implemented + fixture-gated on
+`fx_naval_air_activity`: sea zones = strategic regions containing ≥1 `sea`
+province (vanilla: 98 naval regions / 57 all-sea / 3133 sea provinces of 304
+total regions); field geometry = each zone's sea-province set (the GB fill key,
+islands excluded); tint fill = the controller's country colour; tint alpha =
+`NAVAL_REGION_TRANSPARENCY_RATIO_MIN/MAX` interpolated over
+`NAVAL_REGION_TRANSPARENCY_RANGE` (all FILE, `00_graphics.lua`); no supremacy
+data ⇒ open ocean (fail-closed). Two extractor-contract clarifications for the
+row shape (per `EXTRACTION_NEEDS.md` A6): (1) the needed fields are
+`{region_id, controller_tag, supremacy_magnitude}` — the tri-state
+friendly/enemy/contested is POV-derived replay-side and MUST NOT be recorded
+(colours-never-recorded standing override); replay_core's `NavalSupremacyRow`
+reads `controller`/`supremacy` (used) and `state`/`status` (unused here); the
+`fx_naval_air_activity` fixture's `tri_state` key is therefore ignored by the
+tint. (2) `supremacy_magnitude` UNIT is unresolved: the fixture uses a
+normalised 0..1 value while `RANGE=2000` implies raw naval-dominance points —
+D56 must state the unit so the alpha curve is engine-correct (capture-gated).
+
 ## 6. Weather state per strategic region
 
 The map's snow/mud/ice/storm visuals are driven by SIMULATED weather; the
