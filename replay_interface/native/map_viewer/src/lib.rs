@@ -30,6 +30,7 @@ mod map_furniture;
 mod map_label_capture;
 mod map_mode_terrain_resource;
 mod map_label_law;
+mod map_mode_admin;
 mod map_static_data;
 mod map_text;
 mod mapmode_air;
@@ -236,6 +237,14 @@ pub use map_label_law::{
     LabelLawInputs, LabelTextMetrics, MapLabelGlyphLayoutQuad, ProvinceKind, ENGINE_TITLE_CAP_COEF,
     ENGINE_TITLE_FIT_COEF, LABEL_AB_HYSTERESIS, LABEL_HEIGHT_BREADTH_K, LABEL_OFFSET_PX,
     LABEL_SAMPLE_STEP,
+};
+pub use map_mode_admin::{
+    admin_mapmode_defines_from_resolver, admin_mapmode_defines_from_source,
+    ideology_colors_from_resolver, ideology_colors_from_source, ideology_fill,
+    parse_ideology_colors_into, players_fill, state_boundary_outline, states_admin_fill,
+    vanilla_ideology_colors, AdminMapModeDefines, IdeologyColorTable, StateAdminFill,
+    StateBoundaryOutline, StateIdeologyFill, StatePlayersFill, ADMIN_MAPMODE_GRAPHICS_DEFINES_SOURCE,
+    IDEOLOGIES_DIR, VANILLA_ADMIN_MAPMODE_DEFINES,
 };
 pub use map_static_data::{
     map_building_placements_from_game_dir, map_building_placements_from_resolver,

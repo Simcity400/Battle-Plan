@@ -60,10 +60,10 @@ the engine primitives not already on the toolbar. `country`=political (#1) and
 
 | # | Mode | engine layer type | what it colors | data dependency | status |
 |---|---|---|---|---|---|
-| 13 | **States** | `game_map_mode_states` | state borders/fill (administrative) — owner fill with state outlines | item 2 (owner) + static state map | **law-known** (owner fill + state borders, both file-derivable) |
+| 13 | **States** | `game_map_mode_states` | state borders/fill (administrative) — owner fill with state outlines | item 2 (owner) + static state map | **law-done** (M1b, `map_mode_admin.rs`): owner fill = COL3 (byte-wise == `political_texel_colors`, gate `states_fill_equals_political_owner_color_bytewise`); state outlines = province-raster pixel pairs across state boundaries; render/pixel-parity capture-gated. FILE §2.25 |
 | 14 | **Diplomacy** | `game_map_mode_diplomacy` | pair-relation coloring vs viewed country (ally/enemy/neutral) | item 8b (relations) | **impl** (`mapmode_diplomacy.rs`): relation CLASSIFICATION solved — extends FURN-REL `vp_icon_relation_column` to whole-country fill, per-POV; fx_war_faction_matrix gate (flips @ tick 3/7, 2 POVs). Fill RGB **UNKNOWN/fail-closed**: VP strip DDS is grayscale (measured), no `MAP_MODE_DIPLOMACY_*` define — colours are engine-hardcoded modulate |
-| 15 | **Players** | `game_map_mode_players` | one color per human player (MP) | item 4 (player↔country mapping) | **law-known** (player map file-trivial; color assignment RE) |
-| 16 | **Ideology** | `game_map_mode_ideology` | ruling-ideology coloring (fascism/communism/democratic/neutrality) | item 7b (ruling party) | **law-known** (4 ideology colors file-derivable from `00_*` ideology defs) |
+| 15 | **Players** | `game_map_mode_players` | one color per human player (MP) | item 4 (player↔country mapping) | **law-done** (M1b, `map_mode_admin.rs`): player↔country = session view; player-held = country colour full alpha, non-player faded to `PLAYER_MAPMODE_NOT_SELECTED_COUNTRY_TRANSPARENCY`=0.15 (FILE `00_graphics.lua`). §2.25 |
+| 16 | **Ideology** | `game_map_mode_ideology` | ruling-ideology coloring (fascism/communism/democratic/neutrality) | item 7b (ruling party) | **law-done** (M1b, `map_mode_admin.rs`): 4 colours FILE `00_ideologies.txt` (dem `{0,0,255}`, com `{255,0,0}`, fas `{150,75,0}`, neu `{124,124,124}`), alpha `MAP_MODE_IDEOLOGY_COLOR_TRANSPARENCY`=1; keyed by owner's `ruling_ideology`. §2.25 |
 
 ## 3. Display toggles / overlays (6 — NOT modes, but map-display state)
 
@@ -88,22 +88,18 @@ a replay render option, several already have law.
 - **Display toggles/overlays = 6** (day/night, player-counters, counter-color,
   allied-plans, fog, radar) — not modes.
 - **Status of the 16 modes:**
-  - `done` = **1** (political — COL3 fill law + borders); **terrain** data law is now
-    also implemented (M1a: province→category→`00_terrain.txt` color, 0 unclassified),
-    pending only the shared GB-field pixel raster that gates every mode.
-  - `law-known` = **10** (naval, terrain, resource, factions, states, diplomacy,
-    players, ideology, **air** (`mapmode_air.rs`, M1d), **infrastructure**
-    (`mapmode_infrastructure.rs`, M1d) — fill law file-derivable or ported,
-    gating/binding remains). **M1a (2026-07-09)** closed the file-derivable half of
-    TWO of these: **terrain** (fully static, DONE — 14 category colors cited) and
-    **resource** (deposits+icon-frame DONE from `00_resources.txt`+`history/states`;
-    per-resource map FILL color has **no shipped-file source → UNKNOWN/fail-closed**,
-    an engine-RE/capture item, so resource is not fully closed).
+  - `done` = **1** (political — COL3 fill law + borders).
+  - `module-implemented` = **10** — every remaining selectable mode with a
+    file/RE-derivable law now has a gated map_viewer module (wave 5, 2026-07-09):
+    terrain + resource (`map_mode_terrain_resource`, M1a — terrain fully static
+    DONE, resource deposits DONE / fill color UNKNOWN fail-closed), air +
+    infrastructure (`mapmode_air`/`mapmode_infrastructure`, M1d — POV thresholds
+    + normalisation denominator capture-gated), diplomacy + factions
+    (`mapmode_diplomacy`/`mapmode_factions`, M1c — diplomacy fill RGB
+    UNKNOWN fail-closed, faction member color DERIVED), states + ideology +
+    players (`map_mode_admin`, M1b), naval supremacy (`naval_supremacy_tint`, C6).
   - `not-started` = **5** (operatives, supply, resistance, compliance, raids —
     need mode-specific RE + a new/deferred data stream).
-  - **M1c (2026-07-09): diplomacy + factions now impl-gated** (`mapmode_diplomacy.rs`
-    + `mapmode_factions.rs` landed, fixture-gated per-POV; diplomacy fill RGB
-    UNKNOWN/fail-closed, factions member-colour DERIVED with 2 capture residuals).
 - **New data dependencies for map modes** (fold into REPLAY_DATA_REQUIREMENTS):
   intel/operatives state (mode 4), occupation resistance/compliance (modes 7/8) —
   **shared with UI_COVERAGE_MATRIX §9 items 6 & 8** (no duplicate stream), raid
