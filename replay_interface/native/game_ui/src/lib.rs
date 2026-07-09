@@ -6,6 +6,7 @@ pub mod combat_binding;
 pub mod compose;
 pub mod dds;
 pub mod event_chrome;
+pub mod decision_chrome;
 pub mod font;
 pub mod gfx;
 pub mod gui;

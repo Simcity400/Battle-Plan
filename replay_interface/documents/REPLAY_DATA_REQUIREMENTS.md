@@ -419,6 +419,33 @@ itself from recorded inputs -- do NOT record evaluated per-scope colors.
 The INPUTS for non-political modes (intel, resistance, supply detail)
 are deferred with items 10-12 until those modes are scheduled.
 
+## 9c. Decision panel state (UI CHROME — decisions/missions)
+
+Inventory item 11 (one of the 14 NEW streams). The U2 lane landed the
+STATIC decisions-panel chrome files-first (`game_ui/src/decision_chrome.rs`):
+the `interface/countrydecisionview.gui` layout parses complete, and every
+decision definition in `common/decisions/*.txt` maps to a card with its
+name-loc-key + icon-sprite + category resolved against the shipped
+localisation/GFX (vanilla 1.16.x: **4125 decisions, 591 categories, 88
+decision files**; name-key 3839/4125, declared-icon 3518/3595 resolve). What
+is NOT in any shipped file is the per-decision DYNAMIC state — this is the
+recording ask:
+
+- Per PLAYER/observed country, per hour (or on-change), for each currently
+  **visible** decision: `{decision_id, category_id, availability, remaining_timer_days, cost, target_tag}` where
+  - `availability` ∈ {available, unavailable, active, on_cooldown},
+  - `cost` = the PP (or custom-resource) cost shown in `cost_and_timer_text`,
+  - `remaining_timer_days` = the `timer_text` countdown for timed/mission decisions,
+  - `target_tag` = the flag on a `targeted_decision_item` card.
+
+Consumer READY: `decision_chrome::decision_card_binding(def, Option<&DecisionStateEntry>)`
+folds this onto the file-derived card and FAILS CLOSED (dynamic fields `None`,
+never a fabricated "Available"/cost/timer) when the stream is absent. The
+cost/timer NUMBER FORMATTING (PP glyph, +/- colour, day/week rendering) is
+engine-computed → UNKNOWN, carried raw. Overlaps 9b `alerts.decisions`
+(available/timeout COUNTS); this per-decision list is the superset. Filed as
+EXTRACTION_NEEDS **A21 / R-DECISION-STATE**.
+
 ## 10. Building levels per state (live feed — when building rendering lands)
 
 Schema §4 `buildings`/`province_buildings` (state-scoped levels) are

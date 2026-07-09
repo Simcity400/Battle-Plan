@@ -71,7 +71,7 @@ the localisation join (item 9) for its token→name text plus its own state stre
 | Officer corps | countryofficercorpview.gui | major-view | chrome-composable | **NEW: character/leader roster** | binding |
 | Diplomacy | countrydiplomacyview.gui | major-view | **POPULATED (D4)** | 8b (relations/factions/wars) | relation_strip_view composes; finish rows |
 | State info | countrystateview.gui | major-view/popup | chrome-composable | 2 + 10 (owner/control/buildings) | binding |
-| Decisions | countrydecisionview.gui | major-view | chrome-composable | **NEW: decision state** (available/active/timers/costs) + 9b alert counts | binding + data-driven decision content |
+| Decisions | countrydecisionview.gui | major-view | **DEF-MAPPED (U2)** — layout + decision-def→card mapping done; state pending | **NEW: decision state** (available/active/timers/costs) + 9b alert counts | `decision_chrome.rs`: layout gate + 4125 decisions/591 cats mapped (name 3839/4125, icon 3518/3595); binding fail-closed until decision-state stream (A21) |
 | Division designer | divisiondesignerview.gui | major-view `[interactive→read-only]` | chrome-composable | **NEW: division templates** | read-only snapshot |
 | Equipment designer | equipmentdesignerview.gui | major-view `[interactive→read-only]` | chrome-composable | **NEW: equipment variants** | read-only snapshot |
 | Tank designer (NSB) | tank_designer_view.gui | major-view `[interactive→read-only]` DLC | chrome-composable | **NEW: equipment variants** | read-only, DLC-gated |
