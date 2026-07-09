@@ -739,7 +739,6 @@ fn atlas_rgba(image: &RgbaImage, glyph_channel: Option<usize>, mode: AtlasMode) 
     match mode {
         AtlasMode::Coverage => coverage_atlas_rgba(image, glyph_channel),
         // `RgbaImage` is already the R,G,B,A byte order the overlay uploads.
-        #[cfg(test)]
         AtlasMode::PreservedColor => image.pixels.clone(),
     }
 }

@@ -6808,6 +6808,11 @@ fn maybe_start_auto_round_for_height_locked(
     let root = runtime.root_output_dir.clone();
     match start_map_frame_capture_round_for_runtime(runtime, label) {
         Ok(()) => {
+            // CAPFIX5: an auto height-bucket round IS operator activity (the
+            // camera moved) — re-anchor the idle dwell clock like a control
+            // command (live 2026-07-09: the window expired mid-session while
+            // the operator was actively zooming).
+            note_control_activity();
             runtime
                 .census
                 .auto_round_buckets_done
