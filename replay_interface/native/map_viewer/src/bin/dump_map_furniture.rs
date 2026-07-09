@@ -26,11 +26,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use map_viewer::{
-    furniture_layer_from_resolver, load_vp_label_font, vp_strip_texture_path, BmFont,
+    base_icon_defines_from_resolver, base_icon_layer_from_resolver, furniture_layer_from_resolver,
+    load_vp_label_font, vp_strip_texture_path, BaseIconKind, BaseIconLayer, BaseIconMarker, BmFont,
     FurnitureLayer, FurnitureMarker, FurnitureMarkerKind, GameFileResolver, Result, RgbaFontAtlas,
-    VpIconDefines, CORE_GFX_SOURCE, HOI_20BS_ATLAS_SOURCE, HOI_20BS_FNT_SOURCE,
-    MAPICONS_GFX_SOURCE, MAPICONS_GUI_SOURCE, VICTORY_POINTS_LOC_PREFIX, VP_LABEL_FONT_NAME,
-    VP_STRIP_FRAME_COUNT, VP_STRIP_SPRITE_NAME, VP_STRIP_SPRITE_TEXTURE,
+    VpIconDefines, AIRBASE_ICON_DISTANCE_CUTOFF_KEY, AIR_BASE_SPRITE_FRAMES, AIR_BASE_SPRITE_NAME,
+    AIR_BASE_SPRITE_TEXTURE, CORE_GFX_SOURCE, HOI_20BS_ATLAS_SOURCE, HOI_20BS_FNT_SOURCE,
+    MAPICONS_GFX_SOURCE, MAPICONS_GUI_SOURCE, NAVALBASE_ICON_DISTANCE_CUTOFF_KEY,
+    NAVAL_BASE_SPRITE_FRAMES, NAVAL_BASE_SPRITE_NAME, NAVAL_BASE_SPRITE_TEXTURE,
+    VICTORY_POINTS_LOC_PREFIX, VP_LABEL_FONT_NAME, VP_STRIP_FRAME_COUNT, VP_STRIP_SPRITE_NAME,
+    VP_STRIP_SPRITE_TEXTURE,
 };
 use serde::Serialize;
 
@@ -69,6 +73,19 @@ struct MarkerJson {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct BaseIconJson {
+    kind: String,
+    state_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    province_id: Option<u32>,
+    owner: String,
+    anchor_x: f32,
+    anchor_y: f32,
+    level: u32,
+    frame: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct Citation {
     parameter: String,
     source: String,
@@ -89,10 +106,16 @@ struct LayoutJson {
     vp_strip_sprite: String,
     vp_strip_frames: u32,
     vp_icon_defines: VpIconDefinesJson,
+    airbase_icon_distance_cutoff: f32,
+    navalbase_icon_distance_cutoff: f32,
+    air_base_icon_count: usize,
+    naval_base_icon_count: usize,
+    naval_base_unattributed: Vec<u32>,
     citations: Vec<Citation>,
     untraced: Vec<Citation>,
     regions: Vec<RegionSpec>,
     markers: Vec<MarkerJson>,
+    base_icons: Vec<BaseIconJson>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -164,6 +187,10 @@ fn main() -> Result<()> {
     let (font, atlas) = load_vp_label_font(&resolver)?;
     let sprite_present = vp_strip_texture_path(&resolver)?.is_some();
 
+    // FURN2: naval / air base map icons (file-derived static 1936 slice).
+    let base_layer = base_icon_layer_from_resolver(&resolver)?;
+    let base_defines = base_icon_defines_from_resolver(&resolver)?;
+
     if regions.is_empty() {
         regions = default_regions(layer.width, layer.height);
     }
@@ -173,7 +200,15 @@ fn main() -> Result<()> {
     for mut region in regions {
         clamp_region(&mut region, layer.width, layer.height)?;
         let file = format!("furniture_{}.png", sanitize(&region.name));
-        let in_view = render_region(&layer, &land, &font, &atlas, &region, &out.join(&file))?;
+        let in_view = render_region(
+            &layer,
+            &base_layer,
+            &land,
+            &font,
+            &atlas,
+            &region,
+            &out.join(&file),
+        )?;
         region.file = file;
         region.markers_in_view = Some(in_view);
         region_specs.push(region);
@@ -198,10 +233,16 @@ fn main() -> Result<()> {
         vp_strip_sprite: VP_STRIP_SPRITE_NAME.to_string(),
         vp_strip_frames: VP_STRIP_FRAME_COUNT,
         vp_icon_defines: (&layer.vp_icon_defines).into(),
+        airbase_icon_distance_cutoff: base_defines.airbase_cutoff,
+        navalbase_icon_distance_cutoff: base_defines.navalbase_cutoff,
+        air_base_icon_count: base_layer.air_base_count,
+        naval_base_icon_count: base_layer.naval_base_count,
+        naval_base_unattributed: base_layer.naval_unattributed.clone(),
         citations: citations(sprite_present),
         untraced: untraced(),
         regions: region_specs.clone(),
         markers: layer.markers.iter().map(marker_json).collect(),
+        base_icons: base_layer.markers.iter().map(base_icon_json).collect(),
     };
     let json_path = out.join("map_furniture_layout.json");
     fs::write(&json_path, serde_json::to_vec_pretty(&layout)?)?;
@@ -215,6 +256,14 @@ fn main() -> Result<()> {
         VP_LABEL_FONT_NAME,
         font.glyphs.len(),
     );
+    println!(
+        "base icons (FURN2): {} air + {} naval ({} naval unattributed), cutoffs air={} naval={}",
+        base_layer.air_base_count,
+        base_layer.naval_base_count,
+        base_layer.naval_unattributed.len(),
+        base_defines.airbase_cutoff,
+        base_defines.navalbase_cutoff,
+    );
     println!("layout json: {}", json_path.display());
     for region in &region_specs {
         println!(
@@ -225,6 +274,19 @@ fn main() -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn base_icon_json(m: &BaseIconMarker) -> BaseIconJson {
+    BaseIconJson {
+        kind: m.kind.as_str().to_string(),
+        state_id: m.state_id,
+        province_id: m.province_id,
+        owner: m.owner.clone(),
+        anchor_x: m.anchor_x,
+        anchor_y: m.anchor_y,
+        level: m.level,
+        frame: m.frame,
+    }
 }
 
 fn marker_json(m: &FurnitureMarker) -> MarkerJson {
@@ -295,6 +357,38 @@ fn citations(sprite_present: bool) -> Vec<Citation> {
             "common/defines/00_graphics.lua:947-955,963",
             "VICTORY_POINT_LEVELS=3, VICTORY_POINT_MAP_ICON_AFTER={0,9,20}, VICTORY_POINT_MAP_ICON_TEXT_CUTOFF={150,250,500}, *_TEXT_CUTOFF_{MIN=100,MAX=800}, *_DOT_CUTOFF_{MIN=100,MAX=1000}, MAX_VICTORY_POINTS_FOR_PERCENT=22, CAPITAL_CUTOFF_MAX=1000, CAPITAL_ICON_CUTOFF=1100. Values file-derived; the engine's comparison/interp of them is engine-side.",
         ),
+        // ---- FURN2: naval / air base map icons ----
+        cite(
+            "base_icon_show_on_map",
+            "common/buildings/00_buildings.txt:84-96 (air_base) + :150-174 (naval_base)",
+            "both carry show_on_map=1; air_base has no spawn_point (state locator), naval_base declares spawn_point=naval_base_spawn (province locator); level_cap air state_max=10, naval province_max=10.",
+        ),
+        cite(
+            "base_icon_positions",
+            "map/buildings.txt",
+            &format!(
+                "row layout state;type;x;y;z;rotation;extra. air_base rows are STATE-keyed (1 per state, 1081/1081); {NAVAL_BASE_SPRITE_NAME} spawn rows attributed to a coastal LAND province by raster-sampling the locator pixel. World (x,z) -> pixel (x,(H-1)-z)."
+            ),
+        ),
+        cite(
+            "base_icon_levels",
+            "history/states/*.txt buildings = { }",
+            "state-level air_base = N and per-province <province_id> = { naval_base = N } (1936 START level; runtime construction is a recording feed).",
+        ),
+        cite(
+            "base_icon_distance_cutoffs",
+            "common/defines/00_graphics.lua:956-957",
+            &format!(
+                "{AIRBASE_ICON_DISTANCE_CUTOFF_KEY}=900, {NAVALBASE_ICON_DISTANCE_CUTOFF_KEY}=900 (\"At what distance air/naval bases are hidden\"). Values file-derived; the <= comparison is this law's choice."
+            ),
+        ),
+        cite(
+            "base_icon_sprites",
+            &format!("{MAPICONS_GFX_SOURCE}:369-416 + {MAPICONS_GUI_SOURCE}:887,1022"),
+            &format!(
+                "{AIR_BASE_SPRITE_NAME} tex={AIR_BASE_SPRITE_TEXTURE} noOfFrames={AIR_BASE_SPRITE_FRAMES}; {NAVAL_BASE_SPRITE_NAME} tex={NAVAL_BASE_SPRITE_TEXTURE} noOfFrames={NAVAL_BASE_SPRITE_FRAMES}; containers air_base_mapicon(:887) size 32x32, naval_base_mapicon(:1022). Level->frame index is engine-side (UNTRACED); the law bounds frame < noOfFrames."
+            ),
+        ),
     ]
 }
 
@@ -337,6 +431,7 @@ fn untraced() -> Vec<Citation> {
 /// inside the region.
 fn render_region(
     layer: &FurnitureLayer,
+    base_layer: &BaseIconLayer,
     land: &[bool],
     font: &BmFont,
     atlas: &RgbaFontAtlas,
@@ -405,8 +500,46 @@ fn render_region(
         }
     }
 
+    // FURN2 base icons: air bases as cyan squares, naval bases as orange
+    // diamonds, sized by build level. These marker glyphs are a VALIDATION cue
+    // for the eyeball view, not the game sprite (the real GFX_mapicon_* frames
+    // are cited in the JSON); positions/levels are the file-derived law.
+    for b in &base_layer.markers {
+        let (lx, ly) = to_local(b.anchor_x, b.anchor_y);
+        if lx < 0 || ly < 0 || lx >= out_w as i32 || ly >= out_h as i32 {
+            continue;
+        }
+        let r = 2 + (b.level.min(4) as i32);
+        match b.kind {
+            BaseIconKind::AirBase => {
+                fill_square(&mut pixels, out_w, out_h, lx, ly, r, [90, 210, 230]);
+            }
+            BaseIconKind::NavalBase => {
+                fill_diamond(&mut pixels, out_w, out_h, lx, ly, r, [240, 150, 60]);
+            }
+        }
+    }
+
     write_png(path, out_w, out_h, &pixels)?;
     Ok(in_view)
+}
+
+fn fill_square(pixels: &mut [[u8; 3]], w: usize, h: usize, cx: i32, cy: i32, r: i32, color: [u8; 3]) {
+    for dy in -r..=r {
+        for dx in -r..=r {
+            put(pixels, w, h, cx + dx, cy + dy, color);
+        }
+    }
+}
+
+fn fill_diamond(pixels: &mut [[u8; 3]], w: usize, h: usize, cx: i32, cy: i32, r: i32, color: [u8; 3]) {
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx.abs() + dy.abs() <= r {
+                put(pixels, w, h, cx + dx, cy + dy, color);
+            }
+        }
+    }
 }
 
 /// Blit a string with the real BMFont glyph atlas, left-aligned, vertically

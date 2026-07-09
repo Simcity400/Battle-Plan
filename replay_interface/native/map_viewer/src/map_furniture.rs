@@ -130,8 +130,58 @@ pub const HOI_20BS_FNT_SOURCE: &str = "gfx/fonts/hoi_20bs.fnt";
 /// real atlas shares the `.fnt` basename is INFERRED from `core.gfx` + file
 /// existence + the engine loader convention, not stated in the `.fnt`.
 pub const HOI_20BS_ATLAS_SOURCE: &str = "gfx/fonts/hoi_20bs.dds";
-/// The GUI text font name (`interface/mapicons.gui:645`, `:673`).
+/// The GUI text font name the container DECLARES (`interface/mapicons.gui:645`,
+/// `:673`). NOTE: this is the *declared* font, not the font that renders on the
+/// map — see [`VP_MAP_TEXT_FONT_NAME`] / the FURN-FONT law below.
 pub const VP_LABEL_FONT_NAME: &str = "hoi_20bs";
+
+// ----------------------------------------------------------------------------
+// FURN-FONT law (font substitution — was UNTRACED, now FILE-TRACED 2026-07-09).
+//
+// The `victory_point_mapicon` / `capital_mapicon` GUI containers DECLARE
+// `font = "hoi_20bs"` (`interface/mapicons.gui:645`, `:673`), but the on-map
+// city/VP name that actually renders is the MAP font `tahoma_60`, whose
+// fontfile is `gfx/fonts/hoi_mapfont4` (`interface/core.gfx:1679`-`:1680`
+// `bitmapfont { name = "tahoma_60"  path = "gfx/fonts/hoi_mapfont4" }`) — the
+// SAME map font the country-name labels use (`map_label_law.rs`,
+// `MAP_LABEL_LAW.md` §Font). The on-map instant text is composited by the map
+// text renderer in the map font, not the flat GUI font the container names.
+//
+// DECISIVE FILE EVIDENCE (advance-sum, both shipped `.fnt` files, no capture):
+// the measured on-screen widths (`w1check\furn_oracle_*.png`, gui_scale=1.0)
+// are "Melbourne" 149 px / "Adelaide" 119 px. Summing shipped `xadvance`:
+//   * `hoi_mapfont4` (tahoma_60): 370 / 298 → x0.4027 / x0.3993  (=> 148 / 119)
+//   * `hoi_20bs`               :  77 /  62 → x1.9351 / x1.9194
+// Only the map font lands both words at ONE plausible scale (~0.40); matching
+// with `hoi_20bs` would require a 1.93x UPSCALE of a 20 px bitmap page (blurry,
+// implausible for the crisp on-map glyphs), and the prior oracle's glyph-ink
+// measurement ('M' cap = 56 x 0.4 = 22 px) independently pins the shape to the
+// map font. The gate `gate_vanilla_vp_text_font_substitution_advance_law`
+// re-proves this from the shipped `.fnt` files.
+//
+// TRACED: the RENDERED font is the map font (file citation above).
+// ENGINE-MEASURED (not a single-file constant): the 0.40 scale — it is NOT the
+// declared/map point-size ratio (20/84 = 0.238), so it is a map-text world
+// scale set in engine C++; kept as the measured value with its evidence.
+// ----------------------------------------------------------------------------
+
+/// The map font that ACTUALLY renders the on-map VP/city name (declared
+/// `tahoma_60` at `interface/core.gfx:1679`). The container's `hoi_20bs` is a
+/// declared-but-substituted GUI font (see the FURN-FONT law above).
+pub const VP_MAP_TEXT_FONT_NAME: &str = "tahoma_60";
+/// BMFont metrics for the rendered map text font (`gfx/fonts/hoi_mapfont4.fnt`,
+/// `info size=84 lineHeight=84 base=70`, 575 glyphs).
+pub const VP_MAP_TEXT_FNT_SOURCE: &str = "gfx/fonts/hoi_mapfont4.fnt";
+/// Glyph atlas page for the map text font (`gfx/fonts/hoi_mapfont4.dds`,
+/// 2048x1024) — the same atlas the country-name labels sample.
+pub const VP_MAP_TEXT_ATLAS_SOURCE: &str = "gfx/fonts/hoi_mapfont4.dds";
+/// ENGINE-MEASURED on-map VP/city text scale applied to the map font
+/// (`w1check\furn_oracle_*.png`, gui_scale=1.0): advance-sum x0.4027 / x0.3993
+/// on "Melbourne" (149 px) / "Adelaide" (119 px) vs the shipped
+/// `gfx/fonts/hoi_mapfont4.fnt` sums 370 / 298, glyph-ink confirmed. NOT the
+/// declared/map point-size ratio (20/84 = 0.238) — the exact engine origin is a
+/// map-text world scale (engine C++), so this is kept as the measured value.
+pub const VP_MAP_TEXT_SCALE: f32 = 0.40;
 
 /// `victory_point_mapicon` / `capital_mapicon` container size in GUI pixels
 /// (`interface/mapicons.gui:632`, `:659` `size = { width=160 height=30 }`).
@@ -1055,6 +1105,28 @@ pub fn load_vp_label_font(resolver: &GameFileResolver) -> Result<(BmFont, RgbaFo
     ))
 }
 
+/// Load the map text font that ACTUALLY renders the on-map VP/city name —
+/// `tahoma_60`, fontfile `gfx/fonts/hoi_mapfont4` (`interface/core.gfx:1679`) —
+/// through the resolver (mod override wins). This is the FURN-FONT law: the
+/// container declares `hoi_20bs` but the engine composites the map font (see
+/// the module `VP_MAP_TEXT_*` constants). Returns the BMFont metrics + atlas,
+/// exactly as [`load_vp_label_font`] does for the declared font, so a caller
+/// can render the on-map text with the correct glyphs at [`VP_MAP_TEXT_SCALE`].
+pub fn load_vp_map_text_font(resolver: &GameFileResolver) -> Result<(BmFont, RgbaFontAtlas)> {
+    let fnt_path = resolver.resolve_required(VP_MAP_TEXT_FNT_SOURCE, "hoi_mapfont4.fnt")?;
+    let font = parse_bmfont(&read_latin1(&fnt_path)?)?;
+    let atlas_path = resolver.resolve_required(VP_MAP_TEXT_ATLAS_SOURCE, "hoi_mapfont4.dds")?;
+    let image = load_dds_rgba(&atlas_path)?;
+    Ok((
+        font,
+        RgbaFontAtlas {
+            width: image.width,
+            height: image.height,
+            pixels: image.pixels,
+        },
+    ))
+}
+
 /// A decoded RGBA glyph atlas (kept public so the dump bin can blit from it
 /// without touching the crate-private image types).
 #[derive(Clone, Debug)]
@@ -1129,6 +1201,476 @@ fn parse_u32_field(value: String) -> Option<u32> {
 /// caller can fail visibly rather than assume it exists.
 pub fn vp_strip_texture_path(resolver: &GameFileResolver) -> Result<Option<PathBuf>> {
     resolver.resolve(VP_STRIP_SPRITE_TEXTURE)
+}
+
+// ============================================================================
+// FURN2 — naval-base / air-base map icons (file-derivable 1936 static slice)
+// ============================================================================
+//
+// A separate furniture layer from the VP/capital markers above. Every visual
+// parameter is a shipped-file value read through the mod-aware resolver:
+//
+// * WHICH buildings draw on the map: `common/buildings/00_buildings.txt`
+//   `show_on_map = 1` (`air_base` `:84`-`:96` and `naval_base` `:150`-`:174`
+//   both carry it). The `air_base` block has NO `spawn_point`, so its map
+//   position comes from the `air_base` locator; the `naval_base` block declares
+//   `spawn_point = naval_base_spawn` (`:156`), so its map position comes from
+//   the `naval_base_spawn` locator.
+// * The icon POSITIONS: `map/buildings.txt` locators. Row layout
+//   `state_id;building;x;y;z;rotation;extra` (parsed by
+//   [`map_building_placements_from_resolver`]). `air_base` rows are STATE-keyed
+//   (exactly one per state, verified 1081/1081). `naval_base_spawn` rows are
+//   the port locators (2362), each associated to its coastal land province by
+//   sampling the province raster at the locator pixel (see
+//   [`associate_naval_spawns_to_provinces`]). World `(x, z)` maps to map-pixel
+//   `(x, (H-1) - z)` — the same convention `border_world_synthesis.rs` proved.
+// * The BUILD LEVELS: `history/states/*.txt` `buildings = { }` block — a
+//   state-level `air_base = N` and per-province sub-blocks
+//   `<province_id> = { naval_base = N }` (parsed by
+//   [`parse_state_building_levels`]). This is the 1936 START level only;
+//   runtime construction is a recording feed (same limitation as the capitals).
+// * The zoom cutoffs: `common/defines/00_graphics.lua:956`-`:957`
+//   `AIRBASE_ICON_DISTANCE_CUTOFF = 900`, `NAVALBASE_ICON_DISTANCE_CUTOFF = 900`
+//   ("At what distance air/naval bases are hidden").
+// * The sprites: `interface/mapicons.gfx:369`-`:416`
+//   `GFX_mapicon_air_base` (`noOfFrames = 7`) and `GFX_mapicon_naval_base`
+//   (`noOfFrames = 11`); their containers `interface/mapicons.gui:887`
+//   (`air_base_mapicon`, size 32x32) and `:1022` (`naval_base_mapicon`).
+//
+// UNTRACED (engine-C++, labelled, never fitted): the exact building-level ->
+// sprite-frame index (like the VP strip frame, `noOfFrames` bounds it but the
+// mapping is engine-side); the exact per-icon sub-locator offset; and, for
+// naval bases, the engine's own spawn->province attribution (this law derives
+// it from the raster and fails closed on a miss).
+
+/// `common/buildings/00_buildings.txt` building names FURN2 draws.
+pub const AIR_BASE_BUILDING: &str = "air_base";
+pub const NAVAL_BASE_BUILDING: &str = "naval_base";
+/// The `map/buildings.txt` locator type the `naval_base` block's
+/// `spawn_point = naval_base_spawn` (`00_buildings.txt:156`) points at.
+pub const NAVAL_BASE_SPAWN_LOCATOR: &str = "naval_base_spawn";
+
+/// `interface/mapicons.gfx:375` — the on-map air-base icon sprite.
+pub const AIR_BASE_SPRITE_NAME: &str = "GFX_mapicon_air_base";
+pub const AIR_BASE_SPRITE_TEXTURE: &str = "gfx/interface/mapicons/mapicon_building_airbase.dds";
+/// `interface/mapicons.gfx:377` `noOfFrames = 7`.
+pub const AIR_BASE_SPRITE_FRAMES: u32 = 7;
+/// `interface/mapicons.gfx:411` — the on-map naval-base icon sprite.
+pub const NAVAL_BASE_SPRITE_NAME: &str = "GFX_mapicon_naval_base";
+pub const NAVAL_BASE_SPRITE_TEXTURE: &str = "gfx/interface/mapicons/mapicon_building_navalbase.dds";
+/// `interface/mapicons.gfx:413` `noOfFrames = 11`.
+pub const NAVAL_BASE_SPRITE_FRAMES: u32 = 11;
+
+/// `common/defines/00_graphics.lua:956` `AIRBASE_ICON_DISTANCE_CUTOFF = 900`.
+pub const AIRBASE_ICON_DISTANCE_CUTOFF_KEY: &str = "AIRBASE_ICON_DISTANCE_CUTOFF";
+/// `common/defines/00_graphics.lua:957` `NAVALBASE_ICON_DISTANCE_CUTOFF = 900`.
+pub const NAVALBASE_ICON_DISTANCE_CUTOFF_KEY: &str = "NAVALBASE_ICON_DISTANCE_CUTOFF";
+
+/// `00_buildings.txt` `air_base` `level_cap { state_max = 10 }` (`:93`-`:95`).
+pub const AIR_BASE_STATE_MAX_LEVEL: u32 = 10;
+/// `00_buildings.txt` `naval_base` `level_cap { province_max = 10 }` (`:171`-`:173`).
+pub const NAVAL_BASE_PROVINCE_MAX_LEVEL: u32 = 10;
+
+/// Maximum raster radius (map pixels) searched to attribute a `naval_base_spawn`
+/// port locator to a land province when the exact locator pixel is sea. A port
+/// spawn sits at the coastline, so the land province is at most a few pixels
+/// away; misses beyond this radius fail closed (no icon) rather than guess.
+pub const NAVAL_SPAWN_LAND_SNAP_RADIUS: i32 = 6;
+
+/// The kind of base furniture icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaseIconKind {
+    /// State-level air base (`air_base` locator + `air_base = N` state level).
+    AirBase,
+    /// Province-level naval base (`naval_base_spawn` locator + per-province
+    /// `naval_base = N` level).
+    NavalBase,
+}
+
+impl BaseIconKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BaseIconKind::AirBase => "air_base",
+            BaseIconKind::NavalBase => "naval_base",
+        }
+    }
+    /// Shipped sprite frame count for this icon (`interface/mapicons.gfx`).
+    pub fn sprite_frames(self) -> u32 {
+        match self {
+            BaseIconKind::AirBase => AIR_BASE_SPRITE_FRAMES,
+            BaseIconKind::NavalBase => NAVAL_BASE_SPRITE_FRAMES,
+        }
+    }
+    pub fn sprite_name(self) -> &'static str {
+        match self {
+            BaseIconKind::AirBase => AIR_BASE_SPRITE_NAME,
+            BaseIconKind::NavalBase => NAVAL_BASE_SPRITE_NAME,
+        }
+    }
+}
+
+/// The two FURN2 zoom cutoffs, read from `common/defines/00_graphics.lua`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BaseIconDefines {
+    /// `AIRBASE_ICON_DISTANCE_CUTOFF` (`:956`).
+    pub airbase_cutoff: f32,
+    /// `NAVALBASE_ICON_DISTANCE_CUTOFF` (`:957`).
+    pub navalbase_cutoff: f32,
+}
+
+impl BaseIconDefines {
+    /// Camera-distance cutoff for a kind. The `<=` comparison is this law's
+    /// choice (engine C++ is UNTRACED); the value is the shipped define.
+    pub fn cutoff(&self, kind: BaseIconKind) -> f32 {
+        match kind {
+            BaseIconKind::AirBase => self.airbase_cutoff,
+            BaseIconKind::NavalBase => self.navalbase_cutoff,
+        }
+    }
+    /// Whether the icon is visible at `cam_dist` (`cam_dist <= cutoff`).
+    pub fn visible(&self, kind: BaseIconKind, cam_dist: f32) -> bool {
+        cam_dist <= self.cutoff(kind)
+    }
+}
+
+/// Parse the two base-icon zoom cutoffs from the graphics-defines lua text.
+/// Fails closed if either key is absent — no invented fallback.
+pub fn parse_base_icon_defines(source: &str) -> Result<BaseIconDefines> {
+    Ok(BaseIconDefines {
+        airbase_cutoff: parse_lua_number_define(source, AIRBASE_ICON_DISTANCE_CUTOFF_KEY)?,
+        navalbase_cutoff: parse_lua_number_define(source, NAVALBASE_ICON_DISTANCE_CUTOFF_KEY)?,
+    })
+}
+
+/// Load the base-icon zoom cutoffs from `common/defines/00_graphics.lua`.
+pub fn base_icon_defines_from_resolver(resolver: &GameFileResolver) -> Result<BaseIconDefines> {
+    let path = resolver.resolve_required(BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE, "graphics defines lua")?;
+    let source = latin1_bytes_to_string(&std::fs::read(&path)?);
+    parse_base_icon_defines(&source)
+}
+
+/// 1936 START building levels read from one `history/states/*.txt`
+/// `buildings = { }` block: the state-level `air_base = N` and the per-province
+/// `<province_id> = { naval_base = N }` sub-blocks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StateBuildingLevels {
+    /// State-level air-base level (0 when absent).
+    pub air_base: u32,
+    /// Province id -> naval-base level (only provinces with a level >= 1).
+    pub naval_base: BTreeMap<u32, u32>,
+}
+
+/// Parse the state-level air-base level and per-province naval-base levels out
+/// of one state history file's text (comments already stripped). Returns
+/// `None` when the file carries no `buildings` block. The state-level
+/// `air_base = N` is read word-boundary-aware; province naval bases come from
+/// the `<province_id> = { }` sub-blocks so a bare `naval_base` scalar (there is
+/// none in vanilla) can never be mis-attributed to a state.
+pub fn parse_state_building_levels(text: &str) -> Option<StateBuildingLevels> {
+    let (buildings, _) = extract_block_after(text, "buildings", 0)?;
+    let air_base = parse_u32_value(&buildings, AIR_BASE_BUILDING).unwrap_or(0);
+    let mut naval_base = BTreeMap::new();
+    for (name, block) in top_level_assignment_blocks(&buildings) {
+        let Ok(province_id) = name.trim().parse::<u32>() else {
+            continue;
+        };
+        if let Some(level) = parse_u32_value(&block, NAVAL_BASE_BUILDING) {
+            if level >= 1 {
+                naval_base.insert(province_id, level);
+            }
+        }
+    }
+    Some(StateBuildingLevels {
+        air_base,
+        naval_base,
+    })
+}
+
+/// Load the 1936 building levels for every state through the resolver: state id
+/// -> air-base level, and province id -> naval-base level.
+pub fn state_building_levels_from_resolver(
+    resolver: &GameFileResolver,
+) -> Result<(BTreeMap<u32, u32>, BTreeMap<u32, u32>)> {
+    let files = resolver.resolve_dir_files("history/states", Some("txt"))?;
+    let mut air_by_state = BTreeMap::new();
+    let mut naval_by_province = BTreeMap::new();
+    for (_, path) in &files {
+        let text = strip_comments(&read_latin1(path)?);
+        let Some(state_id) = parse_u32_value(&text, "id") else {
+            continue;
+        };
+        let Some(levels) = parse_state_building_levels(&text) else {
+            continue;
+        };
+        if levels.air_base >= 1 {
+            air_by_state.insert(state_id, levels.air_base);
+        }
+        for (province_id, level) in levels.naval_base {
+            naval_by_province.insert(province_id, level);
+        }
+    }
+    Ok((air_by_state, naval_by_province))
+}
+
+/// Map-pixel anchor (x right, y down) of a `map/buildings.txt` world locator.
+/// World `(x, z)` -> pixel `(x, (H-1) - z)` (the `border_world_synthesis.rs`
+/// convention). `pos` is `[x, elevation, z]`.
+pub fn building_locator_pixel(pos: [f32; 3], map_height: usize) -> (f32, f32) {
+    let x = pos[0];
+    let y = (map_height.saturating_sub(1) as f32) - pos[2];
+    (x, y)
+}
+
+/// Attribute each `naval_base_spawn` port locator to its coastal LAND province
+/// by sampling the province raster at the locator pixel, snapping outward to the
+/// nearest land pixel within [`NAVAL_SPAWN_LAND_SNAP_RADIUS`] when the exact
+/// pixel is sea/empty. Returns province id -> the LOCATOR pixel (the icon draws
+/// at the locator, not the snapped land pixel). When several locators map to the
+/// same province the nearest-snap one wins (deterministic). Locators with no
+/// land within the radius are dropped (fail closed).
+pub fn associate_naval_spawns_to_provinces(
+    placements: &[MapBuildingPlacement],
+    province_ids: &[u32],
+    width: usize,
+    height: usize,
+    province_to_state: &BTreeMap<u32, u32>,
+) -> BTreeMap<u32, (f32, f32)> {
+    let mut best: BTreeMap<u32, (i32, (f32, f32))> = BTreeMap::new();
+    if province_ids.len() != width.saturating_mul(height) || width == 0 || height == 0 {
+        return BTreeMap::new();
+    }
+    let land_at = |px: i32, py: i32| -> Option<u32> {
+        if px < 0 || py < 0 || px >= width as i32 || py >= height as i32 {
+            return None;
+        }
+        let pid = province_ids[py as usize * width + px as usize];
+        // A land province is one that belongs to a state (sea provinces do not).
+        if pid != 0 && province_to_state.contains_key(&pid) {
+            Some(pid)
+        } else {
+            None
+        }
+    };
+    for placement in placements {
+        if placement.building != NAVAL_BASE_SPAWN_LOCATOR {
+            continue;
+        }
+        let (fx, fy) = building_locator_pixel(placement.pos, height);
+        let cx = fx.round() as i32;
+        let cy = fy.round() as i32;
+        // Spiral search by increasing Chebyshev radius; the first land pixel at
+        // the smallest radius attributes the port.
+        let mut found: Option<(u32, i32)> = None;
+        'search: for r in 0..=NAVAL_SPAWN_LAND_SNAP_RADIUS {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if r > 0 && dx.abs() != r && dy.abs() != r {
+                        continue; // only the ring at radius r
+                    }
+                    if let Some(pid) = land_at(cx + dx, cy + dy) {
+                        found = Some((pid, r));
+                        break 'search;
+                    }
+                }
+            }
+        }
+        let Some((pid, dist)) = found else {
+            continue;
+        };
+        match best.get(&pid) {
+            Some((best_dist, _)) if *best_dist <= dist => {}
+            _ => {
+                best.insert(pid, (dist, (fx, fy)));
+            }
+        }
+    }
+    best.into_iter()
+        .map(|(pid, (_, pixel))| (pid, pixel))
+        .collect()
+}
+
+/// A placed FURN2 base icon in map-pixel space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BaseIconMarker {
+    pub kind: BaseIconKind,
+    /// State the base belongs to (air-base key; naval base's owning state).
+    pub state_id: u32,
+    /// Province id for a naval base; `None` for a state-level air base.
+    pub province_id: Option<u32>,
+    /// Owner tag of the state (empty when unowned).
+    pub owner: String,
+    /// Marker centre in map-pixel space (x right, y down).
+    pub anchor_x: f32,
+    pub anchor_y: f32,
+    /// 1936 START build level (>= 1; a level-0 building draws no icon).
+    pub level: u32,
+    /// Sprite frame index. `min(level, sprite_frames - 1)` — the exact
+    /// level->frame mapping is engine-side (UNTRACED); this bounds it inside the
+    /// shipped `noOfFrames` and never invents a frame outside the strip.
+    pub frame: u32,
+}
+
+/// Inputs the base-icon law needs; all resolver-derived.
+pub struct BaseIconInputs<'a> {
+    pub placements: &'a [MapBuildingPlacement],
+    pub province_ids: &'a [u32],
+    pub width: usize,
+    pub height: usize,
+    pub province_to_state: &'a BTreeMap<u32, u32>,
+    pub state_owners: &'a BTreeMap<u32, String>,
+    /// State id -> 1936 air-base level (`history/states`).
+    pub air_base_levels: &'a BTreeMap<u32, u32>,
+    /// Province id -> 1936 naval-base level (`history/states`).
+    pub naval_base_levels: &'a BTreeMap<u32, u32>,
+    /// Building types with `show_on_map = 1` (`common/buildings`).
+    pub show_on_map: &'a std::collections::BTreeSet<String>,
+}
+
+/// The computed FURN2 base-icon layer plus attribution diagnostics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BaseIconLayer {
+    pub markers: Vec<BaseIconMarker>,
+    /// Air-base markers emitted.
+    pub air_base_count: usize,
+    /// Naval-base markers emitted (successfully attributed to a locator).
+    pub naval_base_count: usize,
+    /// Province naval bases in history that could NOT be attributed to a spawn
+    /// locator (fail-closed, reported not guessed).
+    pub naval_unattributed: Vec<u32>,
+}
+
+/// Sprite frame for a build level: `min(level, sprite_frames - 1)`. Kept out of
+/// the marker so the UNTRACED level->frame law lives in exactly one place.
+pub fn base_icon_frame(kind: BaseIconKind, level: u32) -> u32 {
+    level.min(kind.sprite_frames().saturating_sub(1))
+}
+
+/// Compute every FURN2 base icon from the shipped inputs, deterministic and
+/// sorted (air bases by state id, then naval bases by province id).
+///
+/// * Air bases: one per state whose `air_base` level >= 1, positioned at the
+///   state's `air_base` locator (fail closed if the state has no locator).
+/// * Naval bases: one per province whose `naval_base` level >= 1, positioned at
+///   the province's attributed `naval_base_spawn` locator (fail closed / listed
+///   in `naval_unattributed` if no locator attributes to it).
+pub fn compute_base_icon_markers(inputs: &BaseIconInputs) -> BaseIconLayer {
+    let mut markers = Vec::new();
+    let air_on_map = inputs.show_on_map.contains(AIR_BASE_BUILDING);
+    let naval_on_map = inputs.show_on_map.contains(NAVAL_BASE_BUILDING);
+
+    // Air bases: state-keyed locators (verified one per state).
+    if air_on_map {
+        let mut air_locator: BTreeMap<u32, (f32, f32)> = BTreeMap::new();
+        for placement in inputs.placements {
+            if placement.building == AIR_BASE_BUILDING {
+                air_locator
+                    .entry(placement.state_id)
+                    .or_insert_with(|| building_locator_pixel(placement.pos, inputs.height));
+            }
+        }
+        for (state_id, level) in inputs.air_base_levels {
+            if *level < 1 {
+                continue;
+            }
+            let Some((ax, ay)) = air_locator.get(state_id).copied() else {
+                continue; // no shipped locator for this state: fail closed
+            };
+            markers.push(BaseIconMarker {
+                kind: BaseIconKind::AirBase,
+                state_id: *state_id,
+                province_id: None,
+                owner: inputs.state_owners.get(state_id).cloned().unwrap_or_default(),
+                anchor_x: ax,
+                anchor_y: ay,
+                level: *level,
+                frame: base_icon_frame(BaseIconKind::AirBase, *level),
+            });
+        }
+    }
+    let air_base_count = markers.len();
+
+    // Naval bases: province-keyed via the spawn-locator attribution.
+    let mut naval_unattributed = Vec::new();
+    if naval_on_map {
+        let spawn_pixels = associate_naval_spawns_to_provinces(
+            inputs.placements,
+            inputs.province_ids,
+            inputs.width,
+            inputs.height,
+            inputs.province_to_state,
+        );
+        for (province_id, level) in inputs.naval_base_levels {
+            if *level < 1 {
+                continue;
+            }
+            let Some((nx, ny)) = spawn_pixels.get(province_id).copied() else {
+                naval_unattributed.push(*province_id);
+                continue;
+            };
+            let state_id = inputs
+                .province_to_state
+                .get(province_id)
+                .copied()
+                .unwrap_or(0);
+            markers.push(BaseIconMarker {
+                kind: BaseIconKind::NavalBase,
+                state_id,
+                province_id: Some(*province_id),
+                owner: inputs
+                    .state_owners
+                    .get(&state_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                anchor_x: nx,
+                anchor_y: ny,
+                level: *level,
+                frame: base_icon_frame(BaseIconKind::NavalBase, *level),
+            });
+        }
+    }
+    let naval_base_count = markers.len() - air_base_count;
+    naval_unattributed.sort_unstable();
+
+    BaseIconLayer {
+        markers,
+        air_base_count,
+        naval_base_count,
+        naval_unattributed,
+    }
+}
+
+/// Build the full FURN2 base-icon layer straight from a resolver: reads the
+/// province raster, the `common/buildings` `show_on_map` set, the
+/// `map/buildings.txt` locators, and the 1936 `history/states` building levels,
+/// then computes the icons. Reuses the same shipped raster as the VP furniture.
+pub fn base_icon_layer_from_resolver(resolver: &GameFileResolver) -> Result<BaseIconLayer> {
+    let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
+    let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
+    let (_definitions, color_to_id) = load_definition_csv(&definition_csv)?;
+    let bmp = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+
+    let state_files = resolver.resolve_dir_files("history/states", Some("txt"))?;
+    let (_states, province_to_state, state_owners) = load_states(&state_files)?;
+    let (air_base_levels, naval_base_levels) = state_building_levels_from_resolver(resolver)?;
+
+    let placements = map_building_placements_from_resolver(resolver)?;
+    let show_on_map = show_on_map_buildings_from_resolver(resolver)?
+        .into_iter()
+        .filter(|building| building.show_on_map >= 1)
+        .map(|building| building.name)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    Ok(compute_base_icon_markers(&BaseIconInputs {
+        placements: &placements,
+        province_ids: &bmp.ids,
+        width: bmp.width,
+        height: bmp.height,
+        province_to_state: &province_to_state,
+        state_owners: &state_owners,
+        air_base_levels: &air_base_levels,
+        naval_base_levels: &naval_base_levels,
+        show_on_map: &show_on_map,
+    }))
 }
 
 #[cfg(test)]
@@ -1939,6 +2481,53 @@ VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT = 22,\n";
     }
 
     #[test]
+    fn gate_vanilla_vp_text_font_substitution_advance_law() {
+        // FURN-FONT law EVIDENCE GATE (font substitution, was UNTRACED): prove
+        // from the two shipped `.fnt` files that the on-map VP/city text renders
+        // in the MAP font `tahoma_60`/`hoi_mapfont4` at ~0.40, NOT the declared
+        // `hoi_20bs`. Measured on-screen (gui_scale=1.0): "Melbourne" 149 px,
+        // "Adelaide" 119 px. The map font's advance sums x0.40 must reproduce
+        // those; the declared GUI font would require an implausible >1.5x upscale
+        // of its 20 px bitmap page.
+        let Some(resolver) = vanilla_resolver() else {
+            return;
+        };
+        let (map_font, map_atlas) =
+            load_vp_map_text_font(&resolver).expect("map text font (hoi_mapfont4)");
+        let (gui_font, _) = load_vp_label_font(&resolver).expect("declared gui font (hoi_20bs)");
+        // The rendered font is the map font: shipped metrics (lineHeight 84,
+        // 2048x1024 atlas) are the country-label map font, not a 20 px GUI page.
+        assert_eq!(map_font.line_height, 84, "hoi_mapfont4 lineHeight");
+        assert_eq!(
+            (map_atlas.width, map_atlas.height),
+            (2048, 1024),
+            "hoi_mapfont4 atlas geometry"
+        );
+        for (word, measured) in [("Melbourne", 149.0f32), ("Adelaide", 119.0f32)] {
+            let map_sum = map_font.measure(word) as f32;
+            let gui_sum = gui_font.measure(word) as f32;
+            let map_at_scale = map_sum * VP_MAP_TEXT_SCALE;
+            let gui_scale_needed = measured / gui_sum;
+            // The map font at the measured 0.40 scale lands within 2 px.
+            assert!(
+                (map_at_scale - measured).abs() <= 2.0,
+                "map font '{word}' {map_sum} x{VP_MAP_TEXT_SCALE} = {map_at_scale:.1} \
+                 must reproduce measured {measured} px"
+            );
+            // The declared GUI font could only match by upscaling >1.5x — refuted.
+            assert!(
+                gui_scale_needed > 1.5,
+                "declared hoi_20bs '{word}' would need x{gui_scale_needed:.2} (upscale) \
+                 to reach {measured} px — the rendered font is NOT the declared one"
+            );
+            println!(
+                "gate FURN-FONT: '{word}' measured={measured}px  mapfont4 {map_sum}x0.40={map_at_scale:.1}px  \
+                 hoi_20bs {gui_sum}x{gui_scale_needed:.2}(upscale)"
+            );
+        }
+    }
+
+    #[test]
     fn gate_vanilla_vp_icon_defines_match_shipped_values() {
         let Some(resolver) = vanilla_resolver() else {
             return;
@@ -1990,6 +2579,331 @@ VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT = 22,\n";
             capitals,
             layer.localisation_key_count,
             layer.capital_count
+        );
+    }
+
+    #[test]
+    fn gate_vanilla_capital_tie_rule_is_bounded() {
+        // Capital tie-rule RESIDUAL bound (2026-07-09). The engine's capital
+        // star anchors on the HIGHEST-VP province in the capital state (live
+        // oracle: Canberra 30 stars, Sydney 20 circles). WHICH province wins a
+        // TIE (two provinces sharing the state's max VP) is engine-C++ and
+        // UNTRACED statically: the capital icon is built by a type-dispatch
+        // selection is upstream gameplay/state code; the `00_graphics.lua`
+        // cutoff defines route through the string-keyed define registry with no
+        // code string-ref (NameHunt on `VICTORY_POINT_MAP_ICON*` = 0 hits), so
+        // there is no static anchor to the comparator.
+        //
+        // This gate BOUNDS the residual from the shipped files: in vanilla 1936
+        // exactly SIX capital states have a max-VP tie, and our deterministic
+        // rule (lowest province id) equals the province-declaration order for
+        // ALL six — it diverges from a "first-declared victory_points" rule for
+        // only TWO capitals (state 425 Mysore, 807 Gdynia). So the untraced tie
+        // rule can change at most two vanilla capital stars, and never a
+        // non-capital marker. A game update that alters this set fails here.
+        let Some(resolver) = vanilla_resolver() else {
+            return;
+        };
+        // Data-level census: across ALL capital states (any tag's capital), how
+        // many have a max-VP tie at all — the theoretical reach of the tie rule.
+        let data = furniture_static_data_from_resolver(&resolver, "english")
+            .expect("furniture static data");
+        let capital_state_ids: std::collections::BTreeSet<u32> =
+            data.capital_states.values().copied().collect();
+        let tie_state = |vps: &BTreeMap<u32, i32>| -> Option<(Vec<u32>, u32)> {
+            let max_vp = vps.values().copied().max().unwrap_or(0);
+            let mut tied: Vec<u32> = vps
+                .iter()
+                .filter(|(_, v)| **v == max_vp)
+                .map(|(p, _)| *p)
+                .collect();
+            tied.sort_unstable();
+            (tied.len() > 1).then(|| (tied.clone(), *tied.iter().min().unwrap()))
+        };
+        let mut census: Vec<(u32, u32)> = Vec::new();
+        for (state_id, vps) in &data.state_victory_points {
+            if capital_state_ids.contains(state_id) {
+                if let Some((_, winner)) = tie_state(vps) {
+                    census.push((*state_id, winner));
+                }
+            }
+        }
+        census.sort_unstable();
+        // Exactly six shipped capital-state ties; lowest-id winners. Only 425
+        // (Mysore) and 807 (Gdynia) would differ under a "first-declared" rule.
+        assert_eq!(
+            census,
+            vec![
+                (65, 514),   // Sachsen
+                (69, 3585),  // Sudetenland
+                (328, 4572), // Manchukuo
+                (425, 4315), // Mysore  (first-declared would pick 8011)
+                (459, 1145), // Western Algeria
+                (807, 3295), // Gdynia  (first-declared would pick 9263)
+            ],
+            "vanilla capital-state VP ties changed — re-verify the bounded tie residual"
+        );
+        // Render-level bound: of the ties above, how many actually emit a
+        // rendered capital STAR in the 1936 layer (owner's capital == state and
+        // the province is painted). Each such star must land on our lowest-id
+        // winner — this is what a viewer sees, and it is the true visible reach.
+        let layer = furniture_layer_from_resolver(&resolver, "english").expect("layer");
+        let mut rendered_ties: Vec<(u32, u32)> = Vec::new();
+        for (state_id, winner) in &census {
+            let starred: Vec<u32> = layer
+                .markers
+                .iter()
+                .filter(|m| m.state_id == *state_id && m.kind == FurnitureMarkerKind::Capital)
+                .map(|m| m.province_id)
+                .collect();
+            if !starred.is_empty() {
+                assert_eq!(
+                    starred,
+                    vec![*winner],
+                    "capital state {state_id} stars must be exactly the lowest-id tied \
+                     province {winner}"
+                );
+                rendered_ties.push((*state_id, *winner));
+            }
+        }
+        println!(
+            "gate: capital tie residual — {} vanilla capital-state ties in data, \
+             {} rendered as 1936 stars: {:?}",
+            census.len(),
+            rendered_ties.len(),
+            rendered_ties
+        );
+    }
+
+    // ---- FURN2: naval / air base icons ----
+
+    fn base_show_on_map() -> std::collections::BTreeSet<String> {
+        std::collections::BTreeSet::from([
+            AIR_BASE_BUILDING.to_string(),
+            NAVAL_BASE_BUILDING.to_string(),
+        ])
+    }
+
+    #[test]
+    fn parse_state_building_levels_reads_air_and_naval() {
+        // The exact 1-France.txt shape: buildings inside history with a
+        // state-level air_base and a per-province naval_base sub-block.
+        let text = strip_comments(
+            "state={ id=1 history={ owner = FRA\n buildings = {\n infrastructure = 2\n industrial_complex = 1\n air_base = 1\n 3838 = { naval_base = 3 }\n } } provinces={ 3838 } }",
+        );
+        let levels = parse_state_building_levels(&text).expect("buildings block");
+        assert_eq!(levels.air_base, 1);
+        assert_eq!(levels.naval_base.get(&3838).copied(), Some(3));
+        // A state with no buildings block yields None (fail visible).
+        assert!(parse_state_building_levels("state={ id=2 }").is_none());
+        // A state with buildings but no air/naval yields zero air + empty naval.
+        let bare = strip_comments("buildings = { infrastructure = 5 }");
+        let bare = parse_state_building_levels(&bare).expect("bare buildings");
+        assert_eq!(bare.air_base, 0);
+        assert!(bare.naval_base.is_empty());
+    }
+
+    #[test]
+    fn base_icon_frame_stays_inside_shipped_strip() {
+        // Air strip has 7 frames, naval 11; a level beyond the strip clamps to
+        // the top frame and never indexes outside noOfFrames.
+        for level in 0..=15u32 {
+            assert!(base_icon_frame(BaseIconKind::AirBase, level) < AIR_BASE_SPRITE_FRAMES);
+            assert!(base_icon_frame(BaseIconKind::NavalBase, level) < NAVAL_BASE_SPRITE_FRAMES);
+        }
+        assert_eq!(base_icon_frame(BaseIconKind::AirBase, 3), 3);
+        assert_eq!(base_icon_frame(BaseIconKind::AirBase, 10), 6, "air clamps to 6");
+        assert_eq!(base_icon_frame(BaseIconKind::NavalBase, 10), 10);
+    }
+
+    #[test]
+    fn building_locator_pixel_flips_world_z() {
+        // World (x, elevation, z) -> pixel (x, (H-1) - z).
+        let (px, py) = building_locator_pixel([2948.38, 11.6, 1359.45], 2048);
+        assert!((px - 2948.38).abs() < 1e-3);
+        assert!((py - ((2048 - 1) as f32 - 1359.45)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn parse_base_icon_defines_reads_cutoffs() {
+        let lua = "\
+NDefines = { NGraphics = {\n\
+\tAIRBASE_ICON_DISTANCE_CUTOFF = 900, -- At what distance air bases are hidden\n\
+\tNAVALBASE_ICON_DISTANCE_CUTOFF = 900, -- 1300, -- naval bases\n\
+} }\n";
+        let d = parse_base_icon_defines(lua).expect("cutoffs");
+        assert_eq!(d.airbase_cutoff, 900.0);
+        assert_eq!(d.navalbase_cutoff, 900.0);
+        assert!(d.visible(BaseIconKind::AirBase, 900.0));
+        assert!(!d.visible(BaseIconKind::AirBase, 900.1));
+        assert!(!d.visible(BaseIconKind::NavalBase, 901.0));
+    }
+
+    #[test]
+    fn air_and_naval_base_icons_place_on_locators() {
+        let width = 40;
+        let height = 30;
+        let mut ids = vec![0u32; width * height];
+        // Land province 100 (state 5) fills a coastal rectangle; sea elsewhere.
+        raster_rect(&mut ids, width, 100, (10, 10, 20, 20));
+        let province_to_state = BTreeMap::from([(100u32, 5u32)]);
+        let state_owners = BTreeMap::from([(5u32, "FRA".to_string())]);
+        let air_base_levels = BTreeMap::from([(5u32, 3u32)]);
+        let naval_base_levels = BTreeMap::from([(100u32, 2u32)]);
+        // Air-base locator at pixel (15,15) -> pos z = (H-1)-15.
+        let air = MapBuildingPlacement {
+            state_id: 5,
+            building: AIR_BASE_BUILDING.to_string(),
+            pos: [15.0, 0.0, (height - 1) as f32 - 15.0],
+            rotation: 0.0,
+            adjacent_sea_province: 0,
+        };
+        // Naval spawn locator at pixel (20,15): just off the land edge (x=19 is
+        // land, x=20 is sea) so the snap search attributes it to province 100.
+        let naval = MapBuildingPlacement {
+            state_id: 5,
+            building: NAVAL_BASE_SPAWN_LOCATOR.to_string(),
+            pos: [20.0, 0.0, (height - 1) as f32 - 15.0],
+            rotation: 0.0,
+            adjacent_sea_province: 900,
+        };
+        let show = base_show_on_map();
+        let layer = compute_base_icon_markers(&BaseIconInputs {
+            placements: &[air, naval],
+            province_ids: &ids,
+            width,
+            height,
+            province_to_state: &province_to_state,
+            state_owners: &state_owners,
+            air_base_levels: &air_base_levels,
+            naval_base_levels: &naval_base_levels,
+            show_on_map: &show,
+        });
+        assert_eq!(layer.air_base_count, 1);
+        assert_eq!(layer.naval_base_count, 1);
+        assert!(layer.naval_unattributed.is_empty());
+        let a = layer
+            .markers
+            .iter()
+            .find(|m| m.kind == BaseIconKind::AirBase)
+            .unwrap();
+        assert_eq!((a.state_id, a.province_id, a.level, a.frame), (5, None, 3, 3));
+        assert!((a.anchor_x - 15.0).abs() < 0.01 && (a.anchor_y - 15.0).abs() < 0.01);
+        let n = layer
+            .markers
+            .iter()
+            .find(|m| m.kind == BaseIconKind::NavalBase)
+            .unwrap();
+        assert_eq!((n.state_id, n.province_id, n.level, n.frame), (5, Some(100), 2, 2));
+        assert!((n.anchor_x - 20.0).abs() < 0.01 && (n.anchor_y - 15.0).abs() < 0.01);
+        assert_eq!(n.owner, "FRA");
+    }
+
+    #[test]
+    fn naval_base_without_locator_fails_closed() {
+        // A province with a naval base in history but NO spawn locator nearby is
+        // reported as unattributed, never given a fabricated position.
+        let width = 40;
+        let height = 30;
+        let mut ids = vec![0u32; width * height];
+        raster_rect(&mut ids, width, 100, (10, 10, 20, 20));
+        let province_to_state = BTreeMap::from([(100u32, 5u32)]);
+        let state_owners = BTreeMap::from([(5u32, "FRA".to_string())]);
+        let naval_base_levels = BTreeMap::from([(100u32, 2u32)]);
+        let show = base_show_on_map();
+        let layer = compute_base_icon_markers(&BaseIconInputs {
+            placements: &[], // no locators at all
+            province_ids: &ids,
+            width,
+            height,
+            province_to_state: &province_to_state,
+            state_owners: &state_owners,
+            air_base_levels: &BTreeMap::new(),
+            naval_base_levels: &naval_base_levels,
+            show_on_map: &show,
+        });
+        assert_eq!(layer.naval_base_count, 0);
+        assert_eq!(layer.naval_unattributed, vec![100]);
+    }
+
+    #[test]
+    fn base_icons_suppressed_when_not_show_on_map() {
+        // If common/buildings did not flag show_on_map, no icons emit.
+        let width = 40;
+        let height = 30;
+        let mut ids = vec![0u32; width * height];
+        raster_rect(&mut ids, width, 100, (10, 10, 20, 20));
+        let air = MapBuildingPlacement {
+            state_id: 5,
+            building: AIR_BASE_BUILDING.to_string(),
+            pos: [15.0, 0.0, (height - 1) as f32 - 15.0],
+            rotation: 0.0,
+            adjacent_sea_province: 0,
+        };
+        let layer = compute_base_icon_markers(&BaseIconInputs {
+            placements: &[air],
+            province_ids: &ids,
+            width,
+            height,
+            province_to_state: &BTreeMap::from([(100u32, 5u32)]),
+            state_owners: &BTreeMap::from([(5u32, "FRA".to_string())]),
+            air_base_levels: &BTreeMap::from([(5u32, 3u32)]),
+            naval_base_levels: &BTreeMap::new(),
+            show_on_map: &std::collections::BTreeSet::new(),
+        });
+        assert!(layer.markers.is_empty());
+    }
+
+    #[test]
+    fn gate_vanilla_base_icon_defines_match_shipped() {
+        let Some(resolver) = vanilla_resolver() else {
+            return;
+        };
+        let d = base_icon_defines_from_resolver(&resolver).expect("base icon defines");
+        assert_eq!(d.airbase_cutoff, 900.0, "AIRBASE_ICON_DISTANCE_CUTOFF");
+        assert_eq!(d.navalbase_cutoff, 900.0, "NAVALBASE_ICON_DISTANCE_CUTOFF");
+        println!("gate: base icon defines {d:?}");
+    }
+
+    #[test]
+    fn gate_vanilla_base_icon_layer() {
+        let Some(resolver) = vanilla_resolver() else {
+            return;
+        };
+        let layer = base_icon_layer_from_resolver(&resolver).expect("base icon layer");
+        // 1936 vanilla has hundreds of air bases and naval bases.
+        assert!(
+            layer.air_base_count > 300,
+            "expected many air bases, got {}",
+            layer.air_base_count
+        );
+        assert!(
+            layer.naval_base_count > 400,
+            "expected many naval bases, got {}",
+            layer.naval_base_count
+        );
+        // Every emitted frame is inside its shipped strip and every anchor is on
+        // the map.
+        for m in &layer.markers {
+            assert!(m.frame < m.kind.sprite_frames(), "frame in strip");
+            assert!(m.anchor_x >= 0.0 && m.anchor_y >= 0.0);
+        }
+        // The spawn->province attribution should reach almost every naval base;
+        // a handful of odd coastlines may fail closed (reported, not guessed).
+        let total_naval = layer.naval_base_count + layer.naval_unattributed.len();
+        let rate = layer.naval_base_count as f32 / total_naval as f32;
+        assert!(
+            rate > 0.95,
+            "naval spawn attribution rate {rate:.3} ({} of {total_naval}); unattributed {:?}",
+            layer.naval_base_count,
+            layer.naval_unattributed
+        );
+        println!(
+            "gate: FURN2 {} air + {} naval icons, naval attribution {:.3} ({} unattributed)",
+            layer.air_base_count,
+            layer.naval_base_count,
+            rate,
+            layer.naval_unattributed.len()
         );
     }
 }
