@@ -21,8 +21,12 @@
 //! found, replace the raw renderer for that field and cite it. See
 //! `LANE_REPORT.md` for the per-field FILE/UNKNOWN table.
 
+use crate::hud::{OutlinerBinding, OutlinerRowBinding};
 use crate::topbar::{flag_candidates_for_size, FactoryCounts, FlagSizeFolder, TopbarBinding};
-use replay_core::{CountryIdentity, Leaf, TopbarScalars, ViewStatus, WorldFrame};
+use replay_core::{
+    CountryIdentity, DiplomacyView, Leaf, TopbarScalars, ViewStatus, WorldFrame,
+};
+use std::collections::BTreeMap;
 
 /// Render an `f64` leaf as its raw shortest round-trip decimal, or `None`
 /// (the fail-closed absent form) when the value was never measured.
@@ -201,6 +205,279 @@ pub fn resolve_country_name(
     }
     let tag_upper = tag.to_ascii_uppercase();
     (tag_upper.clone(), tag_upper)
+}
+
+// ===========================================================================
+// D3 — Outliner (army / navy / air unit lists) population
+// ===========================================================================
+//
+// The outliner layout consumer is [`crate::hud::OutlinerBinding`] (flat row
+// list). This seam turns the `replay_core` per-hour unit views
+// (`division_units` / `fleets` / `wings`) into POV-keyed army/navy/air rows.
+//
+// FILE labels:
+//   * Row *icon* sprites (`GFX_theatre_army_shield` / `_task_force_shield` /
+//     `_air_force_shield`) are FILE — the shipped `interface/theatreselector`
+//     sprites already resolved by the outliner layout gate in `hud.rs`.
+//   * Row *text* is the unit UID (`div_uid` / `task_force_uid` / `wing_uid`).
+//     the game's outliner shows a formatted unit *name* + status; no shipped file
+//     citation for that formatter exists in this decoupled context, so the row
+//     label is the raw stable identity string (UNKNOWN formatting, rendered
+//     raw per Constraint 3). See `LANE_REPORT.md`.
+//   * Row *progress* is fail-closed `None` — no cited law maps unit
+//     strength/org onto the outliner progress bar.
+//
+// Fail-closed: a unit whose `owner` leaf is not `Measured` cannot be attributed
+// to any POV and is omitted from every POV list. A domain that is
+// absent/unavailable yields an empty list plus the carried [`ViewStatus`].
+
+/// The theatre-shield icon sprites keyed per unit branch (FILE:
+/// `interface/theatreselector.gfx`, same sprites the outliner layout gate
+/// resolves in `hud.rs`).
+pub const OUTLINER_ARMY_ICON: &str = "GFX_theatre_army_shield";
+pub const OUTLINER_NAVY_ICON: &str = "GFX_theatre_task_force_shield";
+pub const OUTLINER_AIR_ICON: &str = "GFX_theatre_air_force_shield";
+
+/// One populated outliner row: the stable unit identity plus its branch icon.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlinerUnitRow {
+    /// The unit UID (`div_uid` / `task_force_uid` / `wing_uid`) — the row key.
+    pub uid: String,
+    /// Branch icon sprite (one of the `OUTLINER_*_ICON` constants).
+    pub icon_sprite: String,
+}
+
+/// POV-keyed army/navy/air lists plus each branch's source-view status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlinerUnitLists {
+    pub pov_tag: String,
+    pub army: Vec<OutlinerUnitRow>,
+    pub navy: Vec<OutlinerUnitRow>,
+    pub air: Vec<OutlinerUnitRow>,
+    pub army_status: ViewStatus,
+    pub navy_status: ViewStatus,
+    pub air_status: ViewStatus,
+}
+
+/// True when a leaf owner string equals `pov_tag` (measured only).
+fn owner_is(owner: &Leaf<String>, pov_tag: &str) -> bool {
+    matches!(owner, Leaf::Measured(tag) if tag == pov_tag)
+}
+
+/// Build the POV-keyed army/navy/air outliner lists for one world frame (D3).
+///
+/// Army rows come from `division_units` (row key `div_uid`), navy rows from
+/// `fleets` (row key `task_force_uid` — the addressable presence unit), and air
+/// rows from `wings` (row key `wing_uid`); each is owner-filtered to `pov_tag`.
+pub fn outliner_unit_lists_from_frame(frame: &WorldFrame, pov_tag: &str) -> OutlinerUnitLists {
+    let army = frame
+        .division_units()
+        .iter()
+        .filter(|d| owner_is(&d.owner, pov_tag))
+        .map(|d| OutlinerUnitRow {
+            uid: d.div_uid.clone(),
+            icon_sprite: OUTLINER_ARMY_ICON.to_string(),
+        })
+        .collect();
+    let navy = frame
+        .fleets()
+        .iter()
+        .filter(|f| owner_is(&f.owner, pov_tag))
+        .map(|f| OutlinerUnitRow {
+            uid: f.task_force_uid.clone(),
+            icon_sprite: OUTLINER_NAVY_ICON.to_string(),
+        })
+        .collect();
+    let air = frame
+        .wings()
+        .iter()
+        .filter(|w| owner_is(&w.owner, pov_tag))
+        .map(|w| OutlinerUnitRow {
+            uid: w.wing_uid.clone(),
+            icon_sprite: OUTLINER_AIR_ICON.to_string(),
+        })
+        .collect();
+    OutlinerUnitLists {
+        pov_tag: pov_tag.to_string(),
+        army,
+        navy,
+        air,
+        army_status: frame.division_units_status(),
+        navy_status: frame.fleets_status(),
+        air_status: frame.wings_status(),
+    }
+}
+
+/// Flatten the typed army→navy→air lists into the layout-only
+/// [`OutlinerBinding`] the existing outliner compositor consumes. Row text is
+/// the raw UID (UNKNOWN formatting) and progress is fail-closed `None`.
+pub fn outliner_binding_from_lists(lists: &OutlinerUnitLists) -> OutlinerBinding {
+    let mut rows = Vec::with_capacity(lists.army.len() + lists.navy.len() + lists.air.len());
+    for row in lists.army.iter().chain(&lists.navy).chain(&lists.air) {
+        rows.push(OutlinerRowBinding {
+            icon_sprite: row.icon_sprite.clone(),
+            text: row.uid.clone(),
+            progress: None,
+        });
+    }
+    OutlinerBinding {
+        collapsed: false,
+        rows,
+    }
+}
+
+/// Convenience: build the flat outliner binding for a POV directly from a
+/// frame (D3 population path used by the HUD).
+pub fn outliner_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> OutlinerBinding {
+    outliner_binding_from_lists(&outliner_unit_lists_from_frame(frame, pov_tag))
+}
+
+// ===========================================================================
+// D4 — Country / diplomacy panel (read-only) population
+// ===========================================================================
+//
+// Bound from `replay_core`'s [`DiplomacyView`] (requirements items 8/8b):
+//   * `factions`  — the global faction-membership matrix (name, leader,
+//     sorted members), from each country's `politics.faction`.
+//   * `relations` — one row per *other* country from `pov_tag`'s perspective,
+//     each flag `Some(bool)` only when the pair leaf is `Measured`, else
+//     `None` (fail-closed; an unrecorded relation is never asserted false).
+//   * `wars`      — the POV's belligerents (relation rows with `at_war ==
+//     Some(true)`), i.e. the panel's war rows.
+//
+// KNOWN VIEW GAPS (data present in the recording but NOT surfaced by the
+// read-only `DiplomacyView`, so absent here — recorded in `LANE_REPORT.md`):
+//   * `diplomacy_world.wars` war objects (attackers/defenders/front/start) —
+//     the view exposes only per-pair `at_war` booleans, so a war's belligerent
+//     grouping is reconstructed from directional pairs, not read as an object.
+//   * `diplomacy_live.war_relations` casualties — not surfaced.
+//   * `diplomacy.relation_flags` / `diplomacy_live.faction_members` — the view
+//     derives the same facts from the per-country lists, so these are redundant
+//     and unread.
+// This lane is READ-ONLY on `replay_core`; closing these gaps is a replay_core
+// change, not a binding change.
+
+/// One faction and its membership (D4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactionRow {
+    pub faction_name: String,
+    /// The member flagged `is_leader`, when the recording marks one.
+    pub leader: Option<String>,
+    /// Member tags, sorted ascending.
+    pub members: Vec<String>,
+}
+
+/// One directed relation row `pov_tag → other_tag` (D4). Each flag is
+/// `Some(bool)` only when the pair leaf was measured; `None` is fail-closed
+/// "not recorded", never a fabricated `false`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RelationRow {
+    pub other_tag: String,
+    pub at_war: Option<bool>,
+    pub same_faction: Option<bool>,
+    pub non_aggression_pact: Option<bool>,
+    pub military_access: Option<bool>,
+    pub guarantee: Option<bool>,
+    pub embargo: Option<bool>,
+    pub subject: Option<bool>,
+}
+
+/// Read-only country/diplomacy panel binding for one POV at one hour (D4).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiplomacyPanelBinding {
+    pub pov_tag: String,
+    /// `true` only when the underlying `DiplomacyView` status is `Present`.
+    pub available: bool,
+    /// Global faction-membership matrix, sorted by faction name.
+    pub factions: Vec<FactionRow>,
+    /// `pov_tag → other` relation rows, one per other country, sorted by tag.
+    pub relations: Vec<RelationRow>,
+    /// The POV's belligerents (relation rows with `at_war == Some(true)`).
+    pub wars: Vec<String>,
+}
+
+fn bool_opt(leaf: &Leaf<bool>) -> Option<bool> {
+    match leaf {
+        Leaf::Measured(v) => Some(*v),
+        Leaf::Absent | Leaf::Unobtained => None,
+    }
+}
+
+/// The global faction-membership matrix from a [`DiplomacyView`], grouped by
+/// measured `faction_name` and sorted (name, then member tags).
+fn faction_rows(view: &DiplomacyView) -> Vec<FactionRow> {
+    // (members, leader) accumulated per faction name; BTreeMap keeps names
+    // sorted and country iteration is already sorted (BTreeMap keys).
+    let mut by_name: BTreeMap<String, (Vec<String>, Option<String>)> = BTreeMap::new();
+    for (tag, country) in &view.countries {
+        if let Leaf::Measured(name) = &country.faction_name {
+            let entry = by_name.entry(name.clone()).or_default();
+            entry.0.push(tag.clone());
+            if matches!(country.faction_is_leader, Leaf::Measured(true)) {
+                entry.1 = Some(tag.clone());
+            }
+        }
+    }
+    by_name
+        .into_iter()
+        .map(|(faction_name, (mut members, leader))| {
+            members.sort();
+            FactionRow {
+                faction_name,
+                leader,
+                members,
+            }
+        })
+        .collect()
+}
+
+/// `pov_tag → other` relation rows (one per other country in the view).
+fn relation_rows(view: &DiplomacyView, pov_tag: &str) -> Vec<RelationRow> {
+    let mut rows = Vec::new();
+    for other in view.countries.keys() {
+        if other == pov_tag {
+            continue;
+        }
+        let pair = view.pairs.get(&(pov_tag.to_string(), other.clone()));
+        rows.push(RelationRow {
+            other_tag: other.clone(),
+            at_war: pair.and_then(|p| bool_opt(&p.at_war)),
+            same_faction: pair.and_then(|p| bool_opt(&p.same_faction)),
+            non_aggression_pact: pair.and_then(|p| bool_opt(&p.non_aggression_pact)),
+            military_access: pair.and_then(|p| bool_opt(&p.military_access)),
+            guarantee: pair.and_then(|p| bool_opt(&p.guarantee)),
+            embargo: pair.and_then(|p| bool_opt(&p.embargo)),
+            subject: pair.and_then(|p| bool_opt(&p.subject)),
+        });
+    }
+    rows
+}
+
+/// Build the read-only diplomacy panel for `pov_tag` at one world frame (D4).
+/// When the diplomacy view is not `Present`, returns the fail-closed empty
+/// binding (`available: false`, no faction/relation rows).
+pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> DiplomacyPanelBinding {
+    let view = frame.diplomacy();
+    if view.status != ViewStatus::Present {
+        return DiplomacyPanelBinding {
+            pov_tag: pov_tag.to_string(),
+            available: false,
+            ..DiplomacyPanelBinding::default()
+        };
+    }
+    let relations = relation_rows(view, pov_tag);
+    let wars = relations
+        .iter()
+        .filter(|r| r.at_war == Some(true))
+        .map(|r| r.other_tag.clone())
+        .collect();
+    DiplomacyPanelBinding {
+        pov_tag: pov_tag.to_string(),
+        available: true,
+        factions: faction_rows(view),
+        relations,
+        wars,
+    }
 }
 
 #[cfg(test)]
