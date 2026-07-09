@@ -374,6 +374,28 @@ reproduced identically by sequential and 4-worker parallel folds. **There is no 
 re-capturing any deleted stream requires a live game session.** Read it in place; never copy or
 modify it.
 
+## ⚠ OUTSTANDING INDEPENDENT GATES (2026-07-10)
+
+Per `CODEX_LANE_BRIEF.md` §7, a lossless-critical diff needs the **orchestrator's** independent
+adversarial gate on the final state — the implementer never clears its own work. Two such diffs
+landed on 2026-07-10 and **that gate has NOT been run**: Codex was rate-limited
+("hit your usage limit") on every attempt. It is not run, so it is not claimed.
+
+| Diff | Ships as | Orchestrator-verified | Independent gate |
+|---|---|---|---|
+| `hour_latch` | **default OFF** (`unwrap_or(false)`; no thread, no extra reads) | scope, fold-path zero edits, 1203/0 tests, G1 chain hash exact | **NOT RUN** |
+| `d53 delta_partial` | **opt-in** (default `delta` byte- and CPU-identical) | scope, 1214/0 tests, **G1 chain hash exact despite `world_fold.rs` edits** | **NOT RUN** |
+
+Both are inert by default, which is why they were allowed to merge. **Neither may be ENABLED**
+until (a) the independent adversarial gate runs clean, and (b) their live gates pass (hour-latch:
+shadow-soak + paired A/B + 6-core run; d53: paired A/B confirming the +46–68 ms/frame cost).
+
+Note the lanes' *own* Codex reviews did run and were valuable: hour-latch's returned REFUTED and
+exposed a real bug (a stale sweep read fabricated a false reload + duplicate capture); d53's
+returned REFUTED and exposed **two real silent-data-loss bugs** its own fuzzer had missed
+(empty-first-frame baseline desync; mutate-before-validate). That is the case for reviewer
+independence, in evidence.
+
 ## ⚠ WHAT "ZERO DATA LOSS" ACTUALLY MEANS (2026-07-10 — scope correction)
 
 The `lane/hour-latch` lane forced this, and it is load-bearing for the whole program.
