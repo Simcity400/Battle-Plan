@@ -374,6 +374,56 @@ reproduced identically by sequential and 4-worker parallel folds. **There is no 
 re-capturing any deleted stream requires a live game session.** Read it in place; never copy or
 modify it.
 
+## ⚠ WHAT "ZERO DATA LOSS" ACTUALLY MEANS (2026-07-10 — scope correction)
+
+The `lane/hour-latch` lane forced this, and it is load-bearing for the whole program.
+
+**An async sampler of a sim it cannot pause cannot deliver literal zero data loss.** Two facts:
+
+1. **Intra-hour transients are unobservable to any hourly sampler.** A value that changes and
+   reverts within one game-hour is invisible no matter how fast the sweep is. Hourly cadence is
+   the requirement; hourly cadence is also the ceiling on what can be seen.
+2. **A skipped/coalesced hour IS real loss of that hour's world state.** The status quo already
+   loses hours: 370 of 1790 (20.7%) on the deep-war run. The latch does **not** fix that — it
+   makes it *accounted* rather than *silent*.
+
+So the achievable guarantee, and the one we now hold ourselves to, is:
+
+> **ZERO-SILENT-GAP ACCOUNTING + BOUNDED SKEW.** Every game-hour is observed and accounted as
+> either a capture attempt (confirmed-complete or recorded-failed) or a **reason-tagged**
+> coalesce (superseded / overflow / flush / backward / anomalous). Invariant:
+> `observed == attempts + coalesced + in_flight`, with `in_flight == 0` after flush. Read skew
+> exists as it does today and is bounded, not monotonically improved.
+
+**Capturing every hour remains the goal — and it is a SWEEP-SPEED problem, not a latch problem.**
+Under sustained overrun only ~`RUN_MS / sweep_ms` hours can be captured; the rest are physically
+unrecoverable. The latch buys correct accounting and absorbs *momentary* bursts (which is what the
+28.2 ms bursts against a 167.6 ms mean actually are). Getting hours captured rather than coalesced
+is Phase 2/4's job: make the sweep fast.
+
+**Crucially, silent loss is prevented by DELTA accounting, not by the poll rate.**
+`HourLatch::observe` accounts every hour in `last+1..=raw`, so a multi-hour jump between polls is
+detected and coalesced-with-reason. 28.2 ms is the minimum *observed* interval in one capture, not
+a proven floor — correctness must never depend on it, and does not.
+
+### Status: MERGED but NOT CLEARED FOR ENABLING
+`hour_latch_enabled` defaults to **false** (`unwrap_or(false)`); no thread is spawned and no extra
+game memory is read when off, so legacy behaviour is unchanged. Verified on the merged tree by the
+orchestrator: fold path has **zero edits**, workspace **1203 tests / 0 failed**, and G1 fold chain
+hash on the deep-war 600 MiB prefix reproduces the reference
+`bc517771692b2052122fd1f83e6fda1c29c84b49c536cf058d8935997c1c63f7` exactly.
+
+**OUTSTANDING before it may be enabled:**
+1. **The orchestrator's independent adversarial gate DID NOT RUN** — Codex hit its usage limit.
+   This is a lossless-critical diff, so per `CODEX_LANE_BRIEF.md` §7 it requires that gate on the
+   post-fix state. *Not yet performed.* (The lane's own Codex review did run and returned REFUTED
+   on the first draft; one fix round was applied — see `lane_reports/hour-latch.md` for verbatim
+   findings, incl. a real bug where a stale sweep read fabricated a false reload + duplicate
+   capture.)
+2. Live shadow-soak: observed matches the counter 1:1, invariant holds throughout.
+3. Paired A/B vs legacy: skip count, frame p95, max_queue_depth, RAM.
+4. 6-core portability companion run.
+
 ## ⚠ CORRECTION 2026-07-10 — the Phase 4 "1.2 ms floor" is UNSUPPORTED
 
 The `lane/phase4-mirror-mapdetail` lane (report: `lane_reports/phase4-mirror-mapdetail.md`,
