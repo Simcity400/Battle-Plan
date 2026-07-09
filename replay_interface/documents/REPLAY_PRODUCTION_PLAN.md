@@ -76,8 +76,26 @@ spec may introduce a bare vanilla path join.
 
 ## 1. Current state (2026-07-09, branch `claude/replay-engine-extraction-18b40f`)
 
-- **Tests:** **1214 passed / 0 failed** across `map_viewer`, `replay_app`,
+- **Tests:** **1345 passed / 0 failed** across `map_viewer`, `replay_app`,
   `game_ui`, `replay_core`, `terrain_capture` (incl. all pool/oracle/fixture
+
+**Wave-5 merged (2026-07-09, all 17 lanes):** u1a/u1b/u1c/u1d war-HUD bindings
+(counters content, unitview, combat+waroverview, alerts strip — HUD POPULATED
+count 3→8 panels), u2a/u2b event+decision chrome (6941 events 97.4% renderable;
+4125 decisions def-mapped), m1a/m1b/m1c/m1d map modes (terrain/resource,
+states/ideology/players, diplomacy/factions, air/infrastructure — every
+selectable mode with a file-derivable law now has a gated module; 5 modes
+remain not-started: operatives/supply/resistance/compliance/raids),
+fx-streams (12 new replay_core views + 7 fixtures, positive set 12→19,
+EXTRACTION_NEEDS A22–A34), b2c (n/len size-law gate, IRAN CLOSED), re-rails
+(ribbon width/Bézier/UV RE-cited, orchestrator pyghidra-audited — one address
+corrected), re-bord12 (island loops = region-contour tracer, per-pair closure
+POOL-REFUTED, port spec archived in re_evidence/), c7 (h=50 gap re-diagnosed
+as WIRING not law), g2 (e2e hash gate), f3 (soak harness, 64 B growth/2000
+sweeps). A-row renumbering at merge: A18 alerts sub-counts, A19 war stats,
+A20 fired-event, A21 decision-state, A22–A34 fx-streams block.
+f2-memory launched post-fx-streams; residual-recount2 queued last.
+
   gate suites). Was 820 at plan authoring; 1036 after wave-1; +178 from the
   2026-07-09 wave-2/3/4 orchestration (see §1a).
 - **Fidelity ledger** (`FIDELITY_LEDGER.md` §1, LEDGER3 recount 2026-07-09 after
