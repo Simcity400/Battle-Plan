@@ -28,6 +28,7 @@
 //! timeline hour; Space toggles ~4 hours/sec autoplay; left click/drag on
 //! the scrub bar seeks the timeline; Escape quits.
 
+mod anomaly;
 mod blockers;
 mod bundle;
 mod camera;

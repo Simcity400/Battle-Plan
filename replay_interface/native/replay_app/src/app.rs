@@ -343,6 +343,9 @@ pub fn run(
         };
         let speed = transport.speed_hours_per_sec();
         let hour_label = provider.hour_label(hour);
+        // F4: surface any mid-playback anomaly holds (marked HELD), so a held
+        // last-good value never reads as live. Empty on clean recordings.
+        let anomaly_note = provider.anomaly_note(hour);
         // The readout lives in the in-window overlay now; the title only
         // repeats it while overlay text is unavailable (fonts not loaded),
         // so no information is silently lost.
@@ -363,8 +366,12 @@ pub fn run(
             // font plus the scrub bar. Line 1 is the raw Clausewitz date
             // string from the recording (GAP: localisation-formatted dates
             // like the in-game clock are a later slice).
+            let anomaly_suffix = match &anomaly_note {
+                Some(note) => format!(" | {note}"),
+                None => String::new(),
+            };
             let line2 = format!(
-                "{mode_label}{playing} {speed:.0}h/s | {POLITICAL_COLOR_BLOCKER_BADGE} | {observer_note} | {probe}"
+                "{mode_label}{playing} {speed:.0}h/s | {POLITICAL_COLOR_BLOCKER_BADGE} | {observer_note} | {probe}{anomaly_suffix}"
             );
             overlay.draw(&gfx, &hour_label, &line2, hour_index, transport.len())?;
             // Present never blocks (PresentOutcome): a full queue or a

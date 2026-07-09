@@ -10,11 +10,12 @@
 //! hour up front) while the static provider stays allocation-free on repeat
 //! calls.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use replay_core::{Leaf, WorldTimeline};
 
+use crate::anomaly::{scan_timeline, AnomalyPolicy};
 use crate::bundle::MapBundle;
 use crate::{Result, TimelineMode};
 
@@ -33,7 +34,19 @@ pub fn build_provider(
             for warning in timeline.warnings() {
                 eprintln!("replay_app: recording warning: {warning}");
             }
-            let recording = RecordingTimeline::new(timeline);
+            // F4 mid-playback anomaly policy: scan the recording at open, log
+            // every mid-stream anomaly once (log + hold-last-good, never
+            // invent). The known-province set (for out-of-range province ids)
+            // comes from the bundle's province->state map. Full-scan-at-open is
+            // fine for the synthetic fixtures; Phase F2 (bounded working set)
+            // revisits it for multi-year recordings.
+            let known_provinces: BTreeSet<u32> =
+                bundle.province_to_state.keys().copied().collect();
+            let policy = scan_timeline(&timeline, Some(known_provinces));
+            for diagnostic in policy.diagnostics() {
+                eprintln!("{}", diagnostic.log_line());
+            }
+            let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
             let label = format!("recording {}", recording.game_id());
             Ok((Box::new(recording), label))
         }
@@ -66,6 +79,12 @@ pub trait OwnerProvider {
         crate::observer::PovPicker::Unavailable(
             "no recording session (static baseline has no player countries)".to_string(),
         )
+    }
+
+    /// F4: the marked held-value note (mid-playback anomaly holds) for `hour`,
+    /// or `None` when nothing is held. Defaults to `None` (no anomaly policy).
+    fn anomaly_note(&self, _hour: i64) -> Option<String> {
+        None
     }
 }
 
@@ -112,6 +131,9 @@ pub struct RecordingTimeline {
     /// only a cheap re-conversion, but the probe path calls per mouse-move
     /// and must not re-walk the leaf map every event.
     cache: Mutex<Option<CachedFrame>>,
+    /// F4 mid-playback anomaly policy (populated at open by `build_provider`).
+    /// Holds the marked last-good state so the UI can surface held domains.
+    anomaly: Option<AnomalyPolicy>,
 }
 
 struct CachedFrame {
@@ -122,10 +144,43 @@ struct CachedFrame {
 }
 
 impl RecordingTimeline {
-    pub fn new(timeline: WorldTimeline) -> RecordingTimeline {
+    pub fn new_with_policy(
+        timeline: WorldTimeline,
+        anomaly: Option<AnomalyPolicy>,
+    ) -> RecordingTimeline {
         RecordingTimeline {
             timeline,
             cache: Mutex::new(None),
+            anomaly,
+        }
+    }
+
+    /// F4: the marked held-value note for the frame at-or-before `hour`, e.g.
+    /// "anomaly: HELD weather from hour 41", or `None` when nothing is held
+    /// (pre-anomaly hours, or a clean recording). An hour that lands inside a
+    /// detected gap is reported as unavailable, never interpolated.
+    fn anomaly_note_at(&self, hour: i64) -> Option<String> {
+        use crate::anomaly::HourResolution;
+        let policy = self.anomaly.as_ref()?;
+        // A requested hour inside a gap is unavailable (never interpolated).
+        if let HourResolution::GapUnavailable { from, to, missing } = policy.classify_hour(hour) {
+            return Some(format!(
+                "anomaly: hour {hour} unavailable (gap {from}->{to}, missing {missing:?}); not interpolated"
+            ));
+        }
+        let frame_hour = self.timeline.state_at(hour).ok()?.hour_index();
+        let mut parts: Vec<String> = Vec::new();
+        // Note a gap immediately preceding this frame (the after-gap hour).
+        if let Some(gap) = policy.gaps().iter().find(|g| g.to == frame_hour) {
+            parts.push(format!("gap before (missing {:?})", gap.missing));
+        }
+        for hold in policy.active_holds_at(frame_hour) {
+            parts.push(hold.marker);
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(format!("anomaly: {}", parts.join("; ")))
         }
     }
 
@@ -235,6 +290,10 @@ impl OwnerProvider for RecordingTimeline {
             )),
         }
     }
+
+    fn anomaly_note(&self, hour: i64) -> Option<String> {
+        self.anomaly_note_at(hour)
+    }
 }
 
 /// Measured owners only; `Absent`/`Unobtained` stay off the map (sentinel).
@@ -307,7 +366,7 @@ mod tests {
         let path = fixture_path("positive/fx_owner_controller_flip.battleplan");
         let source = replay_core::open_recording(&path).expect("open fixture");
         let timeline = replay_core::WorldTimeline::open(source).expect("timeline");
-        let recording = RecordingTimeline::new(timeline);
+        let recording = RecordingTimeline::new_with_policy(timeline, None);
         for &hour in recording.hours() {
             assert_eq!(
                 recording.seek_hour(hour),

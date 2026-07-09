@@ -59,8 +59,10 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
     fs::create_dir_all(out_dir)?;
     let positive_dir = out_dir.join("positive");
     let negative_dir = out_dir.join("negative");
+    let anomaly_dir = out_dir.join("anomaly");
     reset_dir(&positive_dir)?;
     reset_dir(&negative_dir)?;
+    reset_dir(&anomaly_dir)?;
 
     let mut positive_manifest = Vec::new();
     for scenario in positive_scenarios(seed) {
@@ -68,6 +70,18 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
         let bytes = pack_scenario(&scenario, seed)?;
         fs::write(&file, &bytes)?;
         positive_manifest.push(scenario_manifest(&scenario, &file, out_dir, bytes.len() as u64));
+    }
+
+    // F4 anomaly set: OPENS through the shared validator but degrades
+    // mid-stream. Kept in its own manifest section so it never enters the
+    // strict-negative rejection matrix (an anomaly recording opens; a
+    // malformed recording rejects — that distinction stays crisp).
+    let mut anomaly_manifest = Vec::new();
+    for scenario in anomaly_scenarios(seed) {
+        let file = anomaly_dir.join(format!("{}.battleplan", scenario.name));
+        let bytes = pack_scenario(&scenario, seed)?;
+        fs::write(&file, &bytes)?;
+        anomaly_manifest.push(scenario_manifest(&scenario, &file, out_dir, bytes.len() as u64));
     }
 
     let mut negative_manifest = Vec::new();
@@ -94,13 +108,15 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
             "determinism": "all timestamps, ordering, identity, and scenario data derive from the explicit seed"
         },
         "positive": positive_manifest,
+        "anomaly": anomaly_manifest,
         "negative": negative_manifest,
     });
     fs::write(out_dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
 
     println!(
-        "wrote {} positive and {} negative fixtures to {}",
+        "wrote {} positive, {} anomaly, and {} negative fixtures to {}",
         manifest["positive"].as_array().map_or(0, Vec::len),
+        manifest["anomaly"].as_array().map_or(0, Vec::len),
         manifest["negative"].as_array().map_or(0, Vec::len),
         out_dir.display()
     );
@@ -141,6 +157,9 @@ struct Scenario {
     snapshots: Vec<Value>,
     probes: Vec<Probe>,
     events: Vec<Value>,
+    /// F4 mid-playback anomaly descriptor (None for the ordinary positive
+    /// scenarios; Some for the anomaly set — it OPENS but degrades).
+    anomaly: Option<Value>,
 }
 
 struct NegativeFixture {
@@ -207,6 +226,7 @@ where
         snapshots,
         probes: Vec::new(),
         events: Vec::new(),
+        anomaly: None,
     }
 }
 
@@ -218,6 +238,206 @@ fn with_probe(mut scenario: Scenario, probe: Probe) -> Scenario {
 fn with_event(mut scenario: Scenario, event: Value) -> Scenario {
     scenario.events.push(event);
     scenario
+}
+
+fn with_anomaly(mut scenario: Scenario, anomaly: Value) -> Scenario {
+    scenario.anomaly = Some(anomaly);
+    scenario
+}
+
+/// Drop one snapshot (by tick index) after the scenario was built. Used only by
+/// the hour-gap anomaly fixture: it leaves the surviving hour series strictly
+/// increasing but with a hole where a mid-recording snapshot should be.
+fn drop_snapshot(mut scenario: Scenario, tick: usize) -> Scenario {
+    scenario.snapshots.remove(tick);
+    scenario
+}
+
+// ---------------------------------------------------------------------------
+// F4 anomaly scenarios (plan REPLAY_PRODUCTION_PLAN.md F4).
+//
+// Each carries ONE mid-playback anomaly in an otherwise-valid, container-opening
+// recording. They are packed snapshot-flavor `.battleplan` files exactly like
+// the positive set (they OPEN through the shared validator) but degrade
+// mid-stream — distinct from the negative set, which REJECTS at open. Each
+// scenario's `anomaly` descriptor names the class, the monitored view, and the
+// hour where the last-good value should be held from.
+// ---------------------------------------------------------------------------
+
+fn anomaly_scenarios(seed: u64) -> Vec<Scenario> {
+    vec![
+        fx_anomaly_missing_domain(seed),
+        fx_anomaly_type_flip(seed),
+        fx_anomaly_out_of_range(seed),
+        fx_anomaly_hour_gap(seed),
+        fx_anomaly_identity_mutation(seed),
+    ]
+}
+
+fn fx_anomaly_missing_domain(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_anomaly_missing_domain",
+        "Weather domain is present for the first six hours then vanishes entirely mid-recording (Absent-after-Present).",
+        &["plan:F4:missing_domain"],
+        &["clock", "country_identity", "weather"],
+        &["No Step Back"],
+        "english",
+        |tick, snap| {
+            if tick < 6 {
+                snap["weather"]["regions"] = json!({
+                    "201": {"region_id": 201, "phenom": 3, "phenom_name": "snow", "temp_c": -5.0, "active": true, "intensity": 0.8}
+                });
+                snap["weather"]["source"] = json!("M");
+            } else if let Some(obj) = snap.as_object_mut() {
+                // The domain earlier snapshots carried is now missing outright.
+                obj.remove("weather");
+            }
+        },
+    );
+    let crossing = hour_at(&s, 6);
+    let last_good = hour_at(&s, 5);
+    with_anomaly(
+        s,
+        json!({
+            "class": "missing_domain",
+            "monitor": "weather",
+            "crossing_hour": crossing,
+            "last_good_hour": last_good,
+            "detail": "weather view is Present hours 0-5 then the whole weather domain is Absent; policy holds the last-good weather marked HELD, never invents rows"
+        }),
+    )
+}
+
+fn fx_anomaly_type_flip(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_anomaly_type_flip",
+        "GER political_power is a number for the first six hours then flips to a string mid-recording.",
+        &["plan:F4:type_flip"],
+        &["clock", "country_identity", "politics_live"],
+        &["La Resistance"],
+        "english",
+        |tick, snap| {
+            if tick < 6 {
+                snap["countries"]["GER"]["politics"]["political_power"] = json!(120.0 + tick as f64);
+            } else {
+                // Field type flips mid-stream: number -> string. The typed view
+                // goes Unobtained and appends a coverage warning; never coerced.
+                snap["countries"]["GER"]["politics"]["political_power"] = json!("surging");
+            }
+        },
+    );
+    let crossing = hour_at(&s, 6);
+    let last_good = hour_at(&s, 5);
+    with_anomaly(
+        s,
+        json!({
+            "class": "type_flip",
+            "monitor": "countries.GER.political_power",
+            "crossing_hour": crossing,
+            "last_good_hour": last_good,
+            "detail": "GER political_power number->string at the crossing hour; CountryCore.political_power becomes Unobtained + a wrong-typed coverage warning; policy holds the last-good number marked HELD"
+        }),
+    )
+}
+
+fn fx_anomaly_out_of_range(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_anomaly_out_of_range",
+        "GER manpower goes negative and a province id absent from the map appears mid-recording.",
+        &["plan:F4:out_of_range"],
+        &["clock", "country_identity", "country_scalars", "state_ownership"],
+        &["Arms Against Tyranny"],
+        "english",
+        |tick, snap| {
+            if tick >= 6 {
+                // Out-of-range scalar: manpower can never be negative.
+                snap["countries"]["GER"]["military"]["manpower"]["available"] = json!(-5000);
+                // Province id outside the static map universe (base provinces
+                // are 1000/1001/2000/3000). refresh_map_layers folds it into
+                // map.control_by_province, so the stray id is reachable there.
+                snap["provinces"]["987654"] = province("GER", 10);
+            }
+        },
+    );
+    let crossing = hour_at(&s, 6);
+    let last_good = hour_at(&s, 5);
+    with_anomaly(
+        s,
+        json!({
+            "class": "out_of_range",
+            "monitor": "countries.GER.manpower_available",
+            "province_monitor": "map.control_by_province",
+            "out_of_map_province": 987654,
+            "known_province_ids": [1000, 1001, 2000, 3000],
+            "crossing_hour": crossing,
+            "last_good_hour": last_good,
+            "detail": "GER manpower_available goes negative and province 987654 (absent from the map) appears from the crossing hour; policy holds the last-good manpower marked HELD and flags the stray province, never clamps or invents"
+        }),
+    )
+}
+
+fn fx_anomaly_hour_gap(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_anomaly_hour_gap",
+        "A mid-recording hourly snapshot is missing, leaving a hole in the otherwise-contiguous hour series.",
+        &["plan:F4:hour_gap"],
+        &["clock", "country_identity", "state_ownership"],
+        &["By Blood Alone"],
+        "english",
+        |_tick, _snap| {},
+    );
+    let missing = hour_at(&s, 6);
+    let before = hour_at(&s, 5);
+    let after = hour_at(&s, 7);
+    let s = drop_snapshot(s, 6);
+    with_anomaly(
+        s,
+        json!({
+            "class": "hour_gap",
+            "monitor": "timeline",
+            "missing_hours": [missing],
+            "before_gap_hour": before,
+            "after_gap_hour": after,
+            "detail": "the snapshot for the missing hour is absent between the before/after hours; the gap scrubs as unavailable, never interpolated"
+        }),
+    )
+}
+
+fn fx_anomaly_identity_mutation(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_anomaly_identity_mutation",
+        "Recording identity (modset id + save version) mutates mid-recording; the first snapshot keeps the manifest identity so the container still opens.",
+        &["plan:F4:identity_mutation"],
+        &["clock", "country_identity", "world_meta"],
+        &["Together for Victory"],
+        "english",
+        |tick, snap| {
+            if tick >= 6 {
+                snap["save_version"] = json!("fixture-build-2-HIJACK");
+                snap["world"]["scenario"]["save_version"] = json!("fixture-build-2-HIJACK");
+                snap["provenance"]["mod"]["modset_id"] = json!("fixture-modset-MUTATED");
+            }
+        },
+    );
+    let crossing = hour_at(&s, 6);
+    let last_good = hour_at(&s, 5);
+    with_anomaly(
+        s,
+        json!({
+            "class": "identity_mutation",
+            "monitor": "recording_identity",
+            "crossing_hour": crossing,
+            "last_good_hour": last_good,
+            "baseline_modset": MODSET,
+            "mutated_modset": "fixture-modset-MUTATED",
+            "detail": "recording modset_id + save_version change at the crossing hour (recording identity must be invariant across one recording); policy holds the baseline identity marked HELD and logs the mutation once"
+        }),
+    )
 }
 
 fn fx_owner_controller_flip(seed: u64) -> Scenario {
@@ -927,7 +1147,7 @@ fn scenario_manifest(scenario: &Scenario, file: &Path, root: &Path, bytes: u64) 
             })
         })
         .collect::<Vec<_>>();
-    json!({
+    let mut entry = json!({
         "name": scenario.name,
         "path": rel_slash(file, root),
         "description": scenario.description,
@@ -936,7 +1156,11 @@ fn scenario_manifest(scenario: &Scenario, file: &Path, root: &Path, bytes: u64) 
         "hours": hours,
         "probes": probes,
         "bytes": bytes,
-    })
+    });
+    if let Some(anomaly) = &scenario.anomaly {
+        entry["anomaly"] = anomaly.clone();
+    }
+    entry
 }
 
 fn negative_fixtures(seed: u64) -> Result<Vec<NegativeFixture>> {
