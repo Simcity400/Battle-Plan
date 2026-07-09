@@ -16,6 +16,7 @@ pub mod png;
 pub mod probe;
 pub mod tga;
 pub mod topbar;
+pub mod unitview;
 pub mod widget_layout;
 
 use std::fmt;
