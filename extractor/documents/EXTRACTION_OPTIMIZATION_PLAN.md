@@ -274,6 +274,127 @@ Run: runs/live_validation_20260709_221706 (+ probe in live_validation_20260709_2
   replay_decoder (D1). Session tooling: --replay-zstd-level plumbed (validation uses 3);
   emit-mode-full stage optional.
 
+## DEEP-WAR LEVER RANKING (2026-07-09 night corpus)
+
+Source: `runs/live_validation_20260709_221706/stage2_shortspeed5` — manifest per-domain
+`read_time_us` + a full header-only scan of the 12.0 GB `collector_stream.bin` (1421 frame_end
+records for per-frame `frame_time_us`, plus per-domain DOMAIN_DATA payload bytes from the H4CR
+headers; scan script in lane scratchpad, read-in-place). Frame avg 151.5 ms, p95 263.6, max
+477.2; 1421 hours captured / 370 skipped of 1790 advanced (20.7%); 9.068 MB/hour (matches the
+9.08 reported to 3 s.f.). Numbers below are that run only.
+
+### 1. Per-domain frame-time ranking — and the parallelism caveat
+
+The sum of per-domain avg `read_time_us` is **693.6 ms**, but the frame avg is **151.5 ms**
+(`reader_concurrency=12`). So the frame is **critical-path bound at ~4.58× effective
+parallelism**, NOT the sum — cutting a domain only helps the frame if it sits on the slow lane.
+Top read-cost domains (avg ms / p95 ms / % of the 693.6 ms read-sum):
+
+| domain | id | avg ms | p95 ms | % read-sum | changed/present |
+|---|---:|---:|---:|---:|---:|
+| supply_logistics_attrition_live | 44 | 60.0 | 123.6 | 8.6% | 10.0% |
+| oob_command | 28 | 58.6 | 93.8 | 8.4% | **0.7%** |
+| ships | 29 | 57.9 | 94.3 | 8.3% | 8.7% |
+| diplomacy_intel_operatives_live | 53 | 49.3 | 84.0 | 7.1% | ~100%+ churn |
+| map_detail | 23 | 49.2 | 99.6 | 7.1% | **0.1%** |
+| division_equipment | 26 | 41.9 | 91.8 | 6.0% | **2.2%** |
+| divisions | 20 | 41.3 | 91.0 | 5.9% | 58.6% |
+| politics_live | 14 | 37.9 | 82.6 | 5.5% | **0.6%** |
+| naval_combat_lifecycle+members | 49/50 | 34.1 (shared walk) | 74.9 | 4.9%×2 | 4.4% / 19.3% |
+| occupation_resistance_compliance | 52 | 25.1 | 53.8 | 3.6% | **1.3%** |
+| naval_missions_status_live | 56 | 24.7 | 52.2 | 3.6% | **0.8%** |
+| projects_live | 41 | 24.4 | 53.0 | 3.5% | 8.3% |
+| scripted_state_flags_variables | 51 | 23.1 | 52.5 | 3.3% | **0.3%** |
+| construction (d48) | 48 | 22.2 | 50.5 | 3.2% | **79.2%** |
+
+**MISSING COUNTER (propose as a lever):** the manifest carries per-domain wall but NO per-frame
+per-lane / critical-path counter, so frame-ms cannot be attributed to lanes and we cannot see
+which domains co-schedule on the slow path. Every ms-saved estimate below therefore carries a
+parallelism band: work removed saves between `X/4.58` (if fully hidden behind other lanes) and
+`X` (if on the critical path). Emitting a per-frame lane-assignment + lane-wall in the frame_end
+record is a zero-risk instrumentation lever that unblocks exact attribution.
+
+### 2. Skip mechanism — the premise is only half true
+
+The skip law is `skipped = Σ(gap−1)` over consecutive captured hours (`main.rs:16575`) on a
+**free-running game the extractor samples** (read-only; extraction does NOT gate the sim). Skips
+are **weakly** correlated with frame time:
+
+- 139 of 370 skipped hours (38%) follow frames **under 120 ms**; the 150–168 ms band skips the
+  *least* (14%). A gap=2 skip occurred at the run's **fastest** 59.5 ms frame.
+- Cause: the game's **local tick rate is bursty**. Reconstructed local inter-hour interval
+  (`ft/gap`): p50 129.5 ms but **min 28.2 ms, p1 33 ms, p5 53 ms** — the sim bursts to ~22–35
+  effective h/s even though the 300 s average is 5.967 h/s (167.6 ms/hour). A frame skips
+  whenever it exceeds the *instantaneous* interval, so any frame landing in a burst skips.
+
+**Zero-skip frame-time threshold (this run): ≤ ~25 ms** (every observed local interval ≥ 28.2 ms;
+at a 25 ms cap 0/1420 windows are tighter). Practical caps leave residual skips: ≤100 ms → 28.2%
+of windows still tighter, ≤60 ms → 7.7%, ≤50 ms → 3.9%. **No practical uniform frame time yields
+true zero-skip on a bursty deep-war world** — reaching it needs either sub-25 ms frames
+(unreachable for this domain set) or an architectural change that decouples the cheap hour-boundary
+latch from the heavy decode. The 167.6 ms "average budget" framing is wrong; the binding number is
+the min-burst interval. Reducing avg/p95 frame time still cuts skip *count* materially (a ~50 ms
+frame floor would take 20.7% → low single digits), just not to zero.
+
+### 3. Where the 9.068 MB/hour lives (post-delta)
+
+Header-summed DOMAIN_DATA bytes/hour: **d53 diplomacy_intel_operatives = 8.372 MB = 92.3%** of the
+entire stream. Everything else is noise: d48 construction 288 KB (3.2%), divisions 169 KB (1.9%),
+supply 52 KB (0.6%), capitulation 35 KB (0.4%). Delta cross-check (changed_rows/row_count,
+cumulative) reproduces the reported figures: d51 0.3%, d41 8.3%, d44 10.0%, **d48 79.2%**, and d53
+churns >100% (242 M opinion rows re-emit hourly). The delta wave works everywhere except d53 and
+d48 — **bytes are now a d53-only problem** (zstd-93 at 163× is the intended absorber; per-field
+opinion delta is the structural follow-up).
+
+### 4. Ranked levers (ms saved on THIS corpus ÷ risk)
+
+Change-driven projection uses the **empirically proven floor**: map_control reads the *same*
+20.6 M-row province set as map_detail but costs **1.2 ms vs 49.2 ms (40×)** because it is already
+change-driven — so `proj = max(1.2 ms, changed_frac × read)`.
+
+| # | lever | est. read-work cut | frame effect | evidence | risk | owner |
+|---|---|---:|---|---|---|---|
+| 1 | **Phase 4 change-driven reads** (whole program) | **532 ms of the 693.6 ms read-sum (77%)** | critical path 151.5 ms → **~50–70 ms floor** (set by d53 49 ms + divisions 24 ms + d48 18 ms, the only genuinely-changing heavies) | map_control 40× proof; 9 domains at 0.1–2.2% changed re-read the full world | HIGH (needs RE'd dirty signal + shadow-soak fold-identity gate, D3) | Phase 4 (unassigned) |
+| 1a | ├ oob_command change-driven | 58.6→1.2 = **57.4 ms** | on slow path (3rd heaviest) | 0.7% changed, 1.4 M roots for 9 k rows | HIGH | Phase 4 |
+| 1b | ├ map_detail change-driven | 49.2→1.2 = **48.0 ms** | slow path | 0.1% changed; map_control already does it | MED (twin exists) | Phase 4 |
+| 1c | ├ supply_44 change-driven | 60→6 = **53.9 ms** | slow path (heaviest) | 10% changed | HIGH | Phase 4 |
+| 1d | ├ ships change-driven | 57.9→5 = **52.9 ms** | slow path | 8.7% changed | HIGH | Phase 4 |
+| 1e | ├ division_equipment | 41.9→1.2 = **40.7 ms** | slow path | 2.2% changed, 23 M entry rows | HIGH | Phase 4 |
+| 1f | ├ politics_live | 37.9→1.2 = **36.7 ms** | mid | 0.6% changed | HIGH | Phase 4 |
+| 1g | └ occupation_52 / naval_missions_56 / scripted_51 | ~24+24+22 = **~70 ms** combined | mid | 1.3% / 0.8% / 0.3% changed | HIGH | Phase 4 |
+| 2 | **d48 churn fix** (79.2% → ~10%) | ~22→~3 = **~19 ms** + 260 KB/hr bytes | mid lane | 79.2% changed is implausible for construction hourly; neighbors 0.1–10%. Suspected tolerated-partial tracker re-emitting vs stale baseline | **LOW** (no RE; fold-identity gated; collector sparse-merge advance) | flagged INVESTIGATE (night note) |
+| 3 | **d53 per-field / opinion-change delta** | read: relations phase **43.2 ms/frame = 88% of d53**; bytes: **8.37 MB/hr = 92.3%** | sets the post-Phase-4 frame floor AND the container size | d53 stays 100%+ churn so Phase 4 dirty-signal does NOT help it; needs per-opinion change-stamp | MED–HIGH (opinion delta correctness; bytes already 163× absorbed by zstd so read-time is the real prize) | d53 lane |
+| 4 | **W1.1 prefetch sweep {8,16,32,64} + success-only outcome-split timing** | single-digit ms on d53 (attributes the ~37% dark residual) | small on slow path | W0 already banked −43% (190→109 ms warm), byte-identical; W0_AB_RESULTS §5 | LOW–MED (CPU-only, fixture-gated) | W-series perf lane |
+| 5 | **Per-lane critical-path counter** | 0 (instrumentation) | unblocks exact ms-attribution for #1–#4 | frame≠Σread (4.58× gap) is currently un-attributable | **NONE** | recorder/collector |
+| 6 | **divisions partial change-driven** | 41.3→24.2 = **17 ms** (the unchanged 41%) | slow path | 58.6% genuinely move late-war; only the static 41% is addressable | HIGH (per-division dirty) | Phase 4 |
+| 7 | **naval_combat walk (d49+d50 shared)** | 34.1→~6 = **~28 ms** (one walk, two domains) | mid; already fail-closes 367 torn frames | 4.4%/19.3% changed on a 34.2 M-µs CFEXGroup walk | HIGH (torn-read correctness) | naval lane |
+
+### 5. Irreducible fraction without Phase 4
+
+**77% of the read-work (532 of 693.6 ms) is spent reading provably-unchanged rows to prove they
+are unchanged.** Delta emission already removed those *bytes*, but the *reads* still happen —
+delta is byte-lossless, not read-free. Without Phase 4 the only remaining read levers are banked
+(read-primitive + bulk-collapse, 3.57×) or per-domain point fixes (d48 churn, d53 W0/W1.1 CPU),
+which leaves deep-war at ~100–150 ms. **Sub-20 ms deep-war is unreachable without a change-driven
+read path** — this quantifies the "Phase 4 formally necessary" conclusion already recorded above:
+the 151.5 ms frame is ~77% unchanged-proving read work, and only a dirty-signal that lets those
+reads be skipped (D3, soak-gated) removes it.
+
+### Top recommendation for the wave after this one
+
+**Stand up Phase 4 change-driven reads behind ONE shared RE'd dirty-signal, sequenced by cut/churn:
+land the low-churn heavies first (map_detail, oob_command, politics, division_equipment,
+occupation_52, naval_missions_56, scripted_51 — all <2.2% changed, each collapsing to the ~1.2 ms
+map_control floor), gated by a shadow-soak fold-identity harness (D3/G1).** Run two cheap lanes in
+parallel: (a) the **d48 churn fix** — low-risk, no RE, also resolves a data-quality suspicion; and
+(b) the **per-lane critical-path counter** — zero-risk instrumentation that makes every subsequent
+ms-saved claim exact instead of parallelism-banded. Treat **d53** (opinion-change delta) as the
+long pole with its own lane: after Phase 4 it is simultaneously the frame-time floor (49 ms, 88% in
+the relations read) and 92.3% of stream bytes. Finally, reset expectations on skips: Phase 4 buys a
+~50–70 ms floor that cuts skips from 20.7% to single digits but **cannot** reach true zero-skip on a
+bursty world (min local interval 28.2 ms) — true zero-skip is a separate architectural item
+(cheap hour-boundary latch decoupled from heavy decode), not a frame-time-reduction item.
+
 ## Phase 3 (original spec below)
 
 1. **zstd with long window** for container entries (writer `snapshot/src/pack.rs:456` is
