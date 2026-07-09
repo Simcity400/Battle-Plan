@@ -1126,17 +1126,48 @@ impl WorldFold {
                 break;
             }
             let payload = &raw[offset + COMPACT_RECORD_HEADER_LEN..offset + record_len];
-            if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                if self.record_is_for_finalized_hour(game_hour_raw) {
-                    self.record_late_domain_data(game_hour_raw);
-                } else {
-                    self.apply_domain_data(domain_id, payload, record_flags);
-                }
-            } else if record_type == COMPACT_RECORD_TYPE_FRAME_END {
-                self.finish_hour(game_hour_raw);
-            }
+            self.ingest_record(game_hour_raw, domain_id, record_type, payload, record_flags);
             offset += record_len;
         }
+    }
+
+    /// Fold a single already-framed compact record. This is the exact per-record
+    /// dispatch [`ingest_stream`](Self::ingest_stream) performs, factored out so a
+    /// streaming reader (the `fold_check` fold-equivalence gate tool) can drive the
+    /// identical production fold without buffering the whole stream in memory.
+    ///
+    /// Records other than `DOMAIN_DATA` / `FRAME_END` (e.g. `DOMAIN_PERF` and the
+    /// RC read-probe) carry no folded state and are ignored here, exactly as the
+    /// whole-buffer `ingest_stream` loop ignores them. Keeping this the single
+    /// dispatch point is what lets the gate tool certify that an optimized
+    /// collector folds byte-identically: there is exactly one fold.
+    pub fn ingest_record(
+        &mut self,
+        game_hour_raw: i32,
+        domain_id: u16,
+        record_type: u16,
+        payload: &[u8],
+        record_flags: u32,
+    ) {
+        if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+            if self.record_is_for_finalized_hour(game_hour_raw) {
+                self.record_late_domain_data(game_hour_raw);
+            } else {
+                self.apply_domain_data(domain_id, payload, record_flags);
+            }
+        } else if record_type == COMPACT_RECORD_TYPE_FRAME_END {
+            self.finish_hour(game_hour_raw);
+        }
+    }
+
+    /// Drain the finished in-memory snapshots accumulated so far, transferring
+    /// ownership to the caller (in-memory fold only). This lets a streaming
+    /// consumer hash each hour as its `FRAME_END` closes and then release the
+    /// bytes, so a multi-GB stream never forces every per-hour snapshot to be
+    /// resident at once (unlike [`finish`](Self::finish), which returns them all).
+    /// A file-backed fold spills to disk instead and leaves this empty.
+    pub fn take_finished(&mut self) -> Vec<(i64, String, Vec<u8>)> {
+        std::mem::take(&mut self.out)
     }
 
     fn note(&mut self, msg: impl Into<String>) {

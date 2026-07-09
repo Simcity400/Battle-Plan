@@ -162,6 +162,16 @@ name = "focus_research_decisions_depth_live"
 version = "0.1.0"
 
 [[package]]
+name = "fold_check"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "recorder_host",
+ "serde_json",
+ "snapshot",
+]
+
+[[package]]
 name = "hub_motorization_live_lane"
 version = "0.1.0"
 
