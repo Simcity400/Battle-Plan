@@ -220,7 +220,28 @@ Per lane (order: d48 → d44 → d41 → d53 → d51), two changes, each gated b
 
 Phase target (G2): deep-war warm avg **≤ 45 ms** speed-5 zero-skip; stream ≤ ~0.7 MB/game-hour.
 
-## Phase 3 — Container & codec overhaul (bytes)
+## Phase 2c — Offline read-collapse sweep COMPLETE 2026-07-09 (late)
+
+Beyond the Big Five, bulk-read collapse (byte-identical contract, all-window-or-all-fallback,
+equivalence + refused-window fixtures per lane) landed for EVERY deep-war lane above ~13 ms:
+d51/d52/d56 frozen lanes (627a25f87/60c035914/586666f09), d23 map_detail + d26
+division_equipment (35790f468/30d62ed9d), d28 oob_command + d29 ships (376c9e50f/14e84996c),
+politics_live (921c7c9fa). All merged with green suites. Live A/B still pending for actual
+ms gains. stream_fold gained --discard-snapshots (688ca2840) so full-stream soaks fit disk.
+
+## Phase 3 — Container & codec overhaul (bytes) — CORE LANDED 2026-07-09
+
+zstd method-93 (level 13, window_log 27, LDM) + full zip64 shipped in the streaming writer
+and both readers (222fae43f + fix round f2631ca70; adversarial-review verdict SOUND, all 5
+findings fixed: streamed file-backed entries, reader allocation caps, EOCD-at-EOF
+validation, checked-in pre-222 legacy fixture, configurable CompressionProfile).
+**Measured on the real 28 GB deep-war stream (2 GiB slice): zstd 163.2x @ 483.5 MiB/s vs
+deflate-6 9.37x @ 52.6 MiB/s.** Legacy deflate containers remain readable. Remaining Phase 3:
+snapshot-term elimination via the D1 shared decoder crate (in progress — replay_core
+consumes the stream directly; snapshots move to debug profile), keyframe/binary snapshot
+format only if the decoder-crate route stalls.
+
+## Phase 3 (original spec below)
 
 1. **zstd with long window** for container entries (writer `snapshot/src/pack.rs:456` is
    deflate-6; `zip.rs` supports STORE/DEFLATE only → new method or outer frame). Measured
