@@ -132,17 +132,25 @@ fn topbar_scalar_sweep_renders_generator_values() {
                 "{tag} factories @t{t}"
             );
 
-            // Convoys: the view sums military.convoys[].amount (base 50.0); the
-            // generator's per-tick military.convoys_count is on a path the view
-            // does not read (replay_core gap, see LANE_REPORT.md). The binding
-            // faithfully renders the value the view actually serves.
-            assert_eq!(b.convoys, Some("50".to_string()), "{tag} convoys @t{t}");
+            // Convoys: served per-tick since the A3 convoys_count alias landed:
+            // generator writes military.convoys_count = base + 50 + tick.
+            assert_eq!(
+                b.convoys,
+                Some(format!("{}", (base + 50 + t) as f64)),
+                "{tag} convoys @t{t}"
+            );
 
-            // GATE 4 (in-sweep absence): world_tension and supply live on paths
-            // the view does not read for this fixture → fail-closed None.
+            // GATE 4 (in-sweep absence): world_tension lives on a path the view
+            // does not read for this fixture → fail-closed None.
             assert_eq!(b.world_tension_percent, None, "{tag} world_tension @t{t}");
             assert_eq!(b.world_tension, None, "{tag} world_tension ratio @t{t}");
-            assert_eq!(b.supply, None, "{tag} supply @t{t}");
+            // supply is served since the A3 scalars.supply_* alias landed:
+            // generator writes supply_value = 12.0 + tick.
+            assert_eq!(
+                b.supply,
+                Some(format!("{}", 12.0 + t as f64)),
+                "{tag} supply @t{t}"
+            );
         }
     }
 }
