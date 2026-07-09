@@ -1,29 +1,51 @@
 use crate::*;
 
-pub(crate) const DEFAULT_W: usize = 1280;
-pub(crate) const DEFAULT_H: usize = 720;
+// Shader constants below are copied by symbol from shipped the game files and are
+// validated against the generated map material contract before captured-frame
+// replay. They are not tune knobs.
+
+// gfx/FX/constants.fxh:53-56.
 pub(crate) const TERRAIN_TILE_FREQ: f32 = 128.0;
-pub(crate) const TEXELS_PER_TILE: f32 = 512.0;
 pub(crate) const MAP_NUM_TILES: usize = 4;
+pub(crate) const TEXELS_PER_TILE: f32 = 512.0;
 pub(crate) const ATLAS_TEXEL_POW2_EXPONENT: f32 = 11.0;
+
+// gfx/FX/constants.fxh:93-94.
 pub(crate) const COLORMAP_OVERLAY_STRENGTH: f32 = 0.75;
 pub(crate) const COLORMAP_MUD_OVERLAY_STRENGTH: f32 = 0.5;
+
+// gfx/FX/constants.fxh:14.
 pub(crate) const NIGHT_AMBIENT_BOOST: f32 = 3.0;
+
+// gfx/FX/standardfuncsgfx.fxh:328-329.
 pub(crate) const NIGHT_OPACITY: f32 = 0.85;
 pub(crate) const NIGHT_DARKNESS: f32 = 0.5;
+
+// common/defines/00_graphics.lua:934; also consumed by CalcGlobeNormal in
+// gfx/FX/standardfuncsgfx.fxh.
 pub(crate) const GMT_OFFSET: f32 = 2793.0;
+
+// gfx/FX/standardfuncsgfx.fxh:324-325.
 pub(crate) const FEATHER_MIN: f32 = -0.01;
 pub(crate) const FEATHER_MAX: f32 = 0.01;
+
+// gfx/FX/standardfuncsgfx.fxh moon-light cross-fade constants.
 pub(crate) const MOON_FEATHER_MIN: f32 = -0.01;
 pub(crate) const MOON_FEATHER_MAX: f32 = 0.01;
+
+// common/defines/00_graphics.lua:936-937; also mirrored in the day/night shader.
 pub(crate) const SOUTH_POLE_OFFSET: f32 = 0.17;
 pub(crate) const NORTH_POLE_OFFSET: f32 = 0.93;
+
+// gfx/FX/constants.fxh:61-63 and 69-70.
 pub(crate) const MUD_TILING: f32 = 0.09;
 pub(crate) const MUD_NOISE_TILING: f32 = 0.01;
 pub(crate) const MUD_NORMAL_CUTOFF: f32 = 10.982;
 pub(crate) const MUD_STRENGHTEN: f32 = 1.0;
 pub(crate) const MUD_CAM_MIN: f32 = 50.0;
 pub(crate) const MUD_CAM_MAX: f32 = 300.0;
+
+// gfx/FX/constants.fxh:65-68 and 75-78.
 pub(crate) const SNOW_OPACITY_MIN: f32 = 0.95;
 pub(crate) const SNOW_OPACITY_MAX: f32 = 0.2;
 pub(crate) const SNOW_CAM_MIN: f32 = 50.0;
@@ -36,6 +58,9 @@ pub(crate) const SNOW_COLOR: Vec3 = Vec3 {
     y: 0.48,
     z: 0.69,
 };
+
+// gfx/FX/constants.fxh:17-22. These are shader ambient-map constants, distinct
+// from 00_graphics.lua's virtual-light rig.
 pub(crate) const DAY_AMBIENT_MAP_POS_X: Vec3 = Vec3 {
     x: 0.1,
     y: 0.1,
@@ -66,6 +91,9 @@ pub(crate) const DAY_AMBIENT_MAP_NEG_Z: Vec3 = Vec3 {
     y: 0.033,
     z: 0.033,
 };
+
+// gfx/FX/constants.fxh:24-29. These are the NightAmbientMap* constants, not the
+// stronger NightAmbient* rig at constants.fxh:32-37.
 pub(crate) const NIGHT_AMBIENT_MAP_POS_X: Vec3 = Vec3 {
     x: 0.2,
     y: 0.2,
@@ -96,19 +124,26 @@ pub(crate) const NIGHT_AMBIENT_MAP_NEG_Z: Vec3 = Vec3 {
     y: 0.14,
     z: 0.2,
 };
+
+// gfx/FX/constants.fxh:80-85.
 pub(crate) const SNOW_CLIFFS: f32 = 5.0;
 pub(crate) const SNOW_SPEC_GLOSS_MULT: f32 = 0.2;
 pub(crate) const SNOW_TILING: f32 = 0.05;
 pub(crate) const SNOW_NOISE_TILING: f32 = 0.06;
 pub(crate) const SNOW_FROST_MIN_EFFECT: f32 = 0.4;
+
+// gfx/FX/constants.fxh:49-50.
 pub(crate) const CITY_LIGHTS_TILING: f32 = 0.09103;
 pub(crate) const CITY_LIGHTS_INTENSITY: f32 = 5.5;
-pub(crate) const WATER_COLOR_LIGHTNESS: f32 = 0.5;
+
+// gfx/FX/constants.fxh:152-155.
 pub(crate) const FOG_COLOR: Vec3 = Vec3 {
     x: 0.12,
     y: 0.28,
     z: 0.6,
 };
+
+// gfx/FX/fow.fxh:20-21.
 pub(crate) const BRIGHT_FOW_COLOR: Vec3 = Vec3 {
     x: 0.98,
     y: 0.93,
@@ -122,6 +157,8 @@ pub(crate) const DARK_FOW_COLOR: Vec3 = Vec3 {
 pub(crate) const FOG_BEGIN: f32 = 1.0;
 pub(crate) const FOG_END: f32 = 150.0;
 pub(crate) const FOG_MAX: f32 = 0.35;
+
+// gfx/FX/constants.fxh:195-209.
 pub(crate) const GB_CAM_MIN: f32 = 100.0;
 pub(crate) const GB_CAM_MAX: f32 = 350.0;
 pub(crate) const GB_CAM_MAX_FILLING_CLAMP: f32 = 0.8;
@@ -132,13 +169,23 @@ pub(crate) const GB_OPACITY_FAR: f32 = 0.85;
 pub(crate) const GB_STRENGTH_CH1: f32 = 1.0;
 pub(crate) const GB_STRENGTH_CH2: f32 = 1.0;
 pub(crate) const GB_FIRST_LAYER_PRIORITY: f32 = 0.4;
+
+// gfx/FX/constants.fxh:216.
 pub(crate) const SEC_MAP_TILE: f32 = 6000.0;
+
+// gfx/FX/standardfuncsgfx.fxh:965-976, CalculateOccupationMask camera fade.
 pub(crate) const SEC_CAM_MIN: f32 = 300.0;
 pub(crate) const SEC_CAM_MAX: f32 = 1200.0;
+
+// gfx/FX/constants.fxh:204-206.
 pub(crate) const BORDER_NIGHT_DESATURATION_MAX: f32 = 0.2;
 pub(crate) const BORDER_FOW_REMOVAL_FACTOR: f32 = 0.8;
 pub(crate) const BORDER_LIGHT_REMOVAL_FACTOR: f32 = 0.8;
+
+// gfx/FX/constants.fxh:170.
 pub(crate) const SHADOW_WEIGHT_TERRAIN: f32 = 0.7;
+
+// gfx/FX/tiled_pointlights.fxh:11-12.
 pub(crate) const LIGHT_INDEX_TEXTURE_SIZE: usize = 64;
 pub(crate) const LIGHT_DATA_TEXTURE_SIZE: usize = 128;
 pub(crate) const TERRAIN_RUNTIME_SCHEMA: &str = "battle-plan-terrain-runtime-inputs-v2";
@@ -498,7 +545,6 @@ pub(crate) const TREE_FRAME_REQUIRED_SHADER_RESOURCES: [&str; 7] = [
 pub(crate) const TERRAIN_SCENE_CB0_LAYOUT_SOURCE: &str =
     "gfx/FX/standardfuncsgfx.fxh:ConstantBuffer(0,0)";
 pub(crate) const BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE: &str = "common/defines/00_graphics.lua";
-pub(crate) const PRODUCTION_CAMERA_CONTROL_UPDATE_HZ: f32 = 60.0;
 pub(crate) const TERRAIN_DRAW_CB1_BIND_POINT: u32 = 1;
 pub(crate) const TERRAIN_DRAW_CB1_LAYOUT_SOURCE: &str = "gfx/FX/pdxmap.fxh:ConstantBuffer(1,32)";
 pub(crate) const TERRAIN_DRAW_CB1_QUAD_OFFSET_SCALE_BYTE_OFFSET: usize = 64;

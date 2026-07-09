@@ -1,27 +1,17 @@
 # GRADING_LAW — files-first map color grading (RestoreScene post-process)
 
 Status: derived from shipped installed content, validated byte-exactly against a live
-GPU capture, and wired as the **DEFAULT** runtime source in `replay_app` (GRAD1
-graduated `--postfx-restore-full` to default-ON). The installed content are the source
-of truth so mods work; captured evidence VALIDATES the law and is never a runtime
-source of constants or textures.
+GPU capture, and wired as the **DEFAULT** runtime source in `replay_app`. The
+installed content are the source of truth so mods work; captured evidence VALIDATES the
+law and is never a runtime source of constants or textures.
 
-**Default policy (GRAD1).** The files-first grade renders BY DEFAULT. The old
-capture-anchored default (no files-first grade) is reachable with the explicit
-opt-out `--no-postfx-restore-full` (byte-identical to the pre-GRAD1 default; see
-FIDELITY_LEDGER equivalence gate B). Fail-open vs fail-closed:
-
-- **Explicit `--postfx-restore-full`** — a missing `--game`/resolver, a missing
-  `colorcorrection_*.tga`, or a missing selection key is a HARD ERROR (fail
-  closed; no silent identity fallback). Unchanged from the pre-GRAD1 flag.
-- **Default (no flag)** — if the grade evidence/inputs are missing, the renderer
-  logs a one-line downgrade NOTICE and falls back to the old capture-anchored
-  path (identity grade), so a recording without grade evidence still renders.
-  The decision lives in `render.rs::MapRenderer::new` (the
-  `restore_full_postfx_from_files` call site): on `Err` it re-invokes the
-  composer disabled iff `postfx_restore_full && !postfx_restore_full_explicit`.
-- **`--no-postfx-restore-full`** — old default, unconditionally (no grade,
-  never errors on missing evidence).
+**Default policy.** The files-first grade renders BY DEFAULT and fails closed. A
+missing `--game`/resolver, missing `colorcorrection_*.tga`, or missing selection
+key is a HARD ERROR: the product renderer does not silently downgrade to an
+identity grade. `--no-postfx` and `--no-postfx-restore-full` are blocked at the
+CLI because raw captured render targets / ungraded captures are not the game's
+final on-screen image. `--postfx-validate-capture` remains validation-only: it
+loads a captured restore bundle, reports file-law deltas, then exits.
 
 All game-file reads go through the mod-aware `GameFileResolver`
 (`map_viewer/src/mod_resolver.rs`, see `MOD_COMPATIBILITY.md`), never bare paths.
@@ -189,9 +179,12 @@ MIN_HDR_ADJUSTMENT, MAX_HDR_ADJUSTMENT )`.
   (matching the engine's 1x1 `R16_FLOAT` `AverageLuminanceTexture` precision), and
   writes it into the exposure constant's AvgLum field. MiddleGrey and every other
   grade constant are untouched.
-- Default / flag-OFF: unchanged (capture-anchored path; no exposure recompose).
-- `--postfx-restore-full --no-postfx`: no readback — the composite shader does not
-  apply exposure, so the reduction is skipped.
+- Default product render: same files-first path, because restore-full is default
+  ON. If required evidence is missing, startup fails closed instead of using an
+  identity grade.
+- Validation-only disabled path: internal unit tests can construct the composer
+  disabled to prove it is inert, but the product CLI no longer exposes that as a
+  render mode.
 
 **Temporal easing (honest):** `CalculateAdaptedLuminance` (`:99-104`) eases
 `LastLuminance` toward `vCurrentLuminance`, converging to it over time. A static
@@ -227,10 +220,10 @@ is the clamped branch and it is capture-validated.
 
 ### Unclamped branch — NOT capture-validated (open item)
 
-The captured corpus only exercises the CLAMPED branch. Worse, the replay's own
-rendered content never triggers the unclamped branch either: the political map
-view is dim in **linear** space (dark `map_visual` underlay + political fill; no
-bright HDR content like sunlit 3D terrain with specular), so the measured
+The captured corpus only exercises the CLAMPED branch. Historical replay probes
+against the now-removed CPU scaffold also never triggered the unclamped branch:
+that political-map view was dim in **linear** space, with no bright HDR content
+like sunlit 3D terrain with specular, so the measured
 geometric-mean luminance stays ~0.05-0.16 across the whole map — probed at the
 wide view and at bright desert/ice close-ups up to zoom 8 (all clamp to 0.5).
 The unclamped (bright-scene) branch is therefore validated ONLY by:
@@ -269,12 +262,10 @@ small mip/downsample chain, as the engine does) if per-frame cost matters.
   shader's `#ifdef COLOR_LUT` (`restorescene.shader:114`). `HSV.w` is unused by
   both shaders, so the captured HSV.w=1 (a LUT-enable marker) has no render
   effect and neutral `[0,1,1,0]` reproduces the captured grade.
-- Fail policy (GRAD1): with the grade now DEFAULT ON, an **explicit**
-  `--postfx-restore-full` still errors if `--game`/resolver is absent or a
-  required TGA / selection key is missing for the modset — no silent identity
-  fallback. On the **default** (no flag) the same missing-evidence condition
-  logs a one-line downgrade and falls back to the old capture-anchored path
-  (identity grade). `--no-postfx-restore-full` selects that old path directly.
+- Fail policy: with the grade DEFAULT ON, absence of `--game`/resolver or a
+  required TGA / selection key is a hard startup error. There is no silent
+  identity-grade fallback, and `--no-postfx-restore-full` is blocked at parse
+  time.
 
 The captured bundle is now a **validation-only** path:
 `replay_app --postfx-validate-capture` loads the captured restore bundle and

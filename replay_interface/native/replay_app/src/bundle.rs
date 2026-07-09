@@ -3,11 +3,11 @@
 //! Loads the gitignored Rust map bundle documented in
 //! `replay_interface/documents/MAP_REPLICA_PLAN.md` ("Phase 0: Rust Map
 //! Bundle"): `manifest.json`, `province_ids.r32` (little-endian u32 per
-//! pixel, row-major), `map_visual.rgbx` (u32 `0x00RRGGBB` per pixel), plus
-//! the political JSON tables. Fails closed with generation guidance when
-//! the bundle is missing or malformed; nothing is fabricated.
+//! pixel, row-major), plus the political JSON tables. Fails closed with
+//! generation guidance when the bundle is missing or malformed; nothing is
+//! fabricated.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -33,23 +33,12 @@ pub struct MapBundle {
     /// Little-endian u32 province id per pixel, row-major. CPU picking
     /// authority; also uploaded once as an `R32_UINT` texture.
     pub province_ids: Vec<u32>,
-    /// `0x00RRGGBB` per pixel: the grounded terrain/water scaffold underlay.
-    pub map_visual: Vec<u32>,
     /// Province id -> state id (`province_to_state.json`).
     pub province_to_state: BTreeMap<u32, u32>,
     /// State id -> 1936 owner tag (`state_owner_1936.json`).
     pub state_owner_1936: BTreeMap<u32, String>,
     /// Country tag -> RGB color (`country_colors.json`).
     pub country_colors: BTreeMap<String, [u8; 3]>,
-    /// States flagged `impassable = yes` (`state_meta.json`): the game
-    /// paints wasteland a fixed gray on the political map regardless of
-    /// owner (measured 0x5c5c5c in the live capture's country layer).
-    pub impassable_states: BTreeSet<u32>,
-    /// Per-province "home importance" weight (victory points from
-    /// `state_meta.json`), used by the label law to anchor a country's name on
-    /// its capital/core landmass instead of its largest-area colony. Provinces
-    /// with no victory point are absent (weight 0).
-    pub province_importance: BTreeMap<u32, u64>,
 }
 
 impl std::fmt::Debug for MapBundle {
@@ -60,7 +49,6 @@ impl std::fmt::Debug for MapBundle {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("province_ids_len", &self.province_ids.len())
-            .field("map_visual_len", &self.map_visual.len())
             .field("province_to_state_len", &self.province_to_state.len())
             .field("state_owner_1936_len", &self.state_owner_1936.len())
             .field("country_colors_len", &self.country_colors.len())
@@ -109,7 +97,6 @@ impl MapBundle {
             .ok_or("manifest.json dimensions overflow")?;
 
         let province_ids_name = manifest_file_name(&manifest, "province_ids", "province_ids.r32");
-        let map_visual_name = manifest_file_name(&manifest, "map_visual", "map_visual.rgbx");
         let province_to_state_name =
             manifest_file_name(&manifest, "province_to_state", "province_to_state.json");
         let state_owner_name =
@@ -118,24 +105,17 @@ impl MapBundle {
             manifest_file_name(&manifest, "country_colors", "country_colors.json");
 
         let province_ids = read_u32_raw(&dir.join(&province_ids_name), pixel_count)?;
-        let map_visual = read_u32_raw(&dir.join(&map_visual_name), pixel_count)?;
         let province_to_state = read_u32_key_u32_map(&dir.join(&province_to_state_name))?;
         let state_owner_1936 = read_u32_key_string_map(&dir.join(&state_owner_name))?;
         let country_colors = read_country_colors(&dir.join(&country_colors_name))?;
-        let state_meta_name = manifest_file_name(&manifest, "state_meta", "state_meta.json");
-        let (impassable_states, province_importance) =
-            read_state_meta(&dir.join(&state_meta_name))?;
 
         Ok(MapBundle {
             width,
             height,
             province_ids,
-            map_visual,
             province_to_state,
             state_owner_1936,
             country_colors,
-            impassable_states,
-            province_importance,
         })
     }
 
@@ -145,8 +125,8 @@ impl MapBundle {
     /// works for ANY modset, but the render pipeline still assumes the vanilla
     /// MAP GEOMETRY size (the east-west wrap period in
     /// [`crate::render`], the political-colour texture resolution in
-    /// `map_viewer::political_color_synthesis`, plus the camera/chunk laws are
-    /// all tuned to 5632x2048). The overwhelming majority of mods keep the
+    /// `map_viewer::political_color_synthesis`, plus the captured-camera laws
+    /// are all tuned to 5632x2048). The overwhelming majority of mods keep the
     /// vanilla map, so this holds; a total-conversion with a RESIZED map is
     /// rejected here — fail-closed — rather than silently mis-rendered.
     /// Lifting the assumption needs a differently-sized reference map to verify
@@ -178,51 +158,6 @@ impl MapBundle {
             .unwrap_or(0);
         from_mapping.max(from_owners)
     }
-
-    /// Largest province id with a state mapping (0 when none).
-    pub fn max_mapped_province_id(&self) -> u32 {
-        self.province_to_state
-            .keys()
-            .next_back()
-            .copied()
-            .unwrap_or(0)
-    }
-}
-
-/// Read `state_meta.json` into (impassable state ids, per-province victory-point
-/// weight). A bundle generated before the impassable flag or victory-point
-/// export existed simply yields the empty set / empty map (serde-default false /
-/// no `victory_points`), so the label law falls back to largest-area selection.
-fn read_state_meta(path: &Path) -> Result<(BTreeSet<u32>, BTreeMap<u32, u64>)> {
-    let bytes = fs::read(path)
-        .map_err(|err| format!("missing or unreadable {}: {}", path.display(), err))?;
-    let meta: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&bytes)
-        .map_err(|err| format!("{} is not valid JSON: {err}", path.display()))?;
-    let mut impassable = BTreeSet::new();
-    let mut province_importance: BTreeMap<u32, u64> = BTreeMap::new();
-    for (state_id, value) in meta {
-        if value.get("impassable").and_then(serde_json::Value::as_bool) == Some(true) {
-            let id: u32 = state_id.parse().map_err(|err| {
-                format!("{} has non-u32 state id {state_id}: {err}", path.display())
-            })?;
-            impassable.insert(id);
-        }
-        // Per-province victory points: key = province id, value = VP count.
-        if let Some(vps) = value
-            .get("victory_points")
-            .and_then(serde_json::Value::as_object)
-        {
-            for (province_id, vp) in vps {
-                let (Ok(pid), Some(points)) = (province_id.parse::<u32>(), vp.as_i64()) else {
-                    continue;
-                };
-                if points > 0 {
-                    *province_importance.entry(pid).or_insert(0) += points as u64;
-                }
-            }
-        }
-    }
-    Ok((impassable, province_importance))
 }
 
 fn manifest_file_name(manifest: &serde_json::Value, key: &str, default: &str) -> String {
@@ -399,20 +334,17 @@ pub(crate) mod tests {
     }
 
     /// Write a tiny synthetic 8x4 bundle. Provinces 1..=4 fill the four
-    /// horizontal quarters of every row; visual pixels encode the column.
+    /// horizontal quarters of every row.
     pub(crate) fn write_fixture_bundle(dir: &Path) {
         let width = 8usize;
         let height = 4usize;
         let mut province_ids = Vec::with_capacity(width * height);
-        let mut visual = Vec::with_capacity(width * height);
         for _y in 0..height {
             for x in 0..width {
                 province_ids.push((x / 2 + 1) as u32);
-                visual.push(0x0001_0000 + x as u32);
             }
         }
         write_u32_plane(&dir.join("province_ids.r32"), &province_ids);
-        write_u32_plane(&dir.join("map_visual.rgbx"), &visual);
         let manifest = serde_json::json!({
             "schema": BUNDLE_SCHEMA,
             "dimensions": { "width": width, "height": height },
@@ -438,11 +370,6 @@ pub(crate) mod tests {
             br#"{"AAA": [1, 2, 3], "FRA": [10, 20, 30], "GER": [40, 50, 60]}"#,
         )
         .expect("write country_colors");
-        fs::write(
-            dir.join("state_meta.json"),
-            br#"{"10": {"impassable": false}, "20": {}, "30": {"impassable": true}}"#,
-        )
-        .expect("write state_meta");
     }
 
     #[test]
@@ -453,10 +380,8 @@ pub(crate) mod tests {
         assert_eq!(bundle.width, 8);
         assert_eq!(bundle.height, 4);
         assert_eq!(bundle.province_ids.len(), 32);
-        assert_eq!(bundle.map_visual.len(), 32);
         assert_eq!(bundle.province_ids[0], 1);
         assert_eq!(bundle.province_ids[7], 4);
-        assert_eq!(bundle.map_visual[3], 0x0001_0003);
         assert_eq!(bundle.province_to_state.get(&1), Some(&10));
         assert_eq!(bundle.province_to_state.get(&4), Some(&30));
         assert_eq!(
@@ -465,7 +390,18 @@ pub(crate) mod tests {
         );
         assert_eq!(bundle.country_colors.get("GER"), Some(&[40, 50, 60]));
         assert_eq!(bundle.max_state_id(), 30);
-        assert_eq!(bundle.max_mapped_province_id(), 4);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stale_map_visual_artifact_is_ignored() {
+        let dir = unique_temp_dir("stale_map_visual");
+        write_fixture_bundle(&dir);
+        fs::write(dir.join("map_visual.rgbx"), b"removed cpu scaffold")
+            .expect("write stale visual artifact");
+        let bundle = MapBundle::load(&dir).expect("fixture bundle still loads");
+        assert_eq!(bundle.width, 8);
+        assert_eq!(bundle.height, 4);
         fs::remove_dir_all(&dir).ok();
     }
 

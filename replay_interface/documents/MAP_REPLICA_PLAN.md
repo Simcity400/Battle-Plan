@@ -53,8 +53,10 @@ before adding an approximation.
 
 ## Current Grounding Audit
 
-The current Rust map visual is useful as a source-file-backed scaffold, but it is
-not yet a 1:1 the game render. These are the known grounding boundaries.
+The former Rust `map_visual.rgbx` source-file-backed scaffold has been removed
+from fresh bundle output and from `replay_app` loading/rendering. Product map
+rendering requires a validated the game D3D11 capture or a fully reproduced engine
+terrain pipeline. These are the known grounding boundaries.
 
 Capture evidence 2026-07-02 (session at
 `map_viewer/out/captures/session_20260702`, gitignored): an early-injection
@@ -77,10 +79,10 @@ capture window.
 | --- | --- | --- | --- |
 | Province identity | `map/default.map` names `definition.csv` and `provinces.bmp`; `map/definition.csv` maps RGB to province IDs. | Confirmed. Rust decodes the full province-id buffer from these files. | Keep as the hit-test source. |
 | States and 1936 owner | `history/states/*.txt` state blocks define province membership and owner. | Confirmed for static 1936 ownership. | Later replace owner/controller from replay snapshots. |
-| Terrain index to texture ID | `map/default.map` names `terrain.bmp`; `common/terrain/00_terrain.txt` says `color = index in bitmap color table (see terrain.bmp)` and maps each color index to `texture = N`. | Confirmed mapping with explicit gaps. Rust reads the terrain index and texture ID, writes unmapped indices as `255`, and records unmapped index counts in `map_object_meta.json` instead of defaulting them to a fabricated terrain. | Keep the mapping, but replace the current texture sampling with shader-equivalent sampling once `TerrainIDMap` generation is understood. |
+| Terrain index to texture ID | `map/default.map` names `terrain.bmp`; `common/terrain/00_terrain.txt` says `color = index in bitmap color table (see terrain.bmp)` and maps each color index to `texture = N`. | Confirmed mapping with explicit gaps. Rust reads the terrain index and texture ID, writes unmapped indices as `255`, and records unmapped index counts in `map_object_meta.json` instead of defaulting them to a fabricated terrain. The native replay path now feeds this resolver-derived data into the documented `TerrainIDMap` synthesizer when `--game` / `BATTLE_PLAN_VANILLA` evidence is available. | Keep the mapping; remaining terrain-material work is shader-equivalent sampling, mip/derivative behavior, and runtime lighting, not guessing missing terrain IDs. |
 | Texture sampler filtering | `pdxmap.shader` declares `TerrainDiffuse`, `HeightNormal`, `TerrainColorTint`, `TerrainNormal`, and other color samplers with linear filtering; `TerrainIDMap` is point-sampled. | Confirmed for current static inputs. Rust now linearly samples color DDS inputs used by the CPU scaffold and leaves ID/index data point-sampled. | Add sampler-address modes per shader as each remaining layer is ported. |
 | Terrain atlas sampling | `gfx/FX/constants.fxh` sets `TERRAIN_TILE_FREQ = 128.0f`, `MAP_NUM_TILES = 4.0f`, `TEXELS_PER_TILE = 512.0f`, and `ATLAS_TEXEL_POW2_EXPONENT = 11.0f`; `gfx/FX/pdxmap.shader` multiplies `uv2` by `MAP_POW2_X/Y` before `sample_terrain(...)`. | Partly grounded. Rust now preserves the relevant shader source files, parses the current scaffold constants from `gfx/FX/constants.fxh` into `map_material_contract.json`, uses the shader tile constants, linear sampler behavior, and `sample_terrain(...)` atlas coordinate formula at base LOD. `MAP_POW2_X/Y` use is known from shaders, but the vanilla files inspected so far do not define the values or derivation, so Rust no longer applies an inferred ratio. Mip selection also remains unresolved. | Find engine/runtime evidence for `MAP_POW2_X/Y`, then port `mipmapLevel(...)` with real screen derivatives before claiming shader-equivalent terrain sampling. |
-| Terrain ID blending | `pdxmap.shader` calls `calculate_map_tex_index(...)`, samples multiple terrain IDs, and blends `diffuse`, `ColorRD`, `ColorLU`, and `ColorRU` using `vFrac`. | Blocked gap. Rust now bundles `terrain_indices.r8` from `terrain.bmp` and `terrain_texture_ids.r8` from `00_terrain.txt`, but it still does not claim the engine's packed RGBA `TerrainIDMap` generation. | Determine and document how the game builds packed `TerrainIDMap`; then implement the exact four-ID blend. |
+| Terrain ID blending | `pdxmap.shader` calls `calculate_map_tex_index(...)`, samples multiple terrain IDs, and blends `diffuse`, `ColorRD`, `ColorLU`, and `ColorRU` using `vFrac`. | Resolver-backed `TerrainIDMap` synthesis is implemented from `map/terrain.bmp`, `common/terrain/00_terrain.txt`, and `map/default.map`, and validates against captured payload bytes when the capture contains them. `replay_app` now loads terrain bundles through the resolver-aware path so missing captured `TerrainIDMap` bytes are supplied only by that documented law. | Broaden capture validation beyond the current captured map and finish shader-equivalent terrain material sampling/mip behavior; do not reintroduce CPU terrain-color approximations. |
 | Colormap overlay | `pdxmap.shader` samples `TerrainColorTint`; `standardfuncsgfx.fxh` defines `GetOverlay(...)`; `constants.fxh` sets `COLORMAP_OVERLAY_STRENGTH = 0.75f`. | Confirmed for the static CPU scaffold. Rust now ports `GetOverlay(...)` and the `0.75f` constant. | Keep this path unless later GPU shader execution replaces the CPU scaffold. |
 | Terrain normals and lighting | `pdxmap.shader` samples `HeightNormal` and `TerrainNormal`, rotates normals, applies sun/shadow/point light/FOW/day-night/fog. `map/default.map` names `heightmap.bmp`; vanilla also ships `map/world_normal.bmp` and `map/terrain/atlas_normal*.dds`. `pdxmap.shader` uses `TerrainDiffuse.a` for glossiness and `TerrainNormal.a` for specular strength. | Partly grounded. Rust now preserves `map/world_normal.bmp`, RGBX terrain atlases for the current viewer, and alpha-preserving RGBA copies of the diffuse/normal atlas sources. The old visible CPU height-gradient shade has been removed because its constants were not shader-grounded; shader lighting is still not claimed. | Port `HeightNormal`/`TerrainNormal` sampling and the selected lighting subset before changing terrain lighting. |
 | Water and underwater | `pdxmap.shader` has `PixelShaderUnderwater`; `pdxwater.shader` uses water color, reflection, LEAN textures, specular alpha, ice, gradient borders, lighting, and constants such as `WATER_HEIGHT` and `WATER_COLOR_LIGHTNESS`. `standardfuncsgfx.fxh` uses `lean2.zw` and `lean1.w` in `SampleLEAN(...)`; `pdxwater.shader` samples `SpecularMap.a`, `IceDiffuse.a`, `WaterRefraction`, gradient-border channels, light maps, and `ShadowMap`. | Production path is captured native D3D11 replay, not CPU water-shader porting. Rust validates explicit `water_pass` map-frame bundles, requires `pdxwater.shader` source evidence, requires captured IA topology/draw state/output-merger evidence, matches reflected PS SRVs, reflected constant buffers, and sampler slots, requires camera-updateable `TerrainSceneCB0`, and only promotes water in the app-owned terrain-first pass graph when every water draw targets descriptors matching the terrain color/depth graph. Runtime-generated inputs such as refraction, light maps, shadow maps, gradient borders, snow/mud, and secondary color remain blockers until captured from HOI4. | Capture a coherent real the game water bundle with all reflected `pdxwater` SRVs, constant buffers, samplers, draw state, and output-state identity, then replay it after terrain against the app-owned terrain color/depth targets. |
@@ -99,18 +101,30 @@ Statuses: DONE / IN FLIGHT / READY (unblocked, not started) / CAPTURE-GATED
 DECISION (user scoping call).
 
 Track 1 — political look (no game session needed):
-- [DONE 2026-07-02] Gradient borders: exact `gradient_border_apply` port +
-  replay-data generated channel fields (country + state). Open sub-items:
-  GPU jump-flood generation (CPU rebuild is ~1.8s per ownership change) and
-  validation against real captured channels.
-- [DONE 2026-07-02] Occupation striping: `secondary_color_mask` port +
-  generated `ProvinceSecondaryColorMap` from controller-vs-owner divergence;
-  political base color now follows the CONTROLLER (SEMANTIC-ASSUMPTION
-  comments in code; validate against next occupied-save capture).
-- [FOLLOW-UP] Field-generation performance (GPU jump-flood) and captured-
-  channel validation are the two remaining gradient/striping sub-items.
+- [BLOCKED 2026-07-08] Primary political fill: no primary fill SRV/render-target
+  or engine generation path has been identified. The replay app must not invent
+  a solid country-color layer from owner/controller data until this is captured
+  or reverse-engineered from `hoi4.exe`.
+- [RESEARCH 2026-07-08] Gradient borders: `gradient_border_apply` shader
+  application is ported, and `hoi4.exe` contains the right trail
+  (`CGradientBorderManager`, `CGradientBorder::CFillBufferThreaded`,
+  `CClearBufferThreaded`), but the exact runtime channel-generation law is not
+  ported. The Rust CPU generator contains captured-fit distance pieces and is
+  research-only; product rendering keeps generated replay GB channels inert and
+  does not substitute them into captured the game passes.
+- [BLOCKED 2026-07-08] Occupation striping: `secondary_color_mask` shader
+  semantics are understood and captured `ProvinceSecondaryColorMap` is
+  all-transparent in observed default political-map captures. The replay app
+  keeps the texture empty unless a real mode that populates it is captured and
+  its CPU write law is identified.
 
 Track 2 — terrain look:
+- [REMOVED 2026-07-08] CPU `map_visual.rgbx` underlay: removed from bundle
+  generation and from `replay_app` loading/rendering. It mixed source-file
+  decoding with unreproduced engine behavior (`TerrainIDMap` packing/blend,
+  mip/derivative behavior, runtime buffers, lighting, and post-processing), and
+  produced the checkerboard/noisy terrain symptom. Do not restore it except as a
+  clearly separate research artifact.
 - [READY: re-dispatch] CPU lighting subset (HeightNormal/TerrainNormal N.L sun +
   day ambient; verified port was destroyed by a concurrent job revert before
   commit — re-run from its report).
@@ -137,12 +151,12 @@ Track 3 — capture-gated layers:
   rivers drew (crash cause undiagnosed — investigate DLL involvement before
   the next window).
 - [RESEARCH] cities_pass: no grounded shader/resource signature yet.
-- [DONE 2026-07-02] Convergence integration: replay_app renders the validated
+- [PARTIAL 2026-07-08] Convergence integration: replay_app renders the validated
   captured terrain+water passes as its map base (grounded camera bridge from
   decomposed captured VP + defines; water via engine-equivalent fp16->BGRA8
-  refraction copy), with OUR generated GB channels + secondary map substituted
-  into the game shader's SRV slots — the game's own renderer painting replay
-  data (~14 ms/frame with water).
+  refraction copy). Replay-driven political SRV substitution is disabled until
+  the primary political fill and exact `CGradientBorderManager` channel
+  generation are ported; captured passes keep the HOI4-captured political SRVs.
 - [CAPTURE-GATED, named 2026-07-02] Terrain CHUNK LIBRARY: the game
   frustum-culls terrain chunks CPU-side, so a captured session only contains
   the chunks visible to the game's camera at capture time (whole-map fit
@@ -192,10 +206,12 @@ Track 6 — identity and sign-off:
   gradient-border channels or border mesh rendering.
 - Lighting: do not keep the current heightmap gradient as final; first identify
   `HeightNormal` and the relevant shader lighting subset.
-- Runtime buffers: do not fabricate `TerrainIDMap`, `RiverData`,
-  `GradientBorderChannel1/2/3`, `SnowMudData`, `WaterRefraction`, light maps,
-  shadow maps, or `ProvinceSecondaryColorMap`; keep them as blocked until their
-  generation paths are found in engine/runtime data.
+- Runtime buffers: `TerrainIDMap` may be supplied only by the documented
+  resolver-backed synthesis law, with captured-byte validation when available.
+  Do not fabricate `RiverData`, `GradientBorderChannel1/2/3`, `SnowMudData`,
+  `WaterRefraction`, light maps, shadow maps, or `ProvinceSecondaryColorMap`;
+  keep them as blocked until their generation paths are found in engine/runtime
+  data.
 
 ## Rust Ownership
 
@@ -230,7 +246,6 @@ Minimum bundle contents:
 
 - `manifest.json`
 - `province_ids.r32`: full-resolution little-endian `u32` province IDs
-- `map_visual.rgbx`: full-resolution `0x00RRGGBB` terrain/water base layer
 - `terrain_indices.r8`: raw `map/terrain.bmp` index per map pixel
 - `terrain_texture_ids.r8`: resolved per-pixel terrain atlas texture ID from
   `common/terrain/00_terrain.txt`; unmapped terrain indices are encoded as

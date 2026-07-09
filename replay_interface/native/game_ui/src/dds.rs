@@ -430,10 +430,7 @@ fn decode_uncompressed_level(
 /// Compressed formats fail closed — no current caller needs them.
 pub fn decode_mip_chain_bytes(data: &[u8]) -> Result<Vec<RgbaImage>> {
     let header = Header::parse(data)?;
-    if !matches!(
-        header.format.as_str(),
-        "A8R8G8B8" | "X8R8G8B8" | "R8G8B8"
-    ) {
+    if !matches!(header.format.as_str(), "A8R8G8B8" | "X8R8G8B8" | "R8G8B8") {
         return Err(GameUiError::unsupported_dds(
             header.format.clone(),
             format!(

@@ -671,7 +671,7 @@ fn quantize_half(image: &BloomImageRgba) -> BloomImageRgba {
     }
 }
 
-/// IEEE-754 half-float bit pattern to f32 (mirrors cpu_view::half_float_to_f32).
+/// IEEE-754 half-float bit pattern to f32.
 pub fn half_float_to_f32(bits: u16) -> f32 {
     let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
     let exponent = (bits >> 10) & 0x1f;

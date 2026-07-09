@@ -26,13 +26,15 @@ listed clearly so the user can help explain the real-game behavior.
 Use this order when deciding how a UI surface should look or behave:
 
 1. **Effective installed content, resolved mod-over-vanilla.**
-   - UI layout and static chrome should come from extracted `interface/*.gui`
-     files in `replay_interface/game_assets/gui/*.json`.
+   - UI layout and static chrome should come from effective `interface/*.gui`
+     files resolved through the active game/mod file view. Generated
+     `replay_interface/game_assets/gui/*.json` files are local tooling caches,
+     not product truth.
    - Sprite names, texture paths, frame counts, progress-bar sizes, 9-slice
-     metadata, masks, and flags should come from `replay_interface/game_assets/sprites.json` and
-     the resolver.
-   - Bitmap fonts should resolve through `interface/core.gfx` and
-     `replay_interface/game_assets/fonts.json`.
+     metadata, masks, and flags should come from effective `.gfx` files and
+     resolver-read textures. Generated `sprites.json` is tooling cache only.
+   - Bitmap fonts should resolve through `interface/core.gfx` and the resolver,
+     not a committed extracted manifest.
    - Localisation should resolve from the effective localisation set, with mod
      keys overriding vanilla keys where applicable.
    - The active bundle must match the replay's recorded mod-set when the replay
@@ -82,14 +84,15 @@ Agents should maximize direct use of game assets and definitions for:
   names from `.gui`.
 - Button, tab, list, grid, scrollbar, text, icon, progress-bar, 9-slice, flag,
   and frame metadata from `.gui` and `.gfx`.
-- Sprite and art identity from `sprites.json` plus the game resolver.
-- Fonts from `core.gfx` and extracted font maps.
+- Sprite and art identity from effective `.gfx` declarations plus the game resolver.
+- Fonts from `core.gfx` plus resolver-read `.fnt`/atlas pages.
 - Localized display strings from localisation files, not English strings
   invented in Rust or Python.
 - Focus, tech, doctrine, trait, event, scripted-GUI, decision, idea, law,
   advisor, operation, and catalog data from `extractor/game_defs`.
-- Mod-over-vanilla load order from `active_modset.json` or the replay's recorded
-  provenance.
+- Mod-over-vanilla load order from the replay's recorded provenance or the
+  launcher/userdata resolver inputs used to build that replay; generated
+  `active_modset.json` is a local extraction artifact only.
 
 If a view or map surface currently hardcodes geometry, labels, colors, button
 identity, counter placement, overlay semantics, or a row model, the agent must
@@ -169,16 +172,15 @@ Each gap entry should include:
 
 These are the immediate risks agents should check before claiming UI parity:
 
-1. **`replay_interface/game_assets/gui` must be populated before real `.gui` coverage claims.**
-   The code expects `replay_interface/game_assets/gui/*.json`, but the current checkout may not
-   have those generated files present. If `replay_interface/game_assets/gui/topbar.json` and
-   `replay_interface/game_assets/gui/_index.json` are absent, regenerate the asset bundle or
-   restore the generated layouts before claiming real game-layout parity.
+1. **Effective `.gui` files must be resolved before real layout coverage claims.**
+   Generated `replay_interface/game_assets/gui/*.json` files are tooling caches
+   only. Product parity claims must cite the active game/mod `.gui` files or a
+   current extractor run from those files, not stale committed layout JSON.
 
 2. **Static layout is not runtime behavior.**
-   `replay_interface/game_assets` can prove panel skeletons, sprites, and element names. It does
-   not prove dynamic visibility, row population, scripted-GUI behavior, or full
-   interaction parity.
+   Resolved `.gui`/`.gfx` files can prove panel skeletons, sprites, and element
+   names. They do not prove dynamic visibility, row population, scripted-GUI
+   behavior, or full interaction parity.
 
 3. **Interaction coverage is still open.**
    The inventory and executable scaffold exist, and many first slices are

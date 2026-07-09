@@ -1,10 +1,9 @@
 //! the game bitmap font loading for replay-app overlay text.
 //!
-//! Grounding (UI_SOURCE_OF_TRUTH_REPORT: fonts resolve through
-//! `interface/core.gfx` / `replay_interface/game_assets/fonts.json`): a font
-//! NAME is resolved through the committed `fonts.json` map to its `.fnt`
-//! file(s) under the real game install, and the glyph atlas pages are the
-//! game's own textures.
+//! Grounding: a font NAME is resolved directly from the active modset's
+//! `interface/core.gfx` `bitmapfonts` block through [`GameFileResolver`]. The
+//! `.fnt` files and glyph atlas pages are then resolved from the same game/mod
+//! file view. No committed extracted manifest participates in product loading.
 //!
 //! `game_ui` owns BMFont parsing and DDS/TGA page decoding. This module
 //! converts the decoded pages into the replay renderer's white-RGB,
@@ -23,19 +22,10 @@ use crate::Result;
 
 /// The font the overlay renders with.
 ///
-/// The in-game clock/date readout (`interface/ingameclock.gui` ->
-/// `time_text`, extracted to `game_assets/gui/ingame_clock.json`) uses this
-/// bitmap font. Its pages ship as DDS, so loading goes through `game_ui`.
+/// The in-game clock/date readout (`interface/ingameclock.gui` -> `time_text`)
+/// uses this bitmap font. Its pages ship as DDS, so loading goes through
+/// `game_ui`.
 pub const OVERLAY_FONT_NAME: &str = "hoi_18mbs";
-
-/// Fallback font when the real overlay font cannot be loaded.
-///
-/// This is the former overlay proxy: a real core.gfx font
-/// (`gfx/fonts/garamond_16`, TGA-backed) resolved through fonts.json. It is
-/// logged as a fallback whenever it becomes active.
-pub const OVERLAY_PROXY_FONT_NAME: &str = "ToolTip_Font";
-
-const DEFAULT_VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
 
 /// One glyph from the BMFont `char` table. Coordinates are texels in the
 /// owning page; offsets/advance are pixels relative to the pen position at
@@ -87,18 +77,15 @@ impl std::fmt::Debug for FontPage {
 ///
 /// the game map/UI fonts (`hoi_mapfont4`, `hoi_18mbs`) ship **pre-coloured**
 /// atlases: each glyph is a full-colour image (dark body + light rim baked in)
-/// whose ALPHA channel carries coverage (verified by decoding the DDS — glyph
-/// interior `rgb≈black, a≈0.5`, edge `rgb≈white, a≈0.3`, background `a=0`). The
-/// game's `gfx/FX/mapname.shader` draws that atlas straight (`tex2D` then
-/// `a *= transparency`, src_alpha/inv_src_alpha), so the correct replay of a map
-/// label preserves the atlas RGBA rather than collapsing it to a white coverage
-/// mask. Coverage mode is the older single-channel behaviour, kept byte-for-byte
-/// for callers that opt out (the default overlay path).
+/// How decoded font atlas pages are converted. Product overlay text uses
+/// coverage mode; preserved-color mode is retained only in tests for the
+/// captured map-font evidence gates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AtlasMode {
-    /// White RGB, alpha = extracted glyph coverage (legacy overlay behaviour).
+    /// White RGB, alpha = extracted glyph coverage.
     Coverage,
     /// Native atlas RGBA passed straight through (pre-coloured, outlined glyphs).
+    #[cfg(test)]
     PreservedColor,
 }
 
@@ -106,8 +93,6 @@ pub enum AtlasMode {
 #[derive(Clone)]
 pub struct Font {
     pub name: String,
-    /// How the atlas pages were converted (see [`AtlasMode`]).
-    pub atlas_mode: AtlasMode,
     /// Line height in pixels (BMFont `common lineHeight`).
     pub line_height: i32,
     /// Baseline offset from the line top (BMFont `common base`). Layout
@@ -116,7 +101,7 @@ pub struct Font {
     /// mixed fonts) needs.
     #[cfg_attr(not(test), allow(dead_code))]
     pub base: i32,
-    /// Default text color from `fonts.json` (`0xAARRGGBB`).
+    /// Default text color from `interface/core.gfx` (`0xAARRGGBB`).
     pub default_color: u32,
     glyphs: HashMap<u32, Glyph>,
     kernings: HashMap<(u32, u32), i32>,
@@ -166,9 +151,9 @@ pub struct TextLayout {
     pub advance: f32,
 }
 
-/// Font NAME -> files/color, resolved from the committed `fonts.json`
-/// (extracted from `interface/core.gfx`). Language overrides are ignored:
-/// the replay surface renders the English-default font set.
+/// Font NAME -> files/color, resolved from `interface/core.gfx`.
+/// Language overrides are ignored: the replay surface renders the
+/// English-default font set.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontSpec {
     pub name: String,
@@ -179,33 +164,16 @@ pub struct FontSpec {
     pub color: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OverlayFontKind {
-    Real,
-    Proxy,
-}
-
 #[derive(Clone, Debug)]
 pub struct OverlayFontSelection {
     pub font: Font,
     pub font_name: &'static str,
-    pub kind: OverlayFontKind,
     pub root: PathBuf,
-    pub fallback_reason: Option<String>,
 }
 
-/// The committed font map, relative to this crate (same convention as the
-/// default bundle dir): `replay_interface/game_assets/fonts.json`.
-pub fn default_fonts_json_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("game_assets")
-        .join("fonts.json")
-}
-
-/// Resolve `font_name` through the committed fonts.json and load it from
-/// the game install at `game_root` with a vanilla-only resolver.
+/// Resolve `font_name` through `interface/core.gfx` and load it from the game
+/// install at `game_root` with a vanilla-only resolver.
+#[cfg(test)]
 pub fn load_game_font(game_root: &Path, font_name: &str) -> Result<Font> {
     let resolver = GameFileResolver::vanilla(game_root.to_path_buf())?;
     load_game_font_from_resolver(&resolver, font_name)
@@ -215,129 +183,252 @@ pub fn load_game_font_from_resolver(resolver: &GameFileResolver, font_name: &str
     load_game_font_with_mode(resolver, font_name, AtlasMode::Coverage)
 }
 
-/// Load a font preserving its atlas's native RGBA (see [`AtlasMode`]). Used by
-/// the map-label path so pre-coloured, outlined map glyphs render like the
-/// game's `mapname` effect instead of as a flat coverage mask. The default
-/// overlay path keeps [`AtlasMode::Coverage`] so its dumps stay byte-identical.
-pub fn load_game_font_preserving_color(
-    resolver: &GameFileResolver,
-    font_name: &str,
-) -> Result<Font> {
-    load_game_font_with_mode(resolver, font_name, AtlasMode::PreservedColor)
-}
-
 fn load_game_font_with_mode(
     resolver: &GameFileResolver,
     font_name: &str,
     atlas_mode: AtlasMode,
 ) -> Result<Font> {
-    let fonts_json = default_fonts_json_path();
-    let bytes = fs::read(&fonts_json)
-        .map_err(|err| format!("missing or unreadable {}: {err}", fonts_json.display()))?;
-    let spec = font_spec_from_json(&bytes, font_name, &fonts_json.display().to_string())?;
+    let core_gfx_rel = "interface/core.gfx";
+    let core_gfx_path = resolver.resolve_required(core_gfx_rel, "core.gfx font registry")?;
+    let bytes = fs::read(&core_gfx_path).map_err(|err| {
+        format!(
+            "failed to read {core_gfx_rel} resolved to {}: {err}",
+            core_gfx_path.display()
+        )
+    })?;
+    let text = String::from_utf8_lossy(&bytes);
+    let spec = font_spec_from_core_gfx(
+        &text,
+        font_name,
+        &format!("{core_gfx_rel} ({})", core_gfx_path.display()),
+    )?;
     Font::load_from_resolver_with_mode(resolver, &spec, atlas_mode)
 }
 
-pub fn load_overlay_font(resolver: Option<&GameFileResolver>) -> Result<OverlayFontSelection> {
-    if let Some(resolver) = resolver {
-        match load_game_font_from_resolver(resolver, OVERLAY_FONT_NAME) {
-            Ok(font) => {
-                return Ok(OverlayFontSelection {
-                    font,
-                    font_name: OVERLAY_FONT_NAME,
-                    kind: OverlayFontKind::Real,
-                    root: resolver.game_dir().to_path_buf(),
-                    fallback_reason: None,
-                });
-            }
-            Err(err) => {
-                let reason = format!("failed to load real font {OVERLAY_FONT_NAME:?}: {err}");
-                return load_proxy_overlay_font(resolver, Some(reason));
-            }
-        }
-    }
-
-    let Some(root) = default_vanilla_game_dir_if_present() else {
-        return Err(format!(
-            "no game install given; pass --game <the game install dir> or set BATTLE_PLAN_VANILLA; \
-             proxy fallback root {DEFAULT_VANILLA_GAME_DIR:?} is not present"
-        )
-        .into());
-    };
-    let resolver = GameFileResolver::vanilla(root)?;
-    load_proxy_overlay_font(
-        &resolver,
-        Some("no game install given; using the TGA proxy fallback".to_string()),
-    )
-}
-
-fn load_proxy_overlay_font(
-    resolver: &GameFileResolver,
-    fallback_reason: Option<String>,
-) -> Result<OverlayFontSelection> {
-    let font = load_game_font_from_resolver(resolver, OVERLAY_PROXY_FONT_NAME).map_err(|err| {
+pub fn load_overlay_font(resolver: &GameFileResolver) -> Result<OverlayFontSelection> {
+    let font = load_game_font_from_resolver(resolver, OVERLAY_FONT_NAME).map_err(|err| {
         format!(
-            "failed to load proxy font {OVERLAY_PROXY_FONT_NAME:?} from {}: {err}",
+            "failed to load real overlay font {OVERLAY_FONT_NAME:?} from {}: {err}",
             resolver.game_dir().display()
         )
     })?;
     Ok(OverlayFontSelection {
         font,
-        font_name: OVERLAY_PROXY_FONT_NAME,
-        kind: OverlayFontKind::Proxy,
+        font_name: OVERLAY_FONT_NAME,
         root: resolver.game_dir().to_path_buf(),
-        fallback_reason,
     })
 }
 
-fn default_vanilla_game_dir_if_present() -> Option<PathBuf> {
-    let root = PathBuf::from(DEFAULT_VANILLA_GAME_DIR);
-    root.is_dir().then_some(root)
+/// Parse `interface/core.gfx` and pull out one `bitmapfont` spec.
+pub fn font_spec_from_core_gfx(text: &str, font_name: &str, source: &str) -> Result<FontSpec> {
+    let tokens = lex_pdx_tokens(text);
+    let Some((start, end)) = find_assigned_block(&tokens, 0, tokens.len(), "bitmapfonts") else {
+        return Err(format!("{source} has no bitmapfonts block").into());
+    };
+    let mut index = start;
+    while index < end {
+        if tokens[index].eq_ignore_ascii_case("bitmapfont") {
+            if let Some((block_start, block_end)) =
+                assigned_block_after_key(&tokens, index, end, "bitmapfont")
+            {
+                let block_tokens = &tokens[block_start..block_end];
+                if font_block_name(block_tokens).as_deref() == Some(font_name) {
+                    return font_spec_from_core_gfx_block(block_tokens, font_name, source);
+                }
+                index = block_end + 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    Err(format!("font {font_name:?} is not defined as bitmapfont in {source}").into())
 }
 
-/// Parse a fonts.json document and pull out one font's spec.
-pub fn font_spec_from_json(bytes: &[u8], font_name: &str, source: &str) -> Result<FontSpec> {
-    let value: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|err| format!("{source} is not valid JSON: {err}"))?;
-    let fonts = value
-        .get("fonts")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| format!("{source} has no \"fonts\" object"))?;
-    let entry = fonts
-        .get(font_name)
-        .ok_or_else(|| format!("font {font_name:?} is not defined in {source}"))?;
-    let path = entry.get("path").and_then(serde_json::Value::as_str);
-    let fontfiles: Vec<String> = entry
-        .get("fontfiles")
-        .and_then(serde_json::Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    // core.gfx fonts declare either a single `path` or a `fontfiles` list
-    // (latin + cyrillic pieces merged into one glyph table).
+fn font_block_name(tokens: &[String]) -> Option<String> {
+    let mut index = 0;
+    while index + 2 < tokens.len() {
+        if tokens[index].eq_ignore_ascii_case("name") && tokens[index + 1] == "=" {
+            return Some(tokens[index + 2].clone());
+        }
+        index += 1;
+    }
+    None
+}
+
+fn font_spec_from_core_gfx_block(
+    tokens: &[String],
+    wanted_font_name: &str,
+    source: &str,
+) -> Result<FontSpec> {
+    let mut name = None;
+    let mut path = None;
+    let mut fontfiles = Vec::new();
+    let mut color = None;
+    let mut index = 0;
+    while index < tokens.len() {
+        let key = tokens[index].as_str();
+        if index + 2 >= tokens.len() || tokens[index + 1] != "=" {
+            index += 1;
+            continue;
+        }
+        match key.to_ascii_lowercase().as_str() {
+            "name" => {
+                name = Some(tokens[index + 2].clone());
+                index += 3;
+            }
+            "path" => {
+                path = Some(normalize_rel_path(&tokens[index + 2]));
+                index += 3;
+            }
+            "color" => {
+                color = Some(tokens[index + 2].clone());
+                index += 3;
+            }
+            "fontfiles" if tokens[index + 2] == "{" => {
+                let (list_start, list_end) =
+                    block_after_open_brace(tokens, index + 2, tokens.len()).ok_or_else(|| {
+                        format!(
+                            "font {wanted_font_name:?} in {source}: unterminated fontfiles block"
+                        )
+                    })?;
+                fontfiles.extend(
+                    tokens[list_start..list_end]
+                        .iter()
+                        .filter(|token| token.as_str() != "=")
+                        .filter(|token| token.as_str() != "{" && token.as_str() != "}")
+                        .map(|token| normalize_rel_path(token)),
+                );
+                index = list_end + 1;
+            }
+            _ => index += 3,
+        }
+    }
+    let name = name.ok_or_else(|| format!("bitmapfont in {source} has no name"))?;
     let files = match path {
-        Some(path) => vec![path.to_string()],
+        Some(path) => vec![path],
         None => fontfiles,
     };
     if files.is_empty() {
-        return Err(format!("font {font_name:?} in {source} declares no font files").into());
+        return Err(format!("font {name:?} in {source} declares no font files").into());
     }
-    let color_text = entry
-        .get("color")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("font {font_name:?} in {source} has no color string"))?;
-    let color = parse_argb_color(color_text)
-        .map_err(|err| format!("font {font_name:?} in {source}: {err}"))?;
-    Ok(FontSpec {
-        name: font_name.to_string(),
-        files,
-        color,
-    })
+    let color_text =
+        color.ok_or_else(|| format!("font {name:?} in {source} has no color string"))?;
+    let color =
+        parse_argb_color(&color_text).map_err(|err| format!("font {name:?} in {source}: {err}"))?;
+    Ok(FontSpec { name, files, color })
+}
+
+fn assigned_block_after_key(
+    tokens: &[String],
+    key_index: usize,
+    search_end: usize,
+    key: &str,
+) -> Option<(usize, usize)> {
+    (tokens.get(key_index)?.eq_ignore_ascii_case(key)
+        && tokens.get(key_index + 1)? == "="
+        && tokens.get(key_index + 2)? == "{")
+        .then(|| block_after_open_brace(tokens, key_index + 2, search_end))
+        .flatten()
+}
+
+fn find_assigned_block(
+    tokens: &[String],
+    search_start: usize,
+    search_end: usize,
+    key: &str,
+) -> Option<(usize, usize)> {
+    let mut index = search_start;
+    while index + 2 < search_end {
+        if let Some(block) = assigned_block_after_key(tokens, index, search_end, key) {
+            return Some(block);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn block_after_open_brace(
+    tokens: &[String],
+    open_brace_index: usize,
+    search_end: usize,
+) -> Option<(usize, usize)> {
+    if tokens.get(open_brace_index)? != "{" {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut index = open_brace_index + 1;
+    while index < search_end {
+        match tokens[index].as_str() {
+            "{" => depth += 1,
+            "}" => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some((open_brace_index + 1, index));
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn lex_pdx_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    let mut in_quotes = false;
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            match ch {
+                '"' => {
+                    tokens.push(std::mem::take(&mut current));
+                    in_quotes = false;
+                }
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                }
+                _ => current.push(ch),
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                in_quotes = true;
+            }
+            '#' => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+            }
+            '=' | '{' | '}' => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                tokens.push(ch.to_string());
+            }
+            c if c.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 /// Parse a core.gfx `0xAARRGGBB` color string.
@@ -358,11 +449,13 @@ impl Font {
     /// wins for duplicated glyph ids / kerning pairs, matching a
     /// latin-first merge). The mod-aware resolver supplies the BMFont and
     /// page file paths; `game_ui` supplies DDS/TGA page decoding.
+    #[cfg(test)]
     pub fn load(game_root: &Path, spec: &FontSpec) -> Result<Font> {
         let resolver = GameFileResolver::vanilla(game_root.to_path_buf())?;
         Self::load_from_resolver(&resolver, spec)
     }
 
+    #[cfg(test)]
     pub fn load_from_resolver(resolver: &GameFileResolver, spec: &FontSpec) -> Result<Font> {
         Self::load_from_resolver_with_mode(resolver, spec, AtlasMode::Coverage)
     }
@@ -449,7 +542,6 @@ impl Font {
 
         Ok(Font {
             name: spec.name.clone(),
-            atlas_mode,
             line_height: line_height.ok_or("font has no .fnt files")?,
             base: base.unwrap_or(0),
             default_color: spec.color,
@@ -459,6 +551,7 @@ impl Font {
         })
     }
 
+    #[cfg(test)]
     pub fn glyph_count(&self) -> usize {
         self.glyphs.len()
     }
@@ -480,6 +573,7 @@ impl Font {
     /// only ~65% of the law's size; consumers of the cap-height law must
     /// divide by THIS metric. Derived from the loaded font, so mods with
     /// different metrics are honoured.
+    #[cfg(test)]
     pub fn cap_height(&self) -> i32 {
         let mut counts: HashMap<u32, u32> = HashMap::new();
         for id in b'A'..=b'Z' {
@@ -596,14 +690,13 @@ fn game_ui_font_name(relative: &str) -> Result<String> {
 ///
 /// * [`AtlasMode::Coverage`] collapses to white RGB + extracted coverage alpha
 ///   (the legacy overlay behaviour, unchanged so its dumps stay byte-identical).
-/// * [`AtlasMode::PreservedColor`] copies the decoded RGBA straight through, so
-///   the pre-coloured, outlined map-label glyphs keep the dark body / light rim
-///   the game bakes into `hoi_mapfont4` (rendered exactly like `mapname.shader`:
-///   sample the texel, modulate alpha by the per-label transparency).
+/// * Test-only [`AtlasMode::PreservedColor`] copies the decoded RGBA straight
+///   through for captured map-font evidence gates.
 fn atlas_rgba(image: &RgbaImage, glyph_channel: Option<usize>, mode: AtlasMode) -> Vec<u8> {
     match mode {
         AtlasMode::Coverage => coverage_atlas_rgba(image, glyph_channel),
         // `RgbaImage` is already the R,G,B,A byte order the overlay uploads.
+        #[cfg(test)]
         AtlasMode::PreservedColor => image.pixels.clone(),
     }
 }
@@ -1058,6 +1151,7 @@ fn resolve_page_path(fnt_path: &Path, declared: Option<&str>, page_id: usize) ->
 /// 32-bit, either vertical origin, with the optional TGA v2 footer
 /// ("TRUEVISION-XFILE.") ignored. Anything else (colormapped, grayscale
 /// type 3) fails closed naming the file.
+#[cfg(test)]
 pub fn decode_tga(bytes: &[u8], source: &str) -> Result<FontPage> {
     if bytes.len() < 18 {
         return Err(format!("{source}: TGA shorter than its 18-byte header").into());
@@ -1214,7 +1308,6 @@ kernings count=0
     fn font_from(parsed: ParsedFnt, color: u32) -> Font {
         Font {
             name: "test".to_string(),
-            atlas_mode: AtlasMode::Coverage,
             line_height: parsed.line_height,
             base: parsed.base,
             default_color: color,
@@ -1434,25 +1527,45 @@ kernings count=0
         assert_eq!(out, vec![0xFF, 0xFF, 0xFF, 245, 0xFF, 0xFF, 0xFF, 115]);
     }
 
-    const FONTS_JSON_FIXTURE: &[u8] = br#"{
-        "fonts": {
-            "PathFont": { "name": "PathFont", "path": "gfx/fonts/one", "fontfiles": [], "color": "0xffffffff" },
-            "ListFont": { "name": "ListFont", "path": null, "fontfiles": ["gfx/fonts/a", "gfx/fonts/b"], "color": "0xff7799ff" },
-            "BadColor": { "name": "BadColor", "path": "gfx/fonts/one", "fontfiles": [], "color": "0x4ffffffff" },
-            "NoFiles": { "name": "NoFiles", "path": null, "fontfiles": [], "color": "0xffffffff" }
+    const CORE_GFX_FIXTURE: &str = r#"
+        bitmapfonts = {
+            bitmapfont = {
+                name = "PathFont"
+                path = "gfx/fonts/one"
+                color = 0xffffffff
+            }
+            # Commented-out font declarations must not leak into the registry.
+            # bitmapfont = { name = "CommentFont" path = "gfx/fonts/commented" color = 0xffffffff }
+            bitmapfont = {
+                name = "ListFont"
+                fontfiles = {
+                    "gfx/fonts/a"
+                    "gfx/fonts/b"
+                }
+                color = 0xff7799ff
+            }
+            bitmapfont = {
+                name = "BadColor"
+                path = "gfx/fonts/one"
+                color = 0x4ffffffff
+            }
+            bitmapfont = {
+                name = "NoFiles"
+                color = 0xffffffff
+            }
         }
-    }"#;
+    "#;
 
     #[test]
-    fn font_spec_resolves_single_path_fonts() {
-        let spec = font_spec_from_json(FONTS_JSON_FIXTURE, "PathFont", "fixture").expect("spec");
+    fn core_gfx_font_spec_resolves_single_path_fonts() {
+        let spec = font_spec_from_core_gfx(CORE_GFX_FIXTURE, "PathFont", "core.gfx").expect("spec");
         assert_eq!(spec.files, vec!["gfx/fonts/one".to_string()]);
         assert_eq!(spec.color, 0xFFFF_FFFF);
     }
 
     #[test]
-    fn font_spec_resolves_fontfiles_lists() {
-        let spec = font_spec_from_json(FONTS_JSON_FIXTURE, "ListFont", "fixture").expect("spec");
+    fn core_gfx_font_spec_resolves_fontfiles_lists() {
+        let spec = font_spec_from_core_gfx(CORE_GFX_FIXTURE, "ListFont", "core.gfx").expect("spec");
         assert_eq!(
             spec.files,
             vec!["gfx/fonts/a".to_string(), "gfx/fonts/b".to_string()]
@@ -1461,52 +1574,30 @@ kernings count=0
     }
 
     #[test]
-    fn font_spec_unknown_name_fails_closed() {
-        let err = font_spec_from_json(FONTS_JSON_FIXTURE, "Nope", "fixture").expect_err("fails");
+    fn core_gfx_font_spec_unknown_name_fails_closed() {
+        let err = font_spec_from_core_gfx(CORE_GFX_FIXTURE, "Nope", "core.gfx").expect_err("fails");
         assert!(err.to_string().contains("\"Nope\""), "{err}");
     }
 
     #[test]
-    fn font_spec_malformed_color_fails_closed() {
-        // fonts.json really contains a 9-digit color ("0x4ffffffff" on
-        // hoi_22chat); requesting such a font must fail loudly, not guess.
+    fn core_gfx_font_spec_malformed_color_fails_closed() {
         let err =
-            font_spec_from_json(FONTS_JSON_FIXTURE, "BadColor", "fixture").expect_err("fails");
+            font_spec_from_core_gfx(CORE_GFX_FIXTURE, "BadColor", "core.gfx").expect_err("fails");
         assert!(err.to_string().contains("8 hex digits"), "{err}");
     }
 
     #[test]
-    fn font_spec_without_files_fails_closed() {
-        let err = font_spec_from_json(FONTS_JSON_FIXTURE, "NoFiles", "fixture").expect_err("fails");
+    fn core_gfx_font_spec_without_files_fails_closed() {
+        let err =
+            font_spec_from_core_gfx(CORE_GFX_FIXTURE, "NoFiles", "core.gfx").expect_err("fails");
         assert!(err.to_string().contains("no font files"), "{err}");
     }
 
     #[test]
-    fn committed_fonts_json_resolves_the_overlay_font() {
-        // The committed game_assets/fonts.json must keep resolving the
-        // font the overlay uses (no game install required for this).
-        let path = default_fonts_json_path();
-        let bytes = fs::read(&path).expect("committed fonts.json exists");
-        let spec = font_spec_from_json(&bytes, OVERLAY_FONT_NAME, "fonts.json")
-            .expect("overlay font resolves");
-        assert_eq!(
-            spec.files,
-            vec![
-                "gfx/fonts/hoi_18mbs".to_string(),
-                "gfx/fonts/hoi_18mbs_cryllic".to_string()
-            ]
-        );
-        assert_eq!(spec.color, 0xFFFF_FFFF);
-    }
-
-    #[test]
-    fn committed_fonts_json_resolves_the_proxy_font() {
-        let path = default_fonts_json_path();
-        let bytes = fs::read(&path).expect("committed fonts.json exists");
-        let spec = font_spec_from_json(&bytes, OVERLAY_PROXY_FONT_NAME, "fonts.json")
-            .expect("proxy font resolves");
-        assert_eq!(spec.files, vec!["gfx/fonts/garamond_16".to_string()]);
-        assert_eq!(spec.color, 0xFFFF_FFFF);
+    fn core_gfx_comments_do_not_create_fonts() {
+        let err = font_spec_from_core_gfx(CORE_GFX_FIXTURE, "CommentFont", "core.gfx")
+            .expect_err("commented font must not parse");
+        assert!(err.to_string().contains("CommentFont"), "{err}");
     }
 
     #[test]
@@ -1747,7 +1838,7 @@ kernings count=0
     #[test]
     fn hoi_18mbs_loads_from_real_install_when_present() {
         let Some(root) = real_install_root_if_present() else {
-            eprintln!("skipping real-install font test: {DEFAULT_VANILLA_GAME_DIR} not present");
+            eprintln!("skipping real-install font test: BATTLE_PLAN_VANILLA not present");
             return;
         };
         let font = load_game_font(&root, OVERLAY_FONT_NAME).expect("hoi_18mbs loads");
@@ -1794,30 +1885,21 @@ kernings count=0
     }
 
     #[test]
-    fn overlay_font_without_game_dir_uses_proxy_when_default_vanilla_exists() {
-        let Some(_root) = real_install_root_if_present() else {
-            eprintln!("skipping proxy fallback test: {DEFAULT_VANILLA_GAME_DIR} not present");
+    fn overlay_font_uses_real_hoi18mbs_when_resolver_exists() {
+        let Some(root) = real_install_root_if_present() else {
+            eprintln!("skipping overlay font resolver test: BATTLE_PLAN_VANILLA not present");
             return;
         };
-        let selection = load_overlay_font(None).expect("proxy fallback loads");
-        assert_eq!(selection.font_name, OVERLAY_PROXY_FONT_NAME);
-        assert_eq!(selection.kind, OverlayFontKind::Proxy);
-        assert_eq!(selection.font.name, OVERLAY_PROXY_FONT_NAME);
-        assert!(
-            selection
-                .fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("no game install"),
-            "{:?}",
-            selection.fallback_reason
-        );
+        let resolver = GameFileResolver::vanilla(root).expect("resolver");
+        let selection = load_overlay_font(&resolver).expect("real overlay font loads");
+        assert_eq!(selection.font_name, OVERLAY_FONT_NAME);
+        assert_eq!(selection.font.name, OVERLAY_FONT_NAME);
         assert!(selection.font.glyph_count() > 0);
         assert!(!selection.font.pages.is_empty());
     }
 
     fn real_install_root_if_present() -> Option<PathBuf> {
-        let root = PathBuf::from(DEFAULT_VANILLA_GAME_DIR);
+        let root = std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA")).map(PathBuf::from)?;
         root.join("gfx")
             .join("fonts")
             .join("hoi_18mbs.fnt")

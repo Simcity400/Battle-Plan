@@ -879,8 +879,7 @@ pub fn d3d_compile_stage(hlsl: &str, stage: ShaderStage, flags: u32) -> Result<V
 /// render paths (border, and — pending per-shader proof — underwater/buildings)
 /// MUST use this to match the engine's own bytecode.
 #[cfg(windows)]
-pub const ENGINE_COMPILE_FLAGS: u32 =
-    winapi::um::d3dcompiler::D3DCOMPILE_OPTIMIZATION_LEVEL3;
+pub const ENGINE_COMPILE_FLAGS: u32 = winapi::um::d3dcompiler::D3DCOMPILE_OPTIMIZATION_LEVEL3;
 
 /// Compile-flag matrix tried when hunting a byte-exact match. FXC default
 /// optimization is level 1 (flags 0).

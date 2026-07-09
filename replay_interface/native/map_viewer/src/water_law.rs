@@ -292,7 +292,7 @@ pub fn underwater_depth_fog_alpha(prepos_y: f32) -> f32 {
 /// bind exactly that `TerrainColorTint` (fmt `B8G8R8A8`) and the 512×512
 /// `TerrainDiffuse` detail atlas — no absorbed light, no special second CB.
 ///
-/// # Why this constant is still kept (documented fallback, default path)
+/// # Why this constant remains in the law module (forensic evidence only)
 ///
 /// It remains an EMPIRICAL output-matching correction, not a mechanism: the
 /// app's own reconstruction ran ~5× too bright (surfacing the shipped 32-world-
@@ -301,23 +301,20 @@ pub fn underwater_depth_fog_alpha(prepos_y: f32) -> f32 {
 /// the lit arm higher than the engine (a higher effective `vWaterAlpha`, or a
 /// brighter/synthesized `TerrainColorTint`) rather than because the engine
 /// absorbs light. Multiplying the direct light by `(0.133, 0.234, 0.570)`
-/// darkens that lit arm into agreement and measurably improved the oracle (mean
-/// abs err 20.84 → 12.40; WATER_LAW §2a-ter). Because `--water-full` is DEFAULT
-/// ON and this lane cannot run the live D3D11 oracle to prove a replacement,
-/// the constant is KEPT as a documented fallback and the default render path is
-/// left byte-identical — but its interpretation is corrected: it is a texture/
-/// alpha-mismatch proxy, NOT the engine's light law. The engine's true light
-/// law for this pass is now closed: *scene CB0 unchanged* (see
-/// [`underwater_cb0_absorption_ratio`]). Removing the correction is deferred to
-/// a session that can run the oracle against the captured `WaterRefraction`
-/// with the engine's own `TerrainColorTint`.
+/// darkened that lit arm into agreement and measurably improved one oracle (mean
+/// abs err 20.84 → 12.40; WATER_LAW §2a-ter), but it is now blocked from product
+/// rendering. The engine's true light law for this pass is closed: *scene CB0
+/// unchanged* (see [`underwater_cb0_absorption_ratio`]). This constant and helper
+/// remain only for forensic comparisons and regression tests that demonstrate why
+/// the old hypothesis was rejected.
 ///
 /// Modset-bound evidence: fitted from vanilla `live_PAN2`, refuted-as-a-light-
 /// law from vanilla `session_CAPFIX2_GAPS_4`. Re-validate per modset
 /// (MOD_COMPATIBILITY.md).
 pub const UNDERWATER_LIGHT_ABSORPTION: [f32; 3] = [0.133, 0.234, 0.570];
 
-/// Apply [`UNDERWATER_LIGHT_ABSORPTION`] to a raw 416-byte scene CB0 image:
+/// Forensic helper: apply [`UNDERWATER_LIGHT_ABSORPTION`] to a raw 416-byte
+/// scene CB0 image:
 /// multiplies the rgb of `SunDiffuseIntensity` (byte offset 368) and
 /// `MoonDiffuseIntensity` (384), leaving their `.a` intensity lanes and every
 /// other field untouched. The CB0 ambient cube is deliberately NOT patched:
@@ -728,10 +725,10 @@ mod tests {
         // correction, NOT a proof of engine behavior (WATER5: the engine's
         // captured underwater CB0 is un-absorbed, see
         // `engine_underwater_cb0_carries_unabsorbed_white_sun`). The correction
-        // must still attenuate every channel (components in (0,1)) and be
+        // must attenuate every channel (components in (0,1)) and be
         // blue-dominant (r < g < b) — the water-absorption shape both empirical
         // fits show (lit-arm ratio (0.133,0.234,0.570); WATER_LAW scene fit
-        // (0.13,0.20,0.42)) — so the default render stays organically dim-blue.
+        // (0.13,0.20,0.42)).
         let [r, g, b] = UNDERWATER_LIGHT_ABSORPTION;
         assert!(r > 0.0 && r < 1.0, "red absorption {r}");
         assert!(g > 0.0 && g < 1.0, "green absorption {g}");

@@ -2,30 +2,20 @@
 
 Mechanism-correct laws for the game water surface, derived **files-first** from the
 shipped installed content (via the mod-aware `GameFileResolver`) and validated against
-captured evidence. `--water-full` is now **DEFAULT ON** in `replay_app` (GRAD1
-graduated it): the real reflection cube + the mechanism-correct underwater
-refraction pass render by default.
+captured evidence. `--water-full` is **DEFAULT ON** in `replay_app`, and the
+path is fail-closed: if the resolver or captured/refraction evidence is missing,
+the render stops instead of selecting the old approximation.
 
-**Default policy (GRAD1).** The old capture-anchored water default (mean-color
-reflection flatten + the `TERRAIN_COLOR_SNAPSHOT_HLSL` approximation refraction)
-is reachable with the explicit opt-out `--no-water-full` (byte-identical to the
-pre-GRAD1 default; see FIDELITY_LEDGER equivalence gate B). Fail-open vs
-fail-closed (the reflection cube needs no resolver; the underwater refraction
-pass reconstructs `pdxmap` `underwater` through the resolver, so the resolver is
-the gate):
+**Default policy (2026-07-08 fail-closed cleanup).** The old capture-anchored
+water default (mean-color reflection flatten + the `TERRAIN_COLOR_SNAPSHOT_HLSL`
+approximation refraction) is blocked from product rendering. Missing captured
+water evidence is now a startup blocker; the product renderer must not omit
+water or substitute the app-owned approximation.
 
-- **Explicit `--water-full`** — a missing `--game`/resolver is a HARD ERROR
-  (fail closed; no silent fallback to the approximation). Unchanged from the
-  pre-GRAD1 flag.
-- **Default (no flag)** — if no resolver is available, the renderer logs a
-  one-line downgrade NOTICE and falls back to the old capture-anchored water
-  path (both cube and refraction revert, keeping the render byte-identical to
-  the old default rather than erroring). The decision lives in
-  `render.rs::CapturedPassLayer::new`: `water_full` is forced false iff
-  `water_full && game_resolver.is_none() && !water_full_explicit`, before
-  `set_water_full` / `with_underwater_resolver`.
-- **`--no-water-full`** — old default, unconditionally (approximation, never
-  errors on a missing resolver).
+- **Default / explicit `--water-full`** — missing `--game`/resolver or missing
+  water-pass evidence is a HARD ERROR.
+- **`--no-water-full`** — rejected by `replay_app`; it previously selected the
+  old approximation.
 
 Shipped sources of truth (game root
 `<local-path> of Iron IV\`):
@@ -122,8 +112,8 @@ function of the final lit scene. A per-channel linear fit gives
 
 WATER2 makes refraction mechanism-correct: under `--water-full`, the world-
 synthesis water pass binds a **real seafloor render** as `WaterRefraction`,
-reconstructed files-first from `pdxmap.shader` `Effect underwater`. Flag-OFF the
-calibrated approximation stands, byte-identically.
+reconstructed files-first from `pdxmap.shader` `Effect underwater`. The old
+flag-OFF calibrated approximation is blocked from product rendering.
 
 **How it is produced** (`map_viewer/src/underwater_pass.rs`): the terrain draws
 are re-issued with the pixel shader swapped to `PixelShaderUnderwater` into an
@@ -177,31 +167,33 @@ incompatible target descriptor is a hard error (`underwater_pass.rs`); there is 
 silent fallback to the approximation. The renderer requires a `GameFileResolver`
 (threaded from the CLI `--game`/`--mod`); `--water-full` without one errors.
 
-**The old approximation (flag-OFF only):** the app-owned path
-(`TERRAIN_COLOR_SNAPSHOT_HLSL` in `d3d11_device.rs`) still approximates refraction
-as `terrain · (0.0128, 0.0225, 0.0655) + tiny_bias` over the tonemapped terrain
-RT. It is retained for byte-identical flag-OFF behaviour only; it ignores seafloor
-geometry and depth-fog and is **not** mechanism-correct.
+**The old approximation (blocked from product):** the app-owned path
+(`TERRAIN_COLOR_SNAPSHOT_HLSL` in `d3d11_device.rs`) approximated refraction as
+`terrain · (0.0128, 0.0225, 0.0655) + tiny_bias` over the tonemapped terrain RT.
+It ignores seafloor geometry and depth-fog and is **not** mechanism-correct.
+`replay_app` rejects `--no-water-full` so this is historical/research context only.
 
-### 2a-bis. WATER3 — the underwater pass now rides the chunk-SYNTHESIS path too
+### 2a-bis. WATER3 — underwater chunk-synthesis tooling is not product
 
 WATER2 rendered the underwater seafloor only on the **captured-terrain**
-production path (`render_prepared_production_map`). The product world renderer,
-however, runs the **chunk-synthesis** path (`--synthesize-terrain-chunks`,
-`render_prepared_synthesized_production_map`), which previously kept the flat
-approximation even under `--water-full` — so shallow-water halos never appeared
-in the shipping product view. WATER3 closes that gap.
+production path (`render_prepared_production_map`). Earlier research builds also
+threaded underwater rendering through the **chunk-synthesis** path
+(`--synthesize-terrain-chunks`, `render_prepared_synthesized_production_map`).
+As of the 2026-07-09 no-fudge cleanup, `replay_app` blocks chunk synthesis in
+the product surface because mixed-LOD `vSnap` and dependent runtime metadata are
+not fully engine-derived. The notes below are retained as tooling/oracle context,
+not as current product behavior.
 
-Under `--water-full`, the synthesis path now re-renders the **synthesized tiled
+Under `--water-full`, the tooling path re-renders the **synthesized tiled
 terrain** with `PixelShaderUnderwater` into the same offscreen `B8G8R8A8_UNORM`
 `WaterRefraction` target and binds it to the water/rivers passes, reusing the
 existing `native_d3d11_render_underwater_synthesis` machinery (the same tiled
-re-render the WATER2 oracle validation already used). The water/rivers refraction
-source is selected by the pure law `world_synthesis_water_refraction_source`
-(`UnderwaterPass` under `--water-full`, `AppOwnedTerrainColorSnapshot` flag-OFF),
-which is unit-tested to match the captured-terrain path's non-reference selection
-and to keep flag-OFF byte-identical. It is **fail-closed**: `--water-full` on the
-synthesis path errors without a `GameFileResolver` (no silent fallback).
+re-render the WATER2 oracle validation already used). Product water source
+selection is guarded by `product_water_source_policy`: non-reference rendering
+uses `UnderwaterPass` under `--water-full`, and a real water bundle without
+`--water-full` is blocked rather than selecting `AppOwnedTerrainColorSnapshot`.
+It is **fail-closed** inside tooling: `--water-full` on the synthesis path errors
+without a `GameFileResolver` (no silent fallback).
 
 **CB1 ordering (safety).** `native_d3d11_render_underwater_synthesis` rewrites the
 shared synthesis `template_draw` CB1 (QuadOffset/detail-edge) per tile over the
@@ -209,9 +201,10 @@ shared synthesis `template_draw` CB1 (QuadOffset/detail-edge) per tile over the
 at its last *visible* tile. The synthesis renderer therefore issues the underwater
 re-render **before** the terrain color render, so the terrain color pass runs last
 and leaves CB1 in exactly the flag-OFF terminal state the `--borders-from-files`
-overlay (which borrows `template_draw` CB1) expects. The `--water-full
---borders-from-files --synthesize-terrain-chunks` combination is verified to render
-without corruption and deterministically.
+overlay (which borrows `template_draw` CB1) expects. Historical tooling verified
+the `--water-full --borders-from-files --synthesize-terrain-chunks` combination
+without corruption and deterministically; `replay_app` now blocks those
+product-visible flags.
 
 **Still an oracle, not byte-exact.** Like the WATER2 captured-path oracle, the
 synthesis-path seafloor uses the *synthesized tiled* terrain geometry (whole-world
@@ -271,16 +264,13 @@ Because the engine does NOT absorb light (above), this constant is now
 understood as an EMPIRICAL correction that darkens the app's over-bright lit
 arm — most plausibly a proxy for the app weighting the lit arm higher than the
 engine (a higher effective `vWaterAlpha`, or a brighter/synthesized
-`TerrainColorTint`) rather than any light absorption. It is KEPT because it
-improved the oracle (below) and `--water-full` is DEFAULT ON, and this lane
-cannot run the live D3D11 oracle to prove a replacement; the default render
-path is left byte-identical. Under `--water-full` the underwater re-render
-(both the captured-draw and the synthesis tile loops) binds a pass-owned clone
-of the live scene CB0 whose `SunDiffuseIntensity.rgb` and
-`MoonDiffuseIntensity.rgb` are multiplied by this correction
-(`apply_underwater_light_absorption`; the `.a` intensity lanes and all other
-CB0 fields are preserved, and the live CB0 shared with the terrain/water passes
-is never written). The CB0 ambient cube is deliberately NOT patched:
+`TerrainColorTint`) rather than any light absorption. It is blocked from product
+evidence until the engine's own `TerrainColorTint`/`ShadowMap` path is rendered
+and diffed. As of 2026-07-08, `--water-full` no longer applies this correction:
+the underwater re-render binds a byte-identical scene CB0 clone, matching the
+captured engine fact that `SunDiffuseIntensity` and `MoonDiffuseIntensity` are
+unabsorbed. `apply_underwater_light_absorption` remains forensic/test-only.
+The CB0 ambient cube is deliberately NOT patched:
 `PixelShaderUnderwater`'s `ComposeLight` uses the compiled-in static
 `DayAmbientMap*` constants (standardfuncsgfx.fxh:475-494,683), so a CB0 ambient
 patch is inert for this pass (Codex-caught). The moon correction is an
@@ -470,18 +460,19 @@ cube end-to-end (proven: flag-on differs from flag-off; deterministic across run
 change confined to water pixels).
 
 The GRADE2 hook has **landed**: `render.rs::MapRenderer::new` →
-`CapturedPassLayer::new` threads `water_full` (and the GRAD1 `water_full_explicit`
-opt-out marker) into `NativeD3d11TerrainRenderer::from_borrowed_raw(...)`,
+`CapturedPassLayer::new` threads `water_full` into
+`NativeD3d11TerrainRenderer::from_borrowed_raw(...)`,
 calling `set_water_full(...)` and, when the underwater refraction pass is active,
 `with_underwater_resolver(resolver.clone())`. `main.rs` → `app.rs` /
 `headless.rs` plumb the flag and the resolver.
 
-**GRAD1 graduation:** `--water-full` is now **DEFAULT ON** (see the default-policy
-block at the top of this file). An **explicit** `--water-full` without a resolver
-still fails closed; the **default** without a resolver downgrades to the old
-approximation with a one-line NOTICE (both cube and refraction revert together so
-the render stays byte-identical to the old default); `--no-water-full` selects the
-old approximation directly. The reflection cube (WATER1) needs no resolver; the
-underwater refraction pass (WATER2/WATER3) reconstructs `pdxmap.shader` `Effect
-underwater` and needs the modset `GameFileResolver`, so the resolver is the
-fail-open/fail-closed gate.
+**2026-07-08 fail-closed cleanup:** `--water-full` remains **DEFAULT ON**, but no
+default downgrade remains. A missing resolver, missing captured water input, or
+failed underwater construction is a product blocker. `--no-water-full` is
+rejected because it selected the old app-owned approximation directly.
+
+**2026-07-09 no-fudge cleanup:** the `map_viewer` `--map-clock-time` override
+remains development tooling for isolating water/cloud animation law. `replay_app`
+does not pass app wall-clock seconds into the product renderer; it preserves the
+captured map-clock constant-buffer bytes (`map_clock_time = None`) until the
+runtime timing source is capture- or engine-law-derived.

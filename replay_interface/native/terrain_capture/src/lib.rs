@@ -2668,8 +2668,18 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TERRAIN_CAPTURE_FIXTURE_DIRS_ENV: &str = "BATTLE_PLAN_TERRAIN_CAPTURE_FIXTURE_DIRS";
+
+    fn first_capture_fixture(file_name: &str) -> Option<PathBuf> {
+        std::env::var_os(TERRAIN_CAPTURE_FIXTURE_DIRS_ENV)
+            .into_iter()
+            .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+            .map(|dir| dir.join(file_name))
+            .find(|path| path.is_file())
+    }
 
     #[test]
     fn d3d11_vtable_indices_match_sdk_order_needed_for_capture() {
@@ -3111,25 +3121,15 @@ mod tests {
     #[test]
     fn capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader() {
         // CAPFIX2 INVESTIGATION 3: prove the prefilter admits the REAL captured
-        // pdxmap terrain PS bytecode shipped in the repo captures. This is the
-        // decisive test: if this passes, the prefilter did NOT regress the
-        // pdxmap PS, so the LAW-session "no active pdxmap pixel shader"
-        // rejections were an observation miss (the PS was already resident at
-        // attach, not a prefilter false-reject), not a marker regression.
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let candidates = [
-            manifest_dir
-                .join("harness_runs/head_quick_20260702_211446/pdxmap_pixel_shader_ce5e5185d46e214b.bin"),
-            manifest_dir
-                .join("harness_runs/head_quick_nobudget_20260702_211614/pdxmap_pixel_shader_ce5e5185d46e214b.bin"),
-        ];
-        let Some(path) = candidates.iter().find(|p| p.is_file()) else {
+        // pdxmap terrain PS bytecode when an external capture corpus is supplied.
+        // The repo does not carry harness run artifacts as permanent fixtures.
+        let Some(path) = first_capture_fixture("pdxmap_pixel_shader_ce5e5185d46e214b.bin") else {
             eprintln!(
-                "capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader skipped: no captured pdxmap PS present"
+                "capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader skipped: set {TERRAIN_CAPTURE_FIXTURE_DIRS_ENV} to a capture run containing pdxmap_pixel_shader_ce5e5185d46e214b.bin"
             );
             return;
         };
-        let bytes = fs::read(path).expect("read captured pdxmap pixel shader bytecode");
+        let bytes = fs::read(&path).expect("read captured pdxmap pixel shader bytecode");
         assert!(
             pixel_shader_bytecode_could_be_capture_family(&bytes),
             "prefilter must admit the real captured pdxmap PS {}",
@@ -3569,16 +3569,14 @@ mod tests {
         // map_vertex_shader with fnv 4e1b73f39c128df0. Reflect that exact DXBC
         // and confirm the mapname discriminator classifies it — proving the
         // reflected float3-position signature targets the live shader, not just
-        // synthetic HLSL. Fixture-gated so CI without the capture still passes.
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("harness_runs/head_quick_20260702_211446/map_vertex_shader_4e1b73f39c128df0.bin");
-        if !fixture.is_file() {
+        // synthetic HLSL. Fixture-gated so CI without an external capture still
+        // passes.
+        let Some(fixture) = first_capture_fixture("map_vertex_shader_4e1b73f39c128df0.bin") else {
             eprintln!(
-                "mapname_discriminator_matches_live_captured_vertex_shader skipped: {} absent",
-                fixture.display()
+                "mapname_discriminator_matches_live_captured_vertex_shader skipped: set {TERRAIN_CAPTURE_FIXTURE_DIRS_ENV} to a capture run containing map_vertex_shader_4e1b73f39c128df0.bin"
             );
             return;
-        }
+        };
         let bytes = fs::read(&fixture).expect("read live mapname VS fixture");
         assert_eq!(
             fnv1a64_bytes(&bytes),
@@ -3749,7 +3747,8 @@ mod tests {
         // The REAL shipped border.shader:border PS variant declares ONLY
         // BorderDiffuse + ShadowMap (BORD5: the old 4-symbol signature also
         // demanded SnowMudData/IntelMap and could never match it).
-        let border_shader = b"BorderDiffuse_Texture : register(t0); ShadowMap_Texture : register(t3);";
+        let border_shader =
+            b"BorderDiffuse_Texture : register(t0); ShadowMap_Texture : register(t3);";
         let tree_shader = b"DiffuseMap_Texture : register(t0); NormalMap_Texture : register(t1); TintMap_Texture : register(t2); SeasonMap_Texture : register(t3); TreeMaskTexture_Texture : register(t14); GradientBorderChannel1_Texture : register(t12); GradientBorderChannel2_Texture : register(t13);";
 
         assert!(state.observe_river_pixel_shader_created(0xA0, river_shader));

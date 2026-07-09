@@ -14,9 +14,10 @@ The resolver already implements Paradox override semantics: ordered mod
 content layers over vanilla, file-level override wins, `replace_path`
 directory exclusions, `dlc_load.json` playset input, override stats and
 warnings. The recording carries the modset (`REPLAY_SCHEMA.md` §2.1
-`provenance.mod`, written capture-side); `game_assets/extract.py` records
-`active_modset.json` the same way for UI assets. Resolution is therefore
-fully determined by the recording — seamless by construction.
+`provenance.mod`, written capture-side); generated `active_modset.json` files
+are local inspection artifacts, not runtime authority. Resolution is therefore
+fully determined by the recording or by explicit resolver inputs — seamless by
+construction.
 
 ## Why files-first is also mods-first
 

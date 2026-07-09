@@ -41,8 +41,9 @@ Supporting toolchains (not in the runtime path):
   not a per-frame runtime dependency.
 - Python (`replay/`, `models/`, `derive/`, `game_assets/`) — development,
   validation, fixture generation, and asset extraction tooling. Never in the
-  runtime playback path. `game_assets/extract.py` output IS a runtime input
-  (generated once, loaded by `replay_app`).
+  runtime playback path. `game_assets/extract.py` output is a local inspection
+  cache, not product runtime truth; replay_app must resolve effective installed content
+  directly or fail closed.
 
 ## Ingest boundary (the extraction-layer seam)
 
@@ -97,9 +98,9 @@ viewers and is not the product surface.
 2. Terrain look (parallel track): the captured-pass D3D11 replay program
    continues (terrain proven; water/rivers/borders/trees pending real
    captures; MSAA blocker documented). It renders beneath the identity layer
-   inside `replay_app`'s pass graph. Until it lands, the base layer renders
-   over the grounded `map_visual.rgbx` scaffold and the gap is badged, per the
-   grounding rules.
+   inside `replay_app`'s pass graph. Without a validated capture, the product
+   map layer fails closed; the removed `map_visual.rgbx` scaffold is not an
+   interim base layer.
 3. Nothing invented: colors, icons, fonts, layouts come from installed content or the
    recording. Gaps are badged unavailable, never faked.
 
@@ -131,9 +132,9 @@ visual claim. `UI_SOURCE_OF_TRUTH_REPORT.md` remains binding for UI surfaces.
 - `map_pipeline/assets/*.json` — legacy compatibility data for extractor-side
   consumers; not a replay runtime input; removal belongs to the extraction
   owner.
-- `game_assets/` — active runtime-asset pipeline; its generated bundle
-  (`gui/*.json`, `sprites.json`, fonts, loc) must be regenerated per machine
-  and is gitignored.
+- `game_assets/` — local UI asset extraction tooling; its generated bundle
+  (`gui/*.json`, `sprites.json`, fonts, loc, active modset manifests) must be
+  regenerated per machine, is gitignored, and is not replay runtime truth.
 
 ## Extraction-layer asks
 

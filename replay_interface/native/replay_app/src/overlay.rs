@@ -2,10 +2,10 @@
 //! bar. Shared by the interactive window loop and the headless dump path
 //! so verification stays screen-free.
 //!
-//! Font selection contract: the real clock font is tried first. If no
-//! game root was supplied, or the real font fails to load, the former TGA
-//! proxy font is used and logged as such. If both paths fail, the overlay
-//! draws no text; the scrub bar (which is not a font) still draws.
+//! Font selection contract: overlay text uses the real DDS-backed `hoi_18mbs`
+//! font from the active game resolver. If that evidence is absent or fails to
+//! load, the overlay draws no text; the scrub bar (which is not a font) still
+//! draws.
 
 use crate::d3d::Gfx;
 use crate::font;
@@ -16,8 +16,8 @@ use std::collections::BTreeSet;
 
 // PROXY: overlay text placement is a replay-specific choice, not taken
 // from a the game .gui layout yet. Real parity requires laying the readout out
-// from an extracted layout (e.g. game_assets/gui/ingame_clock.json places
-// time_text inside clock_window anchored LOWER_RIGHT).
+// from the shipped GUI layout (interface/ingameclock.gui places time_text
+// inside clock_window anchored LOWER_RIGHT).
 const TEXT_MARGIN_X: f32 = 8.0;
 const TEXT_MARGIN_Y: f32 = 8.0;
 const LINE_GAP: f32 = 4.0;
@@ -99,7 +99,7 @@ pub struct Overlay {
 
 impl Overlay {
     /// Build the overlay. `game_resolver` is `--game` / `BATTLE_PLAN_VANILLA`; when
-    /// absent, font selection falls back to the local vanilla proxy path.
+    /// absent, text is omitted rather than rendered with a proxy font.
     pub fn create(gfx: &Gfx, game_resolver: Option<&GameFileResolver>) -> Overlay {
         let quads = match QuadRenderer::new(gfx) {
             Ok(quads) => Some(quads),
@@ -108,41 +108,38 @@ impl Overlay {
                 None
             }
         };
-        let text = match font::load_overlay_font(game_resolver) {
-            Ok(selection) => {
-                let font_name = selection.font_name;
-                let kind = match selection.kind {
-                    font::OverlayFontKind::Real => "real",
-                    font::OverlayFontKind::Proxy => "proxy fallback",
-                };
-                match TextRenderer::new(gfx, &selection.font) {
-                    Ok(renderer) => {
-                        match &selection.fallback_reason {
-                            Some(reason) => eprintln!(
-                                "replay_app: overlay text active: font {font_name:?} \
-                                 ({kind}) from {}; {reason}",
+        let text = match game_resolver {
+            Some(resolver) => match font::load_overlay_font(resolver) {
+                Ok(selection) => {
+                    let font_name = selection.font_name;
+                    match TextRenderer::new(gfx, &selection.font) {
+                        Ok(renderer) => {
+                            eprintln!(
+                                "replay_app: overlay text active: font {font_name:?} from {}",
                                 selection.root.display()
-                            ),
-                            None => eprintln!(
-                                "replay_app: overlay text active: font {font_name:?} \
-                                 ({kind}) from {}",
-                                selection.root.display()
-                            ),
+                            );
+                            Some(renderer)
                         }
-                        Some(renderer)
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "replay_app: overlay text disabled: failed to upload active font \
-                             {font_name:?} from {}: {err}",
-                            selection.root.display()
-                        );
-                        None
+                        Err(err) => {
+                            eprintln!(
+                                "replay_app: overlay text disabled: failed to upload active font \
+                                 {font_name:?} from {}: {err}",
+                                selection.root.display()
+                            );
+                            None
+                        }
                     }
                 }
-            }
-            Err(err) => {
-                eprintln!("replay_app: overlay text disabled: {err}");
+                Err(err) => {
+                    eprintln!("replay_app: overlay text disabled: {err}");
+                    None
+                }
+            },
+            None => {
+                eprintln!(
+                    "replay_app: overlay text disabled: --game <the game install dir> or \
+                     BATTLE_PLAN_VANILLA is required for the real hoi_18mbs font; no proxy font is used"
+                );
                 None
             }
         };
@@ -207,7 +204,7 @@ impl Overlay {
         }
 
         if let Some(text) = &self.text {
-            // Grounded: the font's own fonts.json color tints the real
+            // Grounded: the font's own core.gfx color tints the real
             // white-alpha glyph pages, matching the game's scheme.
             let color = text.font().default_color;
             let line_height = text.font().line_height.max(0) as f32;

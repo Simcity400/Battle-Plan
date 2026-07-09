@@ -1823,6 +1823,7 @@ pub(crate) fn apply_terrain_secondary_mask(
 }
 
 pub(crate) fn calculate_occupation_mask(uv: Vec2, cam_y: f32) -> f32 {
+    // Port of gfx/FX/standardfuncsgfx.fxh:965-976 CalculateOccupationMask.
     let t: f32 = 3.14159 / 8.0;
     let mut stripe_val = (uv.x * t.cos() * SEC_MAP_TILE + uv.y * t.sin() * SEC_MAP_TILE).cos();
     let cam_dist = cam_distance(cam_y, SEC_CAM_MIN, SEC_CAM_MAX);
@@ -3285,6 +3286,35 @@ pub(crate) fn validate_standard_function_shader_constant(
     Ok(())
 }
 
+pub(crate) fn validate_occupation_mask_shader_source(
+    standard_functions_source: &Path,
+) -> Result<()> {
+    let text = strip_comments(&read_latin1(standard_functions_source)?);
+    let source = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    let expected = [
+        "floatCalculateOccupationMask(infloat2uv)",
+        "floatt=3.14159/8.0;",
+        "floatw=SEC_MAP_TILE;",
+        "floatstripeVal=cos((uv.x*cos(t)*w)+(uv.y*sin(t)*w));",
+        "floatcamDist=cam_distance(300.0,1200.0);",
+        "stripeVal+=camDist*1.5;",
+        "stripeVal=smoothstep(0.0,1.0,stripeVal*1.7)*lerp(1.0,0.3,camDist);",
+        "returnstripeVal;",
+    ];
+    for needle in expected {
+        if !source.contains(needle) {
+            return Err(format!(
+                "production terrain renderer blocked: gfx/FX/standardfuncsgfx.fxh CalculateOccupationMask no longer matches the ported occupation-stripe law near lines 965-976; missing `{needle}`"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_shader_source_vector3_constant(
     source_path: &Path,
     source_label: &str,
@@ -4639,6 +4669,51 @@ mod tests {
         )
         .expect_err("changed FOW color must fail closed");
         assert!(err.to_string().contains("BRIGHT_FOW_COLOR[0]"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn occupation_mask_shader_source_gate_rejects_formula_drift() {
+        let root = temp_test_dir("occupation_mask_shader_source_gate");
+        fs::create_dir_all(&root).expect("create temp dir");
+        let source = root.join("standardfuncsgfx.fxh");
+        fs::write(
+            &source,
+            b"
+float CalculateOccupationMask( in float2 uv )
+{
+    float t = 3.14159 / 8.0;
+    float w = SEC_MAP_TILE;
+    float stripeVal = cos( ( uv.x * cos( t ) * w ) + ( uv.y * sin( t ) * w ) );
+    float camDist = cam_distance( 300.0, 1200.0 );
+    stripeVal += camDist * 1.5;
+    stripeVal = smoothstep(0.0, 1.0, stripeVal*1.7) * lerp(1.0, 0.3, camDist);
+    return stripeVal;
+}
+",
+        )
+        .expect("write standard functions source");
+        validate_occupation_mask_shader_source(&source).expect("matching occupation law");
+
+        fs::write(
+            &source,
+            b"
+float CalculateOccupationMask( in float2 uv )
+{
+    float t = 3.14159 / 8.0;
+    float w = SEC_MAP_TILE;
+    float stripeVal = cos( ( uv.x * cos( t ) * w ) + ( uv.y * sin( t ) * w ) );
+    float camDist = cam_distance( 300.0, 1000.0 );
+    stripeVal += camDist * 1.5;
+    stripeVal = smoothstep(0.0, 1.0, stripeVal*1.7) * lerp(1.0, 0.3, camDist);
+    return stripeVal;
+}
+",
+        )
+        .expect("write changed standard functions source");
+        let err = validate_occupation_mask_shader_source(&source)
+            .expect_err("changed occupation camera fade must fail closed");
+        assert!(err.to_string().contains("CalculateOccupationMask"));
         let _ = fs::remove_dir_all(&root);
     }
 }

@@ -46,6 +46,7 @@ pub mod dxgi {
     /// `DXGI_FORMAT_R16_UINT` — the captured index format.
     pub const R16_UINT: u32 = 57;
     /// `DXGI_FORMAT_R32_UINT` — the synthesized index format.
+    #[cfg(test)]
     pub const R32_UINT: u32 = 42;
 }
 

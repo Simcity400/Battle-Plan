@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""game-asset extraction pipeline for the MP-Stats replay UI.
+"""game-asset extraction tooling for the MP-Stats replay UI.
 
 Reads a (read-only) vanilla the game install plus an optional mod overlay and emits:
   * sprites.json        -- sprite-name -> texture/frame metadata manifest
@@ -16,8 +16,8 @@ location; the mod overlay defaults to the sibling `test` mod. No personal/machin
 path is baked into committed files -- set BATTLE_PLAN_VANILLA or pass --vanilla / --mod.
 
 Copyright: these are the user's own Paradox installed content, extracted for a private
-offline tool. Converted art lives under assets/ and is gitignored -- only this
-script, the manifest, and the parsed layouts are committed.
+offline tool. Converted art and generated manifests/layout caches are gitignored
+-- only this script, tests, and docs are committed.
 """
 from __future__ import annotations
 
@@ -917,10 +917,10 @@ def _sanitize_path(p, userdata: Path):
 
 def _modset_manifest(layers: list, source: str, warnings: list,
                      userdata: Path) -> dict:
-    """Serialize the resolved load order for the app (active_modset.json).
+    """Serialize the resolved load order for local inspection (active_modset.json).
 
     Paths are stored RELATIVE to the user-data dir to keep personal home paths
-    out of the committed file (privacy/copyright rule)."""
+    out of generated artifacts (privacy/copyright rule)."""
     order = []
     for i, ly in enumerate(layers):
         m = ly.meta or {}

@@ -111,6 +111,7 @@ pub(crate) fn validate_production_terrain_renderer_impl(
         "NIGHT_DARKNESS",
         NIGHT_DARKNESS,
     )?;
+    validate_occupation_mask_shader_source(&inputs.standard_functions_source)?;
     validate_shader_source_vector3_constant(
         &inputs.fow_include_source,
         "gfx/FX/fow.fxh",
@@ -5776,7 +5777,6 @@ mod tests {
             province_id_encoding: "little-endian u32 per pixel".to_string(),
             files: BundleFiles {
                 province_ids: "province_ids.r32".to_string(),
-                map_visual: "map_visual.rgbx".to_string(),
                 terrain_id_map: "terrain_id_map.rgba".to_string(),
                 terrain_runtime: "terrain_runtime.json".to_string(),
                 snow_mud_data: "snow_mud_data.rgba".to_string(),
@@ -5842,9 +5842,6 @@ mod tests {
             shader_constants: BTreeMap::new(),
             shader_vector3_constants: BTreeMap::new(),
             shipped_sources: BTreeMap::new(),
-            cpu_map_visual_lighting_terms: cpu_map_visual_lighting_terms(),
-            cpu_map_visual_lighting_gaps: cpu_map_visual_lighting_gaps(),
-            cpu_map_visual_captured_constants: cpu_map_visual_captured_constants(),
             generated_runtime_inputs: generated_runtime_material_inputs(),
         };
         write_json(&root.join("map_material_contract.json"), &contract).expect("write contract");

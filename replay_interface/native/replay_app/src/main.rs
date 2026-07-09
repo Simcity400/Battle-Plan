@@ -1,43 +1,39 @@
 //! Battle Plan product surface: Win32 + D3D11 swapchain app.
 //!
-//! Renders the political map over the grounded map-bundle scaffold per
-//! `replay_interface/documents/REPLAY_ARCHITECTURE.md` (sequencing step 2)
-//! and the Phase 2 architecture of `MAP_REPLICA_PLAN.md`: camera in map
-//! pixels, GPU shaders own recoloring, a CPU mirror of `province_ids.r32`
-//! owns hit testing, and snapshot scrubbing rewrites only the compact
-//! state -> color table (never re-rasterizing the map on the CPU).
+//! Product map rendering enters through validated the game D3D11 capture bundles.
+//! The replay app keeps the map bundle's province/state data for picking and
+//! snapshot metadata, but it does not render the removed CPU `map_visual.rgbx`
+//! scaffold or generated political-color SRV substitutions.
 //!
 //! Usage: `replay_app [--bundle <dir>] [--game <dir>] [--mod <content-dir> ...]
-//! [--use-dlc-load --userdata <dir>] [--recording <path>] [--demo-scrub]
+//! [--use-dlc-load --userdata <dir>] [--recording <path>]
 //! [--capture <session dir>]`
 //!
 //! `--recording` opens a snapshot-flavor `.battleplan` (or snapshot store
 //! directory) through `replay_core` and drives the map from its recorded
-//! state owners. Without it the map shows the grounded 1936 owners;
-//! `--demo-scrub` runs a clearly-labeled synthetic scrub demo instead.
-//! `--gb-cpu` or `REPLAY_APP_GB_CPU=1` forces the reference CPU
-//! GradientBorderChannel generator for parity testing.
+//! state owners. Without it the map shows the grounded 1936 owners.
+//! Replay-driven political color substitution is blocked until the engine's
+//! primary fill / exact GradientBorder generation law is ported.
 //! `--capture` loads a validated map_viewer captured-pass session and uses
 //! the game's captured pdxmap/pdxwater shaders as the map base layer; invalid
 //! captured sessions fail startup with the validator message.
 //!
 //! `--game` points at the game install (falls back to the `BATTLE_PLAN_VANILLA`
 //! environment variable) and enables the real DDS-backed `hoi_18mbs`
-//! overlay font. Without it the app still runs and falls back to the
-//! former TGA proxy font when the local vanilla install is present.
+//! overlay font. Without it the app still runs, but overlay text is omitted
+//! instead of rendered with a proxy font.
 //!
 //! Controls: middle/right-drag or WASD pan; mouse wheel zooms toward the
 //! cursor; `R` resets to whole-map fit; `[`/`]` or Left/Right step one
 //! timeline hour; Space toggles ~4 hours/sec autoplay; left click/drag on
 //! the scrub bar seeks the timeline; Escape quits.
 
-#[cfg(windows)]
-mod buildings;
 mod bundle;
 mod camera;
 mod font;
 mod grading_law;
 mod palette;
+#[cfg(test)]
 mod post_effect;
 mod timeline;
 
@@ -46,19 +42,13 @@ mod app;
 #[cfg(windows)]
 mod d3d;
 #[cfg(windows)]
-mod gb_field;
-#[cfg(windows)]
 mod headless;
-#[cfg(windows)]
-mod map_furniture;
-#[cfg(windows)]
-mod map_labels;
 #[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
-mod render;
+mod political_scene;
 #[cfg(windows)]
-mod secondary_field;
+mod render;
 #[cfg(windows)]
 mod text;
 #[cfg(windows)]
@@ -73,27 +63,25 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const USAGE: &str = "usage: replay_app [--bundle <dir>] [--game <the game install dir>] \
-[--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path>] [--demo-scrub] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <N>] \
-[--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] [--gb-cpu] \
-    [--synthesize-terrain-chunks] [--chunks-from-files] [--trees-from-files] [--no-trees-second-subdraw] [--buildings-from-files] [--buildings-preview-all] [--no-capture-water] [--no-capture-rivers] [--no-capture-trees] [--postfx|--no-postfx] [--postfx-restore-full|--no-postfx-restore-full] [--postfx-validate-capture] [--freeze-clock] [--water-full|--no-water-full] [--borders-from-files|--no-borders-from-files] [--map-labels|--no-map-labels] [--map-furniture|--no-map-furniture]\n\
+[--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path>] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <N>] \
+[--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
+    [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
 --game falls back to the BATTLE_PLAN_VANILLA environment variable; \
 --mod is repeatable and --use-dlc-load mirrors map_viewer bundle semantics with --userdata; \
---capture loads map_viewer/out/captures session bundles and fails closed on validation errors; \
---synthesize-terrain-chunks uses terrain_chunk_library.json to synthesize terrain-detail chunks; \
---chunks-from-files (CHUNK1, default OFF) makes --synthesize-terrain-chunks bind GENERATED chunk mesh buffers (65x65 grid slot0, checkerboard index, per-LOD slot1 height pool from the mod-resolvable map/heightmap.bmp, CB1) instead of the captured chunk template files; byte-identical to the captured law (fails closed on drift); requires --synthesize-terrain-chunks and --game/BATTLE_PLAN_VANILLA; \
---trees-from-files opts into resolver-loaded trees.bmp/.mesh Tree_tint/Tree_season layer (default OFF; requires --capture and --game/BATTLE_PLAN_VANILLA); \
---no-trees-second-subdraw (TREES2, default OFF) is the opt-out anchor for the historical trees second-sub-draw: pixel shader 6b77b6df9ba8f03d is gfx/FX/tree.shader:tree_low_gfx (the LOW_END_GFX variant), compiled by the engine but bound to no captured draw, so nothing renders for it either way and this flag leaves output byte-identical; \
---buildings-from-files opts into resolver-loaded map/buildings.txt + building .mesh preview (default OFF; requires --game/BATTLE_PLAN_VANILLA); --buildings-preview-all force-renders slot 0..show_on_map-1 per state for visual gates only; \
---gb-cpu or REPLAY_APP_GB_CPU=1 forces the reference CPU gradient-border path; \
---postfx enables the ported scene-restore tone map (default ON: the game's on-screen image is post-tonemap; --no-postfx shows the raw captured-RT look); \
---postfx-restore-full (GRAD1, DEFAULT ON) composes the RestoreScene grade (ColorCube LUT + exposure/MiddleGrey) FROM THE Installed content via the mod-aware resolver (posteffect_volumes.txt selection law + colorcorrection_*.tga + defines; see documents/GRADING_LAW.md); when explicitly passed it fails closed on a missing --game/TGA/selection key; on the default (no flag) a missing input logs a one-line downgrade and falls back to the old capture-anchored path; --no-postfx-restore-full restores the old default (no files-first grade); \
+--capture loads map_viewer/out/captures session bundles and is required for map rendering; the removed CPU map_visual.rgbx scaffold is blocked from product output; \
+--demo-scrub is blocked because it generated synthetic, non-replay state changes; \
+terrain chunk synthesis is blocked in replay_app until the remaining runtime/LOD state is engine-derived; use map_viewer terrain tooling only for development; --synthesize-terrain-chunks and --chunks-from-files are blocked; \
+--gb-cpu and REPLAY_APP_GB_CPU are blocked; generated political GradientBorder textures are research-only and not used for product rendering; \
+--postfx enables the ported scene-restore tone map (default ON: the game's on-screen image is post-tonemap; --no-postfx is blocked); \
+--postfx-restore-full (DEFAULT ON) composes the RestoreScene grade from installed content via the mod-aware resolver and fails closed when evidence is missing; --no-postfx-restore-full is blocked; \
 --postfx-validate-capture loads the captured restore-pass bundle and reports file-law vs captured deltas (LUT max delta, MiddleGrey/AverageLuminance diffs) then exits; a regression gate, never a render input (requires --capture and --game); \
---tree-seasons-by-date opts into the hypothesis tree CB1 season override for captured tree passes; modes without recording dates leave it inactive; \
---freeze-clock disables interactive wall-clock map animation for debugging; \
---water-full (WATER1, DEFAULT ON) uploads the real water reflection cube (byte-identical to the shipped, mod-resolvable map/terrain/reflection.dds) plus the mechanism-correct underwater refraction pass instead of the mean-color/approximation; when explicitly passed it fails closed without a --game resolver; on the default (no flag) a missing resolver logs a one-line downgrade and falls back to the old approximation; --no-water-full restores the old default (see documents/WATER_LAW.md); \
---borders-from-files / --no-borders-from-files (BORD5, DEFAULT ON) renders the thin-border ribbons (province/state/country/coast/impassable; sea-region skipped, geometry law underived) with the shipped mod-resolvable gfx/FX/border.shader and camera-height fade; the mesh follows the captured-engine chain law (session_BORDERZOOM_3; the drawn Brittany|Loire strip is a passing 32-vertex answer-key gate); an explicit --borders-from-files fails closed without a --game resolver, the default-ON path degrades to a one-line notice + borders off, and --no-borders-from-files restores the borderless render; \
---map-labels / --no-map-labels (LABGRAD1, DEFAULT ON) draws the reconstructed curved country-name labels, ONE PER CONTROLLED COMPONENT (each detached holding gets its own label; contiguous controlled territory merges), from the mod-resolvable map font (hoi_mapfont4), localisation and 00_graphics.lua DRAW_COUNTRY_NAMES_CUTOFF (see documents/MAP_LABEL_LAW.md); an explicit --map-labels fails closed without a --game resolver, the default-ON path degrades to a one-line notice + labels off, and --no-map-labels restores the byte-identical no-label render; \
---map-furniture / --no-map-furniture (FURN1, DEFAULT ON) draws the city/victory-point map furniture over the map — VP dots / capital stars from the shipped GFX_onmap_victorypoints_strip (neutral gray column; the engine's relation->color map is untraced) + hoi_20bs name text — reconstructed 100% from mod-resolvable installed content (history/states victory_points, history/countries capitals, localisation VICTORY_POINTS_<id>, interface/mapicons.gui/.gfx, 00_graphics.lua VP icon zoom cutoffs); an explicit --map-furniture fails closed without a --game resolver, the default-ON path degrades to a one-line notice + furniture off, and --no-map-furniture restores the byte-identical no-furniture render";
+--freeze-clock is blocked because replay_app preserves captured map-clock constant-buffer bytes until real runtime timing is capture-derived; \
+--water-full (DEFAULT ON) uploads only the real engine/file-derived water path and fails closed when required inputs are missing; --no-water-full is blocked because it selected the old app-owned approximation; \
+borders are blocked in replay_app until the remaining thin-border fade/loop/sea-region law is ported; use map_viewer border dumps as development tooling; --borders-from-files is blocked; \
+country labels are blocked in replay_app until the remaining engine emission/de-overlap law is ported; use map_viewer dump_map_labels as development tooling; --map-labels and --map-labels-fallback are blocked; \
+map furniture is blocked in replay_app until the remaining engine GUI/anchor law is ported; use map_viewer dump_map_furniture as development tooling; --map-furniture is blocked; \
+tree file-derived replacement layers are blocked until scatter/rotation/model-selection/season-CB law is engine-derived; --trees-from-files and --tree-seasons-by-date are blocked; \
+building previews are blocked until map_objects_pass or mesh/material import law exists; --buildings-from-files and --buildings-preview-all are blocked";
 
 const SENSITIVE_GAME_FILE_PATHS: &[&str] = &[
     "gfx/FX/constants.fxh",
@@ -106,30 +94,11 @@ const SENSITIVE_GAME_FILE_PATHS: &[&str] = &[
     "map/seasons.txt",
 ];
 
-/// What drives the timeline: recorded state, the grounded 1936 baseline, or
-/// the labeled synthetic scrub demo.
+/// What drives the timeline: recorded state or the grounded 1936 baseline.
 #[derive(Debug, PartialEq)]
 enum TimelineMode {
     Static1936,
-    DemoScrub,
     Recording(PathBuf),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CliCaptureLayerConfig {
-    water: bool,
-    rivers: bool,
-    trees: bool,
-}
-
-impl Default for CliCaptureLayerConfig {
-    fn default() -> Self {
-        Self {
-            water: true,
-            rivers: true,
-            trees: true,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -152,89 +121,21 @@ struct CliOptions {
     /// post-pass RT referees diff against. Requires `--dump-frame`.
     dump_hdr: Option<PathBuf>,
     capture_dir: Option<PathBuf>,
-    gb_cpu: bool,
-    synthesize_terrain_chunks: bool,
-    capture_layers: CliCaptureLayerConfig,
     postfx_enabled: bool,
-    /// GRAD1: files-first RestoreScene grade. DEFAULT ON. `--no-postfx-restore-full`
-    /// restores the old capture-anchored default (no files-first grade).
+    /// Files-first RestoreScene grade. DEFAULT ON and fail-closed.
     postfx_restore_full: bool,
-    /// GRAD1: true only when the user EXPLICITLY passed `--postfx-restore-full`
-    /// (never for the default-ON value, never when `--no-postfx-restore-full` was
-    /// passed). Drives the fail-open-vs-fail-closed policy in render.rs: an
-    /// explicit request keeps the hard error on a missing resolver/TGA/key; the
-    /// default (no flag) downgrades to the old path with a one-line notice so a
-    /// recording without grade evidence still renders.
-    postfx_restore_full_explicit: bool,
     /// VALIDATION-ONLY: compose the files-first grade and report deltas against
     /// the captured restore bundle (requires --capture and --game), then exit.
     /// Never a render input.
     postfx_validate_capture: bool,
-    tree_seasons_by_date: bool,
-    trees_from_files: bool,
-    /// TREES2 `--no-trees-second-subdraw`: opt-out anchor for the "second tree
-    /// sub-draw" work. The 6b77b6df pixel shader the old warning flagged is
-    /// `gfx/FX/tree.shader:tree_low_gfx` — a compiled-but-unused LOW_END_GFX
-    /// variant that no captured session binds to a draw, so nothing is rendered
-    /// for it either way and this flag leaves output byte-identical. It exists
-    /// so the identity gate is explicit and so a future capture that genuinely
-    /// binds the low-gfx PS can be told to leave it unrendered. Default OFF.
-    no_trees_second_subdraw: bool,
-    buildings_from_files: bool,
-    buildings_preview_all: bool,
-    freeze_clock: bool,
-    /// LABGRAD1: country-name map labels (map_labels.rs). DEFAULT ON. The opt-out
-    /// `--no-map-labels` sets this false and restores the byte-identical
-    /// no-label render path.
-    map_labels: bool,
-    /// LABGRAD1: true only when the user EXPLICITLY asked for labels
-    /// (`--map-labels` / the `--map-labels-fallback` back-compat alias), never
-    /// for the default-ON value and never when `--no-map-labels` was passed.
-    /// Drives fail-closed (explicit) vs fail-open (default) on a missing --game
-    /// resolver in map_labels::create_if_enabled.
-    map_labels_explicit: bool,
-    /// FURN1: the city/VP map-furniture composite (map_furniture.rs — VP dots,
-    /// capital stars, hoi_20bs name text). DEFAULT ON. The opt-out
-    /// `--no-map-furniture` sets this false and restores the byte-identical
-    /// no-furniture render path.
-    map_furniture: bool,
-    /// FURN1: true only when the user EXPLICITLY passed `--map-furniture`,
-    /// never for the default-ON value and never with `--no-map-furniture`.
-    /// Drives fail-closed (explicit) vs fail-open (default) on a missing
-    /// --game resolver in map_furniture::create_if_enabled.
-    map_furniture_explicit: bool,
-    /// WATER1/GRAD1 `--water-full`: upload the real reflection cube + render the
-    /// mechanism-correct underwater refraction pass instead of the mean-color/
-    /// approximation. DEFAULT ON. `--no-water-full` restores the old default.
+    /// `--water-full`: upload the real reflection cube + render the
+    /// mechanism-correct underwater refraction pass. DEFAULT ON and fail-closed.
     water_full: bool,
-    /// GRAD1: true only when the user EXPLICITLY passed `--water-full` (never for
-    /// the default-ON value, never when `--no-water-full` was passed). Drives the
-    /// fail-open-vs-fail-closed policy in render.rs: an explicit request keeps the
-    /// hard error on a missing resolver; the default (no flag) downgrades to the
-    /// old approximation with a one-line notice.
-    water_full_explicit: bool,
-    /// BORD5 `--borders-from-files` (DEFAULT ON): render the synthesized
-    /// thin-border mesh (province/state/country/coast/impassable; sea-region
-    /// skipped — underived geometry law) over the terrain with the shipped
-    /// border shader and camera-height fade. `--no-borders-from-files`
-    /// restores the borderless render.
-    borders_from_files: bool,
-    /// True only when the user EXPLICITLY passed `--borders-from-files`.
-    /// Drives fail-open (default, downgrade + notice) vs fail-closed
-    /// (explicit, hard error) on a missing --game resolver in render.rs.
-    borders_from_files_explicit: bool,
-    /// CHUNK1 `--chunks-from-files`: with `--synthesize-terrain-chunks`, bind
-    /// GENERATED terrain-chunk mesh buffers (slot0 grid, index tessellation,
-    /// per-LOD slot1 height pool from map/heightmap.bmp, CB1) instead of the
-    /// captured chunk template files. Default OFF keeps the render path
-    /// byte-identical. Requires `--game` and `--synthesize-terrain-chunks`.
-    chunks_from_files: bool,
 }
 
 fn parse_cli(args: &[String]) -> Result<CliOptions> {
     let mut bundle_dir = None;
     let mut game_dir = None;
-    let mut demo_scrub = false;
     let mut recording = None;
     let mut mod_paths = Vec::new();
     let mut use_dlc_load = false;
@@ -246,64 +147,17 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
     let mut dump_center = None;
     let mut dump_hdr = None;
     let mut capture_dir = None;
-    let mut gb_cpu = false;
-    let mut synthesize_terrain_chunks = false;
-    let mut capture_layers = CliCaptureLayerConfig::default();
     // The game's on-screen image is the scene-restore tonemap applied to the
-    // linear HDR scene; captured RTs are pre-postfx, which is why raw
-    // replays look dark. Default ON to match what the player actually sees;
-    // --no-postfx reproduces the raw captured-RT look.
+    // linear HDR scene; captured RTs are pre-postfx, which is why raw captures
+    // look dark. Product rendering keeps postfx on.
     let mut postfx_enabled = true;
-    // GRAD1: the files-first RestoreScene grade is now DEFAULT ON (grading is
-    // evidence-closed: LUT byte-exact vs capture, per-frame exposure, bloom
-    // kernel matched to capture). `--no-postfx-restore-full` restores the old
-    // capture-anchored default. `postfx_restore_full_explicit` records an
-    // explicit `--postfx-restore-full` so render.rs can fail closed on missing
-    // evidence only when the user asked for it (default => fail-open downgrade).
+    // Files-first RestoreScene grade is DEFAULT ON and fail-closed. Raw captured
+    // RT output is not the game's final image and is blocked at the CLI layer.
     let mut postfx_restore_full = true;
-    let mut postfx_restore_full_explicit = false;
     let mut postfx_validate_capture = false;
-    let mut tree_seasons_by_date = false;
-    let mut trees_from_files = false;
-    let mut no_trees_second_subdraw = false;
-    let mut buildings_from_files = false;
-    let mut buildings_preview_all = false;
-    let mut freeze_clock = false;
-    // LABGRAD1: country-name labels graduated to DEFAULT ON. The default value
-    // is "on but NOT explicit" so create_if_enabled fails open (downgrades to
-    // labels-off + notice) on a missing --game; an explicit --map-labels is
-    // "on AND explicit" so it fails closed; --no-map-labels restores the old
-    // default (off, byte-identical render).
-    let mut map_labels = true;
-    let mut map_labels_explicit = false;
-    // FURN1: the city/VP furniture composite graduated to DEFAULT ON with the
-    // same policy shape as labels: default = "on but NOT explicit" (fail-open
-    // downgrade on a missing --game), --map-furniture = "on AND explicit"
-    // (fail closed), --no-map-furniture = off (byte-identical render).
-    let mut map_furniture = true;
-    let mut map_furniture_explicit = false;
-    // WATER1/GRAD1: --water-full uploads the real reflection cube (byte-identical
-    // to the shipped map/terrain/reflection.dds) + renders the mechanism-correct
-    // underwater refraction pass. Now DEFAULT ON (reflection cube 54/54
-    // subresources byte-identical; underwater pass is the shipped pdxmap
-    // `underwater` PS port). `--no-water-full` restores the old approximation.
-    // `water_full_explicit` records an explicit `--water-full` so render.rs fails
-    // closed on a missing resolver only when the user asked (default => downgrade).
+    // --water-full is DEFAULT ON and fail-closed. The old mean-color/
+    // approximation path is blocked rather than exposed as an opt-out.
     let mut water_full = true;
-    let mut water_full_explicit = false;
-    // BORD5: the synthesized thin-border pass graduated to DEFAULT ON — the
-    // border geometry law is captured-engine-derived (session_BORDERZOOM_3;
-    // the drawn Brittany|Loire strip is a passing answer-key gate) and the
-    // pass renders the mesh through the shipped border.shader with the
-    // camera-height fade. Same policy shape as labels/furniture/water:
-    // default = "on but NOT explicit" (fail-open downgrade on a missing
-    // --game), --borders-from-files = "on AND explicit" (fail closed),
-    // --no-borders-from-files = off (byte-identical borderless render).
-    let mut borders_from_files = true;
-    let mut borders_from_files_explicit = false;
-    // CHUNK1: --chunks-from-files binds generated chunk mesh buffers instead of
-    // the captured template files. Default OFF => byte-identical replay.
-    let mut chunks_from_files = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -346,7 +200,10 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                 recording = Some(PathBuf::from(value));
             }
             "--demo-scrub" => {
-                demo_scrub = true;
+                return Err(
+                    "--demo-scrub is blocked in replay_app: synthetic scrub data is not replay/capture-derived"
+                        .into(),
+                );
             }
             "--dump-frame" => {
                 index += 1;
@@ -414,109 +271,148 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                 capture_dir = Some(PathBuf::from(value));
             }
             "--gb-cpu" => {
-                gb_cpu = true;
+                return Err(
+                    "--gb-cpu is blocked: replay-generated political GradientBorder textures are not engine-derived enough for product rendering"
+                        .into(),
+                );
             }
             "--synthesize-terrain-chunks" => {
-                synthesize_terrain_chunks = true;
+                return Err(
+                    "--synthesize-terrain-chunks is blocked in replay_app: terrain chunk synthesis still depends on runtime/LOD state that is not fully engine-derived; use map_viewer terrain tooling only for development"
+                        .into(),
+                );
             }
             "--water-full" => {
                 water_full = true;
-                water_full_explicit = true;
             }
             "--no-water-full" => {
-                // GRAD1 opt-out: restore the old capture-anchored default
-                // (mean-color reflection + approximation refraction). Clears
-                // `explicit` so this is unambiguously "user chose the old path".
-                water_full = false;
-                water_full_explicit = false;
+                return Err(
+                    "--no-water-full is blocked: the old app-owned water approximation is not engine-derived"
+                        .into(),
+                );
             }
             "--borders-from-files" => {
-                borders_from_files = true;
-                borders_from_files_explicit = true;
+                return Err(
+                    "--borders-from-files is blocked in replay_app: thin-border fade/loop/sea-region law still has UNKNOWN/FIT residuals; use map_viewer border tooling only for development"
+                        .into(),
+                );
             }
             "--no-borders-from-files" => {
-                // BORD5 opt-out: restore the borderless render (byte-identical
-                // to the pre-BORD5 default). Clears `explicit` so this is
-                // unambiguously "user chose no borders".
-                borders_from_files = false;
-                borders_from_files_explicit = false;
+                return Err(
+                    "--no-borders-from-files is blocked: borders are already blocked in replay_app; do not pass a no-op legacy opt-out"
+                        .into(),
+                );
             }
             "--chunks-from-files" => {
-                chunks_from_files = true;
+                return Err(
+                    "--chunks-from-files is blocked in replay_app: generated terrain chunk mesh buffers still depend on runtime/LOD state that is not fully engine-derived; use map_viewer terrain tooling only for development"
+                        .into(),
+                );
             }
             "--no-capture-water" => {
-                capture_layers.water = false;
+                return Err(
+                    "--no-capture-water is blocked: omitting captured engine water is not the game's final map"
+                        .into(),
+                );
             }
             "--no-capture-rivers" => {
-                capture_layers.rivers = false;
+                return Err(
+                    "--no-capture-rivers is blocked: omitting captured engine rivers is not the game's final map"
+                        .into(),
+                );
             }
             "--no-capture-trees" => {
-                capture_layers.trees = false;
+                return Err(
+                    "--no-capture-trees is blocked: omitting captured engine trees is not the game's final map"
+                        .into(),
+                );
             }
             "--postfx" => {
                 postfx_enabled = true;
             }
             "--no-postfx" => {
-                postfx_enabled = false;
+                return Err(
+                    "--no-postfx is blocked: raw captured render targets are not the game's final on-screen image"
+                        .into(),
+                );
             }
             "--postfx-restore-full" => {
                 postfx_restore_full = true;
-                postfx_restore_full_explicit = true;
             }
             "--no-postfx-restore-full" => {
-                // GRAD1 opt-out: restore the old capture-anchored default (no
-                // files-first grade). Clears `explicit` so this is unambiguously
-                // "user chose the old path", not a fail-open downgrade.
-                postfx_restore_full = false;
-                postfx_restore_full_explicit = false;
+                return Err(
+                    "--no-postfx-restore-full is blocked: RestoreScene grading is part of the final game image"
+                        .into(),
+                );
             }
             "--postfx-validate-capture" => {
                 postfx_validate_capture = true;
             }
             "--tree-seasons-by-date" => {
-                tree_seasons_by_date = true;
+                return Err(
+                    "--tree-seasons-by-date is blocked in replay_app: tree-season CB1 date patching is still a hypothesis pending dated engine capture evidence"
+                        .into(),
+                );
             }
             "--trees-from-files" => {
-                trees_from_files = true;
+                return Err(
+                    "--trees-from-files is blocked in replay_app: tree scatter anchor, rotation, and model selection still have FIT/UNKNOWN residuals; use map_viewer tree tooling only for development"
+                        .into(),
+                );
             }
             "--no-trees-second-subdraw" => {
-                no_trees_second_subdraw = true;
+                return Err(
+                    "--no-trees-second-subdraw is removed: the alleged second tree draw is the mutually exclusive LOW_END_GFX tree shader, and captured product sessions do not bind it"
+                        .into(),
+                );
             }
             "--buildings-from-files" => {
-                buildings_from_files = true;
+                return Err(
+                    "--buildings-from-files is blocked in replay_app: visible static buildings/cities require a grounded map_objects_pass or real mesh/material importer"
+                        .into(),
+                );
             }
             "--buildings-preview-all" => {
-                buildings_preview_all = true;
+                return Err(
+                    "--buildings-preview-all is blocked: building preview rendering is not product engine-derived"
+                        .into(),
+                );
             }
             "--freeze-clock" => {
-                freeze_clock = true;
+                return Err(
+                    "--freeze-clock is blocked in replay_app: synthetic wall-clock map animation would overwrite captured engine constant-buffer time bytes"
+                        .into(),
+                );
             }
             "--map-labels" => {
-                map_labels = true;
-                map_labels_explicit = true;
+                return Err(
+                    "--map-labels is blocked in replay_app: country-label component emission/de-overlap is still UNKNOWN-ENGINE-SIDE; use map_viewer dump_map_labels only as development tooling"
+                        .into(),
+                );
             }
             "--no-map-labels" => {
-                // LABGRAD1 opt-out: restore the pre-graduation default (labels
-                // off, byte-identical render). Clears `explicit` so this is
-                // unambiguously "user chose no labels".
-                map_labels = false;
-                map_labels_explicit = false;
+                return Err(
+                    "--no-map-labels is blocked: country labels are already blocked in replay_app; do not pass a no-op legacy opt-out"
+                        .into(),
+                );
             }
             "--map-labels-fallback" => {
-                // Back-compat alias for the pre-graduation opt-in flag: same as
-                // an explicit --map-labels (on + fail-closed on missing --game).
-                map_labels = true;
-                map_labels_explicit = true;
+                return Err(
+                    "--map-labels-fallback is blocked: legacy country-label reconstruction is not engine-derived"
+                        .into(),
+                );
             }
             "--map-furniture" => {
-                map_furniture = true;
-                map_furniture_explicit = true;
+                return Err(
+                    "--map-furniture is blocked in replay_app: VP/capital GUI anchoring and relation-color law are still UNKNOWN-ENGINE-SIDE; use map_viewer dump_map_furniture only as development tooling"
+                        .into(),
+                );
             }
             "--no-map-furniture" => {
-                // FURN1 opt-out: restore the pre-graduation default (furniture
-                // off, byte-identical render).
-                map_furniture = false;
-                map_furniture_explicit = false;
+                return Err(
+                    "--no-map-furniture is blocked: map furniture is already blocked in replay_app; do not pass a no-op legacy opt-out"
+                        .into(),
+                );
             }
             other => {
                 return Err(format!("unknown argument {other:?}\n{USAGE}").into());
@@ -539,38 +435,6 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
     if dump_hdr.is_some() && dump_frame.is_none() {
         return Err(format!("--dump-hdr requires --dump-frame\n{USAGE}").into());
     }
-    if synthesize_terrain_chunks && capture_dir.is_none() {
-        return Err(format!("--synthesize-terrain-chunks requires --capture\n{USAGE}").into());
-    }
-    if chunks_from_files && !synthesize_terrain_chunks {
-        return Err(format!(
-            "--chunks-from-files requires --synthesize-terrain-chunks (it regenerates that path's chunk mesh)\n{USAGE}"
-        )
-        .into());
-    }
-    if chunks_from_files && game_dir.is_none() {
-        return Err(format!(
-            "--chunks-from-files requires --game <the game install dir> so map/heightmap.bmp resolves\n{USAGE}"
-        )
-        .into());
-    }
-    if trees_from_files && capture_dir.is_none() {
-        return Err(format!("--trees-from-files requires --capture\n{USAGE}").into());
-    }
-    if postfx_restore_full && !postfx_enabled && !postfx_validate_capture {
-        // The RestoreScene grade runs inside the postfx block; with --no-postfx
-        // the composed grade is loaded but never applied. Warn rather than fail
-        // so validation/diagnostic combos still run.
-        eprintln!(
-            "replay_app: warning: --postfx-restore-full with --no-postfx composes the files-first \
-             grade but the postfx pass is disabled, so no grading is applied to the render"
-        );
-    }
-    if buildings_preview_all && !buildings_from_files {
-        return Err(
-            format!("--buildings-preview-all requires --buildings-from-files\n{USAGE}").into(),
-        );
-    }
     if use_dlc_load && !mod_paths.is_empty() {
         return Err(format!(
             "pass either repeated --mod content dirs or --use-dlc-load, not both\n{USAGE}"
@@ -582,18 +446,14 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
             format!("pass --userdata <the game user-data dir> with --use-dlc-load\n{USAGE}").into(),
         );
     }
-    let mode = match (recording, demo_scrub) {
-        (Some(_), true) => {
-            return Err(
-                format!("--recording and --demo-scrub are mutually exclusive\n{USAGE}").into(),
-            )
-        }
-        (Some(path), false) => TimelineMode::Recording(path),
-        (None, true) => TimelineMode::DemoScrub,
-        (None, false) => TimelineMode::Static1936,
+    let mode = match recording {
+        Some(path) => TimelineMode::Recording(path),
+        None => TimelineMode::Static1936,
     };
     Ok(CliOptions {
-        bundle_dir: bundle_dir.unwrap_or_else(default_bundle_dir),
+        bundle_dir: bundle_dir.ok_or_else(|| {
+            format!("--bundle <dir> is required; no implicit generated bundle is loaded\n{USAGE}")
+        })?,
         mode,
         game_dir,
         game_files: GameFileResolverOptions {
@@ -608,28 +468,10 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
         dump_center,
         dump_hdr,
         capture_dir,
-        gb_cpu,
-        synthesize_terrain_chunks,
-        capture_layers,
         postfx_enabled,
         postfx_restore_full,
-        postfx_restore_full_explicit,
         postfx_validate_capture,
-        tree_seasons_by_date,
-        trees_from_files,
-        no_trees_second_subdraw,
-        buildings_from_files,
-        buildings_preview_all,
-        freeze_clock,
-        map_labels,
-        map_labels_explicit,
-        map_furniture,
-        map_furniture_explicit,
         water_full,
-        water_full_explicit,
-        borders_from_files,
-        borders_from_files_explicit,
-        chunks_from_files,
     })
 }
 
@@ -687,16 +529,6 @@ fn log_game_file_resolver_warnings(resolver: Option<&GameFileResolver>) -> Resul
     Ok(())
 }
 
-/// Same convention as map_viewer's `default_bundle_dir()`, relative to
-/// this crate so no machine paths are committed.
-fn default_bundle_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("map_viewer")
-        .join("out")
-        .join("map_bundle")
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(err) = run(&args) {
@@ -725,25 +557,16 @@ fn run(args: &[String]) -> Result<()> {
         )
     })?;
     let game_dir = resolve_game_dir(options.game_dir, std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA")));
-    if options.trees_from_files && game_dir.is_none() {
-        return Err("--trees-from-files requires --game <the game install dir> or BATTLE_PLAN_VANILLA".into());
-    }
-    if options.buildings_from_files && game_dir.is_none() {
-        return Err(
-            "--buildings-from-files requires --game <the game install dir> or BATTLE_PLAN_VANILLA".into(),
-        );
-    }
     let game_resolver = build_game_file_resolver(game_dir, options.game_files)?;
     log_game_file_resolver_warnings(game_resolver.as_ref())?;
-    if options.gb_cpu || gb_cpu_env_enabled() {
-        eprintln!(
-            "replay_app: --gb-cpu/REPLAY_APP_GB_CPU is deprecated and ignored; the \
-             gradient-border country layer is always generated on the CPU now"
-        );
-    }
-    // FURN1: --map-furniture/--no-map-furniture policy (fail-open default vs
-    // fail-closed explicit) is enforced inside map_furniture::create_if_enabled
-    // on the app/headless paths, mirroring map labels.
+    reject_gb_cpu_env(std::env::var_os("REPLAY_APP_GB_CPU"))?;
+    reject_product_debug_env("REPLAY_DEBUG_DUMP_UNDERWATER")?;
+    reject_product_debug_env("REPLAY_DEBUG_CLEAR_BEFORE_WATER")?;
+    reject_product_debug_env("REPLAY_DEBUG_UNDERWATER_INPUTS")?;
+    reject_product_debug_env("REPLAY_DEBUG_CONSTANT_REFRACTION")?;
+    reject_product_debug_env("REPLAY_DUMP_LABELS")?;
+    // Map labels and furniture are product-blocked. Their constructors stay
+    // fail-closed for validation-only callers.
     if options.postfx_validate_capture {
         let capture_dir = options.capture_dir.as_deref().ok_or(
             "--postfx-validate-capture requires --capture <session dir> with a restore-pass bundle",
@@ -794,7 +617,6 @@ fn run(args: &[String]) -> Result<()> {
     match &options.dump_frame {
         Some(out) => dump_frame(
             &bundle,
-            &options.bundle_dir,
             &options.mode,
             options.dump_hour,
             out,
@@ -803,53 +625,19 @@ fn run(args: &[String]) -> Result<()> {
             options.dump_center,
             options.dump_hdr.as_deref(),
             options.capture_dir.as_deref(),
-            options.synthesize_terrain_chunks,
-            options.capture_layers,
             options.postfx_enabled,
             options.postfx_restore_full,
-            options.postfx_restore_full_explicit,
             options.day_night_hour,
-            options.tree_seasons_by_date,
-            options.trees_from_files,
-            options.no_trees_second_subdraw,
-            options.buildings_from_files,
-            options.buildings_preview_all,
-            options.map_labels,
-            options.map_labels_explicit,
-            options.map_furniture,
-            options.map_furniture_explicit,
             options.water_full,
-            options.water_full_explicit,
-            options.borders_from_files,
-            options.borders_from_files_explicit,
-            options.chunks_from_files,
         ),
         None => run_app(
             bundle,
-            options.bundle_dir,
             options.mode,
             game_resolver,
             options.capture_dir,
-            options.synthesize_terrain_chunks,
-            options.capture_layers,
             options.postfx_enabled,
             options.postfx_restore_full,
-            options.postfx_restore_full_explicit,
-            options.tree_seasons_by_date,
-            options.trees_from_files,
-            options.no_trees_second_subdraw,
-            options.buildings_from_files,
-            options.buildings_preview_all,
-            options.freeze_clock,
-            options.map_labels,
-            options.map_labels_explicit,
-            options.map_furniture,
-            options.map_furniture_explicit,
             options.water_full,
-            options.water_full_explicit,
-            options.borders_from_files,
-            options.borders_from_files_explicit,
-            options.chunks_from_files,
         ),
     }
 }
@@ -857,64 +645,27 @@ fn run(args: &[String]) -> Result<()> {
 #[cfg(windows)]
 fn run_app(
     bundle: bundle::MapBundle,
-    bundle_dir: PathBuf,
     mode: TimelineMode,
     game_resolver: Option<GameFileResolver>,
     capture_dir: Option<PathBuf>,
-    synthesize_terrain_chunks: bool,
-    capture_layers: CliCaptureLayerConfig,
     postfx_enabled: bool,
     postfx_restore_full: bool,
-    postfx_restore_full_explicit: bool,
-    tree_seasons_by_date: bool,
-    trees_from_files: bool,
-    no_trees_second_subdraw: bool,
-    buildings_from_files: bool,
-    buildings_preview_all: bool,
-    freeze_clock: bool,
-    map_labels: bool,
-    map_labels_explicit: bool,
-    map_furniture: bool,
-    map_furniture_explicit: bool,
     water_full: bool,
-    water_full_explicit: bool,
-    borders_from_files: bool,
-    borders_from_files_explicit: bool,
-    chunks_from_files: bool,
 ) -> Result<()> {
     app::run(
         bundle,
-        bundle_dir,
         mode,
         game_resolver,
         capture_dir,
-        synthesize_terrain_chunks,
-        render_capture_layer_config(capture_layers),
         postfx_enabled,
         postfx_restore_full,
-        postfx_restore_full_explicit,
-        tree_seasons_by_date,
-        trees_from_files,
-        no_trees_second_subdraw,
-        buildings_from_files,
-        buildings_preview_all,
-        freeze_clock,
-        map_labels,
-        map_labels_explicit,
-        map_furniture,
-        map_furniture_explicit,
         water_full,
-        water_full_explicit,
-        borders_from_files,
-        borders_from_files_explicit,
-        chunks_from_files,
     )
 }
 
 #[cfg(windows)]
 fn dump_frame(
     bundle: &bundle::MapBundle,
-    bundle_dir: &std::path::Path,
     mode: &TimelineMode,
     hour: Option<i64>,
     out: &std::path::Path,
@@ -923,30 +674,13 @@ fn dump_frame(
     dump_center: Option<(f64, f64)>,
     dump_hdr: Option<&std::path::Path>,
     capture_dir: Option<&std::path::Path>,
-    synthesize_terrain_chunks: bool,
-    capture_layers: CliCaptureLayerConfig,
     postfx_enabled: bool,
     postfx_restore_full: bool,
-    postfx_restore_full_explicit: bool,
     day_night_hour: Option<f32>,
-    tree_seasons_by_date: bool,
-    trees_from_files: bool,
-    no_trees_second_subdraw: bool,
-    buildings_from_files: bool,
-    buildings_preview_all: bool,
-    map_labels: bool,
-    map_labels_explicit: bool,
-    map_furniture: bool,
-    map_furniture_explicit: bool,
     water_full: bool,
-    water_full_explicit: bool,
-    borders_from_files: bool,
-    borders_from_files_explicit: bool,
-    chunks_from_files: bool,
 ) -> Result<()> {
     headless::dump_frame(
         bundle,
-        bundle_dir,
         mode,
         hour,
         out,
@@ -955,65 +689,22 @@ fn dump_frame(
         dump_center,
         dump_hdr,
         capture_dir,
-        synthesize_terrain_chunks,
-        render_capture_layer_config(capture_layers),
         postfx_enabled,
         postfx_restore_full,
-        postfx_restore_full_explicit,
         day_night_hour,
-        tree_seasons_by_date,
-        trees_from_files,
-        no_trees_second_subdraw,
-        buildings_from_files,
-        buildings_preview_all,
-        map_labels,
-        map_labels_explicit,
-        map_furniture,
-        map_furniture_explicit,
         water_full,
-        water_full_explicit,
-        borders_from_files,
-        borders_from_files_explicit,
-        chunks_from_files,
     )
-}
-
-#[cfg(windows)]
-fn render_capture_layer_config(config: CliCaptureLayerConfig) -> render::CapturedLayerConfig {
-    render::CapturedLayerConfig {
-        water: config.water,
-        rivers: config.rivers,
-        trees: config.trees,
-    }
 }
 
 #[cfg(not(windows))]
 fn run_app(
     _bundle: bundle::MapBundle,
-    _bundle_dir: PathBuf,
     _mode: TimelineMode,
     _game_resolver: Option<GameFileResolver>,
     _capture_dir: Option<PathBuf>,
-    _synthesize_terrain_chunks: bool,
-    _capture_layers: CliCaptureLayerConfig,
     _postfx_enabled: bool,
     _postfx_restore_full: bool,
-    _postfx_restore_full_explicit: bool,
-    _tree_seasons_by_date: bool,
-    _trees_from_files: bool,
-    _no_trees_second_subdraw: bool,
-    _buildings_from_files: bool,
-    _buildings_preview_all: bool,
-    _freeze_clock: bool,
-    _map_labels: bool,
-    _map_labels_explicit: bool,
-    _map_furniture: bool,
-    _map_furniture_explicit: bool,
     _water_full: bool,
-    _water_full_explicit: bool,
-    _borders_from_files: bool,
-    _borders_from_files_explicit: bool,
-    _chunks_from_files: bool,
 ) -> Result<()> {
     Err("replay_app is a Win32 + D3D11 application and requires Windows".into())
 }
@@ -1021,7 +712,6 @@ fn run_app(
 #[cfg(not(windows))]
 fn dump_frame(
     _bundle: &bundle::MapBundle,
-    _bundle_dir: &std::path::Path,
     _mode: &TimelineMode,
     _hour: Option<i64>,
     _out: &std::path::Path,
@@ -1030,42 +720,36 @@ fn dump_frame(
     _dump_center: Option<(f64, f64)>,
     _dump_hdr: Option<&std::path::Path>,
     _capture_dir: Option<&std::path::Path>,
-    _synthesize_terrain_chunks: bool,
-    _capture_layers: CliCaptureLayerConfig,
     _postfx_enabled: bool,
     _postfx_restore_full: bool,
-    _postfx_restore_full_explicit: bool,
     _day_night_hour: Option<f32>,
-    _tree_seasons_by_date: bool,
-    _trees_from_files: bool,
-    _no_trees_second_subdraw: bool,
-    _buildings_from_files: bool,
-    _buildings_preview_all: bool,
-    _map_labels: bool,
-    _map_labels_explicit: bool,
-    _map_furniture: bool,
-    _map_furniture_explicit: bool,
     _water_full: bool,
-    _water_full_explicit: bool,
-    _borders_from_files: bool,
-    _borders_from_files_explicit: bool,
-    _chunks_from_files: bool,
 ) -> Result<()> {
     Err("replay_app frame dumps require Windows (D3D11)".into())
 }
 
-fn gb_cpu_env_enabled() -> bool {
-    gb_cpu_env_value_enabled(std::env::var_os("REPLAY_APP_GB_CPU"))
+fn reject_gb_cpu_env(value: Option<std::ffi::OsString>) -> Result<()> {
+    if value.is_some() {
+        return Err(
+            "REPLAY_APP_GB_CPU is blocked: replay-generated political GradientBorder textures are not engine-derived enough for product rendering"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
-fn gb_cpu_env_value_enabled(value: Option<OsString>) -> bool {
-    value
-        .and_then(|value| value.into_string().ok())
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false)
+fn reject_product_debug_env(name: &str) -> Result<()> {
+    reject_product_debug_env_value(name, std::env::var_os(name))
+}
+
+fn reject_product_debug_env_value(name: &str, value: Option<std::ffi::OsString>) -> Result<()> {
+    if value.is_some() {
+        return Err(format!(
+            "{name} is blocked in replay_app: debug and validation environment knobs must not mutate or side-effect the final product render path"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1076,29 +760,42 @@ mod tests {
         values.iter().map(|value| value.to_string()).collect()
     }
 
-    #[test]
-    fn cli_defaults_to_map_viewer_bundle_dir() {
-        let options = parse_cli(&[]).expect("empty args parse");
-        assert_eq!(options.mode, TimelineMode::Static1936);
-        assert!(options.bundle_dir.ends_with(
-            std::path::Path::new("map_viewer")
-                .join("out")
-                .join("map_bundle")
-        ));
+    fn args_with_bundle(values: &[&str]) -> Vec<String> {
+        let mut out = args(&["--bundle", "some/dir"]);
+        out.extend(args(values));
+        out
     }
 
     #[test]
-    fn cli_parses_bundle_and_demo_scrub() {
-        let options =
-            parse_cli(&args(&["--bundle", "some/dir", "--demo-scrub"])).expect("args parse");
-        assert_eq!(options.mode, TimelineMode::DemoScrub);
+    fn cli_requires_explicit_bundle_path() {
+        let err = parse_cli(&[]).expect_err("empty args must fail");
+        assert!(
+            err.to_string().contains("--bundle <dir> is required"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cli_parses_bundle_path() {
+        let options = parse_cli(&args(&["--bundle", "some/dir"])).expect("args parse");
+        assert_eq!(options.mode, TimelineMode::Static1936);
         assert_eq!(options.bundle_dir, PathBuf::from("some/dir"));
     }
 
     #[test]
+    fn cli_demo_scrub_product_path_blocked() {
+        let err =
+            parse_cli(&args(&["--bundle", "some/dir", "--demo-scrub"])).expect_err("must fail");
+        assert!(err.to_string().contains("--demo-scrub is blocked"), "{err}");
+    }
+
+    #[test]
     fn cli_parses_recording_path() {
-        let options =
-            parse_cli(&args(&["--recording", "some/session.battleplan"])).expect("args parse");
+        let options = parse_cli(&args_with_bundle(&[
+            "--recording",
+            "some/session.battleplan",
+        ]))
+        .expect("args parse");
         assert_eq!(
             options.mode,
             TimelineMode::Recording(PathBuf::from("some/session.battleplan"))
@@ -1107,8 +804,11 @@ mod tests {
 
     #[test]
     fn cli_parses_capture_dir() {
-        let options =
-            parse_cli(&args(&["--capture", "captures/session_20260702d"])).expect("args parse");
+        let options = parse_cli(&args_with_bundle(&[
+            "--capture",
+            "captures/session_20260702d",
+        ]))
+        .expect("args parse");
         assert_eq!(
             options.capture_dir,
             Some(PathBuf::from("captures/session_20260702d"))
@@ -1117,7 +817,7 @@ mod tests {
 
     #[test]
     fn cli_parses_dump_zoom_and_center() {
-        let options = parse_cli(&args(&[
+        let options = parse_cli(&args_with_bundle(&[
             "--dump-frame",
             "out.bmp",
             "--hour",
@@ -1135,7 +835,7 @@ mod tests {
 
     #[test]
     fn cli_parses_dump_hdr_and_requires_dump_frame() {
-        let options = parse_cli(&args(&[
+        let options = parse_cli(&args_with_bundle(&[
             "--dump-frame",
             "out.bmp",
             "--dump-hdr",
@@ -1143,7 +843,12 @@ mod tests {
         ]))
         .expect("args parse");
         assert_eq!(options.dump_hdr, Some(PathBuf::from("scene.rgba16f")));
-        assert_eq!(parse_cli(&[]).expect("empty parse").dump_hdr, None);
+        assert_eq!(
+            parse_cli(&args_with_bundle(&[]))
+                .expect("bundle-only parse")
+                .dump_hdr,
+            None
+        );
         let err = parse_cli(&args(&["--dump-hdr", "scene.rgba16f"])).expect_err("must fail");
         assert!(
             err.to_string().contains("--dump-hdr requires --dump-frame"),
@@ -1152,248 +857,187 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_gb_cpu_escape_hatch() {
-        let options = parse_cli(&args(&["--gb-cpu"])).expect("args parse");
-        assert!(options.gb_cpu);
-        assert!(!parse_cli(&[]).expect("empty parse").gb_cpu);
+    fn cli_rejects_gb_cpu_escape_hatch() {
+        let err = parse_cli(&args(&["--gb-cpu"])).expect_err("must fail");
+        assert!(err.to_string().contains("--gb-cpu is blocked"), "{err}");
     }
 
     #[test]
-    fn cli_parses_tree_seasons_by_date() {
-        let options = parse_cli(&args(&["--tree-seasons-by-date"])).expect("args parse");
-        assert!(options.tree_seasons_by_date);
-        assert!(!parse_cli(&[]).expect("empty parse").tree_seasons_by_date);
-    }
-
-    #[test]
-    fn cli_parses_no_trees_second_subdraw_opt_out() {
-        // TREES2 opt-out anchor: default OFF, parses ON, needs no capture/game
-        // (it never changes render output — the low-gfx PS is bound to no
-        // captured draw — so it is an unconstrained debug flag).
-        let options = parse_cli(&args(&["--no-trees-second-subdraw"])).expect("args parse");
-        assert!(options.no_trees_second_subdraw);
-        assert!(!parse_cli(&[]).expect("empty parse").no_trees_second_subdraw);
-    }
-
-    #[test]
-    fn cli_parses_trees_from_files_as_capture_gated_opt_in() {
-        let options = parse_cli(&args(&[
-            "--capture",
-            "captures/live_PAN2",
-            "--trees-from-files",
-        ]))
-        .expect("args parse");
-        assert!(options.trees_from_files);
-        assert!(!parse_cli(&[]).expect("empty parse").trees_from_files);
-    }
-
-    #[test]
-    fn cli_rejects_trees_from_files_without_capture() {
-        let err = parse_cli(&args(&["--trees-from-files"])).expect_err("must fail");
+    fn cli_tree_season_date_patch_product_path_blocked() {
+        let err = parse_cli(&args(&["--tree-seasons-by-date"])).expect_err("must fail");
         assert!(
             err.to_string()
-                .contains("--trees-from-files requires --capture"),
+                .contains("--tree-seasons-by-date is blocked"),
             "{err}"
         );
     }
 
     #[test]
-    fn cli_parses_buildings_from_files_as_default_off_opt_in() {
-        let defaults = parse_cli(&[]).expect("empty parse");
-        assert!(!defaults.buildings_from_files);
-        assert!(!defaults.buildings_preview_all);
-
-        let options = parse_cli(&args(&["--buildings-from-files"])).expect("args parse");
-        assert!(options.buildings_from_files);
-        assert!(!options.buildings_preview_all);
-
-        let all = parse_cli(&args(&[
-            "--buildings-from-files",
-            "--buildings-preview-all",
-        ]))
-        .expect("args parse");
-        assert!(all.buildings_from_files);
-        assert!(all.buildings_preview_all);
+    fn cli_rejects_no_trees_second_subdraw_opt_out() {
+        let err = parse_cli(&args(&["--no-trees-second-subdraw"])).expect_err("must fail");
+        assert!(
+            err.to_string()
+                .contains("--no-trees-second-subdraw is removed"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn cli_rejects_buildings_preview_all_without_buildings_layer() {
+    fn cli_trees_from_files_product_path_blocked() {
+        let err = parse_cli(&args(&["--trees-from-files"])).expect_err("must fail");
+        assert!(
+            err.to_string().contains("--trees-from-files is blocked"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cli_building_preview_product_path_blocked() {
+        let explicit = parse_cli(&args(&["--buildings-from-files"])).expect_err("must fail");
+        assert!(
+            explicit
+                .to_string()
+                .contains("--buildings-from-files is blocked"),
+            "{explicit}"
+        );
+
         let err = parse_cli(&args(&["--buildings-preview-all"])).expect_err("must fail");
         assert!(
             err.to_string()
-                .contains("--buildings-preview-all requires --buildings-from-files"),
+                .contains("--buildings-preview-all is blocked"),
             "{err}"
         );
     }
 
     #[test]
-    fn cli_parses_freeze_clock() {
-        let options = parse_cli(&args(&["--freeze-clock"])).expect("args parse");
-        assert!(options.freeze_clock);
-        assert!(!parse_cli(&[]).expect("empty parse").freeze_clock);
+    fn cli_freeze_clock_product_path_blocked() {
+        let err = parse_cli(&args(&["--freeze-clock"])).expect_err("must fail");
+        assert!(
+            err.to_string().contains("--freeze-clock is blocked"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn cli_water_full_defaults_on_with_explicit_opt_out() {
-        // GRAD1: --water-full graduated to DEFAULT ON. The default value is
-        // "on but NOT explicit" so render.rs fails open (downgrades) on a
-        // missing resolver; an explicit --water-full is "on AND explicit" so it
-        // fails closed; --no-water-full restores the old default (off).
-        let defaults = parse_cli(&[]).expect("empty parse");
-        assert!(defaults.water_full, "GRAD1: water-full defaults ON");
-        assert!(
-            !defaults.water_full_explicit,
-            "default-ON must not be treated as an explicit request"
-        );
+    fn cli_water_full_defaults_on_and_blocks_old_approximation() {
+        let defaults = parse_cli(&args_with_bundle(&[])).expect("bundle-only parse");
+        assert!(defaults.water_full, "water-full defaults ON");
 
-        let explicit = parse_cli(&args(&["--water-full"])).expect("args parse");
+        let explicit = parse_cli(&args_with_bundle(&["--water-full"])).expect("args parse");
         assert!(explicit.water_full);
+
+        let err = parse_cli(&args(&["--no-water-full"])).expect_err("must fail");
         assert!(
-            explicit.water_full_explicit,
-            "an explicit --water-full must fail closed on missing evidence"
+            err.to_string().contains("--no-water-full is blocked"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cli_map_labels_product_path_blocked() {
+        let explicit = parse_cli(&args(&["--map-labels"])).expect_err("must fail");
+        assert!(
+            explicit.to_string().contains("--map-labels is blocked"),
+            "{explicit}"
         );
 
-        let opt_out = parse_cli(&args(&["--no-water-full"])).expect("args parse");
-        assert!(!opt_out.water_full, "--no-water-full restores old default");
-        assert!(!opt_out.water_full_explicit);
-
-        // Last-wins ordering: --water-full then --no-water-full => off.
-        let last_off = parse_cli(&args(&["--water-full", "--no-water-full"])).expect("args parse");
-        assert!(!last_off.water_full);
-        assert!(!last_off.water_full_explicit);
-        // ...and --no-water-full then --water-full => on+explicit.
-        let last_on = parse_cli(&args(&["--no-water-full", "--water-full"])).expect("args parse");
-        assert!(last_on.water_full && last_on.water_full_explicit);
-    }
-
-    #[test]
-    fn cli_map_labels_default_on_with_explicit_opt_out() {
-        // LABGRAD1: country-name labels graduated to DEFAULT ON. The default is
-        // "on but NOT explicit" so create_if_enabled fails open (downgrade) on a
-        // missing --game; an explicit --map-labels is "on AND explicit" (fails
-        // closed); --no-map-labels restores the old default (off).
-        let defaults = parse_cli(&[]).expect("empty parse");
-        assert!(defaults.map_labels, "LABGRAD1: map labels default ON");
+        let opt_out = parse_cli(&args(&["--no-map-labels"])).expect_err("must fail");
         assert!(
-            !defaults.map_labels_explicit,
-            "default-ON must not be treated as an explicit request"
+            opt_out.to_string().contains("--no-map-labels is blocked"),
+            "{opt_out}"
         );
 
-        let explicit = parse_cli(&args(&["--map-labels"])).expect("args parse");
-        assert!(explicit.map_labels && explicit.map_labels_explicit);
-
-        let opt_out = parse_cli(&args(&["--no-map-labels"])).expect("args parse");
-        assert!(!opt_out.map_labels, "--no-map-labels restores old default");
-        assert!(!opt_out.map_labels_explicit);
-
-        // Back-compat: the old --map-labels-fallback opt-in maps to explicit-on.
-        let alias = parse_cli(&args(&["--map-labels-fallback"])).expect("args parse");
-        assert!(alias.map_labels && alias.map_labels_explicit);
-
-        // Last-wins ordering: --map-labels then --no-map-labels => off.
-        let last_off = parse_cli(&args(&["--map-labels", "--no-map-labels"])).expect("args parse");
-        assert!(!last_off.map_labels && !last_off.map_labels_explicit);
-        // ...and --no-map-labels then --map-labels => on+explicit.
-        let last_on = parse_cli(&args(&["--no-map-labels", "--map-labels"])).expect("args parse");
-        assert!(last_on.map_labels && last_on.map_labels_explicit);
-    }
-
-    #[test]
-    fn cli_map_furniture_default_on_with_explicit_opt_out() {
-        // FURN1: the city/VP furniture composite graduated to DEFAULT ON with
-        // the LABGRAD1 policy shape: default = on-but-not-explicit (fail-open
-        // downgrade on a missing --game), --map-furniture = on-and-explicit
-        // (fail closed), --no-map-furniture = off (byte-identical render).
-        let defaults = parse_cli(&[]).expect("empty parse");
-        assert!(defaults.map_furniture, "FURN1: map furniture default ON");
+        let alias = parse_cli(&args(&["--map-labels-fallback"])).expect_err("must fail");
         assert!(
-            !defaults.map_furniture_explicit,
-            "default-ON must not be treated as an explicit request"
+            alias
+                .to_string()
+                .contains("--map-labels-fallback is blocked"),
+            "{alias}"
         );
 
-        let explicit = parse_cli(&args(&["--map-furniture"])).expect("args parse");
-        assert!(explicit.map_furniture && explicit.map_furniture_explicit);
-
-        let opt_out = parse_cli(&args(&["--no-map-furniture"])).expect("args parse");
-        assert!(!opt_out.map_furniture);
-        assert!(!opt_out.map_furniture_explicit);
-
-        // Last-wins ordering both ways.
-        let last_off =
-            parse_cli(&args(&["--map-furniture", "--no-map-furniture"])).expect("args parse");
-        assert!(!last_off.map_furniture && !last_off.map_furniture_explicit);
-        let last_on =
-            parse_cli(&args(&["--no-map-furniture", "--map-furniture"])).expect("args parse");
-        assert!(last_on.map_furniture && last_on.map_furniture_explicit);
+        let err = parse_cli(&args(&["--map-labels", "--no-map-labels"])).expect_err("must fail");
+        assert!(err.to_string().contains("--map-labels is blocked"), "{err}");
     }
 
     #[test]
-    fn cli_parses_borders_from_files() {
-        // BORD5: borders graduated to DEFAULT ON (non-explicit, fail-open);
-        // --borders-from-files makes the request explicit (fail closed);
-        // --no-borders-from-files restores the borderless render.
-        let default = parse_cli(&[]).expect("empty parse");
-        assert!(default.borders_from_files && !default.borders_from_files_explicit);
-        let explicit = parse_cli(&args(&["--borders-from-files"])).expect("args parse");
-        assert!(explicit.borders_from_files && explicit.borders_from_files_explicit);
-        let off = parse_cli(&args(&["--no-borders-from-files"])).expect("args parse");
-        assert!(!off.borders_from_files && !off.borders_from_files_explicit);
-        let both = parse_cli(&args(&["--water-full", "--borders-from-files"])).expect("args parse");
-        assert!(both.water_full && both.borders_from_files);
+    fn cli_map_furniture_product_path_blocked() {
+        let explicit = parse_cli(&args(&["--map-furniture"])).expect_err("must fail");
+        assert!(
+            explicit.to_string().contains("--map-furniture is blocked"),
+            "{explicit}"
+        );
+
+        let opt_out = parse_cli(&args(&["--no-map-furniture"])).expect_err("must fail");
+        assert!(
+            opt_out
+                .to_string()
+                .contains("--no-map-furniture is blocked"),
+            "{opt_out}"
+        );
+        let err =
+            parse_cli(&args(&["--map-furniture", "--no-map-furniture"])).expect_err("must fail");
+        assert!(
+            err.to_string().contains("--map-furniture is blocked"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn cli_parses_synthesize_terrain_chunks() {
-        let options = parse_cli(&args(&[
-            "--capture",
-            "captures/session_20260703",
-            "--synthesize-terrain-chunks",
-        ]))
-        .expect("args parse");
-        assert!(options.synthesize_terrain_chunks);
+    fn cli_borders_from_files_product_path_blocked() {
+        let explicit = parse_cli(&args(&["--borders-from-files"])).expect_err("must fail");
+        assert!(
+            explicit
+                .to_string()
+                .contains("--borders-from-files is blocked"),
+            "{explicit}"
+        );
+
+        let off = parse_cli(&args(&["--no-borders-from-files"])).expect_err("must fail");
+        assert!(
+            off.to_string()
+                .contains("--no-borders-from-files is blocked"),
+            "{off}"
+        );
+        let both =
+            parse_cli(&args(&["--water-full", "--borders-from-files"])).expect_err("must fail");
+        assert!(
+            both.to_string().contains("--borders-from-files is blocked"),
+            "{both}"
+        );
     }
 
     #[test]
-    fn cli_rejects_synthesize_terrain_chunks_without_capture() {
+    fn cli_synthesize_terrain_chunks_product_path_blocked() {
         let err = parse_cli(&args(&["--synthesize-terrain-chunks"])).expect_err("must fail");
         assert!(
             err.to_string()
-                .contains("--synthesize-terrain-chunks requires --capture"),
+                .contains("--synthesize-terrain-chunks is blocked"),
             "{err}"
         );
-    }
 
-    #[test]
-    fn cli_parses_chunks_from_files_and_defaults_off() {
-        // CHUNK1: default OFF => byte-identical render path.
-        assert!(!parse_cli(&[]).expect("empty parse").chunks_from_files);
-        let options = parse_cli(&args(&[
+        let with_capture = parse_cli(&args(&[
             "--capture",
             "captures/session_20260703",
             "--synthesize-terrain-chunks",
-            "--chunks-from-files",
-            "--game",
-            "F:/HOI4",
         ]))
-        .expect("args parse");
-        assert!(options.chunks_from_files);
-        assert!(options.synthesize_terrain_chunks);
-    }
-
-    #[test]
-    fn cli_rejects_chunks_from_files_without_synthesis() {
-        let err =
-            parse_cli(&args(&["--chunks-from-files", "--game", "F:/HOI4"])).expect_err("must fail");
+        .expect_err("must fail");
         assert!(
-            err.to_string()
-                .contains("--chunks-from-files requires --synthesize-terrain-chunks"),
-            "{err}"
+            with_capture
+                .to_string()
+                .contains("--synthesize-terrain-chunks is blocked"),
+            "{with_capture}"
         );
     }
 
     #[test]
-    fn cli_rejects_chunks_from_files_without_game() {
-        let err = parse_cli(&args(&[
+    fn cli_chunks_from_files_product_path_blocked() {
+        let err =
+            parse_cli(&args(&["--chunks-from-files", "--game", "F:/HOI4"])).expect_err("must fail");
+        assert!(
+            err.to_string().contains("--chunks-from-files is blocked"),
+            "{err}"
+        );
+        let with_synthesis = parse_cli(&args(&[
             "--capture",
             "captures/session_20260703",
             "--synthesize-terrain-chunks",
@@ -1401,9 +1045,10 @@ mod tests {
         ]))
         .expect_err("must fail");
         assert!(
-            err.to_string()
-                .contains("--chunks-from-files requires --game"),
-            "{err}"
+            with_synthesis
+                .to_string()
+                .contains("--synthesize-terrain-chunks is blocked"),
+            "{with_synthesis}"
         );
     }
 
@@ -1446,80 +1091,76 @@ mod tests {
     }
 
     #[test]
-    fn cli_defaults_capture_layers_on_and_postfx_on() {
-        let options = parse_cli(&[]).expect("empty args parse");
-        assert_eq!(options.capture_layers, CliCaptureLayerConfig::default());
+    fn cli_defaults_postfx_on() {
+        let options = parse_cli(&args_with_bundle(&[])).expect("bundle-only parse");
         // The game's on-screen image is post-tonemap; postfx defaults ON.
         assert!(options.postfx_enabled);
-        // GRAD1: the files-first RestoreScene grade is now DEFAULT ON, but the
-        // default value is NOT an explicit request (so it fails open on missing
-        // evidence rather than erroring).
+        // Files-first RestoreScene grade is DEFAULT ON and fail-closed.
         assert!(
             options.postfx_restore_full,
             "GRAD1: restore-full defaults ON"
         );
+        let err = parse_cli(&args(&["--no-postfx"])).expect_err("must fail");
+        assert!(err.to_string().contains("--no-postfx is blocked"), "{err}");
+    }
+
+    #[test]
+    fn cli_postfx_restore_full_blocks_opt_out() {
+        let explicit =
+            parse_cli(&args_with_bundle(&["--postfx-restore-full"])).expect("args parse");
+        assert!(explicit.postfx_restore_full);
+
+        let err = parse_cli(&args(&["--no-postfx-restore-full"])).expect_err("must fail");
         assert!(
-            !options.postfx_restore_full_explicit,
-            "default-ON must not be treated as an explicit request"
+            err.to_string()
+                .contains("--no-postfx-restore-full is blocked"),
+            "{err}"
         );
-        assert!(!options.trees_from_files);
-        assert!(!options.buildings_from_files);
-        assert!(!options.buildings_preview_all);
-        let raw = parse_cli(&args(&["--no-postfx"])).expect("args parse");
-        assert!(!raw.postfx_enabled);
-    }
 
-    #[test]
-    fn cli_postfx_restore_full_explicit_and_opt_out() {
-        // GRAD1: --no-postfx-restore-full restores the old capture-anchored
-        // default; an explicit --postfx-restore-full sets the explicit flag so
-        // render.rs fails closed on missing evidence.
-        let opt_out = parse_cli(&args(&["--no-postfx-restore-full"])).expect("args parse");
-        assert!(!opt_out.postfx_restore_full);
-        assert!(!opt_out.postfx_restore_full_explicit);
-
-        let explicit = parse_cli(&args(&["--postfx-restore-full"])).expect("args parse");
-        assert!(explicit.postfx_restore_full && explicit.postfx_restore_full_explicit);
-
-        // Last-wins ordering both directions.
-        let last_off = parse_cli(&args(&[
+        let err = parse_cli(&args(&[
             "--postfx-restore-full",
             "--no-postfx-restore-full",
         ]))
-        .expect("args parse");
-        assert!(!last_off.postfx_restore_full && !last_off.postfx_restore_full_explicit);
-        let last_on = parse_cli(&args(&[
-            "--no-postfx-restore-full",
-            "--postfx-restore-full",
-        ]))
-        .expect("args parse");
-        assert!(last_on.postfx_restore_full && last_on.postfx_restore_full_explicit);
+        .expect_err("must fail");
+        assert!(
+            err.to_string()
+                .contains("--no-postfx-restore-full is blocked"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn cli_parses_capture_layer_and_postfx_flags() {
-        let options = parse_cli(&args(&[
-            "--no-capture-rivers",
-            "--no-capture-trees",
-            "--postfx",
-            "--postfx-restore-full",
-        ]))
-        .expect("args parse");
-        assert!(options.capture_layers.water);
-        assert!(!options.capture_layers.rivers);
-        assert!(!options.capture_layers.trees);
+    fn cli_rejects_capture_layer_opt_outs_and_parses_postfx_flags() {
+        let options = parse_cli(&args_with_bundle(&["--postfx", "--postfx-restore-full"]))
+            .expect("args parse");
         assert!(options.postfx_enabled);
         assert!(options.postfx_restore_full);
 
-        let options = parse_cli(&args(&["--postfx", "--no-postfx"])).expect("args parse");
-        assert!(!options.postfx_enabled);
+        let err = parse_cli(&args(&["--no-capture-water"])).expect_err("must fail");
+        assert!(
+            err.to_string().contains("--no-capture-water is blocked"),
+            "{err}"
+        );
+        let err = parse_cli(&args(&["--no-capture-rivers"])).expect_err("must fail");
+        assert!(
+            err.to_string().contains("--no-capture-rivers is blocked"),
+            "{err}"
+        );
+        let err = parse_cli(&args(&["--no-capture-trees"])).expect_err("must fail");
+        assert!(
+            err.to_string().contains("--no-capture-trees is blocked"),
+            "{err}"
+        );
+
+        let err = parse_cli(&args(&["--postfx", "--no-postfx"])).expect_err("must fail");
+        assert!(err.to_string().contains("--no-postfx is blocked"), "{err}");
     }
 
     #[test]
-    fn cli_rejects_recording_with_demo_scrub() {
+    fn cli_recording_with_demo_scrub_still_blocks_demo_scrub() {
         let err = parse_cli(&args(&["--recording", "r.battleplan", "--demo-scrub"]))
             .expect_err("must fail");
-        assert!(err.to_string().contains("mutually exclusive"), "{err}");
+        assert!(err.to_string().contains("--demo-scrub is blocked"), "{err}");
     }
 
     #[test]
@@ -1542,15 +1183,21 @@ mod tests {
 
     #[test]
     fn cli_parses_game_dir() {
-        let options = parse_cli(&args(&["--game", "some/install"])).expect("args parse");
+        let options =
+            parse_cli(&args_with_bundle(&["--game", "some/install"])).expect("args parse");
         assert_eq!(options.game_dir, Some(PathBuf::from("some/install")));
         // Absent flag stays None; the env fallback happens in run().
-        assert_eq!(parse_cli(&[]).expect("empty parse").game_dir, None);
+        assert_eq!(
+            parse_cli(&args_with_bundle(&[]))
+                .expect("bundle-only parse")
+                .game_dir,
+            None
+        );
     }
 
     #[test]
     fn cli_parses_repeated_mod_paths() {
-        let options = parse_cli(&args(&[
+        let options = parse_cli(&args_with_bundle(&[
             "--game",
             "some/install",
             "--mod",
@@ -1568,8 +1215,12 @@ mod tests {
 
     #[test]
     fn cli_parses_dlc_load_selection() {
-        let options =
-            parse_cli(&args(&["--use-dlc-load", "--userdata", "userdata"])).expect("args parse");
+        let options = parse_cli(&args_with_bundle(&[
+            "--use-dlc-load",
+            "--userdata",
+            "userdata",
+        ]))
+        .expect("args parse");
         assert!(options.game_files.use_dlc_load);
         assert_eq!(options.game_files.userdata, Some(PathBuf::from("userdata")));
     }
@@ -1630,12 +1281,29 @@ mod tests {
     }
 
     #[test]
-    fn gb_cpu_env_accepts_truthy_values_only() {
-        assert!(gb_cpu_env_value_enabled(Some(OsString::from("true"))));
-        assert!(gb_cpu_env_value_enabled(Some(OsString::from("1"))));
-        assert!(gb_cpu_env_value_enabled(Some(OsString::from("YES"))));
-        assert!(!gb_cpu_env_value_enabled(Some(OsString::from("0"))));
-        assert!(!gb_cpu_env_value_enabled(None));
+    fn gb_cpu_env_is_blocked_when_present() {
+        let err = reject_gb_cpu_env(Some(std::ffi::OsString::from("0"))).expect_err("must fail");
+        assert!(
+            err.to_string().contains("REPLAY_APP_GB_CPU is blocked"),
+            "{err}"
+        );
+        reject_gb_cpu_env(None).expect("absent env is fine");
+    }
+
+    #[test]
+    fn product_debug_env_is_blocked_when_present() {
+        reject_product_debug_env_value("REPLAY_DEBUG_CLEAR_BEFORE_WATER", None)
+            .expect("absent env is fine");
+        let err = reject_product_debug_env_value(
+            "REPLAY_DEBUG_CLEAR_BEFORE_WATER",
+            Some(std::ffi::OsString::from("1")),
+        )
+        .expect_err("debug env must fail");
+        assert!(
+            err.to_string()
+                .contains("REPLAY_DEBUG_CLEAR_BEFORE_WATER is blocked"),
+            "{err}"
+        );
     }
 
     #[test]

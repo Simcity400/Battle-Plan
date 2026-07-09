@@ -1,14 +1,14 @@
 //! Timeline abstraction: who owns and controls each state at each hour.
 //!
 //! Scrubbing consumes an [`OwnerProvider`]; the renderer rewrites only the
-//! compact state -> color table from `controllers_at(hour)` plus the generated
-//! runtime masks (never the big map textures). `owners_at(hour)` stays exposed
-//! because occupied-territory striping needs both maps.
+//! compact state -> color table from `controllers_at(hour)` for validation
+//! while visible political recoloring remains blocked. `owners_at(hour)` stays
+//! exposed because occupied-territory striping needs both maps.
 //!
 //! Frames are returned as `Arc` so a recording-backed provider can load
 //! them lazily (a real recording is far too large to materialize every
-//! hour up front) while the static/synthetic providers stay allocation-free
-//! on repeat calls.
+//! hour up front) while the static provider stays allocation-free on repeat
+//! calls.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -37,13 +37,6 @@ pub fn build_provider(
             let label = format!("recording {}", recording.game_id());
             Ok((Box::new(recording), label))
         }
-        TimelineMode::DemoScrub => Ok((
-            Box::new(SyntheticScrubDemo::new(
-                &bundle.state_owner_1936,
-                &bundle.country_colors,
-            )),
-            String::from("SYNTHETIC DEMO (not replay data)"),
-        )),
         TimelineMode::Static1936 => Ok((
             Box::new(Static1936::new(bundle.state_owner_1936.clone())),
             String::from("static 1936"),
@@ -56,12 +49,6 @@ pub trait OwnerProvider {
     fn hours(&self) -> &[i64];
     fn owners_at(&self, hour: i64) -> Arc<BTreeMap<u32, String>>;
     fn controllers_at(&self, hour: i64) -> Arc<BTreeMap<u32, String>>;
-    /// Replay date as `(month, day)` when the backing timeline has a measured
-    /// Clausewitz date. Static and synthetic modes return `None`, so
-    /// date-driven visual experiments are documented no-ops there.
-    fn month_day_at(&self, _hour: i64) -> Option<(u32, u32)> {
-        None
-    }
     /// Human-readable label for the title bar; recording-backed providers
     /// add the in-game date.
     fn hour_label(&self, hour: i64) -> String {
@@ -96,79 +83,6 @@ impl OwnerProvider for Static1936 {
 
     fn controllers_at(&self, _hour: i64) -> Arc<BTreeMap<u32, String>> {
         Arc::clone(&self.owners)
-    }
-}
-
-/// SYNTHETIC DEMO (behind `--demo-scrub`): NOT replay data. A
-/// deterministic triangle sweep used only to exercise the scrub path:
-/// over hours 0..=48, up to [`SWEEP_STATE_COUNT`] of the lowest-numbered
-/// owned states flip one per hour to a deterministic other tag and then
-/// flip back, ending identical to the 1936 baseline. No randomness.
-pub struct SyntheticScrubDemo {
-    hours: Vec<i64>,
-    frames: Vec<Arc<BTreeMap<u32, String>>>,
-}
-
-/// Number of states swept by the synthetic demo.
-pub const SWEEP_STATE_COUNT: usize = 24;
-
-/// Total demo hours: 0..=48 (flip out for 24 hours, flip back for 24).
-pub const DEMO_LAST_HOUR: i64 = 48;
-
-impl SyntheticScrubDemo {
-    pub fn new(
-        base_owners: &BTreeMap<u32, String>,
-        country_colors: &BTreeMap<String, [u8; 3]>,
-    ) -> SyntheticScrubDemo {
-        // Deterministic sweep set: the lowest state ids that have a 1936
-        // owner and for which some *different* tag exists in
-        // country_colors.json (so the flip is visible).
-        let mut sweep: Vec<(u32, String)> = Vec::new();
-        for (state_id, owner) in base_owners {
-            if sweep.len() >= SWEEP_STATE_COUNT {
-                break;
-            }
-            let target = country_colors.keys().find(|tag| *tag != owner);
-            if let Some(target) = target {
-                sweep.push((*state_id, target.clone()));
-            }
-        }
-
-        let hours: Vec<i64> = (0..=DEMO_LAST_HOUR).collect();
-        let mut frames = Vec::with_capacity(hours.len());
-        for &hour in &hours {
-            // Triangle sweep: hour 0 -> 0 flipped, hour 24 -> all flipped,
-            // hour 48 -> 0 flipped again.
-            let flipped = (hour.min(DEMO_LAST_HOUR - hour).max(0) as usize).min(sweep.len());
-            let mut frame = base_owners.clone();
-            for (state_id, target) in sweep.iter().take(flipped) {
-                frame.insert(*state_id, target.clone());
-            }
-            frames.push(Arc::new(frame));
-        }
-        SyntheticScrubDemo { hours, frames }
-    }
-
-    fn frame_index(&self, hour: i64) -> usize {
-        // Hours are contiguous 0..=48; clamp out-of-range scrub requests.
-        hour.clamp(0, DEMO_LAST_HOUR) as usize
-    }
-}
-
-impl OwnerProvider for SyntheticScrubDemo {
-    fn hours(&self) -> &[i64] {
-        &self.hours
-    }
-
-    fn owners_at(&self, hour: i64) -> Arc<BTreeMap<u32, String>> {
-        Arc::clone(&self.frames[self.frame_index(hour)])
-    }
-
-    fn controllers_at(&self, hour: i64) -> Arc<BTreeMap<u32, String>> {
-        // SEMANTIC-ASSUMPTION: the synthetic scrub demo has no occupation;
-        // controller and owner are the same synthetic visible political map.
-        // Validation plan is the recording-backed occupied-territory path.
-        Arc::clone(&self.frames[self.frame_index(hour)])
     }
 }
 
@@ -261,11 +175,6 @@ impl OwnerProvider for RecordingTimeline {
         self.frame_maps(hour).1
     }
 
-    fn month_day_at(&self, hour: i64) -> Option<(u32, u32)> {
-        let (_, _, date) = self.frame_maps(hour);
-        month_day_from_clausewitz_date(date.as_deref()?)
-    }
-
     fn hour_label(&self, hour: i64) -> String {
         match self.frame_maps(hour).2 {
             Some(date) => format!("{date} (hour {hour})"),
@@ -282,7 +191,8 @@ pub fn owners_from_leaves(leaves: &BTreeMap<u32, Leaf<String>>) -> BTreeMap<u32,
         .collect()
 }
 
-pub fn month_day_from_clausewitz_date(date: &str) -> Option<(u32, u32)> {
+#[cfg(test)]
+fn month_day_from_clausewitz_date(date: &str) -> Option<(u32, u32)> {
     let mut parts = date.split('.');
     let _year = parts.next()?;
     let month = parts.next()?.parse::<u32>().ok()?;
@@ -303,14 +213,6 @@ mod tests {
         owners
     }
 
-    fn fixture_colors() -> BTreeMap<String, [u8; 3]> {
-        let mut colors = BTreeMap::new();
-        colors.insert("FRA".to_string(), [1, 2, 3]);
-        colors.insert("GER".to_string(), [4, 5, 6]);
-        colors.insert("ITA".to_string(), [7, 8, 9]);
-        colors
-    }
-
     #[test]
     fn static_1936_has_single_hour_and_constant_owners() {
         let provider = Static1936::new(fixture_owners());
@@ -320,85 +222,6 @@ mod tests {
         // Out-of-range hours still resolve to the single frame.
         assert_eq!(*provider.owners_at(9999), fixture_owners());
         assert_eq!(provider.controllers_at(9999), provider.owners_at(9999));
-    }
-
-    #[test]
-    fn demo_is_deterministic() {
-        let a = SyntheticScrubDemo::new(&fixture_owners(), &fixture_colors());
-        let b = SyntheticScrubDemo::new(&fixture_owners(), &fixture_colors());
-        assert_eq!(a.hours(), b.hours());
-        for &hour in a.hours() {
-            assert_eq!(a.owners_at(hour), b.owners_at(hour), "hour {hour}");
-            assert_eq!(
-                a.controllers_at(hour),
-                b.controllers_at(hour),
-                "hour {hour}"
-            );
-        }
-    }
-
-    #[test]
-    fn demo_first_and_last_hours_match_baseline() {
-        let base = fixture_owners();
-        let demo = SyntheticScrubDemo::new(&base, &fixture_colors());
-        assert_eq!(demo.hours().len(), 49);
-        assert_eq!(*demo.owners_at(0), base);
-        assert_eq!(demo.controllers_at(0), demo.owners_at(0));
-        assert_eq!(*demo.owners_at(DEMO_LAST_HOUR), base);
-        assert_eq!(
-            demo.controllers_at(DEMO_LAST_HOUR),
-            demo.owners_at(DEMO_LAST_HOUR)
-        );
-    }
-
-    #[test]
-    fn demo_peak_flips_sweep_states_to_other_tags() {
-        let base = fixture_owners();
-        let demo = SyntheticScrubDemo::new(&base, &fixture_colors());
-        let peak = demo.owners_at(24);
-        assert_eq!(demo.controllers_at(24), peak);
-        let changed: Vec<u32> = peak
-            .iter()
-            .filter(|(state_id, tag)| base.get(*state_id) != Some(*tag))
-            .map(|(state_id, _)| *state_id)
-            .collect();
-        assert_eq!(changed.len(), SWEEP_STATE_COUNT);
-        // Lowest owned state ids are swept first, deterministically.
-        assert_eq!(changed[0], 1);
-        for state_id in &changed {
-            assert_ne!(peak.get(state_id), base.get(state_id));
-        }
-    }
-
-    #[test]
-    fn demo_ramps_one_state_per_hour() {
-        let base = fixture_owners();
-        let demo = SyntheticScrubDemo::new(&base, &fixture_colors());
-        for hour in 0..=DEMO_LAST_HOUR {
-            let expected = (hour.min(DEMO_LAST_HOUR - hour) as usize).min(SWEEP_STATE_COUNT);
-            let frame = demo.owners_at(hour);
-            let changed = frame
-                .iter()
-                .filter(|(state_id, tag)| base.get(*state_id) != Some(*tag))
-                .count();
-            assert_eq!(changed, expected, "hour {hour}");
-        }
-    }
-
-    #[test]
-    fn demo_clamps_out_of_range_hours() {
-        let base = fixture_owners();
-        let demo = SyntheticScrubDemo::new(&base, &fixture_colors());
-        assert_eq!(demo.owners_at(-5), demo.owners_at(0));
-        assert_eq!(demo.owners_at(500), demo.owners_at(DEMO_LAST_HOUR));
-    }
-
-    #[test]
-    fn demo_with_empty_baseline_stays_empty() {
-        let demo = SyntheticScrubDemo::new(&BTreeMap::new(), &fixture_colors());
-        for &hour in demo.hours() {
-            assert!(demo.owners_at(hour).is_empty());
-        }
     }
 
     #[test]

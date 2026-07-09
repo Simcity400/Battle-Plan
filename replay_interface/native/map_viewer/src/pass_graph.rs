@@ -337,13 +337,13 @@ impl ProductionMapPassGraph {
             )
             .into());
         }
-        let mut terrain_blockers = Vec::new();
         if terrain_library.coverage_fraction() < 1.0 {
-            terrain_blockers.push(format!(
-                "terrain chunk library coverage is {:.6}; rendering will contain {} captured-evidence holes",
+            return Err(format!(
+                "production map renderer blocked: terrain chunk library coverage is {:.6}; rendering would contain {} captured-evidence holes",
                 terrain_library.coverage_fraction(),
                 terrain_library.holes().len()
-            ));
+            )
+            .into());
         }
         let target = ProductionMapTargetPlan {
             width: color.desc.width,
@@ -361,7 +361,7 @@ impl ProductionMapPassGraph {
                     capture_moment: TERRAIN_CHUNK_LIBRARY_MOMENT,
                     status: ProductionMapPassStatus::Ready,
                     depends_on: Vec::new(),
-                    blockers: terrain_blockers,
+                    blockers: Vec::new(),
                 },
                 production_blocked_map_pass(
                     ProductionMapPassKind::Water,

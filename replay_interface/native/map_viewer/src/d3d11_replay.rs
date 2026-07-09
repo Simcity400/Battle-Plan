@@ -25,8 +25,9 @@ use winapi::um::unknwnbase::IUnknown;
 /// path's non-reference selection (see
 /// `prepare_production_map_with_layers_for_reference`).
 ///
-/// * `water_full == false` → the calibrated approximation snapshot
-///   (`AppOwnedTerrainColorSnapshot`), preserving flag-OFF byte-identity.
+/// * `water_full == false` → the old calibrated approximation snapshot
+///   (`AppOwnedTerrainColorSnapshot`), now blocked for non-reference product
+///   water rendering when a water pass is present.
 /// * `water_full == true` → the mechanism-correct WATER2 seafloor render
 ///   (`UnderwaterPass`, `pdxmap.shader` `Effect underwater` over the
 ///   synthesized tiles). The underwater pass is therefore selected **only**
@@ -55,6 +56,35 @@ pub(crate) fn world_synthesis_reflection_cube_source(
     } else {
         NativeD3d11ReflectionCubeSource::MeanColorFlatten
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn product_water_source_policy(
+    reference_replay: bool,
+    water_full: bool,
+    has_water_bundle: bool,
+) -> Result<(
+    NativeD3d11WaterRefractionSource,
+    NativeD3d11ReflectionCubeSource,
+)> {
+    let water_refraction_source = if reference_replay {
+        NativeD3d11WaterRefractionSource::CapturedBundleTexture
+    } else if water_full {
+        NativeD3d11WaterRefractionSource::UnderwaterPass
+    } else if has_water_bundle {
+        return Err(
+            "production water replay blocked: non-reference water rendering requires --water-full and a resolver-backed underwater pass; the old AppOwnedTerrainColorSnapshot approximation is not engine-derived"
+                .into(),
+        );
+    } else {
+        NativeD3d11WaterRefractionSource::AppOwnedTerrainColorSnapshot
+    };
+    let reflection_cube_source = if reference_replay || water_full {
+        NativeD3d11ReflectionCubeSource::ShippedFileCube
+    } else {
+        NativeD3d11ReflectionCubeSource::MeanColorFlatten
+    };
+    Ok((water_refraction_source, reflection_cube_source))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -381,67 +411,6 @@ impl NativeD3d11PreparedProductionMap {
         self.terrain.native.render_target.texture.as_raw()
     }
 
-    #[cfg(windows)]
-    pub unsafe fn replace_terrain_political_srvs(
-        &mut self,
-        province_secondary_color_map: *mut ID3D11ShaderResourceView,
-        gradient_border_channel1: *mut ID3D11ShaderResourceView,
-        gradient_border_channel2: *mut ID3D11ShaderResourceView,
-    ) -> Result<NativeD3d11TerrainPoliticalSrvSubstitution> {
-        let mut secondary = replace_terrain_ps_srv_slot(
-            &mut self.terrain.native.pass,
-            6,
-            province_secondary_color_map,
-            "ProvinceSecondaryColorMap",
-        )?;
-        let mut gradient1 = replace_terrain_ps_srv_slot(
-            &mut self.terrain.native.pass,
-            14,
-            gradient_border_channel1,
-            "GradientBorderChannel1",
-        )?;
-        let mut gradient2 = replace_terrain_ps_srv_slot(
-            &mut self.terrain.native.pass,
-            15,
-            gradient_border_channel2,
-            "GradientBorderChannel2",
-        )?;
-        // Dependent passes (pdxwater and friends) sample the same political
-        // inputs at their own slots; substitute by declared name so the
-        // captured session's country layer / naval-supremacy fills never
-        // leak into the replay's water shading.
-        for pass in [
-            self.water.as_mut(),
-            self.rivers.as_mut(),
-            self.borders.as_mut(),
-            self.trees.as_mut(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            secondary += replace_named_ps_srv_in_pass(
-                pass,
-                "ProvinceSecondaryColorMap",
-                province_secondary_color_map,
-            )?;
-            gradient1 += replace_named_ps_srv_in_pass(
-                pass,
-                "GradientBorderChannel1",
-                gradient_border_channel1,
-            )?;
-            gradient2 += replace_named_ps_srv_in_pass(
-                pass,
-                "GradientBorderChannel2",
-                gradient_border_channel2,
-            )?;
-        }
-        Ok(NativeD3d11TerrainPoliticalSrvSubstitution {
-            province_secondary_color_map: secondary,
-            gradient_border_channel1: gradient1,
-            gradient_border_channel2: gradient2,
-        })
-    }
-
     /// SEASON1 (validation): replace the SnowMudTexture SRV in the terrain
     /// pass and every dependent pass (water ice, tree snow, border snow all
     /// sample it). Name-matched so a session without the input fails loudly.
@@ -561,49 +530,6 @@ impl NativeD3d11PreparedSynthesizedProductionMap {
         self.terrain.native.render_target.texture.as_raw()
     }
 
-    #[cfg(windows)]
-    pub unsafe fn replace_terrain_political_srvs(
-        &mut self,
-        province_secondary_color_map: *mut ID3D11ShaderResourceView,
-        gradient_border_channel1: *mut ID3D11ShaderResourceView,
-        gradient_border_channel2: *mut ID3D11ShaderResourceView,
-    ) -> Result<NativeD3d11TerrainPoliticalSrvSubstitution> {
-        let mut substitution = self.terrain.replace_terrain_political_srvs(
-            province_secondary_color_map,
-            gradient_border_channel1,
-            gradient_border_channel2,
-        )?;
-        // Same rationale as the captured-pass variant: the water pass (and
-        // any other dependent pass) must see the replay's generated
-        // political inputs, not the captured session's.
-        for pass in [
-            self.water.as_mut(),
-            self.rivers.as_mut(),
-            self.borders.as_mut(),
-            self.trees.as_mut(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            substitution.province_secondary_color_map += replace_named_ps_srv_in_pass(
-                pass,
-                "ProvinceSecondaryColorMap",
-                province_secondary_color_map,
-            )?;
-            substitution.gradient_border_channel1 += replace_named_ps_srv_in_pass(
-                pass,
-                "GradientBorderChannel1",
-                gradient_border_channel1,
-            )?;
-            substitution.gradient_border_channel2 += replace_named_ps_srv_in_pass(
-                pass,
-                "GradientBorderChannel2",
-                gradient_border_channel2,
-            )?;
-        }
-        Ok(substitution)
-    }
-
     /// SEASON1 (validation): SnowMudTexture substitution across the
     /// synthesized terrain template draw + dependent passes.
     pub unsafe fn replace_snow_mud_srv(
@@ -680,50 +606,6 @@ impl NativeD3d11PreparedTerrainChunkSynthesis {
         self.native.render_target.texture.as_raw()
     }
 
-    #[cfg(windows)]
-    pub unsafe fn replace_terrain_political_srvs(
-        &mut self,
-        province_secondary_color_map: *mut ID3D11ShaderResourceView,
-        gradient_border_channel1: *mut ID3D11ShaderResourceView,
-        gradient_border_channel2: *mut ID3D11ShaderResourceView,
-    ) -> Result<NativeD3d11TerrainPoliticalSrvSubstitution> {
-        let secondary = replace_terrain_ps_srv_slot_in_draw(
-            &mut self.native.template_draw,
-            6,
-            province_secondary_color_map,
-            "ProvinceSecondaryColorMap",
-        )?;
-        let gradient1 = replace_terrain_ps_srv_slot_in_draw(
-            &mut self.native.template_draw,
-            14,
-            gradient_border_channel1,
-            "GradientBorderChannel1",
-        )?;
-        let gradient2 = replace_terrain_ps_srv_slot_in_draw(
-            &mut self.native.template_draw,
-            15,
-            gradient_border_channel2,
-            "GradientBorderChannel2",
-        )?;
-        for (label, count) in [
-            ("ProvinceSecondaryColorMap", secondary),
-            ("GradientBorderChannel1", gradient1),
-            ("GradientBorderChannel2", gradient2),
-        ] {
-            if count == 0 {
-                return Err(format!(
-                    "production native D3D11 terrain replay blocked: prepared terrain chunk synthesis template has no PS SRV slot for {label}"
-                )
-                .into());
-            }
-        }
-        Ok(NativeD3d11TerrainPoliticalSrvSubstitution {
-            province_secondary_color_map: secondary,
-            gradient_border_channel1: gradient1,
-            gradient_border_channel2: gradient2,
-        })
-    }
-
     /// SEASON1 (validation): SnowMudTexture (terrain sampler slot 7 per
     /// `pdxmap.shader:77`; name-verified) substitution on the template draw.
     pub unsafe fn replace_snow_mud_srv(
@@ -737,39 +619,6 @@ impl NativeD3d11PreparedTerrainChunkSynthesis {
             "SnowMudTexture",
         )
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeD3d11TerrainPoliticalSrvSubstitution {
-    pub province_secondary_color_map: usize,
-    pub gradient_border_channel1: usize,
-    pub gradient_border_channel2: usize,
-}
-
-#[cfg(windows)]
-unsafe fn replace_terrain_ps_srv_slot(
-    pass: &mut NativeD3d11PreparedMapPass,
-    slot: u32,
-    view: *mut ID3D11ShaderResourceView,
-    label: &str,
-) -> Result<usize> {
-    if view.is_null() {
-        return Err(format!(
-            "production native D3D11 terrain replay blocked: {label} replacement SRV is null"
-        )
-        .into());
-    }
-    let mut replaced = 0usize;
-    for draw in &mut pass.draws {
-        replaced += replace_terrain_ps_srv_slot_in_draw(draw, slot, view, label)?;
-    }
-    if replaced == 0 {
-        return Err(format!(
-            "production native D3D11 terrain replay blocked: prepared terrain pass has no PS SRV slot {slot} for {label}"
-        )
-        .into());
-    }
-    Ok(replaced)
 }
 
 /// Replace every PS-stage SRV whose captured `declared_name` matches, across
@@ -1336,16 +1185,13 @@ impl NativeD3d11TerrainRenderer {
             world_rect,
             scene_cb0,
         )?;
-        // WATER3: refraction/reflection source policy for the chunk-SYNTHESIS
-        // production path. Flag-OFF keeps the calibrated approximation snapshot
-        // + mean-color cube byte-identically. Under --water-full the water and
-        // rivers passes bind the REAL seafloor render (WATER2 underwater pass,
-        // rendered below over the synthesized tiles) as WaterRefraction and the
-        // real reflection cube — the same mechanism-correct inputs the
-        // captured-terrain production path already uses. This closes the gap
-        // documented in documents/WATER_LAW.md where the synthesis path kept
-        // the flat approximation even under --water-full. The selection is the
-        // pure `world_synthesis_water_refraction_source` /
+        // WATER3: refraction/reflection source policy for the chunk-synthesis
+        // production path. With --water-full the water and rivers passes bind
+        // the REAL seafloor render (WATER2 underwater pass, rendered below over
+        // the synthesized tiles) as WaterRefraction and the real reflection
+        // cube. Without --water-full, product replay is blocked before water is
+        // rendered when a water bundle is present. The selection is the pure
+        // `world_synthesis_water_refraction_source` /
         // `world_synthesis_reflection_cube_source` law so it is unit-testable
         // without a GPU (see the tests) and stays in lockstep with the
         // captured-terrain path's non-reference selection.
@@ -1489,8 +1335,8 @@ impl NativeD3d11TerrainRenderer {
         // PixelShaderUnderwater into an offscreen B8G8R8A8_UNORM target (its
         // own depth), iterating the WHOLE tile plan. Fail-closed if no resolver
         // was threaded in (no game-file access to reconstruct pdxmap.shader
-        // Effect underwater). Flag-OFF leaves this None and the calibrated
-        // approximation snapshot stands, byte-identically.
+        // Effect underwater). Without --water-full, product replay is blocked
+        // before water rendering when a water bundle is present.
         //
         // ORDER (CB1 safety): this runs BEFORE the terrain color synthesis
         // render below. `native_d3d11_render_underwater_synthesis` rewrites the
@@ -1941,25 +1787,15 @@ impl NativeD3d11TerrainRenderer {
         // * reference replay binds the captured buffer (byte-exact parity);
         // * world synthesis + --water-full renders the REAL seafloor pass
         //   (WATER2 underwater), mechanism-correct;
-        // * world synthesis flag-OFF keeps the calibrated approximation
-        //   snapshot byte-identically.
-        let water_refraction_source = if reference_replay {
-            NativeD3d11WaterRefractionSource::CapturedBundleTexture
-        } else if self.water_full {
-            NativeD3d11WaterRefractionSource::UnderwaterPass
-        } else {
-            NativeD3d11WaterRefractionSource::AppOwnedTerrainColorSnapshot
-        };
+        // * world synthesis without --water-full is blocked when a water pass is
+        //   present because the old app-owned approximation is not engine data.
+        let (water_refraction_source, reflection_cube_source) =
+            product_water_source_policy(reference_replay, self.water_full, water_bundle.is_some())?;
         // Reflection-cube policy (WATER1, separate axis from refraction). The
         // reference path already binds the real captured cube. The world-
-        // synthesis path defaults to the mean-color flatten for flag-OFF byte
-        // identity; --water-full (self.water_full) uploads the real cube (which
-        // is byte-identical to the shipped map/terrain/reflection.dds).
-        let reflection_cube_source = if reference_replay || self.water_full {
-            NativeD3d11ReflectionCubeSource::ShippedFileCube
-        } else {
-            NativeD3d11ReflectionCubeSource::MeanColorFlatten
-        };
+        // synthesis path may not use the old mean-color flatten when a water
+        // pass is present; --water-full (self.water_full) uploads the real cube
+        // (byte-identical to the shipped map/terrain/reflection.dds).
         let water = self.prepare_optional_production_map_pass_with_inputs(
             water_bundle,
             pass_camera,
@@ -2149,8 +1985,8 @@ impl NativeD3d11TerrainRenderer {
         // captured terrain draws with PixelShaderUnderwater into an offscreen
         // B8G8R8A8_UNORM target and bind it as WaterRefraction. Fail-closed if
         // no resolver was threaded in (no game-file access to reconstruct the
-        // shader). Flag-OFF leaves this None and the approximation snapshot
-        // stands, byte-identically.
+        // shader). Without --water-full, product replay is blocked before water
+        // rendering when a water bundle is present.
         let underwater_pass = if self.water_full {
             let resolver = self.underwater_resolver.as_ref().ok_or(
                 "--water-full underwater pass blocked: no game-file resolver was provided to \
@@ -4699,15 +4535,15 @@ mod tests {
     #[cfg(windows)]
     use winapi::um::d3dcommon::{D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_SRV_DIMENSION_TEXTURECUBE};
 
-    // WATER3 — the chunk-SYNTHESIS production path selects the mechanism-correct
-    // WATER2 underwater seafloor pass as WaterRefraction ONLY under
-    // --water-full; flag-OFF keeps the calibrated approximation snapshot (which
-    // is what preserves flag-OFF byte-identity). The reflection cube is a
-    // separate axis, also gated on --water-full.
+    // WATER3 — the chunk-synthesis low-level selector chooses the
+    // mechanism-correct WATER2 underwater seafloor pass as WaterRefraction only
+    // under --water-full. Product replay adds a separate fail-closed gate when a
+    // water pass is present.
     #[cfg(windows)]
     #[test]
     fn synthesis_underwater_refraction_selected_only_under_water_full() {
-        // Flag OFF: the approximation snapshot (no seafloor re-render).
+        // Low-level flag OFF: legacy inert source (no seafloor re-render). This
+        // is product-blocked by product_water_source_policy when water exists.
         assert_eq!(
             world_synthesis_water_refraction_source(false),
             NativeD3d11WaterRefractionSource::AppOwnedTerrainColorSnapshot,
@@ -4717,8 +4553,7 @@ mod tests {
             world_synthesis_water_refraction_source(true),
             NativeD3d11WaterRefractionSource::UnderwaterPass,
         );
-        // The underwater pass is NEVER the flag-OFF selection — that is the
-        // byte-identity guarantee.
+        // The underwater pass is never the flag-OFF low-level selection.
         assert_ne!(
             world_synthesis_water_refraction_source(false),
             NativeD3d11WaterRefractionSource::UnderwaterPass,
@@ -4738,29 +4573,58 @@ mod tests {
         );
     }
 
-    // WATER3 — the synthesis path's --water-full refraction selection must match
-    // the captured-terrain production path's NON-reference (world-synthesis)
-    // selection, so both product paths render the same mechanism-correct
-    // WaterRefraction. (The captured path additionally has a reference-replay
-    // mode that binds the CapturedBundleTexture for byte-exact parity; that mode
-    // does not exist on the synthesis path, which is always a product render.)
+    // WATER3 — the low-level synthesis path's --water-full refraction selection
+    // must match the captured-terrain production path's non-reference,
+    // water-full selection, so both product paths render the same
+    // mechanism-correct WaterRefraction.
     #[cfg(windows)]
     #[test]
     fn synthesis_refraction_matches_captured_path_non_reference_selection() {
-        for water_full in [false, true] {
-            // Captured path, non-reference (reference_replay == false): mirror
-            // the exact branch in prepare_production_map_with_layers_for_reference.
-            let captured_non_reference = if water_full {
-                NativeD3d11WaterRefractionSource::UnderwaterPass
-            } else {
-                NativeD3d11WaterRefractionSource::AppOwnedTerrainColorSnapshot
-            };
-            assert_eq!(
-                world_synthesis_water_refraction_source(water_full),
-                captured_non_reference,
-                "synthesis vs captured non-reference refraction diverges at water_full={water_full}",
-            );
-        }
+        let (captured_non_reference, _) =
+            product_water_source_policy(false, true, true).expect("water-full product policy");
+        assert_eq!(
+            world_synthesis_water_refraction_source(true),
+            captured_non_reference,
+            "synthesis vs captured non-reference refraction diverges under --water-full",
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn product_water_policy_blocks_app_owned_refraction_when_water_exists() {
+        let err = product_water_source_policy(false, false, true)
+            .expect_err("non-reference water pass without --water-full must fail closed");
+        assert!(
+            err.to_string()
+                .contains("old AppOwnedTerrainColorSnapshot approximation is not engine-derived"),
+            "{err}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn product_water_policy_keeps_reference_and_water_full_engine_sources() {
+        assert_eq!(
+            product_water_source_policy(true, false, true).expect("reference replay policy"),
+            (
+                NativeD3d11WaterRefractionSource::CapturedBundleTexture,
+                NativeD3d11ReflectionCubeSource::ShippedFileCube
+            )
+        );
+        assert_eq!(
+            product_water_source_policy(false, true, true).expect("water-full policy"),
+            (
+                NativeD3d11WaterRefractionSource::UnderwaterPass,
+                NativeD3d11ReflectionCubeSource::ShippedFileCube
+            )
+        );
+        assert_eq!(
+            product_water_source_policy(false, false, false).expect("no water pass to render"),
+            (
+                NativeD3d11WaterRefractionSource::AppOwnedTerrainColorSnapshot,
+                NativeD3d11ReflectionCubeSource::MeanColorFlatten
+            )
+        );
     }
 
     #[test]

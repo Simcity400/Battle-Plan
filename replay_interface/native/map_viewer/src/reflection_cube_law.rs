@@ -142,9 +142,7 @@ fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
     }
     // GUARD 4: cubemap with all 6 faces, and NOT a volume texture.
     if caps2 & DDSCAPS2_CUBEMAP_ALLFACES != DDSCAPS2_CUBEMAP_ALLFACES {
-        return Err(
-            format!("{path}: caps2 {caps2:#x} is not a 6-face cubemap").into(),
-        );
+        return Err(format!("{path}: caps2 {caps2:#x} is not a 6-face cubemap").into());
     }
     if caps2 & DDSCAPS2_VOLUME != 0 {
         return Err(format!("{path}: caps2 {caps2:#x} marks a volume texture").into());
@@ -325,9 +323,10 @@ fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) 
                     .ok_or("reflection cube source row end overflow")?;
                 let dst = sub
                     .file_offset
-                    .checked_add(row.checked_mul(dst_row_pitch).ok_or(
-                        "reflection cube destination row offset overflow",
-                    )?)
+                    .checked_add(
+                        row.checked_mul(dst_row_pitch)
+                            .ok_or("reflection cube destination row offset overflow")?,
+                    )
                     .ok_or("reflection cube destination offset overflow")?;
                 let dst_end = dst
                     .checked_add(src_row_bytes)
@@ -352,9 +351,11 @@ fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) 
                 // bytes [dst+src_row_bytes .. dst+dst_row_pitch) stay zero (pad)
             }
             src_mip_off = src_mip_off
-                .checked_add(src_row_bytes.checked_mul(h).ok_or(
-                    "reflection cube mip source size overflow",
-                )?)
+                .checked_add(
+                    src_row_bytes
+                        .checked_mul(h)
+                        .ok_or("reflection cube mip source size overflow")?,
+                )
                 .ok_or("reflection cube mip source offset overflow")?;
         }
     }
@@ -440,7 +441,8 @@ mod tests {
     fn synth_reflection_dds(size: u32, mips: u32) -> Vec<u8> {
         let mut hdr = vec![0u8; DDS_HEADER_LEN];
         hdr[0..4].copy_from_slice(b"DDS ");
-        let put = |h: &mut [u8], off: usize, v: u32| h[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        let put =
+            |h: &mut [u8], off: usize, v: u32| h[off..off + 4].copy_from_slice(&v.to_le_bytes());
         put(&mut hdr, 4, 124); // dwSize
         put(&mut hdr, 8, 0x0002_100f); // flags (indicative)
         put(&mut hdr, 12, size); // height
@@ -448,7 +450,7 @@ mod tests {
         put(&mut hdr, 28, mips); // mipMapCount
         put(&mut hdr, 76, 32); // pf dwSize
         put(&mut hdr, 80, DDPF_RGB | DDPF_ALPHAPIXELS); // pf_flags = 0x41
-        // fourcc (84) stays zero
+                                                        // fourcc (84) stays zero
         put(&mut hdr, 88, 32); // rgb bit count
         put(&mut hdr, 92, 0x00ff_0000); // R
         put(&mut hdr, 96, 0x0000_ff00); // G
@@ -530,7 +532,9 @@ mod tests {
     fn rejects_dx10_header() {
         let mut dds = synth_reflection_dds(8, 4);
         dds[84..88].copy_from_slice(b"DX10");
-        let err = parse_reflection_dds(&dds, "dx10.dds").unwrap_err().to_string();
+        let err = parse_reflection_dds(&dds, "dx10.dds")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("DX10"), "got: {err}");
     }
 
@@ -539,8 +543,13 @@ mod tests {
         let mut dds = synth_reflection_dds(8, 4);
         dds[84..88].copy_from_slice(b"DXT5");
         dds[80..84].copy_from_slice(&DDPF_FOURCC.to_le_bytes());
-        let err = parse_reflection_dds(&dds, "dxt5.dds").unwrap_err().to_string();
-        assert!(err.contains("compressed") || err.contains("fourcc"), "got: {err}");
+        let err = parse_reflection_dds(&dds, "dxt5.dds")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("compressed") || err.contains("fourcc"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -549,7 +558,9 @@ mod tests {
         // Swap to RGBA (R in low byte) — should be rejected.
         dds[92..96].copy_from_slice(&0x0000_00ffu32.to_le_bytes());
         dds[100..104].copy_from_slice(&0x00ff_0000u32.to_le_bytes());
-        let err = parse_reflection_dds(&dds, "rgba.dds").unwrap_err().to_string();
+        let err = parse_reflection_dds(&dds, "rgba.dds")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("channel masks"), "got: {err}");
     }
 
@@ -557,7 +568,9 @@ mod tests {
     fn rejects_non_cube() {
         let mut dds = synth_reflection_dds(8, 4);
         dds[112..116].copy_from_slice(&0u32.to_le_bytes()); // caps2 = 0, not a cube
-        let err = parse_reflection_dds(&dds, "flat.dds").unwrap_err().to_string();
+        let err = parse_reflection_dds(&dds, "flat.dds")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("6-face cubemap"), "got: {err}");
     }
 
@@ -565,7 +578,9 @@ mod tests {
     fn rejects_volume_texture() {
         let mut dds = synth_reflection_dds(8, 4);
         dds[112..116].copy_from_slice(&(DDSCAPS2_CUBEMAP_ALLFACES | DDSCAPS2_VOLUME).to_le_bytes());
-        let err = parse_reflection_dds(&dds, "vol.dds").unwrap_err().to_string();
+        let err = parse_reflection_dds(&dds, "vol.dds")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("volume"), "got: {err}");
     }
 
@@ -575,8 +590,13 @@ mod tests {
         let binding = vanilla_reflection_binding(8, 9);
         let dds = synth_reflection_dds(8, 4);
         let cube = parse_reflection_dds(&dds, "synthetic.dds").unwrap();
-        let err = repack_to_captured_layout(&cube, &binding).unwrap_err().to_string();
-        assert!(err.contains("does not match captured binding"), "got: {err}");
+        let err = repack_to_captured_layout(&cube, &binding)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("does not match captured binding"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -637,10 +657,8 @@ mod tests {
 
         // Lay out a vanilla game root so the resolver finds
         // map/terrain/reflection.dds exactly as it would in a real install.
-        let root = std::env::temp_dir().join(format!(
-            "hoi4_reflection_proof_{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("hoi4_reflection_proof_{}", std::process::id()));
         let terrain_dir = root.join("map").join("terrain");
         std::fs::create_dir_all(&terrain_dir).expect("create terrain dir");
         std::fs::copy(&dds_src, terrain_dir.join("reflection.dds")).expect("copy reflection.dds");

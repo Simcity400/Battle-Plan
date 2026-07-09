@@ -1150,6 +1150,72 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_chunk_library_coverage_blocks_production_graph() {
+        let root = temp_test_dir("incomplete_chunk_library_coverage_blocks_graph");
+        fs::create_dir_all(&root).expect("create root");
+        let path = write_valid_map_frame_bundle(&root, |mut frame| {
+            for draw in &mut frame.draws {
+                let mut state = valid_map_frame_draw_state();
+                state.output_merger = Some(valid_output_merger_state());
+                draw.draw_state = Some(state);
+            }
+            frame.active_draw = frame.draws[0].clone();
+            frame
+        });
+        let frame: MapFrameRuntimeBundle =
+            serde_json::from_slice(&fs::read(path).expect("read bundle")).expect("frame");
+        let bounds = TerrainChunkBounds {
+            min_x: 0.0,
+            min_y: 0.0,
+            min_z: 0.0,
+            max_x: 1.0,
+            max_y: 0.0,
+            max_z: 1.0,
+        };
+        let manifest = TerrainChunkLibraryManifest {
+            schema: TERRAIN_CHUNK_LIBRARY_SCHEMA.to_string(),
+            provenance: "unit_test".to_string(),
+            capture_moment: TERRAIN_CHUNK_LIBRARY_MOMENT.to_string(),
+            session_manifest: MAP_CAPTURE_SESSION_FILE.to_string(),
+            shader_cache_constants: frame.shader_cache_constants.clone(),
+            chunks: vec![TerrainChunkRecord {
+                chunk_id: "chunk_a".to_string(),
+                identity: terrain_chunk_identity_from_draw(&frame.draws[0]),
+                bounds,
+                draw: frame.draws[0].clone(),
+            }],
+            vanilla_sources: frame.vanilla_sources.clone(),
+            runtime_files: frame.runtime_files.clone(),
+            coverage: coverage_for_chunk_bounds(
+                &[bounds],
+                TerrainChunkWorldRect {
+                    min_x: 0.0,
+                    min_z: 0.0,
+                    max_x: 2.0,
+                    max_z: 2.0,
+                },
+            ),
+            blockers: Vec::new(),
+        };
+        fs::write(
+            root.join(TERRAIN_CHUNK_LIBRARY_FILE),
+            serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+        let library = NativeD3d11TerrainChunkLibrary::load(&root).expect("load chunk library");
+        assert!(library.coverage_fraction() < 1.0);
+        let result =
+            ProductionMapPassGraph::from_terrain_chunk_library(&library, identity_camera());
+        assert!(result.is_err(), "partial coverage must fail closed");
+        let err = result.err().unwrap();
+        assert!(
+            err.to_string()
+                .contains("terrain chunk library coverage is 0.250000"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn chunk_library_graph_promotes_full_map_dependent_layers() {
         let terrain_root = temp_test_dir("chunk_library_graph_full_map_layers_terrain");
         let water_root = temp_test_dir("chunk_library_graph_full_map_layers_water");

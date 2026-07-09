@@ -281,30 +281,7 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         &common_building_paths,
         &entity_source_paths,
     )?;
-    let visual = make_map_visual(
-        &bmp.ids,
-        &definitions,
-        &colormap,
-        &water,
-        &terrain_atlas,
-        &terrain_normal_atlas,
-        &underwater,
-        &waterspec,
-        &river_diffuse,
-        &border_country,
-        &border_state,
-        &border_sea,
-        &terrain_indices,
-        &terrain_texture_map,
-        &heightmap,
-        &height_normal,
-        &rivers,
-        &province_to_state,
-        &state_owners,
-    );
-
     write_u32_raw(&out.join("province_ids.r32"), &bmp.ids)?;
-    write_u32_raw(&out.join("map_visual.rgbx"), &visual)?;
     write_u8_raw(&out.join("terrain_indices.r8"), &terrain_indices.pixels)?;
     write_u8_raw(&out.join("terrain_texture_ids.r8"), &terrain_texture_ids)?;
     write_u8_raw(&out.join("heightmap.r8"), &heightmap.pixels)?;
@@ -604,7 +581,6 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         province_id_encoding: "little-endian u32 per pixel".to_string(),
         files: BundleFiles {
             province_ids: "province_ids.r32".to_string(),
-            map_visual: "map_visual.rgbx".to_string(),
             terrain_id_map: "terrain_id_map.rgba".to_string(),
             terrain_runtime: "terrain_runtime.json".to_string(),
             snow_mud_data: "snow_mud_data.rgba".to_string(),
@@ -755,7 +731,7 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
             visual_input_dimensions: input_dimensions,
         },
         modset: resolver_setup.manifest_modset(),
-        viewer_note: "map_visual.rgbx is built in Rust from the game terrain colormap/materials, shader-grounded water tint, and province IDs. River, border, tree, city, season, and static-object source assets are preserved in the bundle but not drawn until their generated mesh/channel/scatter paths are reproduced.".to_string(),
+        viewer_note: "No rendered map underlay is generated here. Product map rendering requires validated the game D3D11 captures or a fully reproduced engine terrain pipeline with all runtime/generated inputs accounted for.".to_string(),
     };
     write_json(&out.join("manifest.json"), &manifest)?;
 
@@ -763,7 +739,6 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         "[province_ids.r32] {}x{}, {} ids",
         bmp.width, bmp.height, manifest.counts.distinct_ids_in_provinces_bmp
     );
-    println!("[map_visual.rgbx] terrain/water base from the game visual sources");
     println!("[terrain_indices.r8] from map/terrain.bmp");
     println!("[terrain_texture_ids.r8] from common/terrain/00_terrain.txt texture ids");
     println!("[heightmap.r8] from map/heightmap.bmp");
@@ -805,13 +780,10 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         map_object_meta.static_sources.len()
     );
     println!(
-        "[map_material_contract.json] {} shipped material sources, {} shader constants, {} generated/runtime blockers, {} cpu lighting terms, {} cpu lighting gaps, {} captured constants",
+        "[map_material_contract.json] {} shipped material sources, {} shader constants, {} generated/runtime blockers",
         map_material_contract.shipped_sources.len(),
         map_material_contract.shader_constants.len(),
-        map_material_contract.generated_runtime_inputs.len(),
-        map_material_contract.cpu_map_visual_lighting_terms.len(),
-        map_material_contract.cpu_map_visual_lighting_gaps.len(),
-        map_material_contract.cpu_map_visual_captured_constants.len()
+        map_material_contract.generated_runtime_inputs.len()
     );
     println!("------------------------------------------------------------------------");
     println!("states: {}", state_meta.len());
@@ -825,7 +797,6 @@ pub(crate) fn remove_known_bundle_files(out: &Path) -> Result<()> {
     for name in [
         "manifest.json",
         "province_ids.r32",
-        "map_visual.rgbx",
         "terrain_id_map.rgba",
         "terrain_runtime.json",
         "snow_mud_data.rgba",

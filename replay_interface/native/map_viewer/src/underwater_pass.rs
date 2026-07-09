@@ -55,7 +55,6 @@ mod windows_impl {
         DXGI_FORMAT_B8G8R8A8_UNORM,
     };
     use crate::shader_compile::{build_stage_hlsl, d3d_compile_stage, ShaderStage};
-    use crate::water_law::apply_underwater_light_absorption;
     use crate::{
         native_d3d11_create_depth_stencil, native_d3d11_create_render_target, native_d3d11_hr,
         native_d3d11_shader_resource_view_desc, D3dPtr, GameFileResolver,
@@ -298,24 +297,11 @@ mod windows_impl {
         Ok(())
     }
 
-    /// WATER3/WATER5 — pass-owned corrected scene-CB0 clones for the underwater
-    /// re-render. Holds one patched constant buffer per unique live slot-0
-    /// scene CB0 bound by the re-rendered draws; the replay binds the patched
-    /// clone in place of the live buffer for slot 0 only, so the underwater PS
-    /// sees the direct light scaled by
-    /// [`crate::water_law::UNDERWATER_LIGHT_ABSORPTION`] while the live CB0 —
-    /// shared with the terrain/water passes — is left untouched.
+    /// Pass-owned scene-CB0 clones for the underwater re-render.
     ///
-    /// WATER5 correction (see `water_law::UNDERWATER_LIGHT_ABSORPTION` docs and
-    /// `documents/WATER_LAW.md` §2a-ter): this scaling is NOT what the engine
-    /// does. The first capture of the engine's OWN underwater pass
-    /// (`session_CAPFIX2_GAPS_4`) proved the engine binds the scene CB0 light
-    /// rig UNCHANGED (white sun, day-gated; sun/moon ratio 1.0). This clone is
-    /// therefore an EMPIRICAL output-matching correction that keeps the app's
-    /// reconstruction from rendering ~5× too bright (a texture/alpha-mismatch
-    /// proxy, most likely a `TerrainColorTint` or effective-`vWaterAlpha`
-    /// difference), retained because it improves the oracle and `--water-full`
-    /// is default ON. It is not a model of engine light state.
+    /// WATER5 proved the engine binds the same unabsorbed scene CB0 to the
+    /// underwater pass. These clones are byte-identical snapshots only; no
+    /// empirical light-absorption correction is applied.
     pub(crate) struct NativeD3d11UnderwaterCb0Overrides {
         entries: Vec<(*mut ID3D11Buffer, D3dPtr<ID3D11Buffer>)>,
     }
@@ -330,14 +316,13 @@ mod windows_impl {
     }
 
     /// Snapshot the live slot-0 scene CB0(s) of `draws` (CopyResource to a
-    /// staging buffer, CPU map), apply the underwater light absorption to the
-    /// light-rig colors, and create the patched pass-owned constant buffers.
+    /// staging buffer, CPU map) and create pass-owned constant buffers with the
+    /// exact same bytes.
     ///
     /// Runs once per underwater render, AFTER the frame's scene update wrote
     /// the camera/light state into the live CB0, so the clone carries the
-    /// current camera matrices verbatim and differs ONLY in the absorbed
-    /// sun/moon/ambient colors. Fail-closed on a missing slot-0 CB, a CB
-    /// shorter than the scene CB0 layout, or any D3D11 failure.
+    /// current camera/light state verbatim. Fail-closed on a missing slot-0 CB
+    /// or any D3D11 failure.
     unsafe fn native_d3d11_build_underwater_cb0_overrides<'a>(
         device: &NativeD3d11Device,
         draws: impl Iterator<Item = &'a NativeD3d11PreparedDraw>,
@@ -355,7 +340,7 @@ mod windows_impl {
                     continue;
                 }
                 // Read the live buffer's size, snapshot its bytes via a
-                // staging copy, absorb the light rig, and clone.
+                // staging copy, and clone without mutation.
                 let mut desc: D3D11_BUFFER_DESC = std::mem::zeroed();
                 (*live).GetDesc(&mut desc);
                 let byte_width = desc.ByteWidth as usize;
@@ -396,7 +381,6 @@ mod windows_impl {
                     byte_width,
                 );
                 (*device.context.as_raw()).Unmap(staging.as_raw() as *mut _, 0);
-                apply_underwater_light_absorption(&mut bytes)?;
                 let patched_desc = D3D11_BUFFER_DESC {
                     ByteWidth: desc.ByteWidth,
                     Usage: D3D11_USAGE_DEFAULT_WINAPI,
@@ -618,9 +602,8 @@ mod windows_impl {
         terrain_draws: &[NativeD3d11PreparedDraw],
     ) -> Result<()> {
         unsafe {
-            // WATER3: absorb the light rig for this pass (see
-            // water_law::UNDERWATER_LIGHT_ABSORPTION) — snapshot the live
-            // scene CB0(s) and clone them with sun/moon/ambient absorbed.
+            // WATER5: clone the live scene CB0(s) byte-identically. The engine
+            // underwater pass binds the unabsorbed light rig.
             let cb0_overrides =
                 native_d3d11_build_underwater_cb0_overrides(device, terrain_draws.iter())?;
             let context = &device.context;
@@ -669,10 +652,9 @@ mod windows_impl {
         plan: &crate::TerrainChunkSynthesisPlan,
     ) -> Result<()> {
         unsafe {
-            // WATER3: absorb the light rig for this pass (see
-            // water_law::UNDERWATER_LIGHT_ABSORPTION). Snapshot once — the
-            // scene CB0 is static across the tile loop (only CB1 is updated
-            // per tile).
+            // WATER5: clone the live scene CB0 byte-identically. Snapshot once
+            // because the scene CB0 is static across the tile loop (only CB1 is
+            // updated per tile).
             let cb0_overrides = native_d3d11_build_underwater_cb0_overrides(
                 device,
                 std::iter::once(&synthesis.template_draw),
@@ -791,9 +773,9 @@ mod windows_impl {
         }
         for constant_buffer in &draw.constant_buffers {
             let mut raw = constant_buffer.buffer.as_raw();
-            // WATER3: the scene CB0 (slot 0) is replaced by the pass-owned
-            // clone whose light rig is water-absorbed; other slots (CB1
-            // QuadOffset, CB2 pointlights) bind the live buffers verbatim.
+            // WATER5: slot 0 may bind a pass-owned byte-identical scene-CB0
+            // snapshot; no light-absorption correction is applied. Other slots
+            // (CB1 QuadOffset, CB2 pointlights) bind the live buffers verbatim.
             if constant_buffer.slot == 0 {
                 if let Some(patched) = cb0_overrides.patched_for(raw) {
                     raw = patched;

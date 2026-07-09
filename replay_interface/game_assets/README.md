@@ -1,28 +1,29 @@
 # game_assets — HOI4 UI asset-extraction pipeline
 
-Foundation layer for the **game-authentic replay UI**. It reads a (read-only)
-Hearts of Iron IV install plus the mod overlay and produces a sprite manifest,
-parsed window layouts, and converted PNGs so the UI agent can recreate the real
-HOI4 interface from replay data.
+Foundation tooling for the **game-authentic replay UI**. It reads a (read-only)
+Hearts of Iron IV install plus the mod overlay and can produce local sprite
+manifests, parsed window layouts, and converted PNGs for inspection and
+development. Generated manifests are not product runtime truth; runtime code
+should resolve the active installed content directly or fail closed.
 
 ## What it produces
 
 | Output | Committed? | Contents |
 |---|---|---|
 | `extract.py`, `paradox_parser.py` | yes | the pipeline + Clausewitz-script parser |
-| `sprites.json` | yes | sprite-name -> texture/frame **metadata** (paths, dims, frame counts) — no art bytes |
-| `gui/*.json` + `gui/_index.json` | yes | parsed window layouts (geometry / sprite refs / text) |
-| `fonts.json` | yes | `core.gfx` bitmapfont name -> glyph-atlas path map (+ per-language overrides) |
-| `active_modset.json` | yes | the resolved active mod-set: ordered load order, names, workshop ids, versions, `replace_path` |
+| `sprites.json` | **NO (gitignored)** | sprite-name -> texture/frame **metadata** (paths, dims, frame counts) — local cache only |
+| `gui/*.json` + `gui/_index.json` | **NO (gitignored)** | parsed window layouts (geometry / sprite refs / text) — local cache only |
+| `fonts.json` | **NO (gitignored)** | `core.gfx` bitmapfont name -> glyph-atlas path map (+ per-language overrides) — local cache only |
+| `active_modset.json` | **NO (gitignored)** | the resolved active mod-set: ordered load order, names, workshop ids, versions, `replace_path` — local cache only |
 | `README.md`, `.gitignore` | yes | this file + ignore rules |
 | `assets/**` | **NO (gitignored)** | the converted PNGs (Paradox art) |
 | `extract_report.json` | **NO (gitignored)** | diagnostics (failures/anomalies; may hold relative texture paths) |
 
 > **Copyright / privacy.** These are the owner's own Paradox installed content,
-> extracted for a private offline tool. The converted art under `assets/` is
-> **gitignored and never redistributed**. Only the script, the metadata manifest,
-> and the parsed layouts are committed. No personal home path is baked into any
-> committed file — install paths come from CLI args / a documented default.
+> extracted for a private offline tool. Converted art and generated manifests
+> are **gitignored and never redistributed**. Only the scripts/tests/docs are
+> committed. No personal home path is baked into any committed file — install
+> paths come from CLI args / a documented default.
 
 ## Mod awareness — resolve against the SELECTED mod-set, not vanilla
 
@@ -41,8 +42,9 @@ vanilla, per Clausewitz rules.
   vanilla is the base. Dependencies are *not* auto-loaded (launcher metadata only).
 - **Single mod AND playset** are both supported; **vanilla-only** (empty mod-set) stays valid.
 
-`active_modset.json` records the resolved order so the app can auto-select the matching set
-per replay and warn on mismatch (the §K safeguard).
+`active_modset.json` can be emitted as a local inspection artifact. Product
+runtime should get the matching set from replay provenance or explicit resolver
+inputs and fail closed on mismatch.
 
 ### Selecting the mod-set
 

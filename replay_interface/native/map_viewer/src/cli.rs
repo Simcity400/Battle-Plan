@@ -15,12 +15,6 @@ pub fn run_cli() -> Result<()> {
             let options = BundleOptions::parse(&args)?;
             build_bundle(&options)?;
         }
-        "view" => {
-            let bundle = value_after(&args, "--bundle")
-                .map(PathBuf::from)
-                .unwrap_or_else(default_bundle_dir);
-            view_bundle(&bundle)?;
-        }
         "render-terrain" => {
             let bundle = value_after(&args, "--bundle")
                 .map(PathBuf::from)
@@ -364,30 +358,6 @@ pub fn run_cli() -> Result<()> {
                     .unwrap_or_else(|| "not requested".to_string())
             );
         }
-        "view-production-map-d3d11" => {
-            let terrain_map_frame_bundle =
-                PathBuf::from(required_value_after(&args, "--terrain-map-frame-bundle")?);
-            let water_map_frame_bundle =
-                value_after(&args, "--water-map-frame-bundle").map(PathBuf::from);
-            let rivers_map_frame_bundle =
-                value_after(&args, "--rivers-map-frame-bundle").map(PathBuf::from);
-            let borders_map_frame_bundle =
-                value_after(&args, "--borders-map-frame-bundle").map(PathBuf::from);
-            let trees_map_frame_bundle =
-                value_after(&args, "--trees-map-frame-bundle").map(PathBuf::from);
-            let camera = value_after(&args, "--camera-json")
-                .map(PathBuf::from)
-                .map(|path| production_map_camera_from_json(&path))
-                .transpose()?;
-            view_production_map_d3d11(
-                &terrain_map_frame_bundle,
-                water_map_frame_bundle.as_deref(),
-                rivers_map_frame_bundle.as_deref(),
-                borders_map_frame_bundle.as_deref(),
-                trees_map_frame_bundle.as_deref(),
-                camera,
-            )?;
-        }
         "accept-terrain-d3d11" => {
             let map_frame_bundle =
                 PathBuf::from(required_value_after(&args, "--map-frame-bundle")?);
@@ -509,11 +479,6 @@ pub fn run_cli() -> Result<()> {
                 constants.terrain_id_srv_slot
             );
         }
-        "run" => {
-            let options = BundleOptions::parse(&args)?;
-            build_bundle(&options)?;
-            view_bundle(&options.out)?;
-        }
         "help" | "--help" | "-h" => print_help(),
         _ => {
             return Err(format!("unknown command: {command}").into());
@@ -527,13 +492,11 @@ pub(crate) fn print_help() {
         "map_viewer\n\n\
          Commands:\n\
            bundle --game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--out <bundle dir>] [--force]\n\
-           view   [--bundle <bundle dir>]\n\
            render-terrain [--bundle <bundle dir>] [--map-frame-bundle <map_frame_bundle.json|capture dir>] [--require-post-diffuse] [--out <terrain_render.rgbx>]\n\
 render-terrain-d3d11 --map-frame-bundle <map_frame_bundle.json|capture dir> [--game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>]] [--out <terrain_native.r16g16b16a16_float>] [--repeat <n>] [--compare-each-draw] [--parity-report <dir>]\n\
            validate-terrain-chunk-synthesis --terrain-chunk-library <terrain_chunk_library.json|capture dir> [--report <terrain_chunk_synthesis_validation.json>]\n\
            smoke-terrain-chunk-synthesis --terrain-chunk-library <terrain_chunk_library.json|capture dir> [--target-tile-size <world units>] [--scene-frame-bundle <map_frame_bundle.json>] [--out <terrain_chunk_synthesis.raw>] [--report <terrain_chunk_synthesis_smoke.json>]\n\
 render-production-map-d3d11 --terrain-map-frame-bundle <map_frame_bundle.json|capture dir> [--game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>]] [--camera-json <production_camera.json>] [--water-map-frame-bundle <map_frame_water_pass_bundle.json|capture dir>] [--out <map_native.raw>] [--repeat <n>] [--compare-each-draw] [--skip-reference-compare] [--parity-report <dir>]\n\
-           view-production-map-d3d11 --terrain-map-frame-bundle <map_frame_bundle.json|capture dir> [--camera-json <production_camera.json>] [--water-map-frame-bundle <map_frame_water_pass_bundle.json|capture dir>]\n\
 accept-terrain-d3d11 --map-frame-bundle <map_frame_bundle.json|capture dir> [--game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>]] [--out <terrain_native.r16g16b16a16_float>] [--report <terrain_d3d11_acceptance.json>] [--repeat <n>]\n\
            validate-water-map-frame --map-frame-bundle <map_frame_water_pass_bundle.json|capture dir>\n\
            validate-rivers-map-frame --map-frame-bundle <map_frame_rivers_pass_bundle.json|capture dir>\n\
@@ -546,8 +509,7 @@ accept-terrain-d3d11 --map-frame-bundle <map_frame_bundle.json|capture dir> [--g
            import-terrain-scene-cb0-runtime --bundle <bundle dir> --cb0-bin <raw bytes> [--provenance <label>] [--force]\n\
            import-terrain-vertex-buffer-runtime --bundle <bundle dir> --capture-json <terrain_vertex_buffer_capture.json> [--provenance <label>] [--force]\n\
            import-terrain-input-layout-runtime --bundle <bundle dir> --capture-json <terrain_input_layout_capture.json> [--provenance <label>] [--force]\n\
-           scan-shader-cache --shader-cache <dir> [--terrain-id-slot <n>]\n\
-           run    --game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--out <bundle dir>] [--force]\n\n\
+           scan-shader-cache --shader-cache <dir> [--terrain-id-slot <n>]\n\n\
          Environment:\n\
            BATTLE_PLAN_GAME_DIR can supply --game.\n"
     );

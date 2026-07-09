@@ -442,11 +442,11 @@ pub(crate) enum NativeD3d11WaterRefractionSource {
 /// travel together but must not be conflated (a mean-color cube can pair
 /// with either refraction source).
 ///
-/// - `MeanColorFlatten`: the default world-synthesis behaviour. The captured
-///   cube is collapsed to its mean colour in a 1x1x6 cube so that replaying
-///   the captured (camera-relative) cube faces at a different camera does not
-///   paint bright/dark seams across the ocean. This is the flag-OFF path and
-///   MUST stay byte-identical to prior behaviour.
+/// - `MeanColorFlatten`: the old world-synthesis compatibility path. The
+///   captured cube is collapsed to its mean colour in a 1x1x6 cube so that
+///   replaying the captured (camera-relative) cube faces at a different camera
+///   does not paint bright/dark seams across the ocean. Product water replay now
+///   blocks this path when a non-reference water pass is present.
 /// - `ShippedFileCube`: the `--water-full` path. Uploads the REAL captured
 ///   256x256x6 nine-mip cube (validated for shape, fail-closed) which is
 ///   byte-identical to the shipped, mod-resolvable `map/terrain/reflection.dds`
@@ -3486,7 +3486,8 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
                 == NativeD3d11WaterRefractionSource::AppOwnedTerrainColorSnapshot
             && reflection_cube_source == NativeD3d11ReflectionCubeSource::MeanColorFlatten
         {
-            // Flag-OFF world-synthesis path (byte-identical to prior behaviour).
+            // Legacy no-water-bundle world-synthesis path; product replay blocks
+            // this approximation whenever a water pass is present.
             //
             // NOTE (WATER1, verified): the earlier premise that "the game
             // re-renders the reflection cube around the live camera every
@@ -3533,8 +3534,7 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
         // be uploaded in place of map/terrain/reflection.dds. The shipped asset
         // is 256x256, 9 mips, 6 faces (TEXTURECUBE), B8G8R8A8_UNORM_SRGB
         // (DXGI 91). Fail closed on any deviation (see documents/WATER_LAW.md).
-        let is_reflection_cube =
-            resource.declared_name.as_deref() == Some("ReflectionCubeMap");
+        let is_reflection_cube = resource.declared_name.as_deref() == Some("ReflectionCubeMap");
         if is_reflection_cube
             && reflection_cube_source == NativeD3d11ReflectionCubeSource::ShippedFileCube
         {

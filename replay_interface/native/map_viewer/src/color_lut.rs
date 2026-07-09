@@ -27,7 +27,6 @@
 //! (MOD_COMPATIBILITY.md).
 
 use crate::*;
-use std::path::Path;
 
 pub const COLOR_CORRECTION_DIR: &str = "gfx/world";
 
@@ -256,7 +255,7 @@ mod tests {
     use super::*;
     use crate::test_support::temp_test_dir;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
 

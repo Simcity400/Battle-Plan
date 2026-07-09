@@ -54,7 +54,6 @@ pub(crate) struct Dimensions {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct BundleFiles {
     pub(crate) province_ids: String,
-    pub(crate) map_visual: String,
     #[serde(default = "default_terrain_id_map_file")]
     pub(crate) terrain_id_map: String,
     #[serde(default = "default_terrain_runtime_file")]
@@ -290,12 +289,6 @@ pub(crate) struct MapMaterialContract {
     pub(crate) shader_constants: BTreeMap<String, ShaderConstantMeta>,
     #[serde(default)]
     pub(crate) shader_vector3_constants: BTreeMap<String, ShaderVector3Meta>,
-    #[serde(default)]
-    pub(crate) cpu_map_visual_lighting_terms: Vec<CpuMapVisualLightingTerm>,
-    #[serde(default)]
-    pub(crate) cpu_map_visual_lighting_gaps: Vec<CpuMapVisualLightingGap>,
-    #[serde(default)]
-    pub(crate) cpu_map_visual_captured_constants: Vec<CpuMapVisualCapturedConstant>,
     pub(crate) shipped_sources: BTreeMap<String, MaterialSourceMeta>,
     pub(crate) generated_runtime_inputs: BTreeMap<String, GeneratedRuntimeInput>,
 }
@@ -310,33 +303,6 @@ pub(crate) struct ShaderConstantMeta {
 pub(crate) struct ShaderVector3Meta {
     pub(crate) value: [f32; 3],
     pub(crate) source: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct CpuMapVisualLightingTerm {
-    pub(crate) name: String,
-    pub(crate) status: String,
-    pub(crate) shader_sources: Vec<String>,
-    pub(crate) implementation: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct CpuMapVisualLightingGap {
-    pub(crate) name: String,
-    pub(crate) status: String,
-    pub(crate) shader_sources: Vec<String>,
-    pub(crate) blocking_input: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct CpuMapVisualCapturedConstant {
-    pub(crate) name: String,
-    pub(crate) value: Vec<f32>,
-    pub(crate) source: String,
-    pub(crate) buffer: String,
-    pub(crate) slot: u32,
-    pub(crate) byte_offset: usize,
-    pub(crate) layout_source: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -965,50 +931,6 @@ pub(crate) struct DdsInfo {
     pub(crate) dimensions: Dimensions,
     pub(crate) format: String,
     pub(crate) mip_count: u32,
-}
-
-#[derive(Clone)]
-pub(crate) struct BundleData {
-    pub(crate) manifest: Manifest,
-    pub(crate) province_ids: Vec<u32>,
-    pub(crate) visual: Vec<u32>,
-    pub(crate) province_to_state: BTreeMap<u32, u32>,
-    pub(crate) province_to_region: BTreeMap<u32, u32>,
-    pub(crate) state_owners: BTreeMap<u32, String>,
-    pub(crate) state_meta: BTreeMap<u32, StateMeta>,
-    pub(crate) province_defs: BTreeMap<u32, ProvinceDefinition>,
-}
-
-pub(crate) struct ViewState {
-    pub(crate) zoom: f32,
-    pub(crate) offset_x: f32,
-    pub(crate) offset_y: f32,
-    pub(crate) dragging: bool,
-    pub(crate) drag_x: f32,
-    pub(crate) drag_y: f32,
-    pub(crate) drag_offset_x: f32,
-    pub(crate) drag_offset_y: f32,
-    pub(crate) selected: Option<u32>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ProductionMapCameraViewState {
-    pub(crate) base: ProductionMapCamera,
-    pub(crate) defines: Hoi4MapCameraDefines,
-    pub(crate) zoom: f32,
-    pub(crate) pan_clip_x: f32,
-    pub(crate) pan_clip_y: f32,
-    pub(crate) dragging: bool,
-    pub(crate) drag_x: f32,
-    pub(crate) drag_y: f32,
-    pub(crate) drag_pan_clip_x: f32,
-    pub(crate) drag_pan_clip_y: f32,
-}
-
-pub(crate) struct ProductionMapWindowFrame {
-    pub(crate) width: usize,
-    pub(crate) height: usize,
-    pub(crate) pixels: Vec<u32>,
 }
 
 pub(crate) struct RgbxImage {

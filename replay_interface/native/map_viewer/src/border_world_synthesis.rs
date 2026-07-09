@@ -1197,8 +1197,7 @@ fn emit_chain_ribbon(
 ///
 /// The border classification path already counted `coastline_edges` (the
 /// number of raster edges classified `LandWater`). This pass derives the
-/// water mask a second time through the *renderer's* rule from
-/// `cpu_compose.rs:33`-`cpu_compose.rs:35`
+/// water mask a second time through the local province classification rule
 /// (`province_type == "sea" || province_type == "lake"`, with a missing id
 /// treated as water via `unwrap_or(true)`) and walks the *same* 4-neighbor
 /// raster-edge domain — including the wrapped left/right seam and excluding a
@@ -1267,8 +1266,7 @@ fn cross_check_coastline_against_water_mask(
     mesh.stats.coastline_disagreement_edges = disagreement;
 }
 
-/// Water test matching the map renderer's rule in
-/// `cpu_compose.rs:33`-`cpu_compose.rs:35`: a province is water when its
+/// Water test for border classification: a province is water when its
 /// `definition.csv` type is `sea` or `lake`, and a province id absent from
 /// `definition.csv` is treated as water (`unwrap_or(true)`).
 fn renderer_pixel_is_water(definitions: &BTreeMap<u32, ProvinceDefinition>, province: u32) -> bool {

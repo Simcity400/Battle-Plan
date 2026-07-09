@@ -10,7 +10,9 @@ use crate::bundle::MapBundle;
 use crate::camera::Camera;
 use crate::d3d::Gfx;
 use crate::overlay::{self, Overlay};
-use crate::render::{playback_day_night_hour_from_timeline_hour, CapturedLayerConfig, MapRenderer};
+use crate::render::{
+    playback_day_night_hour_from_timeline_hour, MapRenderer, POLITICAL_COLOR_BLOCKER_BADGE,
+};
 use crate::timeline::{build_provider, OwnerProvider};
 use crate::win32::{MouseButton, Window, WindowEvent};
 use crate::{Result, TimelineMode};
@@ -21,7 +23,6 @@ const WHEEL_ZOOM_STEP: f64 = 1.2;
 /// Autoplay speed: ~4 timeline hours per wall-clock second.
 const AUTOPLAY_SECONDS_PER_HOUR: f64 = 0.25;
 const MAX_FRAME_DT: f64 = 0.25;
-const MAP_CLOCK_SEED_OFFSET_SECONDS: f32 = 8.0;
 
 const VK_A: i32 = 0x41;
 const VK_D: i32 = 0x44;
@@ -43,50 +44,14 @@ struct DragState {
     start_center: (f64, f64),
 }
 
-struct MapClock {
-    start: Instant,
-    frozen: bool,
-}
-
-impl MapClock {
-    fn new(frozen: bool) -> Self {
-        Self {
-            start: Instant::now(),
-            frozen,
-        }
-    }
-
-    fn frame_time(&self) -> Option<f32> {
-        (!self.frozen).then(|| MAP_CLOCK_SEED_OFFSET_SECONDS + self.start.elapsed().as_secs_f32())
-    }
-}
-
 pub fn run(
     bundle: MapBundle,
-    bundle_dir: PathBuf,
     mode: TimelineMode,
     game_resolver: Option<GameFileResolver>,
     capture_dir: Option<PathBuf>,
-    synthesize_terrain_chunks: bool,
-    capture_layers: CapturedLayerConfig,
     postfx_enabled: bool,
     postfx_restore_full: bool,
-    postfx_restore_full_explicit: bool,
-    tree_seasons_by_date: bool,
-    trees_from_files: bool,
-    no_trees_second_subdraw: bool,
-    buildings_from_files: bool,
-    buildings_preview_all: bool,
-    freeze_clock: bool,
-    map_labels: bool,
-    map_labels_explicit: bool,
-    map_furniture: bool,
-    map_furniture_explicit: bool,
     water_full: bool,
-    water_full_explicit: bool,
-    borders_from_files: bool,
-    borders_from_files_explicit: bool,
-    chunks_from_files: bool,
 ) -> Result<()> {
     let (provider, mode_label) = build_provider(&bundle, &mode)?;
     let hours: Vec<i64> = provider.hours().to_vec();
@@ -103,53 +68,17 @@ pub fn run(
     let mut gfx = Gfx::create(window.hwnd(), client_w, client_h)?;
     let mut renderer = MapRenderer::new(
         &gfx,
-        bundle_dir.as_path(),
         &bundle,
         max_state_id,
         capture_dir.as_deref(),
         game_resolver.as_ref(),
-        synthesize_terrain_chunks,
-        capture_layers,
         postfx_enabled,
         postfx_restore_full,
-        postfx_restore_full_explicit,
-        tree_seasons_by_date,
-        trees_from_files,
-        no_trees_second_subdraw,
-        buildings_from_files,
-        buildings_preview_all,
         water_full,
-        water_full_explicit,
-        borders_from_files,
-        borders_from_files_explicit,
-        chunks_from_files,
     )?;
     // Fail-open UI, fail-closed content: a missing game install disables
     // overlay text (one stderr warning), never substitutes a font.
     let mut overlay = Overlay::create(&gfx, game_resolver.as_ref());
-    // LABGRAD1: country-name map labels, DEFAULT ON. --no-map-labels sets
-    // `map_labels=false` and restores the byte-identical no-label path; the
-    // default-ON path degrades to labels-off + a notice on a missing --game.
-    let mut map_labels = crate::map_labels::create_if_enabled(
-        map_labels,
-        map_labels_explicit,
-        &gfx,
-        game_resolver.as_ref(),
-        &bundle,
-        &provider.owners_at(hours[0]),
-        bundle_dir.as_path(),
-    )?;
-    // FURN1: city/VP map furniture (dots/stars + hoi_20bs names), DEFAULT ON.
-    // --no-map-furniture restores the byte-identical no-furniture path; the
-    // default-ON path degrades to furniture-off + a notice on a missing --game.
-    let mut map_furniture = crate::map_furniture::create_if_enabled(
-        map_furniture,
-        map_furniture_explicit,
-        &gfx,
-        game_resolver.as_ref(),
-        &bundle,
-        &provider.owners_at(hours[0]),
-    )?;
     let mut camera = Camera::fit(
         bundle.width,
         bundle.height,
@@ -170,7 +99,6 @@ pub fn run(
     let mut cursor: Option<(i32, i32)> = None;
     let mut closing = false;
     let mut last_frame = Instant::now();
-    let map_clock = MapClock::new(freeze_clock);
 
     loop {
         let (events, alive) = window.pump();
@@ -302,7 +230,7 @@ pub fn run(
             camera.pan_screen(pan_x, pan_y, f64::from(gfx.height));
         }
 
-        // Autoplay: wraps around so the demo sweep loops.
+        // Autoplay: wraps around recorded hours.
         if autoplay && hours.len() > 1 {
             autoplay_accum += dt;
             while autoplay_accum >= AUTOPLAY_SECONDS_PER_HOUR {
@@ -311,19 +239,14 @@ pub fn run(
             }
         }
 
-        // Scrub: rewrite the compact state->color table from controllers and
-        // rebuild generated runtime masks only when their signatures change.
+        // Scrub: validate replay/controller color inputs only when their
+        // signatures change. Visible political recoloring stays blocked until
+        // the engine's primary fill and GradientBorder generation law is ported.
         let hour = hours[hour_index];
         if uploaded_hour_index != Some(hour_index) {
             let owners = provider.owners_at(hour);
             let controllers = provider.controllers_at(hour);
             renderer.update_state_politics(&gfx, &owners, &controllers, &bundle.country_colors)?;
-            if let Some(labels) = &mut map_labels {
-                labels.update_owners(&bundle, &owners);
-            }
-            if let Some(furniture) = &mut map_furniture {
-                furniture.update_owners(&bundle, &owners);
-            }
             uploaded_hour_index = Some(hour_index);
         }
 
@@ -358,62 +281,13 @@ pub fn run(
         if gfx.width > 0 && gfx.height > 0 {
             let day_night_hour =
                 day_night_enabled.then(|| playback_day_night_hour_from_timeline_hour(hour));
-            let tree_season_date = tree_seasons_by_date
-                .then(|| provider.month_day_at(hour))
-                .flatten();
-            // LABHDR1: country names render INTO the HDR MainScene before the
-            // composite (engine mapname-pass parity); non-captured 2D path
-            // keeps the old on-target order.
-            let scene_phase = renderer.draw_scene(
-                &gfx,
-                &camera,
-                day_night_hour,
-                tree_season_date,
-                map_clock.frame_time(),
-            )?;
-            if scene_phase {
-                if let Some(labels) = &map_labels {
-                    let (scene_rtv, tw, th) = renderer.scene_overlay_target(&gfx)?;
-                    labels.draw(
-                        &gfx,
-                        &renderer,
-                        &camera,
-                        gfx.width as f32,
-                        tw as f32,
-                        th as f32,
-                        Some(scene_rtv),
-                    )?;
-                }
-                renderer.composite_scene(&gfx, &camera)?;
-            } else if let Some(labels) = &map_labels {
-                labels.draw(
-                    &gfx,
-                    &renderer,
-                    &camera,
-                    gfx.width as f32,
-                    gfx.width as f32,
-                    gfx.height as f32,
-                    None,
-                )?;
-            }
-            // Furniture draws over the country names (GUI layer above the
-            // map scene, same as the engine's mapicon containers). The
-            // renderer supplies the production 3D camera so anchors land on
-            // the rendered terrain.
-            if let Some(furniture) = &map_furniture {
-                furniture.draw(
-                    &gfx,
-                    &renderer,
-                    &camera,
-                    gfx.width as f32,
-                    gfx.height as f32,
-                )?;
-            }
+            renderer.render(&gfx, &camera, day_night_hour, None)?;
             // Overlay after the map: date/status text in the real game
             // font plus the scrub bar. Line 1 is the raw Clausewitz date
             // string from the recording (GAP: localisation-formatted dates
             // like the in-game clock are a later slice).
-            let line2 = format!("{mode_label}{playing} | {probe}");
+            let line2 =
+                format!("{mode_label}{playing} | {POLITICAL_COLOR_BLOCKER_BADGE} | {probe}");
             overlay.draw(&gfx, &hour_label, &line2, hour_index, hours.len())?;
             // Present never blocks (PresentOutcome): a full queue or a
             // fully-occluded window turns into a short sleep with the

@@ -315,3 +315,18 @@ still needs extractor data for:
 4. A primary political fill SRV or render-target capture. The emitted
    owner/controller texture is a deterministic diagnostic, but the available
    ground truth validated only `ProvinceSecondaryColorMap`.
+
+## Product Rendering Status (2026-07-08)
+
+Replay-driven political color substitution is blocked. The app must not present
+generated owner/controller colors as the real the game political fill until either:
+
+1. The primary political fill SRV/render target is captured and replayed, or
+2. The exact engine generation path is reverse-engineered from `hoi4.exe`.
+
+The executable contains the relevant `CGradientBorderManager` /
+`CGradientBorder::CFillBufferThreaded` trail, but the current Rust
+GradientBorder generator still contains captured-fit distance pieces. It remains
+a research helper only. Product rendering keeps generated GB and secondary
+textures inert and, for captured passes, leaves HOI4-captured political SRVs in
+place instead of substituting generated replay textures.

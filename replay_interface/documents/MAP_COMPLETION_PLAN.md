@@ -42,15 +42,22 @@ Closed and merged: grading (LUT byte-exact, bloom 7-sig-fig, per-frame
 exposure), water reflection (shipped DDS byte-identical) + underwater
 refraction, complete light-rig/day-cycle laws (camera-follow sun removed),
 border geometry (province edges + impassable) + border texture ink laws,
-political color composition, snow laws, wall-clock animation, infinite wrap,
+political color composition, snow laws, captured-time preservation, infinite wrap,
 mod-aware resolver everywhere, capture instrumentation hardened (borders_pass
-identification fail-closed; underwater_pass moment added). Graduated defaults:
-grading + water render files-first BY DEFAULT (borders/labels intentionally
-held back — see Phase 2). IN FLIGHT: CHUNK1 (terrain chunk mesh/LOD generated
-from heightmap instead of cloned from capture — kills the largest captured
-dependency; unlocks arbitrary cameras + mod maps).
+identification fail-closed; underwater_pass moment added). Current defaults after
+the 2026-07-08 cleanup: grading + water render files-first BY DEFAULT and fail
+closed. The 2026-07-09 no-fudge cleanup blocks borders, labels, furniture,
+terrain chunk synthesis, file-derived tree replacement/season patches, and building previews in
+`replay_app` until their remaining engine-computed pieces are proven without
+captured-fit shortcuts. It also removes the old synthetic scrub timeline and
+blocks synthetic wall-clock map animation: `replay_app` now keeps captured
+map-clock CB bytes (`map_clock_time = None`) until runtime animation timing is
+derived from engine/capture evidence. CHUNK1 remains lower-level `map_viewer` tooling only:
+the generated mesh bytes are valuable evidence, but product rendering may not
+enter that path while mixed-LOD `vSnap` and other runtime metadata remain
+capture-sourced or unresolved.
 
-## STATUS UPDATE 2026-07-07 (overnight autonomous run): PHASES 1 + 2 DONE
+## STATUS UPDATE 2026-07-07 (overnight autonomous run): PHASES 1 + 2 SUPERSEDED
 
 Phase 1 executed SOLO (dual-instance + input injection; zero user input
 needed after all): sessions CAPFIX2_GAPS_4 (trees/underwater/mapname +
@@ -60,31 +67,32 @@ merged: LAB3 (VB decode exact; arc law RMS 0.158 wu vs 23 engine labels),
 BORD4 (vanilla borders = gradient-border system, already default-rendered;
 border.shader never even created in normal play; mod-compat defines fix),
 WATER5 (engine applies NO underwater CB0 absorption — constant reframed as
-documented fallback), NIGHT1 (.yzw HOUR-INVARIANT; hour lives in .x only;
+blocked forensic/output-matching evidence, not product input), NIGHT1 (.yzw HOUR-INVARIANT; hour lives in .x only;
 .z drifts with date). Plus TREES2 (missing second tree sub-draw = false
 premise, it is the LOW_END_GFX tier shader, RESOLVED), MAPICON1/WEATHER1
 (Phase 3 furniture laws merged, flag-gated), LEDGER2 (ledger burn-down +
 render-path audit).
 
-Phase 2: labels graduated DEFAULT ON with the per-component law (LABGRAD1;
---no-map-labels opt-out byte-identical). Borders needed no graduation —
-the GB system was already the default vanilla mechanism. **Baseline v4
-locked: baseline_2816_v4.bmp = 2dc14b1eb46c68817ef2db119fac17a9** (labels
-on, deterministic 2x); v3 (307b88b6) remains the --no-map-labels lock.
-QA 16/16 green on the final state.
+Phase 2 is superseded by the 2026-07-08/2026-07-09 fail-closed cleanup:
+labels, borders, furniture, terrain chunk synthesis, file-derived tree
+replacement/season patches, and building previews no longer graduate to
+default ON from reconstructed/captured-fit laws. `replay_app` blocks their
+flags; development-only derivation remains in lower-level tooling. The earlier
+baseline locks remain historical artifacts, not current product gates.
 
-Remaining (tracked, evidence-gated, none blocking the map's current
-files-first state): FoW.w!=0 night-look capture validation; .z(date) map
+Remaining (tracked, evidence-gated, blocking product graduation for the relevant
+layers): FoW.w!=0 night-look capture validation; .z(date) map
 (same-hour/different-date captures); label size-floor/kerning/anchor rule
 (multi-zoom capture); underwater TerrainColorTint parity oracle (then
-remove the fallback constant); mapname owner-raster acceptance gate;
+keep the forensic correction out of product code); mapname owner-raster acceptance gate;
 Phase 4 mod smoke test + extractor-fed dynamics.
 
-## STATUS UPDATE 2026-07-07 (parity shift): FURN1 — furniture composite DEFAULT ON
+## STATUS UPDATE 2026-07-07 (parity shift): FURN1 — furniture composite RESEARCH ONLY
 
-Rubric row 7 (city/VP labels, capital stars, VP dots) now RENDERS in the
-default frame (`replay_app/src/map_furniture.rs`; baseline v7 = 688a1451,
-opt-out chain v6/v5/v2 byte-identical). Live-oracle acceptance on a solo
+Rubric row 7 (city/VP labels, capital stars, VP dots) rendered in the former
+research path; that `replay_app` module has now been removed from the product
+surface, and baseline v7 = 688a1451 is historical, not the current product
+default. Live-oracle acceptance on a solo
 vanilla instance confirmed the shape law against shipped VP values
 (Melbourne 20→circle, Adelaide 15→pentagon, Canberra 30+capital→star) and
 produced two ENGINE-MEASURED corrections the naive .gui reading gets
@@ -120,8 +128,8 @@ rivers_pass,mapname_pass,borders_pass,underwater_pass --enable-map-frame-rounds
    NOT an engine light law (WATER3 hypothesis refuted). The composition law is:
    *underwater pass = scene CB0 light rig, no absorption*; the dim blue is the
    shipped PS's `lerp(TerrainColorTint×0.5, lit, vWaterAlpha≈0.4675)`. The
-   `(0.133,0.234,0.570)` constant is retained as an output-matching fallback
-   (default pixels unchanged) pending a texture-parity oracle. See
+   `(0.133,0.234,0.570)` constant is blocked from product rendering and remains
+   forensic/test-only pending a texture-parity oracle. See
    `WATER_LAW.md` §2a-ter, bin `decode_underwater_state`.
 4. **SAMP1 samples across game-hours** (game runs unpaused at speed) → night-
    side sun curve, DayNight .yzw(hour), FoW.w≠0 night look. → lane NIGHT1:
@@ -130,10 +138,10 @@ rivers_pass,mapname_pass,borders_pass,underwater_pass --enable-map-frame-rounds
 
 ## Phase 2 — graduation to default + re-lock
 
-When LAB3/BORD4 land their laws: borders + labels graduate to default ON
-(same pattern as GRAD1: opt-outs, fail-open defaults on missing evidence,
-explicit flags fail-closed). Baseline re-lock v4. At that point the DEFAULT
-app renders every layer files-first.
+Borders and labels do not graduate to default ON until every visible value is
+engine/file-derived or captured as engine data. Missing evidence is a blocker,
+not an opt-out/default downgrade. At that point the default app may render the
+layer files-first; until then these paths stay research-only and default OFF.
 
 ## Phase 3 — map furniture (files + extractor feeds; rubric rows 7-10)
 

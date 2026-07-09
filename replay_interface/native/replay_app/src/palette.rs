@@ -3,11 +3,13 @@
 //! This is the only buffer scrubbing rewrites (MAP_REPLICA_PLAN Phase 2
 //! acceptance gate): one `R8G8B8A8_UNORM` element per state id. Grounding
 //! rule: a state with a recorded owner whose color is in
-//! `country_colors.json` gets that color at full opacity; everything else
-//! gets the no-owner sentinel (alpha 0), which makes the pixel shader show
-//! the grounded `map_visual.rgbx` underlay instead.
+//! `country_colors.json` gets that color at full opacity. A recorded owner whose
+//! tag has no resolved color is a hard data gap, not a visual fallback: drawing
+//! the underlay would hide the missing country color as terrain.
 
 use std::collections::BTreeMap;
+
+use crate::Result;
 
 /// Alpha 0 = "no recorded owner color": the shader shows the underlay.
 pub const NO_OWNER_SENTINEL_RGBA: u32 = 0;
@@ -30,7 +32,7 @@ pub fn build_state_color_table(
     max_state_id: u32,
     owners: &BTreeMap<u32, String>,
     country_colors: &BTreeMap<String, [u8; 3]>,
-) -> Vec<u32> {
+) -> Result<Vec<u32>> {
     let len = max_state_id as usize + 1;
     let mut table = vec![NO_OWNER_SENTINEL_RGBA; len];
     for (state_id, tag) in owners {
@@ -38,11 +40,12 @@ pub fn build_state_color_table(
         if index >= len {
             continue;
         }
-        if let Some(color) = country_colors.get(tag) {
-            table[index] = encode_owner_rgba(*color);
-        }
+        let color = country_colors.get(tag).ok_or_else(|| {
+            format!("state {state_id} owner/controller tag {tag} has no resolved country color")
+        })?;
+        table[index] = encode_owner_rgba(*color);
     }
-    table
+    Ok(table)
 }
 
 #[cfg(test)]
@@ -60,7 +63,7 @@ mod tests {
     fn owner_color_is_full_opacity_rgba() {
         let mut owners = BTreeMap::new();
         owners.insert(2u32, "FRA".to_string());
-        let table = build_state_color_table(3, &owners, &fixture_colors());
+        let table = build_state_color_table(3, &owners, &fixture_colors()).expect("colors");
         assert_eq!(table.len(), 4);
         // bytes in memory: r=10, g=20, b=30, a=255
         assert_eq!(table[2], 10 | (20 << 8) | (30 << 16) | 0xFF00_0000);
@@ -70,7 +73,7 @@ mod tests {
     fn states_without_owner_get_sentinel() {
         let mut owners = BTreeMap::new();
         owners.insert(1u32, "GER".to_string());
-        let table = build_state_color_table(3, &owners, &fixture_colors());
+        let table = build_state_color_table(3, &owners, &fixture_colors()).expect("colors");
         assert_eq!(table[0], NO_OWNER_SENTINEL_RGBA);
         assert_eq!(table[2], NO_OWNER_SENTINEL_RGBA);
         assert_eq!(table[3], NO_OWNER_SENTINEL_RGBA);
@@ -78,18 +81,23 @@ mod tests {
     }
 
     #[test]
-    fn owner_without_country_color_gets_sentinel() {
+    fn owner_without_country_color_fails_closed() {
         let mut owners = BTreeMap::new();
         owners.insert(1u32, "ZZZ".to_string());
-        let table = build_state_color_table(1, &owners, &fixture_colors());
-        assert_eq!(table[1], NO_OWNER_SENTINEL_RGBA);
+        let err =
+            build_state_color_table(1, &owners, &fixture_colors()).expect_err("missing color");
+        let message = err.to_string();
+        assert!(
+            message.contains("state 1 owner/controller tag ZZZ has no resolved country color"),
+            "{message}"
+        );
     }
 
     #[test]
     fn out_of_range_state_ids_are_ignored() {
         let mut owners = BTreeMap::new();
         owners.insert(9u32, "FRA".to_string());
-        let table = build_state_color_table(3, &owners, &fixture_colors());
+        let table = build_state_color_table(3, &owners, &fixture_colors()).expect("colors");
         assert_eq!(table.len(), 4);
         assert!(table.iter().all(|&c| c == NO_OWNER_SENTINEL_RGBA));
     }

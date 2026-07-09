@@ -1,6 +1,8 @@
 # the game Thin Border Geometry Law
 
-Status: **CAPTURED-ENGINE-DERIVED, DEFAULT ON** (BORD5, 2026-07-07).
+Status: **CAPTURED-ENGINE-DERIVED, tooling-only / product-blocked** as of the
+2026-07-09 no-fudge cleanup. `replay_app` rejects `--borders-from-files` until
+the remaining fade/loop/sea-region cases are engine-derived.
 
 ## BORD5 — the geometry law from the captured engine pool
 
@@ -122,11 +124,10 @@ diag23b "Open Unknowns" are RESOLVED by session_BORDERZOOM_3).
   Citation for shader map-space position input:
   `gfx/FX/border.shader:59`.
 - Water classification uses `definition.csv` type: `sea` and `lake` are water,
-  `land` is land. This matches the existing map visual water mask in
-  `cpu_compose.rs`, where water is `province_type == "sea" ||
-  province_type == "lake"`. Citations: `map/definition.csv:5`,
-  `map/definition.csv:2`,
-  `replay_interface/native/map_viewer/src/cpu_compose.rs:33`-`replay_interface/native/map_viewer/src/cpu_compose.rs:35`.
+  `land` is land. This matches the local border-synthesis water mask rule:
+  `province_type == "sea" || province_type == "lake"`. Citations:
+  `map/definition.csv:5`, `map/definition.csv:2`,
+  `replay_interface/native/map_viewer/src/border_world_synthesis.rs`.
 - Land/land boundaries are ranked by 1936 state/country mapping: same state is
   `province`, different states with the same owner is `state`, and different
   owners is `country`. This is the file-derived ranking from state
@@ -154,16 +155,15 @@ diag23b "Open Unknowns" are RESOLVED by session_BORDERZOOM_3).
 - Coastline consistency is a real cross-check, not a tautology. The synthesized
   coastline count comes from the border classification path (segments tagged
   `land_water`). Independently, a second pass rebuilds a per-pixel water mask
-  through the exact renderer rule (`province_type == "sea" || "lake"`, missing
-  id treated as water via `unwrap_or(true)`) from `cpu_compose.rs`, then walks
+  through the exact border-classification rule (`province_type == "sea" ||
+  "lake"`, missing id treated as water via `unwrap_or(true)`), then walks
   the same 4-neighbor raster-edge domain (including the wrapped left/right seam)
   and counts an edge as a coastline edge when exactly one pixel is water.
   `coastline_disagreement_edges` is the number of edges where the two passes
   disagree; on vanilla 1.16 it is 0 (synthesized 124945 = water-mask 124945).
   The number is honestly computed and reported; a nonzero value would indicate a
   regression in edge enumeration, wrap handling, or water classification.
-  Citations:
-  `replay_interface/native/map_viewer/src/cpu_compose.rs:33`-`replay_interface/native/map_viewer/src/cpu_compose.rs:35`.
+  Citation: `replay_interface/native/map_viewer/src/border_world_synthesis.rs`.
 - Land/water boundaries are tagged as coastline material (`border_sea`) with
   province rank; water/water boundaries are tagged as sea-region material
   (`border_sea_region`) with province rank. The existence of these shipped
@@ -210,11 +210,12 @@ diag23b "Open Unknowns" are RESOLVED by session_BORDERZOOM_3).
   empty lines are skipped; a non-numeric `From` field never reaches `u32`
   parsing. Citation: `map/adjacencies.csv:1`.
 
-## Render Law (BORD2, `--borders-from-files`, default off)
+## Render Law (BORD2, tooling-only; `replay_app` blocks `--borders-from-files`)
 
 The BORD2 pass renders the synthesized mesh above with the shipped border shader,
-files-first through the mod-aware resolver. It is default-off and byte-identical
-when off (no shader compile, no allocation). Implemented in
+files-first through the mod-aware resolver. It remains available as map_viewer
+development tooling, but `replay_app` blocks `--borders-from-files` while the
+FIT/UNKNOWN residuals below remain. Implemented in
 `replay_interface/native/map_viewer/src/border_law.rs` (the law) and
 `border_pass.rs` (the GPU pass).
 
@@ -498,9 +499,9 @@ is honoured. Citations:
 `:866` (`FIELD_COUNTRY_HIGH = 9000`), `:867` (`THICKNESS_COUNTRY_LOW = 5`),
 `:869` (`THICKNESS_COUNTRY_HIGH = 25`), `:868`
 (`GRADIENT_BORDERS_COUNTRY_CENTER_THICKNESS = 2`). The shipped-vanilla values are
-the fail-open fallback when no resolver is present (headless), so the vanilla path
-is byte-identical to the previous hardcoded field (env-gated regression test
-`shipped_graphics_defines_match_vanilla_country_field`).
+the documented vanilla comparison for the env-gated regression test
+`shipped_graphics_defines_match_vanilla_country_field`; product rendering must
+fail closed when the resolver evidence is required and absent.
 
 ### BORD4 Open Unknowns (UNTRACED)
 

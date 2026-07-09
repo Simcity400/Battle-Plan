@@ -86,6 +86,19 @@ pub(crate) fn minimal_standard_functions_source() -> String {
             };
             static const float NIGHT_OPACITY = 0.85f;
             static const float NIGHT_DARKNESS = 0.5f;
+
+            float CalculateOccupationMask( in float2 uv )
+            {
+                float t = 3.14159 / 8.0;
+                float w = SEC_MAP_TILE;
+
+                float stripeVal = cos( ( uv.x * cos( t ) * w ) + ( uv.y * sin( t ) * w ) );
+                float camDist = cam_distance( 300.0, 1200.0 );
+                stripeVal += camDist * 1.5;
+
+                stripeVal = smoothstep(0.0, 1.0, stripeVal*1.7) * lerp(1.0, 0.3, camDist);
+                return stripeVal;
+            }
         "#
     .to_string()
 }
@@ -2193,7 +2206,6 @@ pub(crate) fn minimal_test_manifest() -> Manifest {
         province_id_encoding: "little-endian u32 per pixel".to_string(),
         files: BundleFiles {
             province_ids: "province_ids.r32".to_string(),
-            map_visual: "map_visual.rgbx".to_string(),
             terrain_id_map: "terrain_id_map.rgba".to_string(),
             terrain_runtime: "terrain_runtime.json".to_string(),
             snow_mud_data: "snow_mud_data.rgba".to_string(),
@@ -2409,9 +2421,6 @@ pub(crate) fn minimal_test_contract() -> MapMaterialContract {
             ),
         ]),
         shipped_sources: BTreeMap::new(),
-        cpu_map_visual_lighting_terms: cpu_map_visual_lighting_terms(),
-        cpu_map_visual_lighting_gaps: cpu_map_visual_lighting_gaps(),
-        cpu_map_visual_captured_constants: cpu_map_visual_captured_constants(),
         generated_runtime_inputs: generated_runtime_material_inputs(),
     }
 }

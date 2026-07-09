@@ -19,6 +19,11 @@ and binary Paradox mesh assets:
   objects should therefore be handled first as a grounded object manifest, then
   rendered only after either a real D3D11 `map_objects_pass` is captured or a
   real `.mesh` importer/material path exists.
+- 2026-07-09 product-surface update: `replay_app` blocks
+  `--buildings-from-files` and `--buildings-preview-all`, and the former flat
+  screen-space preview module has been removed from the app. Object decoding can
+  continue in tooling, but visible map objects must enter the product renderer
+  through `map_objects_pass` or a real mesh/material importer with validation.
 - Unit/division counters are a different class. They are billboarded UI-like
   sprites and text sourced from `interface/mapicons.gui`,
   `interface/mapicons.gfx`, `interface/subuniticons.gfx`, and

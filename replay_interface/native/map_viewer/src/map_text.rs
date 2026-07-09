@@ -1,18 +1,17 @@
 //! Map-label text sources (OFF-4): localisation strings and the
 //! country-name zoom cutoff, resolver-routed per MOD_COMPATIBILITY.md.
 //!
-//! This backs the replay app's EXPLICITLY-LABELED FALLBACK label renderer
-//! (`--map-labels-fallback`): the engine's curved label layout is a known
-//! [ENGINE-LAW] gap (GAME_FILES_ATLAS_APPENDIX "Map label curving/layout"),
-//! so the replay draws straight game-font labels at computed anchors until
-//! that law is reconstructed.
+//! This backs research-only map-label experiments. The engine's curved label
+//! layout is a known [ENGINE-LAW] gap (GAME_FILES_ATLAS_APPENDIX "Map label
+//! curving/layout"), so these straight-label helpers are not product render
+//! inputs.
 //!
 //! Sources:
 //! * `localisation/<language>/*.yml` — UTF-8 (BOM) files of
 //!   `KEY:VERSION "text"` lines under an `l_<language>:` header. Country
 //!   display names key off the plain tag (`GER: "Germany"`); ideology
 //!   variants (`GER_fascism`) need game state the recording does not carry
-//!   yet and stay out of the fallback.
+//!   yet and stay out of the research helper.
 //! * `common/defines/00_graphics.lua` `NGraphics.DRAW_COUNTRY_NAMES_CUTOFF`
 //!   (vanilla 260) — "Cutoff for drawing country names on the map"; the
 //!   only shipped numeric law tying country-name visibility to camera
@@ -22,7 +21,7 @@
 //! (replace dirs, key version numbers) is NOT reproduced here; files merge
 //! in sorted rel-path order with later files overriding duplicate keys.
 //! That is sufficient for tag -> display-name lookups and is documented as
-//! part of the fallback.
+//! part of the research helper.
 
 use crate::*;
 use std::collections::BTreeMap;

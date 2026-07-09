@@ -1,13 +1,17 @@
 # the game Country Map-Label Law
 
-Status: files-first, **DEFAULT ON** (LABGRAD1 graduation; opt out with
-`--no-map-labels`, which restores the byte-identical no-label render). The law is
-now **per-component**: one label per controlled connected component, so
-multi-region powers get several labels (the LAB3 refutation of one-per-country,
-§5). The label **placement / orientation / curvature / size** is not shipped in
-any game file — it is engine-computed at runtime — so this document separates the
-shipped-file facts (font, strings, one visibility scalar) from the reconstructed
-placement rule (DERIVED-BY-FIT) and the parts that stay UNKNOWN-ENGINE-SIDE.
+Status: research-only tooling, **blocked in `replay_app` product rendering** as
+of the 2026-07-09 no-fudge cleanup. Current validation code uses the reverse-engineered
+`countryname.cpp` placement and title-size laws in
+`replay_interface/native/map_viewer/src/map_label_law.rs`: one label per
+controlled connected component, engine dual-OLS/offset-trial/owned-run segment,
+engine title scale constants, shipped font/string/cutoff inputs, and no PCA
+segment fallback. The old 2D camera-height substitute and 25% fade ramp are
+removed. The old non-home de-clutter fraction and 16-cell fit floor are also
+removed: there is no app-owned threshold deciding which detached components are
+"worth" naming. Remaining gaps are documented UNKNOWN-ENGINE-SIDE items below
+(owner-vs-controller keying, exact component-emission limits, `Transp_OffsetX`,
+collision/de-overlap, and any future runtime ideology feed).
 Two independent Codex reviews (game-file sweep + capture-evidence audit)
 corroborated the files-first verdict; both are summarised below.
 
@@ -31,7 +35,9 @@ This supersedes OFF-4's straight-label approximation
   (`id x y width height xoffset yoffset xadvance`):
   `71(G) 951 477 50 57 0 16 52`, `101(e) 987 704 43 45 -1 28 41`,
   `114(r) 1373 743 31 43 2 29 30`. The `.fnt` is the size input to the label's
-  glyph rasterisation; the replay app loads it via the committed `fonts.json`.
+  glyph rasterisation; replay_app no longer reads the committed extracted
+  `fonts.json` manifest and instead resolves bitmap fonts directly from
+  `interface/core.gfx` through the active game/mod resolver.
   The atlas is **pre-coloured** (`common ... alphaChnl=1 redChnl=0 ...`, every
   `char chnl=15`, DDS = uncompressed 32-bit BGRA): each glyph is a baked, colour
   outlined image — coverage in ALPHA, dark body + light rim in RGB — not a
@@ -46,7 +52,9 @@ This supersedes OFF-4's straight-label approximation
   `NGraphics.DRAW_COUNTRY_NAMES_CUTOFF = 260` — the shipped comment is exactly
   "Cutoff for drawing country names on the map"; it declares a cutoff, not a
   fade. The only shipped numeric law tying **country-name** visibility to camera
-  distance. (The replay's soft 25% fade ramp above it is DERIVED-BY-FIT, §3.8.) (`:758 PROVINCE_NAME_DRAW_DISTANCE = 500.0`
+  distance. The replay now uses it as a hard cutoff against the production 3D
+  camera height; the old soft 25% fade ramp and 2D visible-height substitute are
+  removed. (`:758 PROVINCE_NAME_DRAW_DISTANCE = 500.0`
   is the analogous *province*-name cutoff; not used for country labels.)
 - **Draw shader.** `gfx/FX/mapname.shader` (`Effect mapname` at
   `gfx/FX/mapname.shader:110`). It renders a pre-built vertex buffer:
@@ -96,8 +104,10 @@ Because placement is engine-computed, the replay reconstructs it from the only
 shipped inputs — province geometry (`map/provinces.bmp` -> `province_ids`) and
 ownership (`history/states/*.txt` owners, per moment). Implemented in
 `map_viewer::compute_country_label_placements`
-(`replay_interface/native/map_viewer/src/map_label_law.rs`), consumed by
-`replay_app::map_labels` behind the unchanged `--map-labels-fallback` flag.
+(`replay_interface/native/map_viewer/src/map_label_law.rs`). `replay_app`
+blocks `--map-labels` and `--map-labels-fallback`; use `map_viewer`
+`dump_map_labels` only as development tooling until the remaining engine law is
+ported.
 
 Coordinate frame: map-pixel space (`x` right, `y` down) = the province raster =
 the engine world plane `x`/`z` 1:1 (`map/ambient_object.txt` world positions and
@@ -117,31 +127,22 @@ the 5632x2048 raster share units; the middle `ambient` coordinate is height).
    holding across water is a separate component → its own label. This is the
    LAB3 refutation of one-per-country: the captured far-zoom frame draws UNITED
    KINGDOM as **8 separate labels**, FRANCE / REGNO DEL SUD / BRITISH IRAQ twice
-   each (§5). Two floors gate it:
-   - **PCA-viability floor** ([`MIN_LABEL_PIXELS`] = 16 sampled cells): below it
-     the principal-axis fit is noise, so the component fails closed. This is a
-     numerical floor, NOT the engine's de-clutter floor.
-   - **Non-home de-clutter gate** ([`NONHOME_MIN_AREA_FRACTION`] = 0.02): the
-     **home** (capital / VP-peak) component always labels; a **detached**
-     component additionally must be substantial — it must contain a sampled
-     **victory-point** province (the engine's own "worth naming" signal,
-     `history/states` VP, surfaced in `state_meta.json`) OR reach 2% of the tag's
-     home-component area. This drops the tiny 1–2-province enclaves that would
-     otherwise spray the map, while keeping every real colony. VP-presence is the
-     **files-grounded substitute** for the engine's UNTRACED absolute size floor
-     (§5.1: a single far-zoom capture cannot fix an absolute map-pixel
-     threshold). The 0.02 fraction is DERIVED-BY-FIT.
+   each (§5). The replay now emits every component that resolves through the
+   ported `countryname.cpp` dual-OLS/offset-trial/owned-run segment law. There is
+   no replay-owned minimum-sample floor, VP survivor rule, or non-home area
+   fraction; if the engine has an additional absolute de-clutter rule, that rule
+   remains UNKNOWN-ENGINE-SIDE rather than approximated.
    The **home component** is still identified per owner — the one containing the
    single highest-VP province (its capital; London/Paris/Rome/Berlin each ~40-50
-   VP), ties broken by summed VP then area — but now only to (a) exempt it from
-   the de-clutter gate and (b) sort it first in the output (`is_home`). Peak VP,
+   VP), ties broken by summed VP then area — but now only to sort it first in the
+   output (`is_home`). Peak VP,
    not summed VP, is the capital discriminator: a sprawling contiguous empire
    aggregates *more total* VP than the small home island, but no colonial
    province out-scores the capital. A country with zero VP anywhere scores 0 and
    its largest-area component is the home (the pre-LAB2 behaviour).
-   DERIVED-BY-FIT. **Measured (1936 vanilla): 171 labels across 89 countries**
-   (was 89 one-per-country); the multi-region powers dominate (ENG ~17,
-   JAP/INS/FRA ~10, USA ~8), single-territory countries get exactly one.
+   DERIVED-BY-FIT for home ordering only. **Measured count must be regenerated
+   after the fail-closed threshold removal**; old 171-label dumps came from the
+   now-removed de-clutter filter.
    Whether the engine's split is strictly per-connected-component vs
    per-state/strategic-region is itself underdetermined (§5.1) — per-component is
    the leading hypothesis, consistent with (not proven by) the 8-UK symptom.
@@ -177,11 +178,12 @@ the 5632x2048 raster share units; the middle `ambient` coordinate is height).
    where the curve steepens. When the height cap bites, the shorter word is
    centred on the arc. DERIVED-BY-FIT; the engine's exact size-vs-extent curve is
    UNKNOWN-ENGINE-SIDE.
-8. **Visibility.** Faded in over a 25% ramp above `DRAW_COUNTRY_NAMES_CUTOFF`
-   (260). The replay camera is 2D, so the visible map-height in world units
-   stands in for the engine's 3D camera height (documented approximation).
-   [FILE-DATA cutoff; the 2D-height substitution and 25% ramp are
-   DERIVED-BY-FIT.]
+8. **Visibility.** `DRAW_COUNTRY_NAMES_CUTOFF` (260) is applied as a hard cutoff
+   against the production 3D camera height. The former 2D visible-map-height
+   substitute and 25% fitted fade ramp are removed; if a production camera height
+   is unavailable, labels fail closed instead of drawing from a proxy. Remaining
+   transparency residual: the engine's per-label `Transp_OffsetX.x` write law is
+   still unknown until a mapname constant-buffer capture pins it.
 9. **Rendering** mirrors `mapname.shader` exactly. The `hoi_mapfont4.dds` atlas
    is **pre-coloured**: decoding the DDS shows each glyph is a full-colour,
    pre-outlined image — coverage in the ALPHA channel (interior `a≈0.5`, edge
@@ -200,9 +202,10 @@ the 5632x2048 raster share units; the middle `ambient` coordinate is height).
    (`gfx/FX/mapname.shader:79`) and the exact `Transp_OffsetX.y` wrap offset are
    not reproduced in the 2D replay (UNKNOWN-ENGINE-SIDE for its fixed lighting).
 
-Fail-closed: an empty or sub-`MIN_LABEL_PIXELS` (16) dominant component yields
-no label rather than a guess; a resolver miss on font/localisation/defines
-errors out naming the exact missing piece.
+Fail-closed: an empty/degenerate component or a component whose ported engine
+segment does not resolve yields no label rather than a PCA/proxy guess; a
+resolver miss on font/localisation/defines errors out naming the exact missing
+piece.
 
 ## 4. What stays UNKNOWN-ENGINE-SIDE
 
@@ -304,7 +307,7 @@ The capture requested at the end of the old §5 landed. Two sessions dumped the
   (LABGRAD1).** UNITED KINGDOM draws **8 separate labels** in one 7B frame,
   FRANCE/REGNO DEL SUD/BRITISH IRAQ twice each. This killed the old §3.2 "keep
   only the home component" reduction, and §3.2 now labels every controlled
-  component (with the non-home de-clutter gate). The count refutes
+  component that resolves through the ported engine segment law. The count refutes
   one-per-country **decisively** but per-connected-component is **consistent with,
   not proven over,** per-state / per-strategic-region / component-with-threshold —
   all produce the same ≥2-labels-per-tag symptom. Settling which needs the
@@ -344,8 +347,8 @@ The capture requested at the end of the old §5 landed. Two sessions dumped the
 
 The arc/advance/size machinery (§3.4–§3.7) is validated as-is by LAB3 and is
 UNCHANGED by LABGRAD1. LABGRAD1 changed only §3.2 (per-component instead of
-home-only) and graduated the flag to default-ON; the opt-out (`--no-map-labels`)
-render is byte-identical to the old flag-off default.
+home-only). As of 2026-07-09 the replay-app render flag is blocked because
+remaining size/anchor/component-emission gaps are research-only.
 
 ## 6. Eyeball validation (1936 vanilla start)
 
@@ -357,20 +360,20 @@ baseline polyline). `--home-only` reproduces the pre-LABGRAD1 one-label-per-coun
 law for a before/after comparison. 1936 vanilla:
 
 - **home-only (before):** 89 labels across 89 countries.
-- **per-component (LABGRAD1 default):** **171 labels across 89 countries** — the
-  27 multi-region/colonial powers pick up their detached holdings (ENG ~17,
-  JAP/INS/FRA ~10, USA ~8, CAN 7), while ~62 single-territory countries keep
-  exactly one. The non-home de-clutter gate dropped the tiny no-VP enclaves that
-  a raw per-component pass would spray (187 → 171).
+- **per-component no-threshold diagnostic (2026-07-09):** **1238 labels across
+  90 countries** from `dump_map_labels` against the current vanilla bundle. This
+  is development evidence, not product output: after removing the non-engine
+  de-clutter fraction and 16-cell floor, the unresolved engine emission/de-
+  overlap law is visible as label spray, so `replay_app` blocks `--map-labels`.
 
-Spot-check of the three majors (the home component per major is unchanged by the
-graduation; map-pixel space, `world_height=60`):
+Spot-check of the three majors from that diagnostic dump (home components,
+map-pixel space, `h` = diagnostic world height):
 
 | tag | anchor (x,y)   | angle°  | half_len | bow  | px    |
 |-----|----------------|---------|----------|------|-------|
-| GER | (2984.6,501.4) | -26.6   | 53.4     | -15.0| 1127  |
-| SOV | (4283.6,308.8) | -8.0    | 666.6    | 4.3  | 73448 |
-| USA | (1258.0,507.7) | 5.4     | 229.3    | 53.8 | 15226 |
+| GER | (2982.0,505.0) | -13.3   | 78.1     | 0.0 | 17933 |
+| SOV | (4396.0,291.0) | -7.3    | 1171.5   | 0.0 | 1167009 |
+| USA | (1249.5,505.5) | 5.0     | 382.0    | 0.0 | 238982 |
 
 GER sits on the 1936 Reich (incl. East Prussia, hence the NE-SW tilt); SOV runs
 near-horizontally across contiguous Eurasia; USA's HOME label anchors on the
@@ -401,8 +404,9 @@ land outline, full / Europe / UK-empire views) are in
   positions but are panel widgets, not map labels; the font claim is
   Latin-default only (JP/CN/KR overrides exist); `mapname.shader` does not tint
   glyphs black (default `0xffffffff`, the black tint is a replay choice); and
-  `DRAW_COUNTRY_NAMES_CUTOFF` only says "cutoff for drawing", so the fade ramp is
-  DERIVED-BY-FIT not shipped. Its top law objections (owner-vs-controller,
+  `DRAW_COUNTRY_NAMES_CUTOFF` only says "cutoff for drawing", so the old fade
+  ramp was removed rather than treated as shipped law. Its top law objections
+  (owner-vs-controller,
   connected-component fragility, centroid/PCA weakness for concave shapes,
   single-quadratic-too-simple, ungrounded constants, raster topology) are
   recorded in §4 as the known UNKNOWN-ENGINE-SIDE gaps.
@@ -413,14 +417,13 @@ land outline, full / Europe / UK-empire views) are in
   language (done: §5 + the acceptance test now say REFUTES-one-per-country,
   consistent-with per-component); it also flagged the seam-crossing PCA (verified
   benign — no 1936 land wraps the antimeridian; documented in §3.2 + the flood
-  fill) and the owner-vs-controller divergence for wartime default-ON (kept
+  fill) and the owner-vs-controller divergence for wartime label rendering (kept
   owner-keyed per project rules — switching needs capture evidence, §4). **(B)
   size floor REJECT** — 16 cells is a PCA-viability floor, not a de-clutter gate,
   and spraying every viable cloud (FRA=10, tiny no-VP enclaves) is not defensible
-  as a user-facing default. FIXED: added the non-home de-clutter gate (§3.2,
-  NONHOME_MIN_AREA_FRACTION) — a detached component labels only with a sampled VP
-  or >=2% of home area, dropping the tiny-enclave spray (187 -> 171 labels) while
-  VP-presence stays files-grounded. It also confirmed the STRUCTURAL acceptance
+  as a user-facing default. A later attempted non-home de-clutter filter
+  (`NONHOME_MIN_AREA_FRACTION`, plus a VP survivor rule) has now been removed
+  because it was not engine-derived. It also confirmed the STRUCTURAL acceptance
   gate is honestly named only if treated as a decode/arc-model + refutation gate,
   not a merge/owner/size-floor proof — the test header and §5 now say exactly
   that.
@@ -550,7 +553,7 @@ baseline spans 0.75× the whole passable-territory major axis, so a
 hyper-elongated country stretches its word to fill that: CHILE 8.1×, CUBA
 4.9×, NORWAY 2.5× — the "N O R W A Y" eyesore.
 
-`map_labels.rs MAX_LETTERSPACE_STRETCH = 2.0` confines the word to the central
+The `MAX_LETTERSPACE_STRETCH = 2.0` law confines the word to the central
 `2.0 × natural` span of the baseline (still centred on the anchor), so
 over-elongated names render compact. The cap is the tightest value that does
 NOT clip an engine-matched label (ITALY-boot sits exactly at 2.00). It fully

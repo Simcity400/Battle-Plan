@@ -199,8 +199,8 @@ Evidence it is simulation state, not a files-only function of the date:
 
 - Three captures → three distinct `SnowMudData` content hashes:
   `restore_gate_1` = `cd2693a5d522646d`, `live_PAN2` = `a94188fa5baafe80`,
-  checked-in harness (`head_quick_20260702_211446`) = `17b9454249922325`.
-- The harness capture is **entirely zero** — a legal game frame no
+  archived harness capture (`head_quick_20260702_211446`) = `17b9454249922325`.
+- The archived harness capture is **entirely zero** — a legal game frame no
   deterministic floor can reproduce.
 - `min_snow_level` maxes at `0.3`, but captured snow (`.g`) reaches `255` (1.0)
   only in the far-NORTH rows (497–511 = Arctic per `CalcGlobeNormal`). The
@@ -273,7 +273,7 @@ validated NH-winter snow state (no accumulated land snow beyond the permanent
 Arctic band). The exact calendar day is **not recoverable** from the
 shipped-file laws alone — a precise date needs a reliable game-date capture
 field (the extractor item in §6); "warm / early-game" is a plausible but
-unproven reading. The checked-in harness capture is a fully zero SnowMud frame.
+unproven reading. The archived harness capture is a fully zero SnowMud frame.
 
 ---
 
@@ -331,7 +331,7 @@ wording to fold into §6 (orchestrator to apply — this lane does not edit
   incl. weather-period date matching + year-wrap, region→texel + Y-flip
   orientation, channel decode/fade, fail-closed parse & synthesis).
 - `dump_snow_validation` stats on `restore_gate_1`, `live_PAN2`, and the
-  checked-in harness capture — see §5; determinism verified 2×.
+  archived harness capture — see §5; determinism verified 2×.
 - Scope: only `map_viewer/src/snow_law.rs`, `src/bin/dump_snow_validation.rs`
   (new), `src/lib.rs` (one-line exports), and this document. No forbidden files
   touched.

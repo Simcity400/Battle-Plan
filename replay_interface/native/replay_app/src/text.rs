@@ -11,20 +11,17 @@ use std::ffi::CString;
 use std::mem;
 use std::ptr;
 
-use winapi::shared::dxgiformat::{
-    DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
-};
+use winapi::shared::dxgiformat::{DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM};
 use winapi::shared::minwindef::UINT;
 use winapi::um::d3d11::{
-    ID3D11BlendState, ID3D11Buffer, ID3D11InputLayout, ID3D11PixelShader,
-    ID3D11RenderTargetView, ID3D11SamplerState,
+    ID3D11BlendState, ID3D11Buffer, ID3D11InputLayout, ID3D11PixelShader, ID3D11SamplerState,
     ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader, D3D11_BIND_CONSTANT_BUFFER,
     D3D11_BIND_VERTEX_BUFFER, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE,
     D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BUFFER_DESC, D3D11_COLOR_WRITE_ENABLE_ALL,
-    D3D11_COMPARISON_NEVER, D3D11_CPU_ACCESS_WRITE, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-    D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_INPUT_ELEMENT_DESC, D3D11_INPUT_PER_VERTEX_DATA,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_WRITE_DISCARD, D3D11_SAMPLER_DESC,
-    D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DYNAMIC, D3D11_VIEWPORT,
+    D3D11_COMPARISON_NEVER, D3D11_CPU_ACCESS_WRITE, D3D11_FILTER_MIN_MAG_MIP_POINT,
+    D3D11_INPUT_ELEMENT_DESC, D3D11_INPUT_PER_VERTEX_DATA, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_MAP_WRITE_DISCARD, D3D11_SAMPLER_DESC, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DYNAMIC,
+    D3D11_VIEWPORT,
 };
 use winapi::um::d3dcommon::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
@@ -92,7 +89,7 @@ pub struct SolidRect {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// `0xAARRGGBB`, same convention as fonts.json colors.
+    /// `0xAARRGGBB`, same convention as core.gfx font colors.
     pub color: u32,
 }
 
@@ -105,7 +102,7 @@ struct ScreenConstants {
 /// Vertex capacity of the dynamic buffer; longer batches draw in chunks.
 const VERTEX_CAPACITY: usize = 8192;
 
-/// Convert an `0xAARRGGBB` color (fonts.json convention) into the
+/// Convert an `0xAARRGGBB` color (core.gfx convention) into the
 /// `R8G8B8A8_UNORM` little-endian vertex encoding (bytes r, g, b, a).
 pub fn color_to_rgba_bytes(argb: u32) -> u32 {
     let a = (argb >> 24) & 0xFF;
@@ -173,10 +170,7 @@ unsafe fn create_immutable_texture_mips(
     levels: &[(usize, usize, &[u8])],
     format: u32,
     role: &str,
-) -> Result<(
-    ComPtr<ID3D11Texture2D>,
-    ComPtr<ID3D11ShaderResourceView>,
-)> {
+) -> Result<(ComPtr<ID3D11Texture2D>, ComPtr<ID3D11ShaderResourceView>)> {
     use winapi::shared::dxgitype::DXGI_SAMPLE_DESC;
     use winapi::um::d3d11::{
         D3D11_BIND_SHADER_RESOURCE, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
@@ -188,10 +182,9 @@ unsafe fn create_immutable_texture_mips(
     let mut init: Vec<D3D11_SUBRESOURCE_DATA> = Vec::with_capacity(levels.len());
     for (li, (w, h, bytes)) in levels.iter().enumerate() {
         if *w != expect_w || *h != expect_h {
-            return Err(format!(
-                "{role}: mip {li} is {w}x{h}, expected {expect_w}x{expect_h}"
-            )
-            .into());
+            return Err(
+                format!("{role}: mip {li} is {w}x{h}, expected {expect_w}x{expect_h}").into(),
+            );
         }
         if bytes.len() != w * h * 4 {
             return Err(format!(
@@ -240,22 +233,14 @@ unsafe fn create_immutable_texture_mips(
 }
 
 /// Atlas sampling filter for a [`Pipeline`]. Overlay text and solid rects use
-/// `Point` (1:1 authored bitmap pixels, byte-stable). Map labels use `Linear` to
-/// match `gfx/FX/mapname.shader` (MagFilter/MinFilter/MipFilter = "Linear"),
-/// since they are scaled and rotated by the camera and point-sampling a scaled,
-/// rotated pre-coloured atlas aliases the outline.
+/// `Point` (1:1 authored bitmap pixels, byte-stable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextureFilter {
     Point,
-    Linear,
 }
 
 /// Shared pipeline objects for the overlay shader.
 struct Pipeline {
-    /// LABHDR1 target override: (raw RTV pointer, width, height). The RTV is
-    /// owned by the renderer's captured pass and outlives the draw call; the
-    /// pointer is only dereferenced inside `draw` on the same thread.
-    target_override: std::cell::Cell<Option<(usize, f32, f32)>>,
     vs: ComPtr<ID3D11VertexShader>,
     ps: ComPtr<ID3D11PixelShader>,
     input_layout: ComPtr<ID3D11InputLayout>,
@@ -340,17 +325,15 @@ impl Pipeline {
 
             let mut sampler_desc: D3D11_SAMPLER_DESC = mem::zeroed();
             // Point for overlay/rects (1:1 authored bitmap pixels); Linear for
-            // the scaled/rotated map labels (mapname.shader analog).
+            // map-label/furniture paths is intentionally absent from replay_app.
             sampler_desc.Filter = match filter {
                 TextureFilter::Point => D3D11_FILTER_MIN_MAG_MIP_POINT,
-                TextureFilter::Linear => D3D11_FILTER_MIN_MAG_MIP_LINEAR,
             };
             // FILE LAW: `gfx/FX/mapname.shader` Samplers declare
             // `MipMapLodBias = -0.4` for the label atlas; the overlay path
             // (single-mip Point pages) keeps 0.
             sampler_desc.MipLODBias = match filter {
                 TextureFilter::Point => 0.0,
-                TextureFilter::Linear => -0.4,
             };
             sampler_desc.MaxLOD = f32::MAX;
             sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -403,7 +386,6 @@ impl Pipeline {
             let vertex_buffer = ComPtr::from_raw(vertex_buffer, "overlay vertex buffer")?;
 
             Ok(Pipeline {
-            target_override: std::cell::Cell::new(None),
                 vs,
                 ps,
                 input_layout,
@@ -419,10 +401,6 @@ impl Pipeline {
     /// chunking through the dynamic vertex buffer. Restores default blend
     /// state afterwards so the map pass is unaffected next frame.
     ///
-    /// LABHDR1: when a target override is set (see
-    /// [`TextRenderer::set_scene_target`]) the pass renders into that RTV at
-    /// its dimensions instead of the window backbuffer — the path that puts
-    /// country names INSIDE the HDR MainScene like the engine's mapname pass.
     fn draw(
         &self,
         gfx: &Gfx,
@@ -432,16 +410,11 @@ impl Pipeline {
         if vertices.is_empty() || gfx.width == 0 || gfx.height == 0 {
             return Ok(());
         }
-        let over = self.target_override.get();
-        let (tw, th) = match over {
-            Some((_, w, h)) => (w, h),
-            None => (gfx.width as f32, gfx.height as f32),
-        };
         unsafe {
             let context = gfx.context.as_raw();
 
             let constants = ScreenConstants {
-                screen_size: [tw, th],
+                screen_size: [gfx.width as f32, gfx.height as f32],
                 _pad: [0.0, 0.0],
             };
             let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
@@ -460,16 +433,13 @@ impl Pipeline {
             );
             (*context).Unmap(self.screen_cb.as_raw() as *mut _, 0);
 
-            let rtvs = [match over {
-                Some((rtv, _, _)) => rtv as *mut ID3D11RenderTargetView,
-                None => gfx.rtv()?.as_raw(),
-            }];
+            let rtvs = [gfx.rtv()?.as_raw()];
             (*context).OMSetRenderTargets(1, rtvs.as_ptr(), ptr::null_mut());
             let viewport = D3D11_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
-                Width: tw,
-                Height: th,
+                Width: gfx.width as f32,
+                Height: gfx.height as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             };
@@ -556,75 +526,6 @@ impl QuadRenderer {
     }
 }
 
-/// One screen-space sprite blit request for [`SpriteRenderer::draw`]:
-/// destination rect in window pixels, source rect in normalized UVs, and an
-/// `0xAARRGGBB` tint (white = pass the texture through, the GUI convention).
-#[derive(Clone, Copy, Debug)]
-pub struct SpriteQuad {
-    pub x0: f32,
-    pub y0: f32,
-    pub x1: f32,
-    pub y1: f32,
-    pub u0: f32,
-    pub v0: f32,
-    pub u1: f32,
-    pub v1: f32,
-    pub color: u32,
-}
-
-/// Screen-space sprite renderer over ONE immutable RGBA texture (e.g. the VP
-/// map-icon strip). Linear-sampled: the engine renders mapicon sprites
-/// smoothly at non-integer scales (the measured on-screen VP dot is ~1.25x
-/// the authored frame), so point sampling would alias the scaled blit.
-pub struct SpriteRenderer {
-    pipeline: Pipeline,
-    _texture: ComPtr<ID3D11Texture2D>,
-    srv: ComPtr<ID3D11ShaderResourceView>,
-}
-
-impl SpriteRenderer {
-    pub fn new(
-        gfx: &Gfx,
-        width: usize,
-        height: usize,
-        rgba: &[u8],
-        label: &str,
-    ) -> Result<SpriteRenderer> {
-        let pipeline = Pipeline::with_filter(gfx, TextureFilter::Linear)?;
-        let (texture, srv) = unsafe {
-            create_immutable_texture(gfx, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, rgba, label)?
-        };
-        Ok(SpriteRenderer {
-            pipeline,
-            _texture: texture,
-            srv,
-        })
-    }
-
-    /// Draw all sprites in one alpha-blended batch.
-    pub fn draw(&self, gfx: &Gfx, quads: &[SpriteQuad]) -> Result<()> {
-        let mut vertices = Vec::with_capacity(quads.len() * 6);
-        for quad in quads {
-            push_glyph_vertices(
-                &mut vertices,
-                &GlyphQuad {
-                    page: 0,
-                    x0: quad.x0,
-                    y0: quad.y0,
-                    x1: quad.x1,
-                    y1: quad.y1,
-                    u0: quad.u0,
-                    v0: quad.v0,
-                    u1: quad.u1,
-                    v1: quad.v1,
-                },
-                color_to_rgba_bytes(quad.color),
-            );
-        }
-        self.pipeline.draw(gfx, self.srv.as_raw(), &vertices)
-    }
-}
-
 /// Bitmap-font text renderer over a loaded game [`Font`].
 pub struct TextRenderer {
     pipeline: Pipeline,
@@ -635,22 +536,7 @@ pub struct TextRenderer {
 
 impl TextRenderer {
     pub fn new(gfx: &Gfx, font: &Font) -> Result<TextRenderer> {
-        // Pre-coloured atlases (map labels) are scaled/rotated by the camera, so
-        // they sample Linear like mapname.shader; coverage atlases (overlay) stay
-        // Point so their 1:1 dumps are byte-stable.
-        let filter = match font.atlas_mode {
-            crate::font::AtlasMode::PreservedColor => TextureFilter::Linear,
-            crate::font::AtlasMode::Coverage => TextureFilter::Point,
-        };
-        // ENGINE-MEASURED (frame4700, NAME2 weight fix): the engine binds the
-        // hoi_mapfont4 atlas as DXGI fmt 87 = B8G8R8A8_UNORM — NOT _SRGB —
-        // at its mapname draws, so the sRGB-encoded glyph bytes enter the
-        // linear HDR MainScene WITHOUT hardware linearization. LABHDR1's
-        // first guess (an _SRGB view, "linearize like any sRGB source")
-        // rendered the dark glyph bodies ~2.2-gamma darker than the engine —
-        // the user-visible heavy/bold titles. Reproducing vanilla means
-        // sampling raw UNORM exactly like the engine, even though that is
-        // colorimetrically "wrong".
+        let filter = TextureFilter::Point;
         let atlas_format = DXGI_FORMAT_R8G8B8A8_UNORM;
         let pipeline = Pipeline::with_filter(gfx, filter)?;
         let mut pages = Vec::with_capacity(font.pages.len());
@@ -692,17 +578,6 @@ impl TextRenderer {
         &self.font
     }
 
-    /// LABHDR1: route subsequent text draws into `rtv` (dimensions `w`x`h`)
-    /// instead of the window backbuffer. The RTV must stay alive for the
-    /// duration; callers MUST call [`Self::clear_scene_target`] afterwards.
-    pub fn set_scene_target(&self, rtv: *mut ID3D11RenderTargetView, w: f32, h: f32) {
-        self.pipeline.target_override.set(Some((rtv as usize, w, h)));
-    }
-
-    pub fn clear_scene_target(&self) {
-        self.pipeline.target_override.set(None);
-    }
-
     /// Measure one line of text: (width, line height) in pixels.
     /// The overlay currently only needs [`TextRenderer::draw_text`]; this
     /// is the other half of the API surface for upcoming counter/panel
@@ -710,189 +585,6 @@ impl TextRenderer {
     #[allow(dead_code)]
     pub fn measure(&self, text: &str) -> (u32, u32) {
         self.font.measure(text)
-    }
-
-    /// Draw one line centered on (`center_x`, `center_y`) with glyph quads
-    /// scaled by `scale` (map-label fallback: label size tracks the map
-    /// zoom instead of the fixed overlay pixel size). `color` is
-    /// `0xAARRGGBB`; alpha rides the same src_alpha/inv_src_alpha blend the
-    /// overlay text uses (the mapname.shader analog).
-    pub fn draw_text_scaled_centered(
-        &self,
-        gfx: &Gfx,
-        center_x: f32,
-        center_y: f32,
-        scale: f32,
-        text: &str,
-        color: u32,
-    ) -> Result<Vec<char>> {
-        let layout = self.font.layout_text(0.0, 0.0, text);
-        let (width, height) = self.font.measure(text);
-        let origin_x = center_x - width as f32 * scale * 0.5;
-        let origin_y = center_y - height as f32 * scale * 0.5;
-        let rgba = color_to_rgba_bytes(color);
-        for (page_index, (_, srv)) in self.pages.iter().enumerate() {
-            let mut vertices = Vec::new();
-            for quad in layout.quads.iter().filter(|quad| quad.page == page_index) {
-                let scaled = GlyphQuad {
-                    page: quad.page,
-                    x0: origin_x + quad.x0 * scale,
-                    y0: origin_y + quad.y0 * scale,
-                    x1: origin_x + quad.x1 * scale,
-                    y1: origin_y + quad.y1 * scale,
-                    u0: quad.u0,
-                    v0: quad.v0,
-                    u1: quad.u1,
-                    v1: quad.v1,
-                };
-                push_glyph_vertices(&mut vertices, &scaled, rgba);
-            }
-            self.pipeline.draw(gfx, srv.as_raw(), &vertices)?;
-        }
-        Ok(layout.missing)
-    }
-
-    /// Draw one line of text as a curved, oriented baseline: each glyph is
-    /// placed at, and rotated to, a point supplied by `place`. This backs the
-    /// LAB1 country-label law (`map_labels.rs`) where the baseline follows the
-    /// country's principal axis and bows along its shape.
-    ///
-    /// `place(u)` maps a horizontal pen offset `u` (in scaled screen pixels,
-    /// measured from the baseline's left end) to a screen-space
-    /// `(x, y, angle)`: the glyph origin on the baseline and the local tangent
-    /// angle (radians, screen space, +angle rotates clockwise). Glyphs are
-    /// scaled by `scale` and vertically centred on the baseline (the font's
-    /// mid-line sits on the path). `color` is `0xAARRGGBB`. Returns the
-    /// characters that had no glyph.
-    pub fn draw_text_curved(
-        &self,
-        gfx: &Gfx,
-        scale: f32,
-        text: &str,
-        color: u32,
-        place: impl Fn(f32) -> (f32, f32, f32),
-    ) -> Result<Vec<char>> {
-        self.draw_text_curved_tracked(gfx, scale, text, color, 0.0, place)
-    }
-
-    /// [`Self::draw_text_curved`] with uniform additive letter tracking
-    /// (`tracking` in FONT px per character slot — the engine's country-name
-    /// justification law; see `BmFont::layout_text_tracked`).
-    pub fn draw_text_curved_tracked(
-        &self,
-        gfx: &Gfx,
-        scale: f32,
-        text: &str,
-        color: u32,
-        tracking: f32,
-        place: impl Fn(f32) -> (f32, f32, f32),
-    ) -> Result<Vec<char>> {
-        let layout = self.font.layout_text_tracked(0.0, 0.0, text, tracking);
-        // Vertically centre glyphs on the baseline: shift so the font's
-        // mid-line sits on the path (BMFont lays out from the line top).
-        let half_line = self.font.line_height as f32 * 0.5;
-        let rgba = color_to_rgba_bytes(color);
-        for (page_index, (_, srv)) in self.pages.iter().enumerate() {
-            let mut vertices = Vec::new();
-            for quad in layout.quads.iter().filter(|quad| quad.page == page_index) {
-                // Pen offset of this glyph's box centre along the baseline.
-                let pen_u = (quad.x0 + quad.x1) * 0.5 * scale;
-                let (bx, by, angle) = place(pen_u);
-                let (sin, cos) = angle.sin_cos();
-                // Glyph-local corners relative to the pen point along the
-                // baseline: x measured from the glyph box centre, y from the
-                // font vertical centre (so the mid-line rides the path).
-                let cx = (quad.x0 + quad.x1) * 0.5;
-                let corners = [
-                    (quad.x0 - cx, quad.y0 - half_line),
-                    (quad.x1 - cx, quad.y0 - half_line),
-                    (quad.x1 - cx, quad.y1 - half_line),
-                    (quad.x0 - cx, quad.y1 - half_line),
-                ];
-                let mut screen = [[0.0f32; 2]; 4];
-                for (i, (lx, ly)) in corners.iter().enumerate() {
-                    let sx = lx * scale;
-                    let sy = ly * scale;
-                    screen[i] = [bx + sx * cos - sy * sin, by + sx * sin + sy * cos];
-                }
-                let uvs = [
-                    [quad.u0, quad.v0],
-                    [quad.u1, quad.v0],
-                    [quad.u1, quad.v1],
-                    [quad.u0, quad.v1],
-                ];
-                let mk = |i: usize| Vertex {
-                    pos: screen[i],
-                    uv: uvs[i],
-                    color: rgba,
-                };
-                vertices.extend_from_slice(&[mk(0), mk(1), mk(2), mk(0), mk(2), mk(3)]);
-            }
-            self.pipeline.draw(gfx, srv.as_raw(), &vertices)?;
-        }
-        Ok(layout.missing)
-    }
-
-    /// [`Self::draw_text_curved_tracked`] with the glyphs emitted as
-    /// caller-projected quads — the engine `mapname` VB semantics: glyph quads
-    /// are laid out in WORLD space flat on the map plane (LAB3: the captured
-    /// TL→BL cap edge lies in the XZ plane, origins terrain-draped) and every
-    /// corner runs through the 3D view-projection, so text foreshortens with
-    /// camera tilt and shrinks with distance — a uniform screen `scale`
-    /// cannot reproduce either.
-    ///
-    /// `corner(pen_u, local_x, local_y) -> Option<[x, y]>` maps a glyph-corner
-    /// in FONT px — `pen_u` the glyph box centre's offset from the text start
-    /// (tracking included), `local_x`/`local_y` the corner offset from the box
-    /// centre / font mid-line — to screen px on the current target. `None`
-    /// skips the whole glyph (fail closed off-view). `color` is `0xAARRGGBB`.
-    /// Returns the characters that had no glyph.
-    pub fn draw_text_curved_projected(
-        &self,
-        gfx: &Gfx,
-        text: &str,
-        color: u32,
-        tracking: f32,
-        corner: impl Fn(f32, f32, f32) -> Option<[f32; 2]>,
-    ) -> Result<Vec<char>> {
-        let layout = self.font.layout_text_tracked(0.0, 0.0, text, tracking);
-        // Same baseline convention as the screen-space path: the font's
-        // mid-line rides the baseline path.
-        let half_line = self.font.line_height as f32 * 0.5;
-        let rgba = color_to_rgba_bytes(color);
-        for (page_index, (_, srv)) in self.pages.iter().enumerate() {
-            let mut vertices = Vec::new();
-            'quads: for quad in layout.quads.iter().filter(|quad| quad.page == page_index) {
-                let cx = (quad.x0 + quad.x1) * 0.5;
-                let corners = [
-                    (quad.x0 - cx, quad.y0 - half_line),
-                    (quad.x1 - cx, quad.y0 - half_line),
-                    (quad.x1 - cx, quad.y1 - half_line),
-                    (quad.x0 - cx, quad.y1 - half_line),
-                ];
-                let mut screen = [[0.0f32; 2]; 4];
-                for (i, (lx, ly)) in corners.iter().enumerate() {
-                    match corner(cx, *lx, *ly) {
-                        Some(point) => screen[i] = point,
-                        None => continue 'quads,
-                    }
-                }
-                let uvs = [
-                    [quad.u0, quad.v0],
-                    [quad.u1, quad.v0],
-                    [quad.u1, quad.v1],
-                    [quad.u0, quad.v1],
-                ];
-                let mk = |i: usize| Vertex {
-                    pos: screen[i],
-                    uv: uvs[i],
-                    color: rgba,
-                };
-                vertices.extend_from_slice(&[mk(0), mk(1), mk(2), mk(0), mk(2), mk(3)]);
-            }
-            self.pipeline.draw(gfx, srv.as_raw(), &vertices)?;
-        }
-        Ok(layout.missing)
     }
 
     /// Draw one line of text with its top-left at (`x`, `y`) window

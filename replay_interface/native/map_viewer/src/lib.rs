@@ -14,9 +14,7 @@ mod camera;
 mod cli;
 mod color_lut;
 mod constants;
-mod cpu_compose;
 mod cpu_terrain;
-mod cpu_view;
 mod d3d11_device;
 mod d3d11_replay;
 mod frame_bundle;
@@ -47,6 +45,7 @@ mod terrain_id_map_synthesis;
 mod terrain_mesh_law;
 #[cfg(test)]
 mod test_support;
+mod texture_sampling;
 mod tree_files;
 mod tree_instance_synthesis;
 mod tree_second_subdraw;
@@ -61,9 +60,7 @@ pub(crate) use bundle_gen::*;
 pub(crate) use camera::*;
 pub(crate) use cli::*;
 pub(crate) use constants::*;
-pub(crate) use cpu_compose::*;
 pub(crate) use cpu_terrain::*;
-pub(crate) use cpu_view::*;
 pub(crate) use d3d11_device::*;
 pub(crate) use d3d11_replay::*;
 pub(crate) use frame_bundle::*;
@@ -78,6 +75,7 @@ pub(crate) use terrain_chunk_library::*;
 pub(crate) use terrain_chunk_synthesis::*;
 pub(crate) use terrain_id_map_synthesis::*;
 pub(crate) use terrain_mesh_law::build_terrain_chunk_synthetic_payloads;
+pub(crate) use texture_sampling::*;
 pub(crate) use tree_instance_synthesis::*;
 pub(crate) use types::*;
 pub(crate) use underwater_pass::*;
@@ -144,9 +142,8 @@ pub use d3d11_replay::{
     NativeD3d11PreparedTerrainChunkSynthesis, NativeD3d11ReferenceComparison,
     NativeD3d11RenderOptions, NativeD3d11ReplayReadback, NativeD3d11ReplayRequest,
     NativeD3d11ReplayResult, NativeD3d11ReplaySummary, NativeD3d11TerrainBundle,
-    NativeD3d11TerrainPoliticalSrvSubstitution, NativeD3d11TerrainRenderer,
-    ProductionMapD3d11ReplayRequest, TerrainD3d11AcceptanceReport, TerrainD3d11AcceptanceRequest,
-    UnderwaterValidationRender,
+    NativeD3d11TerrainRenderer, ProductionMapD3d11ReplayRequest, TerrainD3d11AcceptanceReport,
+    TerrainD3d11AcceptanceRequest, UnderwaterValidationRender,
 };
 pub use frame_bundle::{
     validate_borders_map_frame_bundle, validate_rivers_map_frame_bundle,
@@ -185,9 +182,8 @@ pub use map_label_capture::{
 };
 pub use map_label_law::{
     compute_country_label_placements, principal_axis, CountryLabelPlacement, GlyphScale,
-    LabelLawInputs, ProvinceKind, ENGINE_TITLE_CAP_COEF, ENGINE_TITLE_FIT_COEF, LABEL_AB_HYSTERESIS,
-    LABEL_HEIGHT_BREADTH_K, LABEL_OFFSET_PX, LABEL_SAMPLE_STEP, LABEL_TEXT_ARC_FRACTION,
-    MIN_LABEL_PIXELS,
+    LabelLawInputs, ProvinceKind, ENGINE_TITLE_CAP_COEF, ENGINE_TITLE_FIT_COEF,
+    LABEL_AB_HYSTERESIS, LABEL_HEIGHT_BREADTH_K, LABEL_OFFSET_PX, LABEL_SAMPLE_STEP,
 };
 pub use map_static_data::{
     map_building_placements_from_game_dir, map_building_placements_from_resolver,
