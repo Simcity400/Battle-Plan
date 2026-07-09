@@ -20,11 +20,13 @@ pub const OBJ_TAG_DB_ID: usize = 0x08;
 pub const COUNTRY_FLEET_VECTOR_DATA: usize = 0x278;
 pub const COUNTRY_FLEET_VECTOR_CAPACITY: usize = 0x280;
 pub const COUNTRY_FLEET_VECTOR_COUNT: usize = 0x284;
+pub const COUNTRY_WINDOW_LEN: usize = COUNTRY_FLEET_VECTOR_COUNT + 4;
 
 pub const FLEET_VTABLE_RVA: usize = 0x294BF28;
 pub const TASK_FORCE_SUBOBJECT_VTABLE_RVA: usize = 0x294C480;
 pub const TASK_FORCE_VTABLE_RVA: usize = 0x294C660;
 pub const OOB_TYPE_FLEET: u32 = 61;
+pub const OOB_BODY_WINDOW_LEN: usize = 0x10;
 
 pub const CSHIP_VTABLE_RVA: usize = 0x2941748;
 pub const CSHIP_TYPE: u32 = 51;
@@ -32,11 +34,13 @@ pub const CSHIP_OFF_HANDLE: usize = 0x08;
 pub const CSHIP_OFF_SUNK_CONVOYS: usize = 0x3C;
 pub const CSHIP_OFF_REF100: usize = 0x710;
 pub const CSHIP_REF100_RAW: u32 = 10_000_000;
+pub const CSHIP_WINDOW_LEN: usize = CSHIP_OFF_REF100 + 4;
 
 pub const TASK_FORCE_OFF_LOCATION_PROVINCE: usize = 0x18;
 pub const TASK_FORCE_OFF_FLEET_PARENT: usize = 0x330;
 pub const TASK_FORCE_OFF_SHIP_BEGIN: usize = 0x338;
 pub const TASK_FORCE_OFF_SHIP_COUNT: usize = 0x344;
+pub const TASK_FORCE_VALIDATE_WINDOW_LEN: usize = TASK_FORCE_OFF_SHIP_COUNT + 4;
 
 // Wave-4 naval enrichment (validated live 870ebf, paused D04, same-tick melt
 // oracle; runs/attemptcrack_naval_missions/EVIDENCE.md — each offset was the
@@ -49,9 +53,11 @@ pub const TASK_FORCE_OFF_SHIP_COUNT: usize = 0x344;
 //   - home_base: CFleet+0xD8 CProvince* (119/119) -> province id at +0xA4.
 pub const TASK_FORCE_OFF_MISSION_ENUM: usize = 0x364;
 pub const TASK_FORCE_OFF_REPAIR_TARGET: usize = 0x4B0;
+pub const TASK_FORCE_ROW_WINDOW_LEN: usize = TASK_FORCE_OFF_MISSION_ENUM + 4;
 pub const FLEET_OFF_HOME_BASE: usize = 0xD8;
 pub const CPROVINCE_VTABLE_RVA: usize = 0x295AF68;
 pub const CPROVINCE_OFF_ID: usize = 0xA4;
+pub const CPROVINCE_WINDOW_LEN: usize = CPROVINCE_OFF_ID + 4;
 // E10 / R6 naval supremacy (validated live 870ebf, paused D04, same-tick melt
 // oracle): scan CStrategicRegion objects, walk the per-region
 // CNavalRegionDominance container, and emit CDominanceValues rows. The
@@ -62,9 +68,11 @@ pub const STRATEGIC_REGION_SECONDARY_VTABLE_RVA: usize = 0x29569F8;
 pub const STRATEGIC_REGION_OFF_SECONDARY_VTABLE: usize = 0x08;
 pub const STRATEGIC_REGION_OFF_ID: usize = 0x58;
 pub const STRATEGIC_REGION_OFF_NAVAL_DOMINANCE: usize = 0xE8;
+pub const STRATEGIC_REGION_WINDOW_LEN: usize = STRATEGIC_REGION_OFF_NAVAL_DOMINANCE + 8;
 pub const NAVAL_REGION_DOMINANCE_VTABLE_RVA: usize = 0x296E010;
 pub const NAVAL_REGION_DOMINANCE_OFF_BEGIN: usize = 0x40;
 pub const NAVAL_REGION_DOMINANCE_OFF_COUNT: usize = 0x48;
+pub const NAVAL_REGION_DOMINANCE_WINDOW_LEN: usize = NAVAL_REGION_DOMINANCE_OFF_COUNT + 4;
 pub const DOMINANCE_VALUES_VTABLE_RVA: usize = 0x296DFC0;
 pub const DOMINANCE_VALUES_STRIDE: usize = 0x50;
 pub const DOMINANCE_VALUES_OFF_TAG: usize = 0x00;
@@ -137,6 +145,10 @@ pub trait NavalMissionMemory {
     fn read_u32(&self, address: u64) -> Result<u32, ExtractError> {
         let bytes = self.read_bytes(address, 4)?;
         Ok(u32_from(&bytes, 0))
+    }
+
+    fn read_object_window<const N: usize>(&self, _address: u64) -> Option<[u8; N]> {
+        None
     }
 }
 
@@ -454,8 +466,16 @@ fn read_task_force_row<M: NavalMissionMemory>(
     // blocked (needs live combat) and is set below when sunk convoys appear.
     let mut flags = compact::FLAG_VALIDATED_DIRECT;
     let mut source_status = 0u32;
+    let task_force_window =
+        mem.read_object_window::<TASK_FORCE_ROW_WINDOW_LEN>(task_force.body_ptr);
+    let task_force_win = task_force_window.as_ref().map(|window| window.as_slice());
     let mut location_province_id = 0u32;
-    let location = mem.read_u32(task_force.body_ptr + TASK_FORCE_OFF_LOCATION_PROVINCE as u64)?;
+    let location = win_u32(
+        task_force_win,
+        mem,
+        task_force.body_ptr,
+        TASK_FORCE_OFF_LOCATION_PROVINCE,
+    )?;
     if (1..=compact::MAX_PROVINCE_ID).contains(&location) {
         flags |= compact::FLAG_HAS_LOCATION;
         location_province_id = location;
@@ -473,7 +493,12 @@ fn read_task_force_row<M: NavalMissionMemory>(
     // (<= MAX_OBSERVED_MISSION_ENUM); an unproven/out-of-range value or a
     // negative-i32 sentinel (read as a huge u32) is badged absent (absent != 0).
     let mut mission_enum = 0u32;
-    let mission_raw = mem.read_u32(task_force.body_ptr + TASK_FORCE_OFF_MISSION_ENUM as u64)?;
+    let mission_raw = win_u32(
+        task_force_win,
+        mem,
+        task_force.body_ptr,
+        TASK_FORCE_OFF_MISSION_ENUM,
+    )?;
     if mission_raw <= MAX_OBSERVED_MISSION_ENUM {
         flags |= compact::FLAG_HAS_MISSION;
         mission_enum = mission_raw;
@@ -500,7 +525,7 @@ fn read_task_force_row<M: NavalMissionMemory>(
         flags |= compact::FLAG_HAS_REPAIR_BASE;
         repair_base_province_id = province_id;
     }
-    let sunk_convoys = aggregate_sunk_convoys(mem, task_force.body_ptr)?;
+    let sunk_convoys = aggregate_sunk_convoys(mem, task_force.body_ptr, task_force_win)?;
     if sunk_convoys > 0 {
         flags |= compact::FLAG_HAS_SUNK_CONVOY_COUNT | compact::FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED;
         source_status |= compact::STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED;
@@ -539,12 +564,18 @@ fn read_naval_supremacy_rows<M: NavalMissionMemory>(
 
     let mut regions_by_id = BTreeMap::new();
     for region_ptr in hits {
-        if mem.read_u64(region_ptr + STRATEGIC_REGION_OFF_SECONDARY_VTABLE as u64)
-            != Ok(region_secondary_vtable)
+        let region_window = mem.read_object_window::<STRATEGIC_REGION_WINDOW_LEN>(region_ptr);
+        let region_win = region_window.as_ref().map(|window| window.as_slice());
+        if win_u64(
+            region_win,
+            mem,
+            region_ptr,
+            STRATEGIC_REGION_OFF_SECONDARY_VTABLE,
+        ) != Ok(region_secondary_vtable)
         {
             continue;
         }
-        let Ok(region_id) = mem.read_u32(region_ptr + STRATEGIC_REGION_OFF_ID as u64) else {
+        let Ok(region_id) = win_u32(region_win, mem, region_ptr, STRATEGIC_REGION_OFF_ID) else {
             return Ok(None);
         };
         if !(1..=compact::MAX_REGION_ID).contains(&region_id) {
@@ -558,19 +589,38 @@ fn read_naval_supremacy_rows<M: NavalMissionMemory>(
 
     let mut rows = Vec::new();
     for (region_id, region_ptr) in regions_by_id {
-        let container_ptr =
-            match mem.read_u64(region_ptr + STRATEGIC_REGION_OFF_NAVAL_DOMINANCE as u64) {
-                Ok(container_ptr) => container_ptr,
-                Err(_) => return Ok(None),
-            };
+        let region_window = mem.read_object_window::<STRATEGIC_REGION_WINDOW_LEN>(region_ptr);
+        let region_win = region_window.as_ref().map(|window| window.as_slice());
+        let container_ptr = match win_u64(
+            region_win,
+            mem,
+            region_ptr,
+            STRATEGIC_REGION_OFF_NAVAL_DOMINANCE,
+        ) {
+            Ok(container_ptr) => container_ptr,
+            Err(_) => return Ok(None),
+        };
         if !is_heap_aligned(container_ptr) {
             continue;
         }
-        if mem.read_u64(container_ptr)? != container_vtable {
+        let container_window =
+            mem.read_object_window::<NAVAL_REGION_DOMINANCE_WINDOW_LEN>(container_ptr);
+        let container_win = container_window.as_ref().map(|window| window.as_slice());
+        if win_u64(container_win, mem, container_ptr, 0)? != container_vtable {
             return Ok(None);
         }
-        let begin = mem.read_u64(container_ptr + NAVAL_REGION_DOMINANCE_OFF_BEGIN as u64)?;
-        let count = mem.read_u32(container_ptr + NAVAL_REGION_DOMINANCE_OFF_COUNT as u64)?;
+        let begin = win_u64(
+            container_win,
+            mem,
+            container_ptr,
+            NAVAL_REGION_DOMINANCE_OFF_BEGIN,
+        )?;
+        let count = win_u32(
+            container_win,
+            mem,
+            container_ptr,
+            NAVAL_REGION_DOMINANCE_OFF_COUNT,
+        )?;
         if count == 0 {
             continue;
         }
@@ -655,11 +705,17 @@ fn read_cprovince_id<M: NavalMissionMemory>(
     if province_ptr == 0 || !is_heap_aligned(province_ptr) {
         return Ok(None);
     }
-    if mem.read_u64(province_ptr)? != module_base + CPROVINCE_VTABLE_RVA as u64 {
+    let province_window = mem.read_object_window::<CPROVINCE_WINDOW_LEN>(province_ptr);
+    let province_win = province_window.as_ref().map(|window| window.as_slice());
+    if win_u64(province_win, mem, province_ptr, 0)? != module_base + CPROVINCE_VTABLE_RVA as u64 {
         return Ok(None);
     }
-    let province_id = mem.read_u32(province_ptr + CPROVINCE_OFF_ID as u64)?;
-    if province_id != mem.read_u32(province_ptr + CPROVINCE_OFF_ID as u64)? {
+    let province_id = win_u32(province_win, mem, province_ptr, CPROVINCE_OFF_ID)?;
+    let province_second_window = mem.read_object_window::<CPROVINCE_WINDOW_LEN>(province_ptr);
+    let province_second_win = province_second_window
+        .as_ref()
+        .map(|window| window.as_slice());
+    if province_id != win_u32(province_second_win, mem, province_ptr, CPROVINCE_OFF_ID)? {
         // The id flapped mid-read: torn, badge absent.
         return Ok(None);
     }
@@ -673,12 +729,23 @@ fn read_cprovince_id<M: NavalMissionMemory>(
 fn aggregate_sunk_convoys<M: NavalMissionMemory>(
     mem: &M,
     task_force_body: u64,
+    task_force_win: Option<&[u8]>,
 ) -> Result<u32, ExtractError> {
-    let count = mem.read_u32(task_force_body + TASK_FORCE_OFF_SHIP_COUNT as u64)?;
+    let count = win_u32(
+        task_force_win,
+        mem,
+        task_force_body,
+        TASK_FORCE_OFF_SHIP_COUNT,
+    )?;
     if count == 0 || count > MAX_OOB_TASK_FORCE_SHIPS {
         return Ok(0);
     }
-    let begin = mem.read_u64(task_force_body + TASK_FORCE_OFF_SHIP_BEGIN as u64)?;
+    let begin = win_u64(
+        task_force_win,
+        mem,
+        task_force_body,
+        TASK_FORCE_OFF_SHIP_BEGIN,
+    )?;
     if !is_heap_aligned(begin) {
         return Ok(0);
     }
@@ -687,10 +754,10 @@ fn aggregate_sunk_convoys<M: NavalMissionMemory>(
     let module_base = mem.module_base();
     for index in 0..count as usize {
         let ship_ptr = u64_from(&raw, index * 8);
-        if read_cship_instance_id(mem, module_base, ship_ptr).is_some() {
-            let sunk = mem
-                .read_u32(ship_ptr + CSHIP_OFF_SUNK_CONVOYS as u64)
-                .unwrap_or(0);
+        let ship_window = mem.read_object_window::<CSHIP_WINDOW_LEN>(ship_ptr);
+        let ship_win = ship_window.as_ref().map(|window| window.as_slice());
+        if read_cship_instance_id_from_window(mem, module_base, ship_ptr, ship_win).is_some() {
+            let sunk = win_u32(ship_win, mem, ship_ptr, CSHIP_OFF_SUNK_CONVOYS).unwrap_or(0);
             total = total.saturating_add(sunk);
         }
     }
@@ -706,10 +773,12 @@ fn validate_country<M: NavalMissionMemory>(
     if !is_heap_aligned(country_ptr) {
         return None;
     }
-    if mem.read_u64(country_ptr).ok()? != module_base + COUNTRY_VTABLE_RVA as u64 {
+    let country_window = mem.read_object_window::<COUNTRY_WINDOW_LEN>(country_ptr);
+    let country_win = country_window.as_ref().map(|window| window.as_slice());
+    if win_u64(country_win, mem, country_ptr, 0).ok()? != module_base + COUNTRY_VTABLE_RVA as u64 {
         return None;
     }
-    let tag_db_id = mem.read_u32(country_ptr + OBJ_TAG_DB_ID as u64).ok()?;
+    let tag_db_id = win_u32(country_win, mem, country_ptr, OBJ_TAG_DB_ID).ok()?;
     if tag_db_id == 0 || tag_db_id != slot_id {
         return None;
     }
@@ -723,9 +792,11 @@ fn collect_country_fleet_roots<M: NavalMissionMemory>(
     owner_tag_db_id: u32,
     fleets_by_ptr: &mut BTreeMap<u64, FleetRoot>,
 ) -> Result<u32, ExtractError> {
-    let vector_data = mem.read_u64(country_ptr + COUNTRY_FLEET_VECTOR_DATA as u64)?;
-    let capacity = mem.read_u32(country_ptr + COUNTRY_FLEET_VECTOR_CAPACITY as u64)?;
-    let count = mem.read_u32(country_ptr + COUNTRY_FLEET_VECTOR_COUNT as u64)?;
+    let country_window = mem.read_object_window::<COUNTRY_WINDOW_LEN>(country_ptr);
+    let country_win = country_window.as_ref().map(|window| window.as_slice());
+    let vector_data = win_u64(country_win, mem, country_ptr, COUNTRY_FLEET_VECTOR_DATA)?;
+    let capacity = win_u32(country_win, mem, country_ptr, COUNTRY_FLEET_VECTOR_CAPACITY)?;
+    let count = win_u32(country_win, mem, country_ptr, COUNTRY_FLEET_VECTOR_COUNT)?;
     if count == 0
         || count > capacity
         || count > MAX_COUNTRY_FLEET_ROWS
@@ -868,21 +939,19 @@ fn validate_task_force_body<'a, M: NavalMissionMemory>(
         TASK_FORCE_VTABLE_RVA,
         OOB_TYPE_FLEET,
     )?;
-    let parent_ptr = mem
-        .read_u64(body_ptr + TASK_FORCE_OFF_FLEET_PARENT as u64)
-        .ok()?;
+    let task_force_window = mem.read_object_window::<TASK_FORCE_VALIDATE_WINDOW_LEN>(body_ptr);
+    let task_force_win = task_force_window.as_ref().map(|window| window.as_slice());
+    let parent_ptr = win_u64(task_force_win, mem, body_ptr, TASK_FORCE_OFF_FLEET_PARENT).ok()?;
     let fleet_root = fleets_by_ptr.get(&parent_ptr)?;
-    let count = mem
-        .read_u32(body_ptr + TASK_FORCE_OFF_SHIP_COUNT as u64)
-        .ok()?;
+    let count = win_u32(task_force_win, mem, body_ptr, TASK_FORCE_OFF_SHIP_COUNT).ok()?;
     if count > MAX_OOB_TASK_FORCE_SHIPS {
         return None;
     }
     if count > 0 {
-        let begin = mem
-            .read_u64(body_ptr + TASK_FORCE_OFF_SHIP_BEGIN as u64)
-            .ok()?;
-        if !is_heap_aligned(begin) || !validate_task_force_ship_vector(mem, module_base, body_ptr) {
+        let begin = win_u64(task_force_win, mem, body_ptr, TASK_FORCE_OFF_SHIP_BEGIN).ok()?;
+        if !is_heap_aligned(begin)
+            || !validate_task_force_ship_vector(mem, module_base, body_ptr, task_force_win)
+        {
             return None;
         }
     }
@@ -893,8 +962,14 @@ fn validate_task_force_ship_vector<M: NavalMissionMemory>(
     mem: &M,
     module_base: u64,
     task_force_body: u64,
+    task_force_win: Option<&[u8]>,
 ) -> bool {
-    let Ok(count) = mem.read_u32(task_force_body + TASK_FORCE_OFF_SHIP_COUNT as u64) else {
+    let Ok(count) = win_u32(
+        task_force_win,
+        mem,
+        task_force_body,
+        TASK_FORCE_OFF_SHIP_COUNT,
+    ) else {
         return false;
     };
     if count == 0 {
@@ -903,7 +978,12 @@ fn validate_task_force_ship_vector<M: NavalMissionMemory>(
     if count > MAX_OOB_TASK_FORCE_SHIPS {
         return false;
     }
-    let Ok(begin) = mem.read_u64(task_force_body + TASK_FORCE_OFF_SHIP_BEGIN as u64) else {
+    let Ok(begin) = win_u64(
+        task_force_win,
+        mem,
+        task_force_body,
+        TASK_FORCE_OFF_SHIP_BEGIN,
+    ) else {
         return false;
     };
     if !is_heap_aligned(begin) {
@@ -926,13 +1006,24 @@ fn read_cship_instance_id<M: NavalMissionMemory>(
     module_base: u64,
     ship_ptr: u64,
 ) -> Option<u32> {
+    let ship_window = mem.read_object_window::<CSHIP_WINDOW_LEN>(ship_ptr);
+    let ship_win = ship_window.as_ref().map(|window| window.as_slice());
+    read_cship_instance_id_from_window(mem, module_base, ship_ptr, ship_win)
+}
+
+fn read_cship_instance_id_from_window<M: NavalMissionMemory>(
+    mem: &M,
+    module_base: u64,
+    ship_ptr: u64,
+    ship_win: Option<&[u8]>,
+) -> Option<u32> {
     if !is_heap_aligned(ship_ptr) {
         return None;
     }
-    if mem.read_u64(ship_ptr).ok()? != module_base + CSHIP_VTABLE_RVA as u64 {
+    if win_u64(ship_win, mem, ship_ptr, 0).ok()? != module_base + CSHIP_VTABLE_RVA as u64 {
         return None;
     }
-    let handle = mem.read_u64(ship_ptr + CSHIP_OFF_HANDLE as u64).ok()?;
+    let handle = win_u64(ship_win, mem, ship_ptr, CSHIP_OFF_HANDLE).ok()?;
     if (handle & 0xFFFF_FFFF) as u32 != CSHIP_TYPE {
         return None;
     }
@@ -940,7 +1031,7 @@ fn read_cship_instance_id<M: NavalMissionMemory>(
     if instance_id == 0 || instance_id > MAX_SHIP_INSTANCE_ID {
         return None;
     }
-    if mem.read_u32(ship_ptr + CSHIP_OFF_REF100 as u64).ok()? != CSHIP_REF100_RAW {
+    if win_u32(ship_win, mem, ship_ptr, CSHIP_OFF_REF100).ok()? != CSHIP_REF100_RAW {
         return None;
     }
     Some(instance_id)
@@ -956,10 +1047,12 @@ fn validate_oob_body<M: NavalMissionMemory>(
     if !is_heap_aligned(body) {
         return None;
     }
-    if mem.read_u64(body).ok()? != module_base + vtable_rva as u64 {
+    let body_window = mem.read_object_window::<OOB_BODY_WINDOW_LEN>(body);
+    let body_win = body_window.as_ref().map(|window| window.as_slice());
+    if win_u64(body_win, mem, body, 0).ok()? != module_base + vtable_rva as u64 {
         return None;
     }
-    let handle = mem.read_u64(body + 0x08).ok()?;
+    let handle = win_u64(body_win, mem, body, 0x08).ok()?;
     if (handle & 0xFFFF_FFFF) as u32 != type_tag {
         return None;
     }
@@ -991,6 +1084,30 @@ fn u32_from(data: &[u8], offset: usize) -> u32 {
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(&data[offset..offset + 4]);
     u32::from_le_bytes(bytes)
+}
+
+fn win_u64<M: NavalMissionMemory>(
+    win: Option<&[u8]>,
+    mem: &M,
+    addr: u64,
+    off: usize,
+) -> Result<u64, ExtractError> {
+    match win {
+        Some(buf) => Ok(u64_from(buf, off)),
+        None => mem.read_u64(addr + off as u64),
+    }
+}
+
+fn win_u32<M: NavalMissionMemory>(
+    win: Option<&[u8]>,
+    mem: &M,
+    addr: u64,
+    off: usize,
+) -> Result<u32, ExtractError> {
+    match win {
+        Some(buf) => Ok(u32_from(buf, off)),
+        None => mem.read_u32(addr + off as u64),
+    }
 }
 
 #[cfg(test)]
@@ -1070,6 +1187,50 @@ mod tests {
 
         fn scan_qword_hits(&self, needle: u64) -> Result<Vec<u64>, ExtractError> {
             Ok(self.scan_hits.get(&needle).cloned().unwrap_or_default())
+        }
+    }
+
+    struct ContiguousFakeMemory {
+        inner: FakeMemory,
+        refused_windows: BTreeSet<u64>,
+    }
+
+    impl ContiguousFakeMemory {
+        fn new(inner: FakeMemory) -> Self {
+            Self {
+                inner,
+                refused_windows: BTreeSet::new(),
+            }
+        }
+
+        fn refusing(mut self, address: u64) -> Self {
+            self.refused_windows.insert(address);
+            self
+        }
+    }
+
+    impl NavalMissionMemory for ContiguousFakeMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            self.inner.read_bytes(address, len)
+        }
+
+        fn province_to_region(&self, province_id: u32) -> Option<u32> {
+            self.inner.province_to_region(province_id)
+        }
+
+        fn scan_qword_hits(&self, needle: u64) -> Result<Vec<u64>, ExtractError> {
+            self.inner.scan_qword_hits(needle)
+        }
+
+        fn read_object_window<const N: usize>(&self, address: u64) -> Option<[u8; N]> {
+            if self.refused_windows.contains(&address) {
+                return None;
+            }
+            self.inner.read_bytes(address, N).ok()?.try_into().ok()
         }
     }
 
@@ -1260,6 +1421,72 @@ mod tests {
         assert!(row.flags & compact::FLAG_FIXTURE_REQUIRED == 0);
         assert!(row.source_status & compact::STATUS_MISSION_FIXTURE_REQUIRED == 0);
         assert!(row.source_status & compact::STATUS_HOME_BASE_FIXTURE_REQUIRED == 0);
+    }
+
+    #[test]
+    fn bulk_windows_extract_rows_match_per_field_path() {
+        let mem = fake_memory();
+        let per_roots = resolve_naval_roots(&mem).unwrap();
+        let per_extracted = extract_rows_from_roots(&mem, &per_roots).unwrap();
+
+        let bulk_mem = ContiguousFakeMemory::new(mem);
+        let bulk_roots = resolve_naval_roots(&bulk_mem).unwrap();
+        let bulk_extracted = extract_rows_from_roots(&bulk_mem, &bulk_roots).unwrap();
+
+        assert_eq!(bulk_roots, per_roots);
+        assert_eq!(bulk_extracted, per_extracted);
+        let per_frame = encode_rows_with_naval_supremacy(
+            1,
+            0,
+            per_extracted.observed_task_forces,
+            &per_extracted.rows,
+            &per_extracted.naval_supremacy_rows,
+        );
+        let bulk_frame = encode_rows_with_naval_supremacy(
+            1,
+            0,
+            bulk_extracted.observed_task_forces,
+            &bulk_extracted.rows,
+            &bulk_extracted.naval_supremacy_rows,
+        );
+        assert_eq!(bulk_frame.payload, per_frame.payload);
+    }
+
+    #[test]
+    fn refused_object_windows_fall_back_to_per_field_path() {
+        let mem = fake_memory();
+        let per_roots = resolve_naval_roots(&mem).unwrap();
+        let per_extracted = extract_rows_from_roots(&mem, &per_roots).unwrap();
+
+        let refused_mem = ContiguousFakeMemory::new(mem)
+            .refusing(COUNTRY_1)
+            .refusing(FLEET_615)
+            .refusing(TASK_FORCE_617)
+            .refusing(SHIP_9001)
+            .refusing(PROVINCE_HOME_BASE)
+            .refusing(PROVINCE_REPAIR)
+            .refusing(REGION_16)
+            .refusing(NAVAL_DOMINANCE_16);
+        let refused_roots = resolve_naval_roots(&refused_mem).unwrap();
+        let refused_extracted = extract_rows_from_roots(&refused_mem, &refused_roots).unwrap();
+
+        assert_eq!(refused_roots, per_roots);
+        assert_eq!(refused_extracted, per_extracted);
+        let per_frame = encode_rows_with_naval_supremacy(
+            1,
+            0,
+            per_extracted.observed_task_forces,
+            &per_extracted.rows,
+            &per_extracted.naval_supremacy_rows,
+        );
+        let refused_frame = encode_rows_with_naval_supremacy(
+            1,
+            0,
+            refused_extracted.observed_task_forces,
+            &refused_extracted.rows,
+            &refused_extracted.naval_supremacy_rows,
+        );
+        assert_eq!(refused_frame.payload, per_frame.payload);
     }
 
     #[test]

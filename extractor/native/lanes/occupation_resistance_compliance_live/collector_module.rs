@@ -20,27 +20,35 @@ pub const STATE_OFF_RESISTANCE: usize = 0x278;
 pub const STATE_OFF_RESISTANCE_SPEED: usize = 0x280;
 pub const STATE_OFF_COMPLIANCE: usize = 0x2A8;
 pub const STATE_OFF_COMPLIANCE_SPEED: usize = 0x2B0;
+pub const STATE_ROOT_WINDOW_LEN: usize = STATE_OFF_SID + 4;
 
 pub const CPROVINCE_VTABLE_RVA: usize = 0x295AF68;
 pub const CPROVINCE_OFF_ID: usize = 0xA4;
 pub const CPROVINCE_OFF_STATE: usize = 0xC0;
+pub const CPROVINCE_WINDOW_LEN: usize = CPROVINCE_OFF_STATE + 8;
 
 pub const COUNTRY_VTABLE_RVA: usize = 0x27D0E90;
 pub const COUNTRY_OFF_TAG_DB_ID: usize = 0x08;
 pub const COUNTRY_OFF_OCCUPATION_STATUS: usize = 0xFD0;
 pub const COUNTRY_OFF_COLLABORATION_STATUS: usize = 0xFD8;
+pub const COUNTRY_WINDOW_LEN: usize = COUNTRY_OFF_COLLABORATION_STATUS + 8;
 pub const COUNTRY_OCCUPATION_STATUS_VTABLE_RVA: usize = 0x296DD50;
 pub const COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_RVA: usize = 0x296DD88;
 pub const COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_OFF: usize = 0x18;
 pub const COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF: usize = 0x118;
 pub const COUNTRY_OCCUPATION_STATUS_GARRISON_TEMPLATE_OFF: usize = 0x78;
+pub const COUNTRY_OCCUPATION_STATUS_WINDOW_LEN: usize =
+    COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF + 8;
 pub const COUNTRY_COLLABORATION_STATUS_VTABLE_RVA: usize = 0x29A5D58;
 pub const OCCUPATION_LAW_VTABLE_RVA: usize = 0x2928218;
 pub const OCCUPATION_LAW_NAME_OFF: usize = 0x10;
+pub const PDX_STRING_WINDOW_LEN: usize = 0x20;
+pub const OCCUPATION_LAW_WINDOW_LEN: usize = OCCUPATION_LAW_NAME_OFF + PDX_STRING_WINDOW_LEN;
 pub const DIVISION_TEMPLATE_VTABLE_RVA: usize = 0x2938F70;
 pub const DIVISION_TEMPLATE_TYPE: u32 = 52;
 pub const DIVISION_TEMPLATE_OFF_TYPE: usize = 0x08;
 pub const DIVISION_TEMPLATE_OFF_ID: usize = 0x0C;
+pub const DIVISION_TEMPLATE_WINDOW_LEN: usize = DIVISION_TEMPLATE_OFF_ID + 4;
 
 // Garrison scalar chain (wave-3 crack, validated on the paused D04 save vs the
 // same-tick save oracle: 303 CStateGarrisonData rows, clean diagonal, 0 stale;
@@ -54,6 +62,8 @@ pub const COUNTRY_OCCUPATION_DATA_VTABLE_RVA: usize = 0x296DD00;
 pub const COUNTRY_OCCUPATION_DATA_PARENT_STATUS_OFF: usize = 0x08;
 pub const COUNTRY_OCCUPATION_DATA_OCCUPIED_TAG_OFF: usize = 0x10;
 pub const COUNTRY_OCCUPATION_DATA_GARRISON_LIST_CONTAINER_OFF: usize = 0xD8;
+pub const COUNTRY_OCCUPATION_DATA_WINDOW_LEN: usize =
+    COUNTRY_OCCUPATION_DATA_GARRISON_LIST_CONTAINER_OFF + 8;
 pub const STATE_GARRISON_DATA_VTABLE_RVA: usize = 0x296DCB0;
 pub const STATE_GARRISON_DATA_STATE_OFF: usize = 0x50;
 pub const STATE_GARRISON_DATA_OCCUPATION_DATA_OFF: usize = 0x58;
@@ -117,6 +127,10 @@ pub trait OccupationMemory {
     fn read_i32(&self, address: u64) -> Result<i32, ExtractError> {
         let bytes = self.read_bytes(address, 4)?;
         Ok(i32::from_le_bytes(bytes[..4].try_into().unwrap()))
+    }
+
+    fn read_object_window<const N: usize>(&self, _address: u64) -> Option<[u8; N]> {
+        None
     }
 }
 
@@ -285,14 +299,17 @@ pub fn resolve_state_roots<M: OccupationMemory>(mem: &M) -> Result<StateRoots, E
             invalid_province_rows = invalid_province_rows.saturating_add(1);
             continue;
         }
-        let province_ok = mem.read_u64(province_ptr).ok() == Some(cprovince_vtable)
-            && mem.read_u32(province_ptr + CPROVINCE_OFF_ID as u64).ok() == Some(province_id);
+        let province_window = mem.read_object_window::<CPROVINCE_WINDOW_LEN>(province_ptr);
+        let province_win = province_window.as_ref().map(|window| window.as_slice());
+        let province_ok = win_u64(province_win, mem, province_ptr, 0).ok()
+            == Some(cprovince_vtable)
+            && win_u32(province_win, mem, province_ptr, CPROVINCE_OFF_ID).ok() == Some(province_id);
         if !province_ok {
             invalid_province_rows = invalid_province_rows.saturating_add(1);
             continue;
         }
         province_rows = province_rows.saturating_add(1);
-        let state_ptr = match mem.read_u64(province_ptr + CPROVINCE_OFF_STATE as u64) {
+        let state_ptr = match win_u64(province_win, mem, province_ptr, CPROVINCE_OFF_STATE) {
             Ok(value) => value,
             Err(_) => {
                 invalid_state_links = invalid_state_links.saturating_add(1);
@@ -306,8 +323,10 @@ pub fn resolve_state_roots<M: OccupationMemory>(mem: &M) -> Result<StateRoots, E
             invalid_state_links = invalid_state_links.saturating_add(1);
             continue;
         }
-        let state_ok = mem.read_u64(state_ptr).ok() == Some(state_vtable);
-        let state_id = mem.read_u32(state_ptr + STATE_OFF_SID as u64).unwrap_or(0);
+        let state_window = mem.read_object_window::<STATE_ROOT_WINDOW_LEN>(state_ptr);
+        let state_win = state_window.as_ref().map(|window| window.as_slice());
+        let state_ok = win_u64(state_win, mem, state_ptr, 0).ok() == Some(state_vtable);
+        let state_id = win_u32(state_win, mem, state_ptr, STATE_OFF_SID).unwrap_or(0);
         if !state_ok || !(1..=u16::MAX as u32).contains(&state_id) {
             invalid_state_links = invalid_state_links.saturating_add(1);
             continue;
@@ -382,21 +401,23 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
         if !is_heap_ptr(country_ptr) {
             continue;
         }
-        let country_ok = mem.read_u64(country_ptr).ok() == Some(country_vtable)
-            && mem
-                .read_u32(country_ptr + COUNTRY_OFF_TAG_DB_ID as u64)
-                .ok()
-                == Some(tag_id);
+        let country_window = mem.read_object_window::<COUNTRY_WINDOW_LEN>(country_ptr);
+        let country_win = country_window.as_ref().map(|window| window.as_slice());
+        let country_ok = win_u64(country_win, mem, country_ptr, 0).ok() == Some(country_vtable)
+            && win_u32(country_win, mem, country_ptr, COUNTRY_OFF_TAG_DB_ID).ok() == Some(tag_id);
         if !country_ok {
             continue;
         }
         summary.valid_country_roots = summary.valid_country_roots.saturating_add(1);
-        let status_ptr = mem
-            .read_u64(country_ptr + COUNTRY_OFF_OCCUPATION_STATUS as u64)
-            .unwrap_or(0);
-        let collab_ptr = mem
-            .read_u64(country_ptr + COUNTRY_OFF_COLLABORATION_STATUS as u64)
-            .unwrap_or(0);
+        let status_ptr =
+            win_u64(country_win, mem, country_ptr, COUNTRY_OFF_OCCUPATION_STATUS).unwrap_or(0);
+        let collab_ptr = win_u64(
+            country_win,
+            mem,
+            country_ptr,
+            COUNTRY_OFF_COLLABORATION_STATUS,
+        )
+        .unwrap_or(0);
         let collab_valid =
             is_heap_ptr(collab_ptr) && mem.read_u64(collab_ptr).ok() == Some(collab_vtable);
         if collab_valid {
@@ -404,11 +425,21 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
                 summary.valid_collaboration_status_roots.saturating_add(1);
         }
 
+        let status_window = if is_heap_ptr(status_ptr) {
+            mem.read_object_window::<COUNTRY_OCCUPATION_STATUS_WINDOW_LEN>(status_ptr)
+        } else {
+            None
+        };
+        let status_win = status_window.as_ref().map(|window| window.as_slice());
         let status_valid = is_heap_ptr(status_ptr)
-            && mem.read_u64(status_ptr).ok() == Some(status_vtable)
-            && mem
-                .read_u64(status_ptr + COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_OFF as u64)
-                .ok()
+            && win_u64(status_win, mem, status_ptr, 0).ok() == Some(status_vtable)
+            && win_u64(
+                status_win,
+                mem,
+                status_ptr,
+                COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_OFF,
+            )
+            .ok()
                 == Some(status_secondary_vtable);
         if !status_valid {
             summary.invalid_status_roots = summary.invalid_status_roots.saturating_add(1);
@@ -424,30 +455,53 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
             ..CountryOccupationStatus::default()
         };
 
-        let law_ptr = mem
-            .read_u64(status_ptr + COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF as u64)
-            .unwrap_or(0);
-        if is_heap_ptr(law_ptr) && mem.read_u64(law_ptr).ok() == Some(law_vtable) {
-            if let Some(name) = read_pdx_string(mem, law_ptr + OCCUPATION_LAW_NAME_OFF as u64) {
+        let law_ptr = win_u64(
+            status_win,
+            mem,
+            status_ptr,
+            COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF,
+        )
+        .unwrap_or(0);
+        let law_window = if is_heap_ptr(law_ptr) {
+            mem.read_object_window::<OCCUPATION_LAW_WINDOW_LEN>(law_ptr)
+        } else {
+            None
+        };
+        let law_win = law_window.as_ref().map(|window| window.as_slice());
+        if is_heap_ptr(law_ptr) && win_u64(law_win, mem, law_ptr, 0).ok() == Some(law_vtable) {
+            let name = match law_win {
+                Some(window) => window
+                    .get(OCCUPATION_LAW_NAME_OFF..OCCUPATION_LAW_WINDOW_LEN)
+                    .and_then(|blob| read_pdx_string_from_blob(mem, blob)),
+                None => read_pdx_string(mem, law_ptr + OCCUPATION_LAW_NAME_OFF as u64),
+            };
+            if let Some(name) = name {
                 rec.default_law_ptr = law_ptr;
                 rec.default_law_token_id = fnv1a32(&name);
                 summary.valid_default_law_roots = summary.valid_default_law_roots.saturating_add(1);
             }
         }
 
-        let template_ptr = mem
-            .read_u64(status_ptr + COUNTRY_OCCUPATION_STATUS_GARRISON_TEMPLATE_OFF as u64)
-            .unwrap_or(0);
+        let template_ptr = win_u64(
+            status_win,
+            mem,
+            status_ptr,
+            COUNTRY_OCCUPATION_STATUS_GARRISON_TEMPLATE_OFF,
+        )
+        .unwrap_or(0);
+        let template_window = if is_heap_ptr(template_ptr) {
+            mem.read_object_window::<DIVISION_TEMPLATE_WINDOW_LEN>(template_ptr)
+        } else {
+            None
+        };
+        let template_win = template_window.as_ref().map(|window| window.as_slice());
         if is_heap_ptr(template_ptr)
-            && mem.read_u64(template_ptr).ok() == Some(template_vtable)
-            && mem
-                .read_u32(template_ptr + DIVISION_TEMPLATE_OFF_TYPE as u64)
-                .ok()
+            && win_u64(template_win, mem, template_ptr, 0).ok() == Some(template_vtable)
+            && win_u32(template_win, mem, template_ptr, DIVISION_TEMPLATE_OFF_TYPE).ok()
                 == Some(DIVISION_TEMPLATE_TYPE)
         {
-            let template_id = mem
-                .read_u32(template_ptr + DIVISION_TEMPLATE_OFF_ID as u64)
-                .unwrap_or(0);
+            let template_id =
+                win_u32(template_win, mem, template_ptr, DIVISION_TEMPLATE_OFF_ID).unwrap_or(0);
             if template_id != 0 {
                 rec.garrison_template_ptr = template_ptr;
                 rec.garrison_template_id = template_id;
@@ -550,9 +604,15 @@ pub fn read_state_garrison_scalars<M: OccupationMemory>(
     let mut anomaly_rows = 0u32;
 
     for (&controller_tag_db_id, status) in occupation_status {
-        let container = match mem.read_u64(
-            status.occupation_status_ptr
-                + COUNTRY_OCCUPATION_STATUS_OCCUPATION_DATA_CONTAINER_OFF as u64,
+        let status_window = mem.read_object_window::<COUNTRY_OCCUPATION_STATUS_WINDOW_LEN>(
+            status.occupation_status_ptr,
+        );
+        let status_win = status_window.as_ref().map(|window| window.as_slice());
+        let container = match win_u64(
+            status_win,
+            mem,
+            status.occupation_status_ptr,
+            COUNTRY_OCCUPATION_STATUS_OCCUPATION_DATA_CONTAINER_OFF,
         ) {
             Ok(value) => value,
             Err(_) => {
@@ -570,7 +630,14 @@ pub fn read_state_garrison_scalars<M: OccupationMemory>(
         };
         let mut seen_occupation_data = BTreeSet::new();
         for occupation_data_ptr in iter_qword_heap_ptrs(&container_blob) {
-            if mem.read_u64(occupation_data_ptr).ok() != Some(occupation_data_vtable) {
+            let occupation_data_window =
+                mem.read_object_window::<COUNTRY_OCCUPATION_DATA_WINDOW_LEN>(occupation_data_ptr);
+            let occupation_data_win = occupation_data_window
+                .as_ref()
+                .map(|window| window.as_slice());
+            if win_u64(occupation_data_win, mem, occupation_data_ptr, 0).ok()
+                != Some(occupation_data_vtable)
+            {
                 continue;
             }
             if !seen_occupation_data.insert(occupation_data_ptr) {
@@ -579,24 +646,34 @@ pub fn read_state_garrison_scalars<M: OccupationMemory>(
             // Parent back-ref: this occupation-data record must belong to the
             // exact status root we reached it from; foreign records are not
             // anomalies, they are simply not ours.
-            if mem
-                .read_u64(occupation_data_ptr + COUNTRY_OCCUPATION_DATA_PARENT_STATUS_OFF as u64)
-                .ok()
+            if win_u64(
+                occupation_data_win,
+                mem,
+                occupation_data_ptr,
+                COUNTRY_OCCUPATION_DATA_PARENT_STATUS_OFF,
+            )
+            .ok()
                 != Some(status.occupation_status_ptr)
             {
                 continue;
             }
-            let occupied_tag_db_id = match mem
-                .read_u32(occupation_data_ptr + COUNTRY_OCCUPATION_DATA_OCCUPIED_TAG_OFF as u64)
-            {
+            let occupied_tag_db_id = match win_u32(
+                occupation_data_win,
+                mem,
+                occupation_data_ptr,
+                COUNTRY_OCCUPATION_DATA_OCCUPIED_TAG_OFF,
+            ) {
                 Ok(value) if value != 0 && value <= MAX_TAG_DB_ID => value,
                 _ => {
                     anomaly_rows = anomaly_rows.saturating_add(1);
                     continue;
                 }
             };
-            let garrison_container = match mem.read_u64(
-                occupation_data_ptr + COUNTRY_OCCUPATION_DATA_GARRISON_LIST_CONTAINER_OFF as u64,
+            let garrison_container = match win_u64(
+                occupation_data_win,
+                mem,
+                occupation_data_ptr,
+                COUNTRY_OCCUPATION_DATA_GARRISON_LIST_CONTAINER_OFF,
             ) {
                 Ok(value) => value,
                 Err(_) => {
@@ -835,24 +912,32 @@ fn read_state_row<M: OccupationMemory>(
 
 fn read_pdx_string<M: OccupationMemory>(mem: &M, address: u64) -> Option<String> {
     let blob = mem.read_bytes(address, 32).ok()?;
+    read_pdx_string_from_blob(mem, &blob)
+}
+
+fn read_pdx_string_from_blob<M: OccupationMemory>(mem: &M, blob: &[u8]) -> Option<String> {
     let size = u64_from(&blob, 0x10) as usize;
     let cap = u64_from(&blob, 0x18);
     if size == 0 || size > 255 {
         return None;
     }
+    let borrowed;
+    let owned;
     let raw = if cap == 15 {
-        blob.get(0..size.min(16))?.to_vec()
+        borrowed = blob.get(0..size.min(16))?;
+        borrowed
     } else {
         let ptr = u64_from(&blob, 0);
         if !is_heap_address(ptr) {
             return None;
         }
-        mem.read_bytes(ptr, size).ok()?
+        owned = mem.read_bytes(ptr, size).ok()?;
+        &owned
     };
     if !raw.iter().all(|byte| (32..127).contains(byte)) {
         return None;
     }
-    String::from_utf8(raw).ok()
+    std::str::from_utf8(raw).ok().map(str::to_string)
 }
 
 fn fnv1a32(text: &str) -> u32 {
@@ -899,6 +984,30 @@ fn i32_from(data: &[u8], offset: usize) -> i32 {
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(&data[offset..offset + 4]);
     i32::from_le_bytes(bytes)
+}
+
+fn win_u64<M: OccupationMemory>(
+    win: Option<&[u8]>,
+    mem: &M,
+    addr: u64,
+    off: usize,
+) -> Result<u64, ExtractError> {
+    match win {
+        Some(buf) => Ok(u64_from(buf, off)),
+        None => mem.read_u64(addr + off as u64),
+    }
+}
+
+fn win_u32<M: OccupationMemory>(
+    win: Option<&[u8]>,
+    mem: &M,
+    addr: u64,
+    off: usize,
+) -> Result<u32, ExtractError> {
+    match win {
+        Some(buf) => Ok(u32_from(buf, off)),
+        None => mem.read_u32(addr + off as u64),
+    }
 }
 
 #[cfg(test)]
@@ -967,6 +1076,42 @@ mod tests {
                 out.push(*byte);
             }
             Ok(out)
+        }
+    }
+
+    struct ContiguousFakeMemory {
+        inner: FakeMemory,
+        refused_windows: BTreeSet<u64>,
+    }
+
+    impl ContiguousFakeMemory {
+        fn new(inner: FakeMemory) -> Self {
+            Self {
+                inner,
+                refused_windows: BTreeSet::new(),
+            }
+        }
+
+        fn refusing(mut self, address: u64) -> Self {
+            self.refused_windows.insert(address);
+            self
+        }
+    }
+
+    impl OccupationMemory for ContiguousFakeMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            self.inner.read_bytes(address, len)
+        }
+
+        fn read_object_window<const N: usize>(&self, address: u64) -> Option<[u8; N]> {
+            if self.refused_windows.contains(&address) {
+                return None;
+            }
+            self.inner.read_bytes(address, N).ok()?.try_into().ok()
         }
     }
 
@@ -1081,6 +1226,70 @@ mod tests {
                 .get("occupation_garrison_template_rows"),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn bulk_windows_extract_rows_match_per_field_path() {
+        let mem = fake_memory_with_garrison(1);
+        let mut roots = BTreeMap::new();
+        roots.insert(10, STATE_10);
+
+        let per_field = extract_rows_from_state_roots(&mem, GAME_STATE, &roots).unwrap();
+        let bulk =
+            extract_rows_from_state_roots(&ContiguousFakeMemory::new(mem), GAME_STATE, &roots)
+                .unwrap();
+
+        assert_eq!(bulk, per_field);
+        let per_encoded = encode_rows(
+            25,
+            0,
+            per_field.observed_state_rows,
+            per_field.garrison_anomaly_rows,
+            &per_field.rows,
+        );
+        let bulk_encoded = encode_rows(
+            25,
+            0,
+            bulk.observed_state_rows,
+            bulk.garrison_anomaly_rows,
+            &bulk.rows,
+        );
+        assert_eq!(bulk_encoded.payload, per_encoded.payload);
+    }
+
+    #[test]
+    fn refused_object_windows_fall_back_to_per_field_path() {
+        let mem = fake_memory_with_garrison(1);
+        let mut roots = BTreeMap::new();
+        roots.insert(10, STATE_10);
+
+        let per_field = extract_rows_from_state_roots(&mem, GAME_STATE, &roots).unwrap();
+        let refused = extract_rows_from_state_roots(
+            &ContiguousFakeMemory::new(mem)
+                .refusing(COUNTRY_2)
+                .refusing(STATUS_2)
+                .refusing(OCC_DATA),
+            GAME_STATE,
+            &roots,
+        )
+        .unwrap();
+
+        assert_eq!(refused, per_field);
+        let per_encoded = encode_rows(
+            25,
+            0,
+            per_field.observed_state_rows,
+            per_field.garrison_anomaly_rows,
+            &per_field.rows,
+        );
+        let refused_encoded = encode_rows(
+            25,
+            0,
+            refused.observed_state_rows,
+            refused.garrison_anomaly_rows,
+            &refused.rows,
+        );
+        assert_eq!(refused_encoded.payload, per_encoded.payload);
     }
 
     #[test]

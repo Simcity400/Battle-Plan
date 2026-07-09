@@ -10,6 +10,8 @@ pub const CV_SIZE_MASK: u64 = 0x20;
 pub const NODE_STRIDE: u64 = 0x30;
 pub const NODE_VALUE: u64 = 0x20;
 pub const VALUE_SCALE_RAW: i64 = 100_000;
+pub const CVARIABLES_HEADER_WINDOW_LEN: usize = (CV_SIZE_MASK + 8) as usize;
+pub const MSVC_STRING_WINDOW_LEN: usize = 0x20;
 
 pub const HEAP_LO: u64 = 0x10000000000;
 pub const HEAP_HI: u64 = 0x7FF000000000;
@@ -49,6 +51,10 @@ pub trait MemoryRead {
         let mut bytes = [0u8; 4];
         self.read_into(addr, &mut bytes)?;
         Some(u32::from_le_bytes(bytes))
+    }
+
+    fn read_object_window<const N: usize>(&self, _addr: u64) -> Option<[u8; N]> {
+        None
     }
 }
 
@@ -230,6 +236,9 @@ pub fn rtti_type_name<R: MemoryRead>(mem: &R, module_base: u64, obj: u64) -> Opt
 }
 
 pub fn read_msvc_string<R: MemoryRead>(mem: &R, addr: u64) -> Option<String> {
+    if let Some(window) = mem.read_object_window::<MSVC_STRING_WINDOW_LEN>(addr) {
+        return read_msvc_string_from_header(mem, &window);
+    }
     let size = mem.read_u64(addr.saturating_add(0x10))? as usize;
     let cap = mem.read_u64(addr.saturating_add(0x18))? as usize;
     if size == 0 || size > MAX_KEYLEN || size > cap || cap >= (1 << 20) {
@@ -253,6 +262,12 @@ fn stable_header<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u32, u3
 }
 
 fn stable_header_pair<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u64)> {
+    if let Some(window) = mem.read_object_window::<CVARIABLES_HEADER_WINDOW_LEN>(container) {
+        return Some((
+            read_u64_le(&window, CV_BASE as usize)?,
+            read_u64_le(&window, CV_SIZE_MASK as usize)?,
+        ));
+    }
     let addr = container.saturating_add(CV_BASE);
     let mut bytes = [0u8; 16];
     if mem.read_into(addr, &mut bytes).is_some() {
@@ -274,10 +289,8 @@ fn read_variables_container_snapshot<R: MemoryRead>(
     if span_len == 0 || span_len > VARIABLE_TABLE_SNAPSHOT_MAX_BYTES {
         return None;
     }
-    let bytes = mem.read_exact(base, span_len)?;
-    if bytes.len() != span_len {
-        return None;
-    }
+    let mut bytes = vec![0u8; span_len];
+    mem.read_into(base, &mut bytes)?;
     scan_variables_snapshot(mem, &bytes, size)
 }
 
@@ -331,6 +344,24 @@ fn read_msvc_string_from_node_snapshot<R: MemoryRead>(mem: &R, node: &[u8]) -> O
         read_msvc_string_from_bytes(data, size)
     } else {
         read_msvc_string_bytes(mem, read_u64_le(node, 0)?, size)
+    }
+}
+
+fn read_msvc_string_from_header<R: MemoryRead>(mem: &R, header: &[u8]) -> Option<String> {
+    let size = read_u64_le(header, 0x10)? as usize;
+    let cap = read_u64_le(header, 0x18)? as usize;
+    if size == 0 || size > MAX_KEYLEN || size > cap || cap >= (1 << 20) {
+        return None;
+    }
+    let inline = cap == 15;
+    if !inline && cap < 16 {
+        return None;
+    }
+    if inline {
+        let data = header.get(..size.checked_add(1)?)?;
+        read_msvc_string_from_bytes(data, size)
+    } else {
+        read_msvc_string_bytes(mem, read_u64_le(header, 0)?, size)
     }
 }
 
@@ -395,8 +426,9 @@ fn read_i64_le(bytes: &[u8], offset: usize) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct FixtureMemory {
         segments: Vec<(u64, Vec<u8>)>,
     }
@@ -421,6 +453,87 @@ mod tests {
             }
             None
         }
+    }
+
+    struct ContiguousFixtureMemory {
+        inner: FixtureMemory,
+        refused_windows: BTreeSet<u64>,
+    }
+
+    impl ContiguousFixtureMemory {
+        fn new(inner: FixtureMemory) -> Self {
+            Self {
+                inner,
+                refused_windows: BTreeSet::new(),
+            }
+        }
+
+        fn refusing(mut self, addr: u64) -> Self {
+            self.refused_windows.insert(addr);
+            self
+        }
+    }
+
+    impl MemoryRead for ContiguousFixtureMemory {
+        fn read_exact(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            self.inner.read_exact(addr, len)
+        }
+
+        fn read_object_window<const N: usize>(&self, addr: u64) -> Option<[u8; N]> {
+            if self.refused_windows.contains(&addr) {
+                return None;
+            }
+            let bytes = self.inner.read_exact(addr, N)?;
+            bytes.try_into().ok()
+        }
+    }
+
+    fn complete_country_variable_fixture() -> (u64, u64, FixtureMemory) {
+        let module_base = 0x7FF7_0000_0000;
+        let country = 0x2000_0000_0000;
+        let container = 0x2000_0000_1000;
+        let node_base = 0x2000_0000_3000;
+        let mut mem = FixtureMemory::default();
+
+        let mut country_bytes = vec![0u8; 0x300];
+        put_u64(&mut country_bytes, OBJ_VARIABLES as usize, container);
+        mem.add(country, country_bytes);
+
+        let mut container_bytes = vec![0u8; 0x40];
+        put_u64(&mut container_bytes, 0, module_base + 0x5000);
+        put_u64(&mut container_bytes, CV_BASE as usize, node_base);
+        put_u64(
+            &mut container_bytes,
+            CV_SIZE_MASK as usize,
+            2 | (3u64 << 32),
+        );
+        mem.add(container, container_bytes);
+
+        let mut vtable_prefix = vec![0u8; 16];
+        put_u64(&mut vtable_prefix, 0, module_base + 0x6000);
+        mem.add(module_base + 0x5000 - 8, vtable_prefix);
+
+        let mut col = vec![0u8; 0x20];
+        put_u32(&mut col, 0x0C, 0x7000);
+        mem.add(module_base + 0x6000, col);
+
+        let mut type_descriptor = vec![0u8; 0x100];
+        type_descriptor[0x10..0x10 + RTTI_VARIABLES.len()]
+            .copy_from_slice(RTTI_VARIABLES.as_bytes());
+        mem.add(module_base + 0x7000, type_descriptor);
+
+        let mut nodes = vec![0u8; ((4 + 4) * NODE_STRIDE) as usize];
+        put_inline_string(&mut nodes, 0, "foo");
+        put_i64(&mut nodes, NODE_VALUE as usize, 1_100_000);
+        put_inline_string(&mut nodes, NODE_STRIDE as usize, "bar^0");
+        put_i64(
+            &mut nodes,
+            NODE_STRIDE as usize + NODE_VALUE as usize,
+            -1_073_741_542,
+        );
+        mem.add(node_base, nodes);
+
+        (module_base, country, mem)
     }
 
     #[test]
@@ -474,6 +587,31 @@ mod tests {
         assert_eq!(read.declared_size, 2);
         assert_eq!(read.entries.get("foo").copied(), Some(1_100_000));
         assert_eq!(read.entries.get("bar^0").copied(), Some(-1_073_741_542));
+    }
+
+    #[test]
+    fn bulk_window_country_variables_match_per_field_path() {
+        let (module_base, country, mem) = complete_country_variable_fixture();
+        let per_field = read_country_variables(&mem, module_base, country);
+        let bulk = read_country_variables(&ContiguousFixtureMemory::new(mem), module_base, country);
+
+        assert_eq!(bulk, per_field);
+        assert_eq!(bulk.status, VariableReadStatus::Measured);
+    }
+
+    #[test]
+    fn refused_window_country_variables_falls_back_to_per_field_path() {
+        let (module_base, country, mem) = complete_country_variable_fixture();
+        let container = mem.read_u64(country + OBJ_VARIABLES).unwrap();
+        let per_field = read_country_variables(&mem, module_base, country);
+        let refused = read_country_variables(
+            &ContiguousFixtureMemory::new(mem).refusing(container),
+            module_base,
+            country,
+        );
+
+        assert_eq!(refused, per_field);
+        assert_eq!(refused.status, VariableReadStatus::Measured);
     }
 
     #[test]
