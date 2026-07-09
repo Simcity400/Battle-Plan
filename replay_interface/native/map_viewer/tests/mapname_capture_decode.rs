@@ -45,6 +45,7 @@ fn sovietunion_chars() -> Vec<FntChar> {
             y: 473.0,
             width: 45.0,
             height: 57.0,
+            xadvance: 0.0,
         }, // S
         FntChar {
             id: 79,
@@ -52,6 +53,7 @@ fn sovietunion_chars() -> Vec<FntChar> {
             y: 479.0,
             width: 54.0,
             height: 57.0,
+            xadvance: 0.0,
         }, // O
         FntChar {
             id: 86,
@@ -59,6 +61,7 @@ fn sovietunion_chars() -> Vec<FntChar> {
             y: 598.0,
             width: 53.0,
             height: 55.0,
+            xadvance: 0.0,
         }, // V
         FntChar {
             id: 73,
@@ -66,6 +69,7 @@ fn sovietunion_chars() -> Vec<FntChar> {
             y: 647.0,
             width: 32.0,
             height: 55.0,
+            xadvance: 0.0,
         }, // I
         FntChar {
             id: 69,
@@ -73,6 +77,7 @@ fn sovietunion_chars() -> Vec<FntChar> {
             y: 649.0,
             width: 39.0,
             height: 55.0,
+            xadvance: 0.0,
         }, // E
         FntChar {
             id: 84,
@@ -80,6 +85,7 @@ fn sovietunion_chars() -> Vec<FntChar> {
             y: 585.0,
             width: 48.0,
             height: 55.0,
+            xadvance: 0.0,
         }, // T
         FntChar {
             id: 85,
@@ -87,6 +93,7 @@ fn sovietunion_chars() -> Vec<FntChar> {
             y: 543.0,
             width: 48.0,
             height: 56.0,
+            xadvance: 0.0,
         }, // U
         FntChar {
             id: 78,
@@ -94,6 +101,7 @@ fn sovietunion_chars() -> Vec<FntChar> {
             y: 585.0,
             width: 48.0,
             height: 55.0,
+            xadvance: 0.0,
         }, // N
     ]
 }

@@ -256,6 +256,7 @@ fn placement_from_fit(fit: &BaselineFit) -> CountryLabelPlacement {
         minor_extent_incl: 2.0 * fit.cap_height,
         breadth_span: 2.0 * fit.cap_height,
         breadth_p2_98: 2.0 * fit.cap_height,
+        curve: None,
     }
 }
 

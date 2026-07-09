@@ -47,7 +47,8 @@
 //! stay UNKNOWN-ENGINE-SIDE / UNTRACED.
 
 use map_viewer::{
-    decode_label, decode_vertices, fit_baseline, glyph_quads, parse_fnt_chars, FntChar, GlyphQuad,
+    decode_label, decode_vertices, draw_country_names_cutoff_from_resolver, fit_baseline,
+    glyph_quads, label_draw_visible, parse_fnt_chars, FntChar, GameFileResolver, GlyphQuad,
 };
 
 const NUM_DRAWS: usize = 23;
@@ -208,6 +209,107 @@ fn all_23_strings_resolve_cleanly() {
 }
 
 #[test]
+fn draw_time_cull_matches_the_captured_drawn_set() {
+    // RE-EMIT §6.2a: the BUILT label set is camera-independent (the
+    // visibility is a DRAW-time cull. `label_draw_visible` is that cull, and
+    // this capture pins its two laws:
+    //
+    // 1. CUTOFF (output-observable): every one of the 23 drawn labels was
+    //    captured at vCamPos.y >= the shipped cutoff (260, read from the
+    //    defines via the resolver — never a literal). Asserted 23/23.
+    // 2. FRUSTUM is pixel-neutral, and a TIGHT per-glyph reject is REFUTED as
+    //    the engine's submission law: draw 8's glyph strip projects ENTIRELY
+    //    off-frame (NDC y in [1.04, 1.14]) yet the engine SUBMITTED it — the
+    //    GPU clipped it to nothing. So the gate asserts recall 1.0 on every
+    //    draw that has at least one on-screen point (pixel-producing labels
+    //    must never be culled), and separately reports the fully-offscreen
+    //    submissions where a conservative skip is pixel-identical.
+    //
+    // Honest scope (precision): the 7B save's full BUILT label set is not
+    // reconstructable (its owner raster was not captured — MAP_LABEL_LAW §5.1),
+    // so drawn-set PRECISION against that save cannot be measured here; recall
+    // on the engine's own drawn geometry + the negative controls below are
+    // what this capture can prove. SKIPS without the local game install.
+    let game = std::path::PathBuf::from(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
+    let Ok(resolver) = GameFileResolver::vanilla(game) else {
+        eprintln!("SKIP draw-cull gate: no local the game install");
+        return;
+    };
+    let cutoff = draw_country_names_cutoff_from_resolver(&resolver)
+        .expect("shipped defines carry DRAW_COUNTRY_NAMES_CUTOFF");
+    assert!(
+        (cutoff - 260.0).abs() < 1e-3,
+        "vanilla cutoff is 260, defines gave {cutoff}"
+    );
+    let draws = draws();
+    let mut kept = 0usize;
+    let mut onscreen = 0usize;
+    let mut offscreen_submitted: Vec<usize> = Vec::new();
+    for (i, (vb, cb0)) in draws.iter().enumerate() {
+        let verts = decode_vertices(vb).unwrap();
+        let world_pts: Vec<[f32; 3]> = verts.iter().map(|v| [v.x, v.y, v.z]).collect();
+        let f = cb0_floats(cb0);
+        let vp: [f32; 16] = f[0..16].try_into().unwrap();
+        let cam_height = f[53]; // vCamPos.y
+                                // Law 1: the engine drew this label, so its camera must pass the
+                                // shipped cutoff.
+        assert!(
+            cam_height >= cutoff,
+            "draw {i}: engine drew a label at cam_height {cam_height} BELOW the \
+             shipped cutoff {cutoff} — the cutoff law is wrong"
+        );
+        // Does the label have any pixel-producing (on-screen, in-front) point?
+        let m = |r: usize, c: usize| vp[r * 4 + c] as f64;
+        let has_pixels = world_pts.iter().any(|p| {
+            let v = [p[0] as f64, p[1] as f64, p[2] as f64, 1.0];
+            let clip: [f64; 4] = std::array::from_fn(|r| (0..4).map(|c| m(c, r) * v[c]).sum());
+            clip[3] > 0.0 && (clip[0] / clip[3]).abs() <= 1.0 && (clip[1] / clip[3]).abs() <= 1.0
+        });
+        let visible = label_draw_visible(&world_pts, &vp, cam_height, cutoff);
+        if has_pixels {
+            onscreen += 1;
+            // Law 2: a pixel-producing label must NEVER be culled.
+            assert!(
+                visible,
+                "draw {i}: label has on-screen pixels but the cull rejected it"
+            );
+        } else if !visible {
+            // Fully-offscreen submission (engine drew it, GPU clipped it):
+            // skipping it is pixel-identical. Report, don't assert.
+            offscreen_submitted.push(i);
+        }
+        if visible {
+            kept += 1;
+        }
+        // Negative controls on the same geometry:
+        // (a) below the cutoff the label must not draw;
+        assert!(
+            !label_draw_visible(&world_pts, &vp, cutoff - 10.0, cutoff),
+            "draw {i}: cutoff cull failed"
+        );
+        // (b) translating the world geometry far outside the frustum culls it
+        //     (x += 100k map units is far beyond any captured view).
+        let far: Vec<[f32; 3]> = world_pts
+            .iter()
+            .map(|p| [p[0] + 100_000.0, p[1], p[2]])
+            .collect();
+        assert!(
+            !label_draw_visible(&far, &vp, cam_height, cutoff),
+            "draw {i}: frustum cull failed"
+        );
+    }
+    eprintln!(
+        "draw-cull: cutoff 23/23 pass; pixel-producing recall {onscreen}/{onscreen}; \
+         kept {kept}/{}; engine-submitted-but-offscreen (pixel-neutral skips): {:?}",
+        draws.len(),
+        offscreen_submitted
+    );
+    // The overwhelming majority of the drawn set is genuinely on-screen; the
+    // capture evidences at least 20 pixel-producing labels.
+    assert!(onscreen >= 20, "only {onscreen}/23 draws project on-screen");
+}
+
+#[test]
 fn law_arc_model_reproduces_all_23_engine_baselines() {
     // (4): the placement law's arc model fits each engine baseline. Per LAB3 the
     // MEAN RMS across the 23 is ≈0.158 (max ≈1.14). Assert the aggregate mean is
@@ -237,6 +339,10 @@ fn law_arc_model_reproduces_all_23_engine_baselines() {
     }
     assert!(n >= 20, "expected ~23 multi-glyph labels, fit {n}");
     let mean_rms = (rms_sum / n as f64) as f32;
+    eprintln!(
+        "arc-model vs 23 engine baselines: mean RMS {mean_rms:.4} wu, worst per-label \
+         RMS {rms_max:.4}, worst max residual {worst_max:.4}"
+    );
     // LAB3 measured mean RMS ≈ 0.158. Gate at 0.35 (> the cited value with head-
     // room, << one world unit): a real regression trips this.
     assert!(

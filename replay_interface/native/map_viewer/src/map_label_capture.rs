@@ -320,6 +320,9 @@ pub struct FntChar {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Pen advance (font px) — the BMFont `xadvance` metric (spaces carry a
+    /// nonzero advance but a zero-area rect).
+    pub xadvance: f32,
 }
 
 /// Parse the BMFont *text* `.fnt` header we need: `scaleW`/`scaleH` and the char
@@ -345,12 +348,17 @@ pub fn parse_fnt_chars(text: &str) -> (f32, f32, Vec<FntChar>) {
                 f.get("width").and_then(|v| v.parse().ok()),
                 f.get("height").and_then(|v| v.parse().ok()),
             ) {
+                let xadvance = f
+                    .get("xadvance")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.0);
                 chars.push(FntChar {
                     id,
                     x,
                     y,
                     width: w,
                     height: h,
+                    xadvance,
                 });
             }
         }
@@ -527,6 +535,7 @@ mod tests {
                 y: 200.0,
                 width: 40.0,
                 height: 50.0,
+                xadvance: 0.0,
             },
             FntChar {
                 id: 66,
@@ -534,6 +543,7 @@ mod tests {
                 y: 600.0,
                 width: 45.0,
                 height: 55.0,
+                xadvance: 0.0,
             },
         ];
         let mut b = Vec::new();

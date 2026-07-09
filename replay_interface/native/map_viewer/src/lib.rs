@@ -192,8 +192,9 @@ pub use map_label_capture::{
     MAPNAME_VERTEX_STRIDE, POSITION_OFFSET, TEXCOORD_OFFSET, VERTS_PER_GLYPH,
 };
 pub use map_label_law::{
-    compute_country_label_placements, principal_axis, CountryLabelPlacement, GlyphScale,
-    LabelLawInputs, ProvinceKind, ENGINE_TITLE_CAP_COEF, ENGINE_TITLE_FIT_COEF,
+    compute_country_label_placements, compute_country_label_placements_with_text,
+    label_draw_visible, principal_axis, CountryLabelPlacement, EngineCurve, GlyphScale,
+    LabelLawInputs, LabelTextMetrics, ProvinceKind, ENGINE_TITLE_CAP_COEF, ENGINE_TITLE_FIT_COEF,
     LABEL_AB_HYSTERESIS, LABEL_HEIGHT_BREADTH_K, LABEL_OFFSET_PX, LABEL_SAMPLE_STEP,
 };
 pub use map_static_data::{

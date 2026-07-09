@@ -64,14 +64,40 @@ bulk reads work: `weather_live` reads 5.26 MB in **5 reads**, costs ~1.5 ms for 
 - **G4 size:** measured bytes/game-hour on the same capture, projected to 105 k game-hours.
 - Only live paired A/B counts (~±13 % single-capture noise); no cross-run comparisons at
   different state depths.
+- **G5 bounded memory & post-processing:** recorder host peak private bytes must stay under
+  ~2 GB regardless of session length, and replay finalization must complete in time
+  proportional to a small constant × capture time (streaming, not batch). Evidence for the
+  defect: 2026-07-09 ShortSpeed5 run (`production_speed5_ShortSpeed5_20260709_124210`) —
+  collector_record.exe reached **27 GB working set / 34 GB private** and post-processing ran
+  >15 min after a 300 s capture (hoi4.exe itself: 4.8 GB). User verdict: absurd, major
+  problem. A full-game capture cannot complete under the current batch fold/pack design.
 
 ## Phase 0 — Ground truth (small)
 
-1. One clean speed-5 zero-skip run at current head, deep-war save, dev rig → the honest
-   pre-plan baseline (none exists today; latest smoke was cold/paused and gate-invalid).
-2. Same run affinity-limited to 6 cores → portability baseline.
-3. Wire the fold-equivalence harness (decode stream → fold → hash per hour) so G1 is a
-   one-command check for every later phase.
+1. ~~One clean speed-5 run at current head~~ **DONE 2026-07-09** —
+   `runs/production_speed5_ShortSpeed5_20260709_124210` (live mid-war, speed 5, 300 s,
+   55 domains, full launcher production shape). **The honest baseline is a hard FAIL:**
+   - frame avg 69.9 ms, p95 82.4 ms, max 130.1 ms (sum of per-domain avgs 176.9 ms,
+     parallel lanes); game advanced ~21 game-h/s.
+   - **3,897 of 6,346 game hours SKIPPED (61 % data loss)** — the status quo already
+     violates the zero-data-loss requirement at speed 5. Phase 2 is a correctness fix.
+   - raw stream **28.15 GB / 300 s** (~11.5 MB per captured hour → ~1.2 TB full game).
+     d53 emitted 855.9 M "changed" rows in 2,450 frames (~349 k/frame) — its delta path is
+     effectively full-replace.
+   - host RAM 27–34 GB + post-processing killed manually after ~55 min, still unfinished
+     (G5 evidence). The partial fold had already written **~65 GB of per-hour snapshot
+     JSONs** for ~2,449 captured hours (~27 MB/hour) on top of the 28 GB stream — the
+     snapshot representation is ~2.3× the stream at deep-war, confirming Phase 3's
+     keyframe/binary/zstd priorities. Partial snapshots deleted 2026-07-09; the 28 GB
+     stream is retained as the Phase 1b/G5 scale-test input.
+   - **stream not decodable**: 4 parse errors, `focus depth row N has no token context`
+     (focus_research_decisions_depth_live encoder emits rows the host decoder rejects) —
+     BUG, gate-failing independently of skips. Fix in Phase 1b window.
+   - top read costs this save: d53 29.4 ms avg / 36.0 p95; map_detail 15.2; supply 14.2;
+     divisions 13.4; division_equipment 13.0.
+2. 6-core portability run: DEFERRED until after Phase 2 (measuring a known failure adds
+   nothing while frames cost ~70 ms and 61 % of hours already skip at full cores).
+3. Fold-equivalence harness (G1): in progress (fold_check tool).
 
 ## Phase 1 — Strip debug taxes + `--profile` switch (fast, low risk)
 
@@ -106,6 +132,26 @@ production readers) and must never be a debug profile.
 
 Expected: a few ms/frame (3.17 M rc_bump calls + perf-record building), container ~2×
 smaller immediately (single representation), clean profile surface for everything after.
+
+## Phase 1b — Bounded-memory streaming fold/pack (recorder host) — PROMOTED 2026-07-09
+
+Defect (see G5): the host's post-capture replay build batch-folds the entire session in RAM
+(27–34 GB for a 300 s speed-5 mid-war run) and takes >3× the capture time. Required rewrite:
+
+1. **Fold incrementally during capture:** consume the pipe stream as it arrives, maintain
+   only the CURRENT world state + the in-progress hour, emit each finished hour's snapshot
+   (or delta) to disk immediately, then release it. Peak memory becomes O(world state), not
+   O(session).
+2. **Stream the container:** write `.battleplan` entries incrementally (zip supports
+   streaming append); never buffer the whole stream or all snapshots in memory. Verify
+   entries by re-reading from disk, not from RAM copies.
+3. Finalization after the capture ends should be seconds (index/manifest write + container
+   close), not minutes.
+4. Gate: G5 measured on a live speed-5 run (peak private bytes logged into the manifest),
+   plus G1 fold-equivalence — the streaming fold must hash identical to the batch fold on
+   the same stream.
+
+This phase is independent of the DLL hot loop and can proceed in parallel with Phase 2.
 
 ## Phase 2 — The Big Five: bulk-read collapse (time) + delta emission (bytes)
 
