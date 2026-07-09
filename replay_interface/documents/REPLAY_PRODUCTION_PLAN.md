@@ -76,8 +76,10 @@ spec may introduce a bare vanilla path join.
 
 ## 1. Current state (2026-07-09, branch `claude/replay-engine-extraction-18b40f`)
 
-- **Tests:** 820 passed / 0 failed across `map_viewer`, `replay_app`,
-  `game_ui` (incl. all pool/oracle gate suites).
+- **Tests:** **1036 passed / 0 failed** across `map_viewer`, `replay_app`,
+  `game_ui`, `replay_core`, `terrain_capture` (incl. all pool/oracle/fixture
+  gate suites). Was 820 at plan authoring; +216 from the 2026-07-09
+  orchestration wave (see §1a).
 - **Fidelity ledger** (`FIDELITY_LEDGER.md` §1): **78 FILE / 24 CAPTURE /
   38 FIT / 46 UNKNOWN** parameter rows. FIT+UNKNOWN = the burn-down (§3 there).
 - **Parity oracle:** 38 vanilla political RenderDoc frames mined
@@ -100,6 +102,45 @@ spec may introduce a bare vanilla path join.
   building damage already landed in `extractor/` per the 2026-07-09
   reconciliation sweep — evidence the schema in REPLAY_DATA_REQUIREMENTS.md is
   being honored, which de-risks fixture fidelity.
+
+## 1a. Progress log — 2026-07-09 orchestration wave 1
+
+Merged to the session branch (each verified independently: own test runs, own
+pyghidra re-checks of every binary citation, diff-scope review). Lane reports
+archived under `documents/lane_reports/`.
+
+- **A1+A2 DONE** — `replay_fixture_gen` crate (uses the shared
+  `extractor/native/snapshot::pack` API) emits 12 scenario + 4 negative packed
+  **snapshot-flavor** `.battleplan` fixtures + a manifest; determinism is
+  seed-exact (verified byte-identical same-seed, committed == regenerated);
+  `replay_core/tests/fixture_conformance.rs` loads every positive through the
+  real `ReplaySource` and rejects every negative.
+- **A3 skeleton DONE** — `replay_core` now exposes typed `WorldTimeline` views
+  for all requirements items (units/session/supremacy/weather/identity/
+  diplomacy/topbar/buildings + `visibility_for(pov)`), a `ViewStatus`
+  absent-vs-unavailable distinction (A6), and `seek`/`play_to` hooks (A4).
+  Additive — zero public items removed. Fixture-gated round-trips (the full A3
+  gate) are the next step now that A1/A2 fixtures exist.
+- **B1 narrowed** — water border pool 8,500 → **8,534/8,560** via the ported
+  post-smoothing f32 emission law (15 instruction citations, all Ghidra-verified
+  by me); land held 27,018/27,018. 26 sub-pixel rows + island loops remain.
+- **C1 files-first DONE** — `unit_counter_assets.rs` decodes the full counter
+  asset chain (mapicons/subuniticons/texticons/fonts via the resolver);
+  `UNIT_COUNTER_LAW.md` classifies FILE vs CAPTURE-GATED; CAP6 ask sharpened.
+- **C8 FoW law CRACKED** — from the live CAP4 observe-on/off pair (see below):
+  carrier = screen-space `ShadowMap` SRV, FoW color/alpha packed `.g/.b`,
+  `ApplyFOW` at `pdxmap.shader:388`, producer `fow.fxh` (world-position
+  sampled). `fow_law.rs` + parity gate (full-frame mean abs 0.00109). This is
+  the marquee result of the day. Residual: hidden-unit culling (B10 follow-up).
+- **Capture automation** — scaffold merged (4 fail-closed control commands +
+  game-clock/FoW heartbeat, render-thread-marshalled); the engine-RE follow-up
+  (camera object / console dispatch / render-view / owner-map roots) is
+  **in progress** on an isolated Ghidra project copy. Closes future-session toil.
+- **Live capture session (`session_WAVE1_CAP4`)** — war-era player save;
+  delivered the **FoW pair (= plan CAP10)** cleanly + partial counters + auto
+  zoom rounds; preserved twice (F: full 8.2 GB, C: jewels). Session-harness
+  fixes shipped: CAPFIX4/5 (idle-anchored dwell), the `replay_app` non-test
+  build fix, the fixture gitignore fix, runbook control-path correction.
 
 ---
 
@@ -156,9 +197,9 @@ the trichotomy (value / inherited / unavailable) preserved.
 
 | # | Item | Gate | Status |
 |---|---|---|---|
-| A1 | Fixture generator v1: extend `replay_interface/replay/` to emit schema-complete synthetic recordings (hourly snapshots + compact deltas, all container roles) | shared-validator conformance pass on every fixture | OPEN |
-| A2 | Scenario fixture set: owner/controller flips, cosmetic-tag + ideology changes, war/faction matrix evolution, capital moves, weather sweep, **snow/mud accumulator evolution (SnowMudData texture + fade phase per requirements item 6)**, topbar scalar sweep, division movement, naval/air activity, building damage, **per-POV visibility evolution (FoW flips + unit spot/lose events)**, **DLC-set variation (NAME1b DLC-gated cosmetics) + localisation-language selection** | one named fixture per consumer contract; enumerated in a manifest | OPEN |
-| A3 | `replay_core` ingest of every requirements item (1–10 + 7b/8b/9b/**13**): parse, index by time, expose typed views (incl. `visibility_for(pov_tag)` province view + spotted-units view) | round-trip gates: generator value == view value at every probed hour, incl. delta-reconstruction == snapshot cross-check | PARTIAL (owner/controller views exist, world_timeline tests green; most fields unserved) |
+| A1 | Fixture generator v1: extend `replay_interface/replay/` to emit schema-complete synthetic recordings (hourly snapshots + compact deltas, all container roles) | shared-validator conformance pass on every fixture | **DONE 2026-07-09** — `replay_fixture_gen` crate via `snapshot::pack`; snapshot-flavor packed containers; seed-exact determinism verified |
+| A2 | Scenario fixture set: owner/controller flips, cosmetic-tag + ideology changes, war/faction matrix evolution, capital moves, weather sweep, **snow/mud accumulator evolution (SnowMudData texture + fade phase per requirements item 6)**, topbar scalar sweep, division movement, naval/air activity, building damage, **per-POV visibility evolution (FoW flips + unit spot/lose events)**, **DLC-set variation (NAME1b DLC-gated cosmetics) + localisation-language selection** | one named fixture per consumer contract; enumerated in a manifest | **DONE 2026-07-09** — 12 positive scenario fixtures (incl. `fx_pov_visibility`, `fx_snow_mud_accumulator`, `fx_dlc_language_variation`) + 4 negative in `replay_interface/fixtures/manifest.json` |
+| A3 | `replay_core` ingest of every requirements item (1–10 + 7b/8b/9b/**13**): parse, index by time, expose typed views (incl. `visibility_for(pov_tag)` province view + spotted-units view) | round-trip gates: generator value == view value at every probed hour, incl. delta-reconstruction == snapshot cross-check | **SKELETON DONE 2026-07-09** — typed views for all items + `ViewStatus` (A6) + `seek`/`play_to` (A4) landed, additive; **remaining: wire the views to A1/A2 packed fixtures for the round-trip gate** (inline-synthetic tests only so far) |
 | A4 | Time semantics: hourly resolution, seek/scrub to arbitrary hour, forward/backward, mid-file start (snapshot + delta replay) | seek(h) == linear-play-to(h) equality gate on all fixtures | PARTIAL (timeline.rs scrub exists for captured moments) |
 | A5 | Renderer keying swap: political fill/borders/labels/furniture read owner+controller+cosmetic from WorldTimeline instead of static history parse | pixel-identical output at t0 vs current static path on the 1936 baseline; then divergence gates on flip fixtures (expected-diff oracles) | OPEN — **this is the single highest-leverage item in the plan** |
 | A6 | Fail-closed data absence: every view distinguishes "field absent from recording" and renderers surface it per Constraint 3 | absence-injection fixture gates | PARTIAL (Leaf trichotomy exists) |
@@ -196,7 +237,7 @@ extractor-independent.
 
 | # | Item | Law source | Gate | Status |
 |---|---|---|---|---|
-| C1 | Unit counters (NATO/sprite): quad geometry, atlas, strength/org bars, stacking/aggregation-by-zoom | hoi4.exe RE + interface gfx files + one live counter capture (§4-CAP6) | pixel parity vs captured counter frame; fixture-driven placement gates | OPEN |
+| C1 | Unit counters (NATO/sprite): quad geometry, atlas, strength/org bars, stacking/aggregation-by-zoom | hoi4.exe RE + interface gfx files + one live counter capture (§4-CAP6) | pixel parity vs captured counter frame; fixture-driven placement gates | **FILES-FIRST DONE 2026-07-09** (`unit_counter_assets.rs` + `UNIT_COUNTER_LAW.md`: all FILE rows decoded/gated); **remaining: CAPTURE-GATED rows** (screen-space size/anchor/stacking/selection) need CAP6 — CAP4's `counters_close` round was budget-truncated |
 | C2 | Division/fleet/wing positions over time served from recording; interpolation between hourly samples matches engine hourly snap (no invented smoothing without evidence) | REPLAY_DATA_REQUIREMENTS units items + fixtures | seek==play equality; placement matches fixture ground truth | OPEN (schema listed) |
 | C3 | Battle bubbles / combat indicators | RE + capture | parity gate | OPEN |
 | C4 | Front lines + movement/plan arrows (or explicit descope for v1 if not in recording — arrows are player-plan state; **decision needed, tracked in REPLAY_DATA_REQUIREMENTS**) | RE + requirements | parity or descope note | OPEN |
@@ -266,14 +307,20 @@ held the seam, H is days, not weeks.
 Each ask is one frame/short session; several can share a session. These gate
 Phase B/C/D closures but nothing in Phase A/E/F.
 
+**Status note (2026-07-09):** the `session_WAVE1_CAP4` live session delivered
+**CAP10 (FoW pair) — DONE** and partially addressed CAP2/CAP6 (see rows). Once
+the capture-automation RE lane lands, CAP1/CAP3/CAP5/CAP7-ladder become
+near-zero-touch (scripted camera/console), so batch the rest into one automated
+session.
+
 | # | Ask | Closes |
 |---|---|---|
-| CAP1 | Single-frame, NO-pan, wide-frustum mixed-LOD terrain capture recording render-view side planes / tessellation visibility flags (signed-byte owner map) | B7: vSnap 146→170/176 |
-| CAP2 | Player-POV political frame with enemy-owned + same-faction VPs on screen | B11: VP diplomatic color columns 1/3 |
+| CAP1 | Single-frame, NO-pan, wide-frustum mixed-LOD terrain capture recording render-view side planes / tessellation visibility flags (signed-byte owner map) | B7: vSnap 146→170/176. **Capture tooling landed** (`render_view_capture` moment, fail-closed pending the RE lane's render-view/owner-map roots) |
+| CAP2 | Player-POV political frame with enemy-owned + same-faction VPs on screen | B11: VP diplomatic color columns 1/3. **PARTIAL** — CAP4 front frame has enemy territory/VPs; confirm column coverage in mining |
 | CAP3 | Game-speed night capture with `FoW.w≠0` + multi-hour night sweep | B8: night look + `.x/.yzw(hour)` |
-| CAP4 | Bright close-up `restore_pass` frame exceeding the 0.5 exposure floor | B9: unclamped exposure branch |
+| CAP4 | Bright close-up `restore_pass` frame exceeding the 0.5 exposure floor | B9: unclamped exposure branch. (Note: the CAP4 *session name* is unrelated — `restore_pass` fired but exceeding the 0.5 floor is unconfirmed) |
 | CAP5 | Multi-zoom label captures over occupied territory (owner≠controller) | B10: label keying + per-label alpha |
-| CAP6 | Close-zoom frame with land units + counters visible (and a naval stack) | C1: counter geometry/atlas ground truth |
+| CAP6 | Close-zoom frame with land units + counters visible (and a naval stack) | C1: counter geometry/atlas ground truth. **PARTIAL** — CAP4 `counters_close` round budget-truncated (101 draws); re-capture with a higher payload budget |
 | CAP7 | Frame with an open scrollable panel (thumb positions at known content sizes) | D5: scrollbar thumb travel |
 | CAP8 | No-FOW sea frame | B12: sea base look referee |
 | CAP9 | Tree instance buffer + cities_pass (standing ledger asks) | B3/B4 |
