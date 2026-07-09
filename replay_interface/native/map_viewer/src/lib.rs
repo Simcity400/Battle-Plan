@@ -52,6 +52,7 @@ mod tree_instance_synthesis;
 mod tree_second_subdraw;
 mod types;
 mod underwater_pass;
+mod unit_counter_assets;
 mod util;
 mod water_law;
 mod weather_law;
@@ -343,6 +344,24 @@ pub use tree_second_subdraw::{
 };
 pub use types::IndexImage;
 pub use underwater_pass::{UNDERWATER_EFFECT_NAME, UNDERWATER_SHADER_SOURCE};
+pub use unit_counter_assets::{
+    army_badge_progress_bars_from_resolver, counter_fonts_from_resolver,
+    division_template_counter_layout_from_resolver,
+    map_counter_code_textured_sprites_from_resolver, map_counter_sprites_from_resolver,
+    nato_text_icon_sprites_from_resolver, on_map_division_counter_inventory_from_resolver,
+    on_map_division_counter_sprites_from_resolver, on_map_ship_counter_sprites_from_resolver,
+    parse_sprite_defs, unit_counter_assets_from_resolver, unit_counter_gui_layouts_from_resolver,
+    unitview_counter_sprites_from_resolver, AtlasFrame, BitmapFontBinding, CounterSpriteAsset,
+    CounterSpriteInventory, DivisionTemplateCounterLayout, GuiContainerLayout, GuiControlLayout,
+    GuiPoint, GuiSize, PixelRect, ProgressBarAsset, RawSpriteDef, UnitCounterAssetManifest,
+    UnitCounterGuiLayouts, UnresolvedSpriteAsset, UvRect, NATO_TEXT_ICON_TEXTURE_PREFIX,
+    ON_MAP_DIVISION_SYMBOL_TEXTURE_PREFIX, ON_MAP_SHIP_SYMBOL_TEXTURE_PREFIX,
+    UNIT_COUNTER_CORE_GFX_SOURCE, UNIT_COUNTER_DIVISION_DESIGNER_GUI_SOURCE,
+    UNIT_COUNTER_GAMEPLAY_DEFINES_SOURCE, UNIT_COUNTER_GRAPHICS_DEFINES_SOURCE,
+    UNIT_COUNTER_MAPICONS_GFX_SOURCE, UNIT_COUNTER_MAPICONS_GUI_SOURCE,
+    UNIT_COUNTER_SUBUNITICONS_GFX_SOURCE, UNIT_COUNTER_TEXTICONS_GFX_SOURCE,
+    UNIT_COUNTER_UNITVIEW_GFX_SOURCE, UNIT_COUNTER_UNITVIEW_GUI_SOURCE,
+};
 pub use water_law::{
     apply_underwater_light_absorption, lean_flattened_det, lean_specular_peak,
     lean_specular_peak_glossiness, underwater_cb0_absorption_ratio,

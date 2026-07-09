@@ -90,7 +90,8 @@ Inside item 1's snapshots, per hour:
 Extension (2026-07-09 review): faithful COUNTER BADGES at close zoom need
 more per-division state than the row above: `supply_ratio`/`low_supply`
 (supply warning icon), `has_orders`/`current_order_kind` (plan badge),
-`dig_in` (entrenchment), `training`, and attrition-active. Wanted
+`dig_in` (entrenchment), `training`, attrition-active, and
+`active_ability_kinds` (the on-counter active-ability icon grid). Wanted
 hourly/on-change alongside the base division row; each missing field
 degrades to badge-absent. Same priority as the close-zoom unit lane (A7).
 
