@@ -2,8 +2,8 @@
 //!
 //! The furniture law lives in `map_viewer::map_furniture`; this module gives
 //! replay_app a product-side module boundary without re-deriving placement,
-//! tiering, labels, or capital selection. The CLI remains fail-closed until the
-//! remaining draw-time residuals are captured/decompiled.
+//! tiering, relation color, labels, or capital selection. The CLI remains
+//! fail-closed until the remaining draw-time residuals are captured/decompiled.
 #![allow(dead_code)]
 
 use map_viewer::{
@@ -49,6 +49,14 @@ pub fn load_replay_furniture_layer(
     Ok(ReplayFurnitureLayer::from_map_viewer_layer(layer))
 }
 
+pub fn replay_vp_icon_relation_column(
+    owner_tag: Option<&str>,
+    viewed_tag: Option<&str>,
+    pair_state: map_viewer::VpIconDiplomaticPairState,
+) -> u32 {
+    map_viewer::vp_icon_relation_column(owner_tag, viewed_tag, pair_state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +95,16 @@ mod tests {
         assert_eq!(replay.markers[0].province_id, 100);
         assert_eq!(replay.markers[0].kind, FurnitureMarkerKind::Capital);
         assert_eq!(replay.markers[1].kind, FurnitureMarkerKind::VictoryPoint);
+        assert_eq!(
+            replay_vp_icon_relation_column(
+                Some("SOV"),
+                Some("GER"),
+                map_viewer::VpIconDiplomaticPairState {
+                    same_faction: false,
+                    at_war: true,
+                },
+            ),
+            map_viewer::VP_STRIP_COLOR_ENEMY_RED
+        );
     }
 }

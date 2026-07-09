@@ -230,6 +230,15 @@ Three small per-country/per-pair streams, all with existing schema shapes
    furniture must move when a government relocates (France 1940).
    Rare-event cadence; on-change is plenty.
 
+FURN-REL refinement (2026-07-09, decompile-verified): for the VP/capital
+icon color column SPECIFICALLY, the engine selector
+access/embargo, and does NOT read the d53 relation-flag container. So the
+MINIMUM for the icon column is just `at_war` + `same_faction` per
+viewed/owner pair (column law: self/same-faction -> col 2, at-war ->
+col 0, else neutral col 4; ported as `vp_icon_relation_column`, degrades
+to neutral gray). The BROADER pair-state set above stays requested for the
+other consumers (war overlays, diplomacy UI).
+
 ## 9. Localisation / token joins
 
 The replay UI renders tokens the recording emits (focus ids, idea tokens,
@@ -342,6 +351,7 @@ so the registry is complete; do not build.
 |---|---|---|
 | 1 | hourly snapshots in container | extractor LANDED (R1); replay verify pending |
 | 2 | owners/controllers per hour | shape COVERED (§4/§5); rides on 1 |
+<<<<<<< HEAD
 | 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; counter-badge extension OPEN |
 | 4 | session metadata | partial (session header LANDED; speed/pause + DLC display-names OPEN) |
 | 5 | naval supremacy | extractor LANDED (D56); replay ingest pending |
@@ -353,6 +363,17 @@ so the registry is complete; do not build.
 | 9 | localisation joins | partial (static artifact in their contract; verify it ships) |
 | 9b | topbar scalar bindings | schema shapes exist (§3.1–3.3); extended set + outliner OPEN |
 | 10 | building levels live | largely LANDED (D48 incl. damage); replay ingest deferred |
+=======
+| 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; rides on 1 |
+| 4 | session metadata | needed |
+| 5 | naval supremacy | needed |
+| 6 | weather state | needed |
+| 7 | cosmetic-tag stream | schema shape exists; live feed needed |
+| 8 | naval/air presence | raw streams exist; consumable rows needed |
+| 8b | VP/capital icon diplomatic pair-state | needed: same_faction + at_war per viewed/owner pair |
+| 9 | localisation joins | needed |
+| 10 | building levels live | schema shape exists (save-only); deferred |
+>>>>>>> lane/render-integration
 | 11 | rail/supply state | deferred |
 | 12 | battle plans | deferred — do not build yet |
 

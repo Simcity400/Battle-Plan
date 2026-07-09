@@ -83,7 +83,7 @@ terrain chunk synthesis is blocked in replay_app until the remaining runtime/LOD
 --water-full (DEFAULT ON) uploads only the real engine/file-derived water path and fails closed when required inputs are missing; --no-water-full is blocked because it selected the old app-owned approximation; \
 borders are blocked in replay_app until the remaining thin-border fade/loop/sea-region law is ported; use map_viewer border dumps as development tooling; --borders-from-files is blocked; \
 country labels are blocked in replay_app only on owner-vs-controller keying and per-label Transp_OffsetX.x runtime values; the product glyph-VB path exists but --map-labels and --map-labels-fallback remain blocked; \
-map furniture is blocked in replay_app only on diplomatic color-column relation to sprite-frame selection, highlight ring rendering, and the 0.40 map-text scale origin; the furniture module/projection API exists but --map-furniture remains blocked; \
+map furniture is blocked in replay_app only on highlight ring rendering and the 0.40 map-text scale origin; the relation-column law is engine-traced in map_viewer, but non-neutral capture coverage is still pending; the furniture module/projection API exists but --map-furniture remains blocked; \
 tree file-derived replacement layers are blocked until scatter/rotation/model-selection/season-CB law is engine-derived; --trees-from-files and --tree-seasons-by-date are blocked; \
 building previews are blocked until map_objects_pass or mesh/material import law exists; --buildings-from-files and --buildings-preview-all are blocked";
 
@@ -408,7 +408,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
             }
             "--map-furniture" => {
                 return Err(
-                    "--map-furniture is blocked in replay_app: diplomatic color-column relation to sprite-frame selection, highlight ring rendering, and the 0.40 map-text scale origin await capture/decompile confirmation; the replay_app furniture module and 3D projection API are present but these draw-time inputs remain fail-closed"
+                    "--map-furniture is blocked in replay_app: highlight ring rendering and the 0.40 map-text scale origin await capture/decompile confirmation; the relation-column law is engine-traced in map_viewer, but non-neutral capture coverage is still pending; the replay_app furniture module and 3D projection API are present but these draw-time inputs remain fail-closed"
                         .into(),
                 );
             }
