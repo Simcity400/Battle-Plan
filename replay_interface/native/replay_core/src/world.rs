@@ -237,7 +237,30 @@ pub struct SpeedEvent {
 pub struct NavalSupremacyRow {
     pub controller: Leaf<String>,
     pub state: Leaf<String>,
+    /// Region naval supremacy magnitude.
+    ///
+    /// UNIT — **UNKNOWN (extractor must state)**: the fixture generator
+    /// (`replay_fixture_gen::fx_naval_air_activity`) emits this NORMALISED in
+    /// `0.0..=1.0` (`0.55 + tick*0.02`), but the engine's own naval-region
+    /// supremacy is accumulated in raw points and only normalised for the
+    /// map-mode tint against `NAVAL_REGION_TRANSPARENCY_RANGE` (=2000, the
+    /// full-supremacy point ceiling). Whether a real recording carries the
+    /// normalised fraction or the raw point total is NOT pinned by the schema
+    /// today (documented gap D56, c6 lane). The view therefore surfaces the
+    /// number VERBATIM and never rescales; consumers must not assume a unit
+    /// until `REPLAY_SCHEMA.md` states it. See `EXTRACTION_NEEDS.md §A`.
     pub supremacy: Leaf<f64>,
+}
+
+/// Per-strategic-region air-superiority contest (requirements item 5),
+/// distinct from [`NavalSupremacyRow`]'s naval region control. Sourced from
+/// `naval_air.air_superiority.<region>` in the recording schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AirSuperiorityRow {
+    pub controller: Leaf<String>,
+    pub mission_mask: Leaf<i64>,
+    pub wing_count: Leaf<i64>,
+    pub plane_count: Leaf<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -358,11 +381,39 @@ impl DiplomaticPairState {
     }
 }
 
+/// One live war-relation row from `diplomacy_live.war_relations` (requirements
+/// item 8b): the ordered belligerent pair plus the running casualty tallies.
+/// This is a LIVE feed distinct from the boolean `pairs` matrix (which folds
+/// `wars[]`/relation lists into directional `at_war`); it carries the casualty
+/// magnitudes the boolean matrix cannot. It is deliberately NOT folded into
+/// `pairs` so the certified directional war matrix is preserved verbatim.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarRelationRow {
+    pub first: Leaf<String>,
+    pub second: Leaf<String>,
+    pub first_casualties: Leaf<i64>,
+    pub second_casualties: Leaf<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiplomacyView {
     pub status: ViewStatus,
     pub pairs: BTreeMap<(String, String), DiplomaticPairState>,
     pub countries: BTreeMap<String, CountryDiplomacy>,
+    /// Live war-relation rows from `diplomacy_live.war_relations`
+    /// (`Absent` when the key never appears, `Unobtained` when explicit-null).
+    pub war_relations: Leaf<Vec<WarRelationRow>>,
+    /// Live faction membership from `diplomacy_live.faction_members`, keyed by
+    /// the recording's faction id string → member TAG list. `Absent`/
+    /// `Unobtained` preserve the trichotomy of the source key.
+    pub faction_members: Leaf<BTreeMap<String, Vec<String>>>,
+    /// Per-owner relation-flag arrays from
+    /// `countries.<owner>.diplomacy.relation_flags` (`{other_tag: [flag,...]}`).
+    /// Surfaced verbatim (never coerced into the boolean `pairs` matrix, whose
+    /// directional semantics are certified): the entry is `Measured` for an
+    /// object, `Unobtained` for explicit-null; an owner with no relation_flags
+    /// key is simply absent from the map.
+    pub relation_flags: BTreeMap<String, Leaf<BTreeMap<String, Vec<String>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -410,6 +461,53 @@ impl TopbarScalars {
             world_tension: Leaf::Unobtained,
             supply_value: Leaf::Unobtained,
             supply_ratio: Leaf::Unobtained,
+        }
+    }
+}
+
+/// Per-POV topbar ratio bars (requirements item 9b): the derived
+/// industrial / convoy / fuel / xp fractions the HUD renders as fill bars.
+/// Sourced from `countries.<tag>.scalars.*` (the topbar scalar sweep bag);
+/// each field independently degrades to `Absent`/`Unobtained`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopbarRatios {
+    pub industrial_ratio: Leaf<f64>,
+    pub convoy_ratio: Leaf<f64>,
+    pub fuel_ratio: Leaf<f64>,
+    pub xp_ratio: Leaf<f64>,
+}
+
+impl TopbarRatios {
+    fn all_unobtained() -> TopbarRatios {
+        TopbarRatios {
+            industrial_ratio: Leaf::Unobtained,
+            convoy_ratio: Leaf::Unobtained,
+            fuel_ratio: Leaf::Unobtained,
+            xp_ratio: Leaf::Unobtained,
+        }
+    }
+}
+
+/// Per-POV topbar alert / notification counts (requirements item 9b).
+/// Sourced from `countries.<tag>.scalars.alerts.*`. Only the fields the
+/// schema oracle (fixture generator) carries are modeled; each degrades
+/// independently. (The topbar also shows prototype/decision-timeout alerts;
+/// those are not yet in the recording schema — see `EXTRACTION_NEEDS.md §A`.)
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopbarAlerts {
+    pub initiative: Leaf<i64>,
+    pub decisions_available: Leaf<i64>,
+    pub intel: Leaf<i64>,
+    pub market_contracts: Leaf<i64>,
+}
+
+impl TopbarAlerts {
+    fn all_unobtained() -> TopbarAlerts {
+        TopbarAlerts {
+            initiative: Leaf::Unobtained,
+            decisions_available: Leaf::Unobtained,
+            intel: Leaf::Unobtained,
+            market_contracts: Leaf::Unobtained,
         }
     }
 }
@@ -580,6 +678,8 @@ pub struct WorldFrame {
     session_metadata: SessionMetadataView,
     naval_supremacy_by_region: BTreeMap<u32, NavalSupremacyRow>,
     naval_supremacy_status: ViewStatus,
+    air_superiority_by_region: BTreeMap<u32, AirSuperiorityRow>,
+    air_superiority_status: ViewStatus,
     weather_by_region: BTreeMap<u32, WeatherRegionRow>,
     weather_status: ViewStatus,
     snow_mud: SnowMudView,
@@ -588,6 +688,9 @@ pub struct WorldFrame {
     diplomacy: DiplomacyView,
     topbar_scalars_by_country: BTreeMap<String, TopbarScalars>,
     topbar_status: ViewStatus,
+    topbar_ratios_by_country: BTreeMap<String, TopbarRatios>,
+    topbar_alerts_by_country: BTreeMap<String, TopbarAlerts>,
+    topbar_extras_status: ViewStatus,
     buildings_by_state: BTreeMap<u32, StateBuildings>,
     buildings_status: ViewStatus,
     visibility_by_pov: BTreeMap<String, PovVisibilityView>,
@@ -687,6 +790,18 @@ impl WorldFrame {
     pub fn naval_supremacy_status(&self) -> ViewStatus {
         self.naval_supremacy_status
     }
+    /// Per-strategic-region air-superiority contest (requirements item 5),
+    /// sourced from `naval_air.air_superiority`. Distinct from
+    /// [`WorldFrame::naval_supremacy_by_region`] (naval region control).
+    pub fn air_superiority_by_region(&self) -> &BTreeMap<u32, AirSuperiorityRow> {
+        &self.air_superiority_by_region
+    }
+    pub fn air_superiority(&self, region_id: u32) -> Option<&AirSuperiorityRow> {
+        self.air_superiority_by_region.get(&region_id)
+    }
+    pub fn air_superiority_status(&self) -> ViewStatus {
+        self.air_superiority_status
+    }
     pub fn weather_by_region(&self) -> &BTreeMap<u32, WeatherRegionRow> {
         &self.weather_by_region
     }
@@ -726,6 +841,28 @@ impl WorldFrame {
     }
     pub fn topbar_status(&self) -> ViewStatus {
         self.topbar_status
+    }
+    /// Per-POV topbar ratio bars (requirements item 9b), sourced from the
+    /// `countries.<tag>.scalars` bag. Additive companion to
+    /// [`WorldFrame::topbar_scalars_by_country`].
+    pub fn topbar_ratios_by_country(&self) -> &BTreeMap<String, TopbarRatios> {
+        &self.topbar_ratios_by_country
+    }
+    pub fn topbar_ratios(&self, tag: &str) -> Option<&TopbarRatios> {
+        self.topbar_ratios_by_country.get(tag)
+    }
+    /// Per-POV topbar alert / notification counts (requirements item 9b),
+    /// sourced from `countries.<tag>.scalars.alerts`.
+    pub fn topbar_alerts_by_country(&self) -> &BTreeMap<String, TopbarAlerts> {
+        &self.topbar_alerts_by_country
+    }
+    pub fn topbar_alerts(&self, tag: &str) -> Option<&TopbarAlerts> {
+        self.topbar_alerts_by_country.get(tag)
+    }
+    /// Domain status for the ratio-bar / alert surfaces (mirrors
+    /// [`WorldFrame::topbar_status`]; keyed off the same `countries` domain).
+    pub fn topbar_extras_status(&self) -> ViewStatus {
+        self.topbar_extras_status
     }
     pub fn buildings_by_state(&self) -> &BTreeMap<u32, StateBuildings> {
         &self.buildings_by_state
@@ -797,6 +934,8 @@ impl WorldFrame {
         let session_metadata = build_session_metadata(&frame.rest, &mut warnings);
         let (naval_supremacy_by_region, naval_supremacy_status) =
             build_naval_supremacy(&frame.rest, &mut warnings);
+        let (air_superiority_by_region, air_superiority_status) =
+            build_air_superiority(&frame.rest, &mut warnings);
         let (weather_by_region, weather_status) = build_weather(&frame.rest, &mut warnings);
         let snow_mud = build_snow_mud(&frame.rest, &mut warnings);
         let (country_identities, country_identities_status) =
@@ -804,6 +943,8 @@ impl WorldFrame {
         let diplomacy = build_diplomacy(&frame.rest, &mut warnings);
         let (topbar_scalars_by_country, topbar_status) =
             build_topbar_scalars(&frame.rest, &mut warnings);
+        let (topbar_ratios_by_country, topbar_alerts_by_country, topbar_extras_status) =
+            build_topbar_extras(&frame.rest, &mut warnings);
         let (buildings_by_state, buildings_status) = build_buildings(&frame.rest, &mut warnings);
         let (visibility_by_pov, visibility_status) = build_visibility(&frame.rest, &mut warnings);
         let provenance = build_provenance(&frame.rest, &mut warnings);
@@ -834,6 +975,8 @@ impl WorldFrame {
             session_metadata,
             naval_supremacy_by_region,
             naval_supremacy_status,
+            air_superiority_by_region,
+            air_superiority_status,
             weather_by_region,
             weather_status,
             snow_mud,
@@ -842,6 +985,9 @@ impl WorldFrame {
             diplomacy,
             topbar_scalars_by_country,
             topbar_status,
+            topbar_ratios_by_country,
+            topbar_alerts_by_country,
+            topbar_extras_status,
             buildings_by_state,
             buildings_status,
             visibility_by_pov,
@@ -2296,6 +2442,78 @@ fn parse_naval_supremacy_map(
     out
 }
 
+/// Air-superiority view (requirements item 5): `naval_air.air_superiority` is
+/// a `{region_id: {controller, mission_mask, wing_count, plane_count}}` map.
+/// A present-but-null domain is `DomainUnavailable`; a null/wrong-typed row is
+/// captured-but-unobtained (never coerced).
+fn build_air_superiority(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<u32, AirSuperiorityRow>, ViewStatus) {
+    let (region_map, status) = object_at_path(
+        rest,
+        &["naval_air", "air_superiority"],
+        "naval_air.air_superiority",
+        warnings,
+    );
+    let Some(region_map) = region_map else {
+        return (BTreeMap::new(), status);
+    };
+    let mut out = BTreeMap::new();
+    for (key, value) in region_map {
+        let id = match key.parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => {
+                warnings.push(format!(
+                    "naval_air.air_superiority: non-numeric region id {key:?} skipped"
+                ));
+                continue;
+            }
+        };
+        match value {
+            Value::Object(row) => {
+                let ctx = format!("naval_air.air_superiority.{key}");
+                out.insert(
+                    id,
+                    AirSuperiorityRow {
+                        controller: leaf_string(row, &["controller"], &ctx, warnings),
+                        mission_mask: leaf_i64(row, &["mission_mask"], &ctx, warnings),
+                        wing_count: leaf_i64(row, &["wing_count"], &ctx, warnings),
+                        plane_count: leaf_i64(row, &["plane_count"], &ctx, warnings),
+                    },
+                );
+            }
+            Value::Null => {
+                out.insert(
+                    id,
+                    AirSuperiorityRow {
+                        controller: Leaf::Unobtained,
+                        mission_mask: Leaf::Unobtained,
+                        wing_count: Leaf::Unobtained,
+                        plane_count: Leaf::Unobtained,
+                    },
+                );
+            }
+            other => {
+                warnings.push(format!(
+                    "naval_air.air_superiority.{key}: expected object, found {}; treated as unobtained",
+                    json_type_name(other)
+                ));
+                out.insert(
+                    id,
+                    AirSuperiorityRow {
+                        controller: Leaf::Unobtained,
+                        mission_mask: Leaf::Unobtained,
+                        wing_count: Leaf::Unobtained,
+                        plane_count: Leaf::Unobtained,
+                    },
+                );
+            }
+        }
+    }
+    (out, ViewStatus::Present)
+}
+
 fn build_weather(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
@@ -2586,6 +2804,7 @@ fn build_country_identities(
 fn build_diplomacy(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> DiplomacyView {
     let mut countries = BTreeMap::new();
     let mut pairs: BTreeMap<(String, String), DiplomaticPairState> = BTreeMap::new();
+    let mut relation_flags: BTreeMap<String, Leaf<BTreeMap<String, Vec<String>>>> = BTreeMap::new();
     let mut status = ViewStatus::DomainAbsent;
 
     match rest.get("countries") {
@@ -2619,6 +2838,9 @@ fn build_diplomacy(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Dip
                             },
                         );
                         fold_country_diplomacy_pairs(tag, obj, &mut pairs, warnings);
+                        if let Some(flags) = read_relation_flags(obj, &ctx, warnings) {
+                            relation_flags.insert(tag.clone(), flags);
+                        }
                     }
                     Value::Null => {
                         countries.insert(tag.clone(), CountryDiplomacy::all_unobtained());
@@ -2661,10 +2883,169 @@ fn build_diplomacy(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Dip
         }
     }
 
+    // Live diplomacy surfaces (requirements item 8b): `diplomacy_live` carries
+    // the live war-relation casualties and faction membership. These are
+    // separate typed surfaces (NOT folded into the certified boolean matrix).
+    let (war_relations, war_rel_status) = read_war_relations(rest, warnings);
+    let (faction_members, faction_status) = read_faction_members(rest, warnings);
+    status = combine_status(combine_status(status, war_rel_status), faction_status);
+
     DiplomacyView {
         status,
         pairs,
         countries,
+        war_relations,
+        faction_members,
+        relation_flags,
+    }
+}
+
+/// Read `countries.<owner>.diplomacy.relation_flags` (`{other_tag: [flag,…]}`).
+/// Returns `None` when the key is absent (owner omitted from the flags map),
+/// `Some(Unobtained)` for explicit-null / wrong-typed, `Some(Measured(map))`
+/// for a well-formed object. Flag strings are surfaced verbatim.
+fn read_relation_flags(
+    country: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Option<Leaf<BTreeMap<String, Vec<String>>>> {
+    match walk_path(country, &["diplomacy", "relation_flags"], ctx, warnings) {
+        Leaf::Absent => None,
+        Leaf::Unobtained => Some(Leaf::Unobtained),
+        Leaf::Measured(Value::Object(map)) => {
+            let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (other, flags) in map {
+                match flags {
+                    Value::Array(items) => {
+                        let mut list = Vec::with_capacity(items.len());
+                        let mut ok = true;
+                        for (i, item) in items.iter().enumerate() {
+                            match item.as_str() {
+                                Some(s) => list.push(s.to_string()),
+                                None => {
+                                    warnings.push(format!(
+                                        "{ctx}.diplomacy.relation_flags.{other}[{i}]: expected flag string, found {}; entry treated as unobtained",
+                                        json_type_name(item)
+                                    ));
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if ok {
+                            out.insert(other.clone(), list);
+                        }
+                    }
+                    other_v => warnings.push(format!(
+                        "{ctx}.diplomacy.relation_flags.{other}: expected array of flag strings, found {}; entry skipped",
+                        json_type_name(other_v)
+                    )),
+                }
+            }
+            Some(Leaf::Measured(out))
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.diplomacy.relation_flags: present but wrong-typed (expected object, found {}); treated as unobtained",
+                json_type_name(other)
+            ));
+            Some(Leaf::Unobtained)
+        }
+    }
+}
+
+/// Read `diplomacy_live.war_relations` (an array of live belligerent rows with
+/// casualty tallies). Returns the typed leaf plus the domain status the
+/// presence of `diplomacy_live` contributes.
+fn read_war_relations(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (Leaf<Vec<WarRelationRow>>, ViewStatus) {
+    match walk_path(rest, &["diplomacy_live", "war_relations"], "snapshot", warnings) {
+        Leaf::Absent => (Leaf::Absent, ViewStatus::DomainAbsent),
+        Leaf::Unobtained => (Leaf::Unobtained, ViewStatus::DomainUnavailable),
+        Leaf::Measured(Value::Array(items)) => {
+            let mut rows = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                let ctx = format!("diplomacy_live.war_relations[{i}]");
+                match item {
+                    Value::Object(row) => rows.push(WarRelationRow {
+                        first: leaf_string(row, &["first"], &ctx, warnings),
+                        second: leaf_string(row, &["second"], &ctx, warnings),
+                        first_casualties: leaf_i64(row, &["first_casualties"], &ctx, warnings),
+                        second_casualties: leaf_i64(row, &["second_casualties"], &ctx, warnings),
+                    }),
+                    other => warnings.push(format!(
+                        "{ctx}: expected object, found {}; row skipped",
+                        json_type_name(other)
+                    )),
+                }
+            }
+            (Leaf::Measured(rows), ViewStatus::Present)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "diplomacy_live.war_relations: present but wrong-typed (expected array, found {}); treated as unobtained",
+                json_type_name(other)
+            ));
+            (Leaf::Unobtained, ViewStatus::DomainUnavailable)
+        }
+    }
+}
+
+/// Read `diplomacy_live.faction_members` (`{faction_id: [TAG,…]}`). Returns the
+/// typed leaf plus the domain status contribution.
+fn read_faction_members(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (Leaf<BTreeMap<String, Vec<String>>>, ViewStatus) {
+    match walk_path(
+        rest,
+        &["diplomacy_live", "faction_members"],
+        "snapshot",
+        warnings,
+    ) {
+        Leaf::Absent => (Leaf::Absent, ViewStatus::DomainAbsent),
+        Leaf::Unobtained => (Leaf::Unobtained, ViewStatus::DomainUnavailable),
+        Leaf::Measured(Value::Object(map)) => {
+            let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (faction_id, members) in map {
+                match members {
+                    Value::Array(items) => {
+                        let mut list = Vec::with_capacity(items.len());
+                        let mut ok = true;
+                        for (i, item) in items.iter().enumerate() {
+                            match item.as_str() {
+                                Some(s) => list.push(s.to_string()),
+                                None => {
+                                    warnings.push(format!(
+                                        "diplomacy_live.faction_members.{faction_id}[{i}]: expected TAG string, found {}; entry treated as unobtained",
+                                        json_type_name(item)
+                                    ));
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if ok {
+                            out.insert(faction_id.clone(), list);
+                        }
+                    }
+                    other => warnings.push(format!(
+                        "diplomacy_live.faction_members.{faction_id}: expected array of TAG strings, found {}; entry skipped",
+                        json_type_name(other)
+                    )),
+                }
+            }
+            (Leaf::Measured(out), ViewStatus::Present)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "diplomacy_live.faction_members: present but wrong-typed (expected object, found {}); treated as unobtained",
+                json_type_name(other)
+            ));
+            (Leaf::Unobtained, ViewStatus::DomainUnavailable)
+        }
     }
 }
 
@@ -3021,6 +3402,94 @@ fn build_topbar_scalars(
         }
     }
     (out, ViewStatus::Present)
+}
+
+/// Per-POV topbar ratio bars + alert counts (requirements item 9b). Both live
+/// in the derived `countries.<tag>.scalars` bag (the topbar scalar sweep);
+/// mirrors [`build_topbar_scalars`]'s domain handling so the trichotomy and
+/// status are consistent across the topbar surfaces.
+fn build_topbar_extras(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (
+    BTreeMap<String, TopbarRatios>,
+    BTreeMap<String, TopbarAlerts>,
+    ViewStatus,
+) {
+    let entries = match rest.get("countries") {
+        Some(Value::Object(entries)) => entries,
+        Some(Value::Null) => {
+            return (BTreeMap::new(), BTreeMap::new(), ViewStatus::DomainUnavailable)
+        }
+        None => return (BTreeMap::new(), BTreeMap::new(), ViewStatus::DomainAbsent),
+        Some(other) => {
+            warnings.push(format!(
+                "countries: present but wrong-typed (expected object, found {}); topbar ratio/alert view unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+    };
+    let mut ratios = BTreeMap::new();
+    let mut alerts = BTreeMap::new();
+    for (tag, entry) in entries {
+        match entry {
+            Value::Object(obj) => {
+                let ctx = format!("countries.{tag}");
+                ratios.insert(
+                    tag.clone(),
+                    TopbarRatios {
+                        industrial_ratio: leaf_f64(
+                            obj,
+                            &["scalars", "industrial_ratio"],
+                            &ctx,
+                            warnings,
+                        ),
+                        convoy_ratio: leaf_f64(obj, &["scalars", "convoy_ratio"], &ctx, warnings),
+                        fuel_ratio: leaf_f64(obj, &["scalars", "fuel_ratio"], &ctx, warnings),
+                        xp_ratio: leaf_f64(obj, &["scalars", "xp_ratio"], &ctx, warnings),
+                    },
+                );
+                alerts.insert(
+                    tag.clone(),
+                    TopbarAlerts {
+                        initiative: leaf_i64(
+                            obj,
+                            &["scalars", "alerts", "initiative"],
+                            &ctx,
+                            warnings,
+                        ),
+                        decisions_available: leaf_i64(
+                            obj,
+                            &["scalars", "alerts", "decisions_available"],
+                            &ctx,
+                            warnings,
+                        ),
+                        intel: leaf_i64(obj, &["scalars", "alerts", "intel"], &ctx, warnings),
+                        market_contracts: leaf_i64(
+                            obj,
+                            &["scalars", "alerts", "market_contracts"],
+                            &ctx,
+                            warnings,
+                        ),
+                    },
+                );
+            }
+            Value::Null => {
+                ratios.insert(tag.clone(), TopbarRatios::all_unobtained());
+                alerts.insert(tag.clone(), TopbarAlerts::all_unobtained());
+            }
+            other => {
+                warnings.push(format!(
+                    "countries.{tag}: expected object, found {}; topbar ratio/alert leaves treated as unobtained",
+                    json_type_name(other)
+                ));
+                ratios.insert(tag.clone(), TopbarRatios::all_unobtained());
+                alerts.insert(tag.clone(), TopbarAlerts::all_unobtained());
+            }
+        }
+    }
+    (ratios, alerts, ViewStatus::Present)
 }
 
 fn topbar_world_tension(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Leaf<f64> {

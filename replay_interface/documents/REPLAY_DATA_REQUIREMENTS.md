@@ -351,6 +351,20 @@ intel, prototypes, market contracts); plus the OUTLINER rows (army/fleet
 groups with icon, text token, progress). Each degrades independently to an
 unavailable badge / empty outliner section.
 
+> `world_tension` CAVEAT (rc-reconcile 2026-07-09): unlike the other scalars
+> here it is COMPUTED-not-stored (clamped 0..100 decayed sum of the ~160-record
+> NDiplomacy threat ledger via the `TENSION_*` defines — extractor
+> `world_extract_offsets.draft.json` / `CRACKED_LEDGER.md`). It is **not** a
+> per-country field and **not** recomputable from the inputs a recording carries
+> today (`world.world_tension_inputs.{average_major_ic,
+> tension_scaling_base_country}` alone are insufficient). Until the extractor
+> emits either the final clamped scalar or the full threat ledger (EXTRACTION_NEEDS
+> A16), `replay_core::TopbarScalars::world_tension` reports `Absent`
+> (fail-closed) — surfacing it is a recording-side gap, not a view-path bug. The
+> ratio bars and alert counts, by contrast, ARE carried per country under
+> `countries.<tag>.scalars.*` and are now surfaced (`topbar_ratios()` /
+> `topbar_alerts()`).
+
 Degrades to an unavailable badge per missing field (never a fabricated
 number). Deeper panel content (production lines, army lists — the
 listbox/gridbox rows) stays deferred with items 10–12 until those panels

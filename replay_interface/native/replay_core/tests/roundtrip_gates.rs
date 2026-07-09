@@ -20,8 +20,10 @@
 //! byte-identical world state).
 
 use replay_core::{
-    open_recording, Leaf, PlayerCountry, SnowMudCell, ViewStatus, WorldFrame, WorldTimeline,
+    open_recording, Leaf, PlayerCountry, SnowMudCell, ViewStatus, WarRelationRow, WorldFrame,
+    WorldTimeline,
 };
+use std::collections::BTreeMap;
 use serde_json::Value;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -555,6 +557,254 @@ fn rt_naval_air_activity() {
     }
 }
 
+/// Air-superiority surface (requirements item 5). Oracle: the fixture
+/// generator (`fx_naval_air_activity`) writes
+/// `naval_air.air_superiority.301 = {controller, mission_mask, wing_count,
+/// plane_count}` every tick; the view must expose each verbatim, per the
+/// trichotomy. (Previously there was NO typed view for this — the surface
+/// returned nothing; `naval_supremacy_by_region` only carried region control.)
+#[test]
+fn rt_air_superiority() {
+    let t = open_fixture("fx_naval_air_activity");
+    for f in frames(&t) {
+        assert_eq!(
+            f.air_superiority_status(),
+            ViewStatus::Present,
+            "air superiority present @ {}",
+            f.hour_index()
+        );
+        let row = f.air_superiority(301).expect("region 301 air superiority");
+        let p = |k: &str| raw(&f, &["naval_air", "air_superiority", "301", k]).cloned();
+        assert_eq!(
+            row.controller,
+            exp_string(p("controller").as_ref()),
+            "air controller @ {}",
+            f.hour_index()
+        );
+        assert_eq!(row.mission_mask, exp_i64(p("mission_mask").as_ref()));
+        assert_eq!(row.wing_count, exp_i64(p("wing_count").as_ref()));
+        assert_eq!(row.plane_count, exp_i64(p("plane_count").as_ref()));
+    }
+}
+
+/// Trichotomy: a fixture whose base snapshot parks `naval_air.air_superiority`
+/// as explicit-null (every fixture except `fx_naval_air_activity`) yields a
+/// `DomainUnavailable` view with no rows — genuinely-unobtained, never coerced.
+#[test]
+fn rt_air_superiority_unobtained_when_null() {
+    let t = open_fixture("fx_owner_controller_flip");
+    for f in frames(&t) {
+        // Base snapshot: naval_air present, air_superiority = null.
+        assert!(
+            matches!(
+                raw(&f, &["naval_air", "air_superiority"]),
+                Some(serde_json::Value::Null)
+            ),
+            "fixture parks air_superiority null @ {}",
+            f.hour_index()
+        );
+        assert_eq!(
+            f.air_superiority_status(),
+            ViewStatus::DomainUnavailable,
+            "air superiority unavailable @ {}",
+            f.hour_index()
+        );
+        assert!(f.air_superiority_by_region().is_empty());
+    }
+}
+
+/// Live diplomacy surfaces (requirements item 8b), all previously `Absent`:
+/// `diplomacy_live.war_relations`, `diplomacy_live.faction_members`, and
+/// per-owner `countries.*.diplomacy.relation_flags`. Oracle = the generator
+/// source (`fx_war_faction_matrix`): faction_members appear at tick>=3,
+/// war_relations + GER relation_flags at tick>=7; all park as explicit-null in
+/// the base before then. These are surfaced verbatim and NOT folded into the
+/// certified boolean `pairs` matrix (whose directional semantics are locked).
+#[test]
+fn rt_diplomacy_live_surfaces() {
+    let t = open_fixture("fx_war_faction_matrix");
+    for f in frames(&t) {
+        let dip = f.diplomacy();
+
+        // war_relations: null (Unobtained) before the war, an array after.
+        match raw(&f, &["diplomacy_live", "war_relations"]) {
+            Some(serde_json::Value::Null) => {
+                assert_eq!(
+                    dip.war_relations,
+                    Leaf::Unobtained,
+                    "war_relations unobtained @ {}",
+                    f.hour_index()
+                );
+            }
+            Some(serde_json::Value::Array(items)) => {
+                let want: Vec<WarRelationRow> = items
+                    .iter()
+                    .map(|it| WarRelationRow {
+                        first: exp_string(it.get("first")),
+                        second: exp_string(it.get("second")),
+                        first_casualties: exp_i64(it.get("first_casualties")),
+                        second_casualties: exp_i64(it.get("second_casualties")),
+                    })
+                    .collect();
+                assert_eq!(
+                    dip.war_relations,
+                    Leaf::Measured(want),
+                    "war_relations @ {}",
+                    f.hour_index()
+                );
+            }
+            other => panic!("unexpected war_relations {other:?} @ {}", f.hour_index()),
+        }
+
+        // faction_members: null (Unobtained) before formation, a map after.
+        match raw(&f, &["diplomacy_live", "faction_members"]) {
+            Some(serde_json::Value::Null) => {
+                assert_eq!(
+                    dip.faction_members,
+                    Leaf::Unobtained,
+                    "faction_members unobtained @ {}",
+                    f.hour_index()
+                );
+            }
+            Some(serde_json::Value::Object(map)) => {
+                let want: BTreeMap<String, Vec<String>> = map
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            v.as_array()
+                                .expect("member array")
+                                .iter()
+                                .map(|m| m.as_str().expect("member tag").to_string())
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    dip.faction_members,
+                    Leaf::Measured(want),
+                    "faction_members @ {}",
+                    f.hour_index()
+                );
+            }
+            other => panic!("unexpected faction_members {other:?} @ {}", f.hour_index()),
+        }
+
+        // relation_flags: GER carries null (Unobtained) before tick 7, then an
+        // object; the surface preserves the raw flag arrays verbatim.
+        match raw(&f, &["countries", "GER", "diplomacy", "relation_flags"]) {
+            Some(serde_json::Value::Null) => {
+                assert_eq!(
+                    dip.relation_flags.get("GER"),
+                    Some(&Leaf::Unobtained),
+                    "GER relation_flags unobtained @ {}",
+                    f.hour_index()
+                );
+            }
+            Some(serde_json::Value::Object(map)) => {
+                let want: BTreeMap<String, Vec<String>> = map
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            v.as_array()
+                                .expect("flag array")
+                                .iter()
+                                .map(|s| s.as_str().expect("flag string").to_string())
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    dip.relation_flags.get("GER"),
+                    Some(&Leaf::Measured(want)),
+                    "GER relation_flags @ {}",
+                    f.hour_index()
+                );
+            }
+            other => panic!("unexpected relation_flags {other:?} @ {}", f.hour_index()),
+        }
+
+        // The certified boolean matrix is UNPERTURBED by the relation_flags
+        // surfacing: military_access/embargo remain unset from flags (they are
+        // only ever Measured via the canonical `wars[]`/relation lists, which
+        // this fixture leaves empty), so GER|ITA military_access stays Absent.
+        if let Some(pair) = f.diplomatic_pair_state("GER", "ITA") {
+            assert_eq!(
+                pair.military_access,
+                Leaf::Absent,
+                "relation_flags must NOT fold into pairs @ {}",
+                f.hour_index()
+            );
+        }
+    }
+}
+
+/// Topbar ratio bars + alert counts (requirements item 9b), both previously
+/// without any typed field. Oracle: `fx_topbar_scalars_sweep` writes
+/// `countries.<tag>.scalars.{industrial_ratio,convoy_ratio,fuel_ratio,
+/// xp_ratio}` and `scalars.alerts.{initiative,decisions_available,intel,
+/// market_contracts}` per tick.
+#[test]
+fn rt_topbar_ratios_alerts() {
+    let t = open_fixture("fx_topbar_scalars_sweep");
+    for f in frames(&t) {
+        assert_eq!(
+            f.topbar_extras_status(),
+            ViewStatus::Present,
+            "topbar extras present @ {}",
+            f.hour_index()
+        );
+        for tag in ["GER", "ENG", "SOV"] {
+            let r = f.topbar_ratios(tag).unwrap_or_else(|| panic!("{tag} ratios"));
+            let a = f.topbar_alerts(tag).unwrap_or_else(|| panic!("{tag} alerts"));
+            let p = |k: &[&str]| {
+                let mut path = vec!["countries", tag, "scalars"];
+                path.extend_from_slice(k);
+                raw(&f, &path).cloned()
+            };
+            assert_eq!(
+                r.industrial_ratio,
+                exp_f64(p(&["industrial_ratio"]).as_ref())
+            );
+            assert_eq!(r.convoy_ratio, exp_f64(p(&["convoy_ratio"]).as_ref()));
+            assert_eq!(r.fuel_ratio, exp_f64(p(&["fuel_ratio"]).as_ref()));
+            assert_eq!(r.xp_ratio, exp_f64(p(&["xp_ratio"]).as_ref()));
+            assert_eq!(a.initiative, exp_i64(p(&["alerts", "initiative"]).as_ref()));
+            assert_eq!(
+                a.decisions_available,
+                exp_i64(p(&["alerts", "decisions_available"]).as_ref())
+            );
+            assert_eq!(a.intel, exp_i64(p(&["alerts", "intel"]).as_ref()));
+            assert_eq!(
+                a.market_contracts,
+                exp_i64(p(&["alerts", "market_contracts"]).as_ref()),
+                "{tag} market_contracts @ {}",
+                f.hour_index()
+            );
+        }
+    }
+}
+
+/// Trichotomy for the ratio/alert surface: a fixture that never writes the
+/// `scalars` bag leaves every ratio/alert leaf `Absent` (present-country,
+/// empty scalars object) — never a fabricated `0`.
+#[test]
+fn rt_topbar_ratios_alerts_absent_without_scalars() {
+    let t = open_fixture("fx_owner_controller_flip");
+    for f in frames(&t) {
+        // Base country carries `scalars: {}` (present, empty) → each leaf Absent.
+        for tag in f.topbar_ratios_by_country().keys() {
+            let r = f.topbar_ratios(tag).unwrap();
+            let a = f.topbar_alerts(tag).unwrap();
+            assert_eq!(r.industrial_ratio, Leaf::Absent);
+            assert_eq!(r.convoy_ratio, Leaf::Absent);
+            assert_eq!(a.initiative, Leaf::Absent);
+            assert_eq!(a.market_contracts, Leaf::Absent);
+        }
+    }
+}
+
 #[test]
 fn rt_building_damage() {
     let t = open_fixture("fx_building_damage");
@@ -829,6 +1079,21 @@ fn assert_state_equal(a: &WorldFrame, b: &WorldFrame, ctx: &str) {
         a.naval_supremacy_by_region(),
         b.naval_supremacy_by_region(),
         "{ctx}: naval"
+    );
+    assert_eq!(
+        a.air_superiority_by_region(),
+        b.air_superiority_by_region(),
+        "{ctx}: air_superiority"
+    );
+    assert_eq!(
+        a.topbar_ratios_by_country(),
+        b.topbar_ratios_by_country(),
+        "{ctx}: topbar_ratios"
+    );
+    assert_eq!(
+        a.topbar_alerts_by_country(),
+        b.topbar_alerts_by_country(),
+        "{ctx}: topbar_alerts"
     );
     assert_eq!(a.session_metadata(), b.session_metadata(), "{ctx}: session");
     for pov in ["GER", "ENG", "SOV"] {

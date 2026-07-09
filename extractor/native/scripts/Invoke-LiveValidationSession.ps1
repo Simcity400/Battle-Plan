@@ -553,7 +553,8 @@ function Get-CollectorPids {
 
 function Stop-NewCollectors {
     <# Kill only collector_record.exe processes that appeared since $Before (never touch other runs'). #>
-    param([Parameter(Mandatory = $true)][int[]]$Before)
+    param([AllowNull()][AllowEmptyCollection()][int[]]$Before = @())
+    if ($null -eq $Before) { $Before = @() }
     $now = Get-CollectorPids
     foreach ($collectorPid in $now) {
         if ($Before -notcontains $collectorPid) {
