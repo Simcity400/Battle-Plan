@@ -522,7 +522,7 @@ pub fn parse_sprite_defs(text: &str, source_file: &str) -> Vec<RawSpriteDef> {
         .collect()
 }
 
-fn sprites_from_resolver<F>(
+pub(crate) fn sprites_from_resolver<F>(
     resolver: &GameFileResolver,
     source_file: &str,
     keep: F,
@@ -545,7 +545,7 @@ where
     Ok(assets)
 }
 
-fn sprite_inventory_from_resolver<F>(
+pub(crate) fn sprite_inventory_from_resolver<F>(
     resolver: &GameFileResolver,
     source_file: &str,
     keep: F,
@@ -658,7 +658,7 @@ fn sprite_asset_from_def(
     })
 }
 
-fn parse_progress_bar_assets(text: &str, source_file: &str) -> Vec<ProgressBarAsset> {
+pub(crate) fn parse_progress_bar_assets(text: &str, source_file: &str) -> Vec<ProgressBarAsset> {
     braced_blocks(text)
         .into_iter()
         .filter(|block| block.kind.eq_ignore_ascii_case("progressbartype"))
@@ -675,7 +675,7 @@ fn parse_progress_bar_assets(text: &str, source_file: &str) -> Vec<ProgressBarAs
         .collect()
 }
 
-fn parse_bitmap_fonts(text: &str, source_file: &str) -> Vec<BitmapFontBinding> {
+pub(crate) fn parse_bitmap_fonts(text: &str, source_file: &str) -> Vec<BitmapFontBinding> {
     braced_blocks(text)
         .into_iter()
         .filter(|block| {
@@ -702,7 +702,7 @@ fn position_type_from_text(text: &str, name: &str, source_file: &str) -> Result<
         .ok_or_else(|| format!("missing position for {name} in {source_file}").into())
 }
 
-fn container_layout_from_text(
+pub(crate) fn container_layout_from_text(
     text: &str,
     name: &str,
     source_file: &str,

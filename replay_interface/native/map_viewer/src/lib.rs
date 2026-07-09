@@ -50,6 +50,7 @@ mod terrain_chunk_synthesis;
 mod terrain_id_map_synthesis;
 mod terrain_lod_law;
 mod terrain_mesh_law;
+mod combat_indicator_assets;
 #[cfg(test)]
 mod test_support;
 mod texture_sampling;
@@ -389,6 +390,16 @@ pub use tree_instance_synthesis::{
 pub use tree_second_subdraw::{
     identify_tree_pixel_shader, tree_second_subdraw_verdict, TreePixelShaderEvidence,
     TreePixelShaderKind, TreeSecondSubDrawVerdict, TREE_FULL_PS_FNV1A64, TREE_LOW_GFX_PS_FNV1A64,
+};
+pub use combat_indicator_assets::{
+    combat_indicator_assets_from_resolver, combat_indicator_fonts_from_resolver,
+    combat_indicator_gui_container_count, combat_indicator_gui_layouts_from_resolver,
+    combat_indicator_progress_bars_from_resolver, land_combat_indicator_sprites_from_resolver,
+    naval_combat_indicator_sprites_from_resolver, CombatIndicatorAssetManifest,
+    CombatIndicatorGuiLayouts, CombatIndicatorKind, CombatIndicatorPlacement,
+    COMBAT_INDICATOR_LANDCOMBAT_GFX_SOURCE, COMBAT_INDICATOR_MAPICONS_GFX_SOURCE,
+    COMBAT_INDICATOR_MAPICONS_GUI_SOURCE, COMBAT_INDICATOR_NAVALCOMBAT_GFX_SOURCE,
+    COMBAT_INDICATOR_NAVAL_LEADER_MODULE_GFX_SOURCE,
 };
 pub use types::IndexImage;
 pub use underwater_pass::{UNDERWATER_EFFECT_NAME, UNDERWATER_SHADER_SOURCE};

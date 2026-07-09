@@ -86,6 +86,19 @@ Inside item 1's snapshots, per hour:
   bubbles; the replay derives attack-direction arrows from participants'
   provinces. Combat `progress` for the bubble bar is wanted but currently
   unvalidated — flag when it becomes trustworthy.
+  - **Battle-bubble display fields (added 2026-07-09, C3 files-first).** The
+    on-map `land_combat_mapicon` (`interface/mapicons.gui`) draws more than
+    location + participants; each needs a per-combat state field, else the
+    corresponding bubble element degrades to absent/default:
+    - `progress` (0..1) — fills the `combat_progress` textbox and the reused
+      `GFX_land_unit_combat_progressbar`; same field flagged above.
+    - `bombardment_active` (bool) — shows `GFX_mapicon_land_combat_bombardment_overlay`
+      (shore/naval bombardment support on the combat).
+    - `air_superiority_state` (enum/index 0..9) — selects the frame of the
+      10-frame `GFX_battle_modifier_strip` (`air_superiority_icon` control).
+    - Urban variant (`GFX_mapicon_land_combat_urban`) is **province-terrain
+      derived** (static map data), NOT a recording field — note only.
+    Each missing field degrades to bubble-absent/default frame.
 
 Extension (2026-07-09 review): faithful COUNTER BADGES at close zoom need
 more per-division state than the row above: `supply_ratio`/`low_supply`
@@ -238,6 +251,16 @@ Land is covered by item 3; oceans and skies are empty without:
 2. Air: per-hour `{wing_or_group_id, owner_tag, strategic_region_id or
    airbase province, mission_kind}` — enough for region air-activity
    icons.
+3. **Active naval combats (added 2026-07-09, C3 files-first).** Item 3's
+   combat row is land-only; the on-map naval combat bubbles
+   (`naval_combat_mapicon`, `naval_combat_results_mapicon` in
+   `interface/mapicons.gui`) have no recording coverage. Wanted per-hour /
+   on-change: `{naval_combat_id, location (sea province), attacker/defender
+   task_force ids, result_type, progress}` where `result_type` selects the
+   frame/sprite path — naval battle vs port strike (`GFX_mapicon_naval_battle_result`
+   2-frame) and the `GFX_naval_combat_result[_portstrikes|_navalstrikes|_convoys]`
+   3-frame result families. `progress` fills `GFX_navalcombat_bar_progress_attacker_154`.
+   Degrades to no naval combat bubble.
 Degrades to empty seas/skies.
 
 **STATUS (reconciled 2026-07-09):** AIR is extractor-side LANDED
@@ -438,13 +461,13 @@ cadence — otherwise record at the engine's cadence (zero-data-loss rule).
 |---|---|---|
 | 1 | hourly snapshots in container | extractor LANDED (R1); replay verify pending |
 | 2 | owners/controllers per hour | shape COVERED (§4/§5); rides on 1 |
-| 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; counter-badge extension OPEN |
+| 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; counter-badge extension OPEN; battle-bubble display fields (progress/bombardment/air-superiority, C3) OPEN |
 | 4 | session metadata | partial (session header LANDED; speed/pause + DLC display-names OPEN) |
 | 5 | naval supremacy | extractor LANDED (D56); replay ingest pending |
 | 6 | weather state | weather stream LANDED (D24); SnowMud accumulators OPEN |
 | 7 | cosmetic-tag stream | extractor LANDED (D18); replay ingest pending |
 | 7b | ruling party / ideology | schema shape exists (§3.3, live-collector); ride into snapshots |
-| 8 | naval/air presence | AIR LANDED (D31); NAVAL rows OPEN |
+| 8 | naval/air presence | AIR LANDED (D31); NAVAL presence rows OPEN; active naval combats (C3 naval bubbles) OPEN |
 | 8b | pair relations + faction + capitals | relation flags already live-extracted (d53); fold into snapshots. VP-icon column minimum = just at_war + same_faction (FURN-REL decompile) |
 | 9 | localisation joins | partial (static artifact in their contract; verify it ships) |
 | 9b | topbar scalar bindings | schema shapes exist (§3.1–3.3); extended set + outliner OPEN |
