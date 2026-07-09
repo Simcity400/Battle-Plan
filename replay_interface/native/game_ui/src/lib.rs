@@ -7,6 +7,7 @@ pub mod gui;
 pub mod hud;
 pub mod loc;
 pub mod major_views;
+pub mod markup;
 pub mod paradox_text;
 pub mod png;
 pub mod probe;

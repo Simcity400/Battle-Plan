@@ -20,6 +20,10 @@ pub struct BitmapFont {
     pub pages: Vec<FontPage>,
     pub chars: BTreeMap<u32, FontChar>,
     pub kernings: BTreeMap<(u32, u32), i32>,
+    /// File-derived `§`-code colour table (`interface/core.gfx` textcolors).
+    /// `None` when `core.gfx` is unavailable — text then renders in the base
+    /// colour with codes stripped (fail-closed: never a fabricated tint).
+    pub color_table: Option<crate::markup::TextColorTable>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,7 +195,7 @@ impl BitmapFont {
         text: &str,
         color: [u8; 4],
     ) -> TextRenderReport {
-        let rich = colorize_hoi4_text(text, color);
+        let rich = self.colorize(text, color);
         let measured = self.measure_text(&rich.text);
         let x = match (max_width, align) {
             (Some(max_width), TextAlign::Center) => x + (max_width - measured) / 2,
@@ -225,48 +229,42 @@ impl BitmapFont {
     }
 }
 
-pub fn strip_color_codes(text: &str) -> String {
-    if text.contains('\u{00a7}') || text.contains('\u{00c2}') {
-        return colorize_hoi4_text(text, [0, 0, 0, 0]).text;
+impl BitmapFont {
+    /// Split marked-up text into visible glyphs + per-glyph RGBA, resolving
+    /// `§` colour codes through the FILE-derived `interface/core.gfx` table
+    /// (`self.color_table`). When no table is loaded, codes are stripped and
+    /// every glyph keeps the base colour (fail-closed: no fabricated tint).
+    pub fn colorize(&self, text: &str, base: [u8; 4]) -> ColorizedText {
+        colorize_with_table(text, base, self.color_table.as_ref())
     }
-    let mut out = String::new();
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '§' {
-            let _ = chars.next();
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
-pub fn colorize_hoi4_text(text: &str, default_color: [u8; 4]) -> ColorizedText {
-    let mut out = String::new();
-    let mut colors = Vec::new();
-    let mut current = default_color;
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{00a7}' || (ch == '\u{00c2}' && chars.peek() == Some(&'\u{00a7}')) {
-            if ch == '\u{00c2}' {
-                let _ = chars.next();
-            }
-            let Some(code) = chars.next() else {
-                continue;
-            };
-            current = match code.to_ascii_uppercase() {
-                'G' => [134, 210, 120, default_color[3]],
-                'R' => [210, 80, 72, default_color[3]],
-                'Y' => [245, 213, 101, default_color[3]],
-                '!' => default_color,
-                _ => current,
-            };
-            continue;
-        }
-        out.push(ch);
-        colors.push(current);
+/// Strip `§` colour sequences from text (leaving `£`/`$…$`/`[…]` delimiters
+/// intact), returning plain visible text. No colour table needed.
+pub fn strip_color_codes(text: &str) -> String {
+    crate::markup::strip_section_codes(text)
+}
+
+/// Colourise marked-up text against an explicit (file-derived) colour table.
+/// `base` is the text box's base RGBA; its alpha is carried onto every glyph.
+pub fn colorize_with_table(
+    text: &str,
+    base: [u8; 4],
+    table: Option<&crate::markup::TextColorTable>,
+) -> ColorizedText {
+    let empty = crate::markup::TextColorTable::default();
+    let table = table.unwrap_or(&empty);
+    let tokens = crate::markup::parse(text, table);
+    let runs = crate::markup::color_runs(&tokens, [base[0], base[1], base[2]]);
+    let colors = runs
+        .colors
+        .iter()
+        .map(|rgb| [rgb[0], rgb[1], rgb[2], base[3]])
+        .collect();
+    ColorizedText {
+        text: runs.text,
+        colors,
     }
-    ColorizedText { text: out, colors }
 }
 
 fn blit_glyph(
@@ -409,6 +407,7 @@ impl ParsedFont {
             pages,
             chars: self.chars,
             kernings: self.kernings,
+            color_table: crate::markup::TextColorTable::load(resolver).ok(),
         })
     }
 }
@@ -815,15 +814,22 @@ mod tests {
 
     #[test]
     fn maps_hoi4_color_codes_to_per_glyph_tints() {
+        // Colours are the FILE-derived interface/core.gfx textcolors values,
+        // not the old hard-coded approximations.
+        let doc = crate::paradox_text::parse_str(
+            "bitmapfonts = { textcolors = { G = { 0 159 3 } Y = { 255 189 0 } R = { 255 50 50 } } }",
+        );
+        let table = crate::markup::TextColorTable::from_core_gfx_value(&doc.root);
         let default = [221, 214, 190, 255];
-        let colorized = colorize_hoi4_text(
+        let colorized = colorize_with_table(
             "\u{00a7}GFull\u{00a7}! \u{00a7}Y74%\u{00a7}! \u{00a7}R0\u{00a7}!",
             default,
+            Some(&table),
         );
         assert_eq!(colorized.text, "Full 74% 0");
-        assert_eq!(colorized.colors[0], [134, 210, 120, 255]);
-        assert_eq!(colorized.colors[5], [245, 213, 101, 255]);
-        assert_eq!(colorized.colors[9], [210, 80, 72, 255]);
+        assert_eq!(colorized.colors[0], [0, 159, 3, 255]);
+        assert_eq!(colorized.colors[5], [255, 189, 0, 255]);
+        assert_eq!(colorized.colors[9], [255, 50, 50, 255]);
     }
 
     #[test]
@@ -966,6 +972,7 @@ mod tests {
             }],
             chars,
             kernings: BTreeMap::from([(('1' as u32, '9' as u32), -1)]),
+            color_table: None,
         }
     }
 }

@@ -1,6 +1,7 @@
 use crate::assets::AssetResolver;
 use crate::compose::{
-    draw_image, draw_scaled, draw_scaled_crop, ComposeOptions, ComposeOutput, Compositor, DebugRect,
+    draw_image, draw_scaled, draw_scaled_crop, resolve_element_rect, ComposeOptions, ComposeOutput,
+    Compositor, DebugRect, Orientation, Rect,
 };
 use crate::dds::RgbaImage;
 use crate::font::{blank_image, BitmapFont};
@@ -20,6 +21,9 @@ pub const TOPBAR_WINDOW_NAME: &str = "topbar";
 pub struct TopbarBinding {
     pub country_tag: Option<String>,
     pub country_ideology: Option<String>,
+    /// 1936 `set_cosmetic_tag` override (e.g. `RAJ_UK`), if any. Takes
+    /// precedence over the base tag for flag selection.
+    pub cosmetic_tag: Option<String>,
     pub flag_texture: Option<String>,
     pub political_power: Option<String>,
     pub manpower: Option<String>,
@@ -267,6 +271,86 @@ pub fn load_topbar_layout(
         viewport_width,
         viewport_height,
     })
+}
+
+/// A topbar element rect resolved purely from the `.gui` layout fields
+/// (position / size / orientation) through the decompiled engine anchor law in
+/// [`resolve_element_rect`]. Natural sprite sizes are deliberately treated as
+/// zero, so every value here is a pure function of `topbar.gui` and the layout
+/// rule — no texture decode is involved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedTopbarRect {
+    pub path: String,
+    pub name: String,
+    pub element_type: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub orientation: Orientation,
+    /// Human-readable note of which `.gui` fields drove this rect.
+    pub drivers: String,
+}
+
+/// Resolve every topbar element's screen rect at a fixed viewport using ONLY
+/// the parsed `.gui` fields and the engine-exact orientation/anchor law.
+pub fn resolve_topbar_rects_pure(
+    layout: &TopbarLayout,
+    viewport_w: usize,
+    viewport_h: usize,
+) -> Vec<ResolvedTopbarRect> {
+    let options =
+        ComposeOptions::new(viewport_w, viewport_h).with_root_size(viewport_w, viewport_h);
+    let root_parent = Rect::new(0, 0, viewport_w as i32, viewport_h as i32);
+    let mut out = Vec::new();
+    walk_pure(&layout.root, root_parent, "", &options, &mut out);
+    out
+}
+
+fn walk_pure(
+    element: &GuiElement,
+    parent: Rect,
+    parent_path: &str,
+    options: &ComposeOptions,
+    out: &mut Vec<ResolvedTopbarRect>,
+) {
+    let rect = resolve_element_rect(element, parent, (0, 0), options);
+    let orientation = Orientation::parse(element.orientation.as_deref());
+    let path = if parent_path.is_empty() {
+        element.name.clone()
+    } else {
+        format!("{parent_path}/{}", element.name)
+    };
+    let mut drivers = Vec::new();
+    if let Some(pos) = &element.position {
+        drivers.push(format!("position=({},{})", pos.x.raw, pos.y.raw));
+    }
+    if let Some(size) = &element.size {
+        drivers.push(format!("size=({},{})", size.x.raw, size.y.raw));
+    }
+    drivers.push(format!(
+        "orientation={:?}{}",
+        orientation,
+        if element.orientation.is_none() {
+            " (default)"
+        } else {
+            ""
+        }
+    ));
+    out.push(ResolvedTopbarRect {
+        path: path.clone(),
+        name: element.name.clone(),
+        element_type: element.element_type.clone(),
+        x: rect.x(),
+        y: rect.y(),
+        w: rect.w(),
+        h: rect.h(),
+        orientation,
+        drivers: drivers.join("; "),
+    });
+    for child in &element.children {
+        walk_pure(child, rect, &path, options, out);
+    }
 }
 
 pub fn compose_topbar(
@@ -698,26 +782,56 @@ struct ResolvedFlag {
     image: RgbaImage,
 }
 
+/// Ordered flag-texture candidate paths for a country, encoding the engine's
+/// flag-name precedence. The engine identifies a flag by a *flag name* — the
+/// `set_cosmetic_tag` cosmetic tag when present, else the country tag — suffixed
+/// with the current ideology, falling back to the base (un-suffixed) flag of the
+/// same name. FILE-grounded from the shipped `gfx/flags` inventory:
+///   * `GER.tga` (base) is ABSENT — only `GER_<ideology>.tga` ship, so the
+///     ideology variant must precede the base;
+///   * cosmetic `RAJ_UK.tga` ships but `RAJ_UK_neutrality.tga` does NOT, so a
+///     cosmetic's base flag must be tried before the real tag's flags.
+/// Therefore all candidates for the cosmetic name precede all candidates for the
+/// real tag. `gfx/flags` (full-res), `medium/`, and `small/` ship as parallel
+/// per-name sets; the size folder is the render context's (residual: the exact
+/// size-folder selection law is UNTRACED — see UI_LAYOUT_LAW.md).
+pub fn flag_candidates(
+    tag: Option<&str>,
+    ideology: Option<&str>,
+    cosmetic_tag: Option<&str>,
+    explicit: Option<&str>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(explicit) = explicit {
+        out.push(explicit.to_string());
+    }
+    let mut names: Vec<String> = Vec::new();
+    // Cosmetic tags are case-sensitive identifiers (e.g. `RAJ_UK`); the base
+    // tag is upper-cased.
+    if let Some(cosmetic) = cosmetic_tag.filter(|value| !value.is_empty()) {
+        names.push(cosmetic.to_string());
+    }
+    if let Some(tag) = tag {
+        names.push(tag.to_ascii_uppercase());
+    }
+    for name in names {
+        for dir in ["gfx/flags", "gfx/flags/medium", "gfx/flags/small"] {
+            if let Some(ideology) = ideology {
+                out.push(format!("{dir}/{name}_{ideology}.tga"));
+            }
+            out.push(format!("{dir}/{name}.tga"));
+        }
+    }
+    out
+}
+
 fn resolve_flag(resolver: &AssetResolver, binding: &TopbarBinding) -> Result<Option<ResolvedFlag>> {
-    let mut candidates = Vec::new();
-    if let Some(explicit) = &binding.flag_texture {
-        candidates.push(explicit.clone());
-    }
-    if let Some(tag) = &binding.country_tag {
-        let tag = tag.to_ascii_uppercase();
-        if let Some(ideology) = &binding.country_ideology {
-            candidates.push(format!("gfx/flags/{}_{}.tga", tag, ideology));
-        }
-        candidates.push(format!("gfx/flags/{tag}.tga"));
-        if let Some(ideology) = &binding.country_ideology {
-            candidates.push(format!("gfx/flags/medium/{}_{}.tga", tag, ideology));
-        }
-        candidates.push(format!("gfx/flags/medium/{tag}.tga"));
-        if let Some(ideology) = &binding.country_ideology {
-            candidates.push(format!("gfx/flags/small/{}_{}.tga", tag, ideology));
-        }
-        candidates.push(format!("gfx/flags/small/{tag}.tga"));
-    }
+    let candidates = flag_candidates(
+        binding.country_tag.as_deref(),
+        binding.country_ideology.as_deref(),
+        binding.cosmetic_tag.as_deref(),
+        binding.flag_texture.as_deref(),
+    );
     for candidate in candidates {
         if resolver.resolve_optional_file(&candidate)?.is_some() {
             let decoded = resolver.decode_texture(&candidate)?;
@@ -855,6 +969,40 @@ mod tests {
     }
 
     #[test]
+    fn flag_candidate_order_puts_cosmetic_before_tag() {
+        let cands = flag_candidates(Some("raj"), Some("neutrality"), Some("RAJ_UK"), None);
+        // All cosmetic-name candidates precede any real-tag candidate.
+        let first_tag = cands.iter().position(|c| !c.contains("RAJ_UK")).unwrap();
+        let last_cosmetic = cands.iter().rposition(|c| c.contains("RAJ_UK")).unwrap();
+        assert!(
+            last_cosmetic < first_tag,
+            "cosmetic must precede tag: {cands:?}"
+        );
+        // Within a name, the ideology variant precedes the base.
+        assert_eq!(cands[0], "gfx/flags/RAJ_UK_neutrality.tga");
+        assert_eq!(cands[1], "gfx/flags/RAJ_UK.tga");
+    }
+
+    #[test]
+    fn cosmetic_base_flag_beats_real_tag_flag() {
+        let root = temp_root("flag_cosmetic");
+        // The cosmetic's ideology variant is ABSENT; its base is present. The
+        // real tag's ideology flag also exists but must NOT win.
+        write_tga(&root.join("gfx/flags/RAJ_UK.tga"), [10, 20, 30, 255]);
+        write_tga(&root.join("gfx/flags/RAJ_neutrality.tga"), [200, 0, 0, 255]);
+        let resolver = AssetResolver::new(vec![root.clone()]);
+        let binding = TopbarBinding {
+            country_tag: Some("RAJ".to_string()),
+            country_ideology: Some("neutrality".to_string()),
+            cosmetic_tag: Some("RAJ_UK".to_string()),
+            ..TopbarBinding::default()
+        };
+        let flag = resolve_flag(&resolver, &binding).unwrap().unwrap();
+        assert_eq!(flag.rel_path, "gfx/flags/RAJ_UK.tga");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn frame_selection_maps_fraction_to_existing_frames() {
         assert_eq!(frame_from_fraction(0.0, 10), 0);
         assert_eq!(frame_from_fraction(0.51, 10), 5);
@@ -873,6 +1021,106 @@ mod tests {
         assert_eq!(format_scaled_short(66_100), "66.10K");
         assert_eq!(format_scaled_short(2_500_000), "2.50M");
         assert_eq!(format_percent(0.735), "74%");
+    }
+
+    fn hoi4_root() -> Option<PathBuf> {
+        let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(crate::probe::DEFAULT_GAME_ROOT));
+        if root.is_dir() {
+            Some(root)
+        } else {
+            None
+        }
+    }
+
+    fn find<'a>(rects: &'a [ResolvedTopbarRect], name: &str) -> &'a ResolvedTopbarRect {
+        rects
+            .iter()
+            .find(|r| r.name == name)
+            .unwrap_or_else(|| panic!("topbar element `{name}` not resolved"))
+    }
+
+    /// GATE: the topbar element rects resolved purely from `interface/topbar.gui`
+    /// must follow the decompiled engine layout law
+    /// (origin(child) = origin(parent) + anchor_fraction(orientation)·size(parent)
+    /// + position). Expected values are hand-derived from the exact `.gui` fields
+    /// at a 1920x1080 viewport and reported alongside their drivers.
+    #[test]
+    fn topbar_rects_follow_engine_layout_law() {
+        let Some(root) = hoi4_root() else {
+            eprintln!("SKIP topbar gate: the game root missing");
+            return;
+        };
+        let resolver = AssetResolver::new(vec![root]);
+        // Load the layout directly from topbar.gui (no sprite/texture decode is
+        // needed for a pure-law rect resolution).
+        let resolved = resolver
+            .resolve_file(TOPBAR_GUI)
+            .expect("resolve topbar.gui");
+        let doc = parse_file(&resolved.path).expect("parse topbar.gui");
+        let mut layouts = LayoutSet::default();
+        layouts.add_document(&resolved.rel_path, &doc);
+        let root_el = layouts
+            .documents
+            .iter()
+            .flat_map(|d| d.roots.iter())
+            .find(|r| {
+                r.name.eq_ignore_ascii_case(TOPBAR_WINDOW_NAME)
+                    && r.element_type.eq_ignore_ascii_case("containerWindowType")
+            })
+            .cloned()
+            .expect("topbar containerWindowType");
+        let layout = TopbarLayout {
+            source_file: resolved.rel_path,
+            window_name: TOPBAR_WINDOW_NAME.to_string(),
+            root: root_el,
+            viewport_width: 1920,
+            viewport_height: 1080,
+        };
+        let rects = resolve_topbar_rects_pure(&layout, 1920, 1080);
+
+        // (name, x, y, w, h) — each derived from the .gui fields + the law.
+        // root: position=(-4,-1) size=(100%%,100%%) UPPER_LEFT(default)
+        //   -> anchor (0,0) of viewport, size = full viewport, +position.
+        let expected = [
+            ("topbar", -4, -1, 1920, 1080),
+            // player_flag: position=(12,14) UPPER_LEFT under root(-4,-1)
+            ("player_flag", 8, 13, 0, 0),
+            // land: position=(796,5) size=(56,28) UPPER_LEFT under root
+            ("land", 792, 4, 56, 28),
+            // experience_value: position=(23,5) UPPER_LEFT(default) under land(792,4)
+            ("experience_value", 815, 9, 0, 0),
+            // menu_button: position=(-35,7) UPPER_RIGHT -> anchor (1920,0) of root
+            ("menu_button", 1881, 6, 0, 0),
+            // threat_button: position=(-96,20) UPPER_RIGHT under root
+            ("threat_button", 1820, 19, 0, 0),
+            // time_control_window: position=(-378,7) size=(253,30) UPPER_RIGHT
+            ("time_control_window", 1538, 6, 253, 30),
+            // DateText: position=(-175,4) UPPER_RIGHT under time_control_window(1538,6,253,30)
+            //   -> anchor (253,0) => 1538+253-175 = 1616, 6+4 = 10
+            ("DateText", 1616, 10, 0, 0),
+        ];
+
+        for (name, x, y, w, h) in expected {
+            let r = find(&rects, name);
+            println!(
+                "{:<22} rect=({},{},{},{})  [{}]",
+                r.path, r.x, r.y, r.w, r.h, r.drivers
+            );
+            assert_eq!(
+                (r.x, r.y, r.w, r.h),
+                (x, y, w, h),
+                "rect mismatch for {name}"
+            );
+        }
+
+        // Nested right-anchoring must compose parent→child, not re-anchor to the
+        // viewport: DateText sits inside the right-anchored time_control_window.
+        let tcw = find(&rects, "time_control_window");
+        let date = find(&rects, "DateText");
+        assert!(date.x > tcw.x && date.x < tcw.x + tcw.w);
+        assert_eq!(date.orientation, Orientation::UpperRight);
     }
 
     fn temp_root(label: &str) -> PathBuf {
