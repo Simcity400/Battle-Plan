@@ -524,6 +524,96 @@ state for all ~200 AI tags unless it is free.
 boundary is acceptable ONLY if that matches the engine's own FoW update
 cadence — otherwise record at the engine's cadence (zero-data-loss rule).
 
+## 14. UI-inventory deep-panel data streams (the deep-population set)
+
+**Surfaced 2026-07-09 by the UI + map-mode inventory (`UI_COVERAGE_MATRIX.md`
+§9): 14 recording-data streams the deep panels bind against.** Every one is
+country/state/world-scoped, hourly-or-on-change, and each degrades independently
+to an "unavailable" badge (never a fabricated value). All of them already have a
+`REPLAY_SCHEMA.md` shape (cited per stream) — the ask is that the shape rides
+into item 1's hourly snapshots. The `fx-streams` lane added a synthetic fixture
++ typed `replay_core` view + round-trip gate for each, so the next UI wave gates
+against real fixture data instead of fail-closing. Two of the 14
+(**fired-event stream** + **decision state**) are owned by the
+`u2a-event-chrome` / `u2b-decision-chrome` lanes and are specified there; the
+other 12 are below.
+
+Cadence for all: **hourly or on-change**. Degrade for all: **unavailable badge /
+empty panel section**, never a fabricated row or number.
+
+1. **Research state** — `countries.<tag>.research` (schema §3.4):
+   `{tech_count, research_slots, in_progress[{name, points_factor, progress_pct}],
+   technologies[{name, level, date}]}`. Drives countrytechnologyview / techtree /
+   doctrinetree (done / in-progress / ahead-of-time penalty). Fixture
+   `fx_research_focus`; view `ResearchView`.
+2. **National-focus state** — `countries.<tag>.focus` (schema §3.5):
+   `{focus_tree, current, completed[], completed_count, progress}`. Drives
+   nationalfocusview. Fixture `fx_research_focus`; view `FocusView`.
+3. **Politics detail** — `countries.<tag>.politics` (schema §3.3):
+   `party_popularities{ideology:pct}`, `ideas[]`, `national_spirits[]`,
+   `laws.{economy,trade,conscription}`, `appointed_advisors[]`; PLUS
+   **command abilities** `countries.<tag>.abilities[].ability` (folds the
+   abilitylist.gui ask). Drives countrypoliticsview + the ability bar. Fixture
+   `fx_country_management`; view `PoliticsDetailView`.
+4. **Production queue + equipment stockpile** —
+   `countries.<tag>.production` (schema §3.6): `{stockpile_total, stockpile{id:amt},
+   construction_queue[{id, active_factories, cost, produced, priority}]}` PLUS
+   `countries.<tag>.military.equipment_stockpile[{archetype, equip_id, equip_type,
+   amount}]` (schema §3.2). Drives countryproductionlineview + equipmentoverview.
+   Fixture `fx_country_management`; view `ProductionView`.
+5. **Division / equipment templates & variants** — `designs.division_templates[]`
+   + `designs.equipment_variants{"id:type": …}` (schema §11, world-scoped, keyed by
+   `country`). Read-only snapshot for every designer view. Fixture
+   `fx_designs_catalog`; view `DesignsView`.
+6. **Intelligence / operatives state** — `countries.<tag>.intel` (schema §3.9):
+   `agency{name, is_created, upgrade_progress, capacity{…}}`, `operatives[{op_id,
+   name, state, captured}]`, `operations{running[{op_id, type, target, duration}]}`.
+   Drives intelligenceagencyview / intelledger / operationoverview / operative.
+   Fixture `fx_country_management`; view `IntelView`.
+7. **Trade state** — `countries.<tag>.economy.resources.{produced,exported,to_export}`
+   (schema §3.1) + trade contracts `countries.<tag>.diplomacy.lend_lease[{counterpart,
+   direction, convoys{assigned,total}}]` (schema §3.8; canonical world list
+   `diplomacy_world.trade_contracts`). Drives countrytradeview. Fixture
+   `fx_country_management`; view `TradeView`.
+8. **Occupation resistance / compliance** — `states.<id>.occupation`
+   `{resistance, resistance_speed, compliance, compliance_speed, occupied_country_tag,
+   operational_status}` + `states.<id>.occupation_law` (schema §4, state-scoped).
+   Drives countryoccupationview / garrisonlogview **and feeds the resistance +
+   compliance map modes** (`MAPMODE_COVERAGE_MATRIX`). Fixture `fx_occupation_sweep`;
+   view `OccupationRow` (keyed by state id).
+9. **Character / leader roster + traits** — `countries.<tag>.commanders` (schema
+   §3.10): `leader{name}`, `field_marshals[]` / `generals[]` / `admirals[]` each
+   `{name, token, level, traits[], assignment{kind,name}|null}`, `counts.roster_size`.
+   Drives officercorpview / unitleaderwindow / leadergroups / the trait trees.
+   Fixture `fx_leader_roster`; view `LeaderRosterView`.
+10. **Power-balance state** — `world.power_balances[]` (schema §18):
+    `{template, value, left_side, right_side, trending_side, countries[]}`. Drives
+    powerbalanceview (BBA). Fixture `fx_power_balance_combat`; view `PowerBalanceView`.
+11. **Naval / air combat detail + losses** — a new top-level `naval_combats[]`
+    `{naval_combat_id, location_province, attacker/defender (TAG), attacker/defender
+    task_force id, result_type, progress}` (pairs with the C3 naval-bubble ask in
+    item 8) + convoy losses `world_events.sunk_convoys[{month, convoys, killer_country,
+    owner}]` (schema §17). Air combat detail is served region-level by the existing
+    `naval_air.air_superiority` view. Drives navalcombat / navalcombatresultswindow /
+    naval_losses / destroyedshipswindow / combatlogview. Fixture
+    `fx_power_balance_combat`; view `NavalAirCombatView`.
+12. **Scripted-GUI variable state** — a GENERIC recorded var map (mod-extensible,
+    NOT 23 bespoke fields): `countries.<tag>.script_variables{name:number}` +
+    `world.variables{name:number}` + `world.flags{name:{value,date}}` (schema §3 /
+    §18). Drives all 23 national-mechanic `*_scripted_gui.gui` panels via a generic
+    composer. Fixture `fx_scripted_gui_vars`; view `ScriptedGuiView`.
+
+Plus one small companion folded here: **strategic raid state** `raids`
+(schema §16) `{counters.next_target, countries[{tag, priority}]}` — fixture
+`fx_power_balance_combat`, view `RaidStateView`. (Radar coverage has no
+`REPLAY_SCHEMA.md` field yet — tracked UNKNOWN in `EXTRACTION_NEEDS.md §A`,
+no view until a shape is pinned.)
+
+> **fired-event stream** (item 13 of the inventory, `world_events.fired_events` +
+> event id → loc join) and **decision state** (`countries.<tag>.decisions.*`) are
+> the remaining two of the 14 — owned by the `u2a`/`u2b` chrome lanes, not
+> duplicated here.
+
 ---
 
 ## 14. Fired-event stream (EVENT POPUP CHROME)
@@ -587,6 +677,7 @@ resolved title+desc text; else the replay takes the first loc-resolvable desc
 | 12 | battle plans | deferred — do not build yet |
 | 13 | per-country FoW / visibility | **PROMOTED 2026-07-09** (observer country-POV is now core UX); per-player-country province-level-or-finer visibility/intel + spotted-units per hour; OPEN on both sides |
 | 14 | fired-event stream | **NEW (U2 2026-07-09).** Event popup chrome layout + def→window resolution DONE replay-side (`game_ui::event_chrome`, 97.4% of visible vanilla events renderable); needs `{event_id, target_tag, chosen_option_index, fire_date}` per fired event (on-change, tiny volume). Content fail-closed until it lands. OPEN extractor-side (EXTRACTION_NEEDS A18) |
+| 15 | UI-inventory deep-panel streams (12 of 14) | replay-side FIXTURE + typed view + round-trip gate LANDED (fx-streams lane): research/focus/politics-detail/production+stockpile/templates+variants/intel/trade/occupation/leaders/power-balance/naval-air-combat/scripted-GUI-vars (+raids). Shapes exist in `REPLAY_SCHEMA.md`; extractor fold into hourly snapshots OPEN (EXTRACTION_NEEDS A22–A33). fired-event + decision-state owned by u2a/u2b |
 
 The replay layer keeps this file current; anything new the replay needs
 from memory gets added HERE (nowhere else).

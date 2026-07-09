@@ -162,7 +162,7 @@ mod tests {
         let root = fixture_root();
         let manifest = manifest();
         let positive = manifest["positive"].as_array().expect("positive list");
-        assert_eq!(positive.len(), 12, "expected 12 positive fixtures");
+        assert_eq!(positive.len(), 19, "expected 19 positive fixtures");
         for entry in positive {
             let name = entry["name"].as_str().expect("name");
             let rel = entry["path"].as_str().expect("path");

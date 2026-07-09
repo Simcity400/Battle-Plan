@@ -183,6 +183,14 @@ fn positive_scenarios(seed: u64) -> Vec<Scenario> {
         fx_building_damage(seed),
         fx_pov_visibility(seed),
         fx_dlc_language_variation(seed),
+        // fx-streams lane: the 12 UI-inventory data streams (UI_COVERAGE_MATRIX §9).
+        fx_research_focus(seed),
+        fx_country_management(seed),
+        fx_designs_catalog(seed),
+        fx_occupation_sweep(seed),
+        fx_leader_roster(seed),
+        fx_power_balance_combat(seed),
+        fx_scripted_gui_vars(seed),
     ]
 }
 
@@ -1036,6 +1044,342 @@ fn fx_dlc_language_variation(seed: u64) -> Scenario {
             &["world", "scenario", "localisation_language"],
             json!("english"),
             "language selection changes",
+        ),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// fx-streams lane fixtures — the 12 UI-inventory data streams
+// (UI_COVERAGE_MATRIX §9). Each populates one domain family per tick,
+// deterministically from the seed, leaving existing fixtures untouched.
+// ---------------------------------------------------------------------------
+
+fn fx_research_focus(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_research_focus",
+        "Per-country research (completed count / in-progress / slots) and national-focus (current / completed / progress) evolve.",
+        &["requirements:14", "plan:FXSTREAMS:research_focus"],
+        &["clock", "country_identity", "tech_live", "focus_live"],
+        &["No Step Back"],
+        "english",
+        |tick, snap| {
+            let t = tick as i64;
+            snap["countries"]["GER"]["research"]["tech_count"] = json!(4 + t);
+            snap["countries"]["GER"]["research"]["research_slots"] =
+                json!(if tick < 6 { 3 } else { 4 });
+            snap["countries"]["GER"]["research"]["technologies"] = json!([
+                {"name": "infantry_weapons", "level": 1, "date": "1936.1.1.0", "research_points": 10.0},
+                {"name": "fighter1", "level": 1, "date": "1936.1.2.0", "research_points": 12.0}
+            ]);
+            snap["countries"]["GER"]["research"]["in_progress"] = json!([
+                {"name": if tick < 6 { "infantry_weapons2" } else { "artillery2" }, "points_factor": 1.0, "progress_pct": tick as f64 / 11.0}
+            ]);
+            snap["countries"]["GER"]["focus"]["current"] =
+                if tick < 8 { json!("GER_rhineland") } else { Value::Null };
+            snap["countries"]["GER"]["focus"]["completed"] = if tick < 4 {
+                json!(["GER_army_effort"])
+            } else {
+                json!(["GER_army_effort", "GER_rhineland"])
+            };
+            snap["countries"]["GER"]["focus"]["completed_count"] =
+                json!(if tick < 4 { 1 } else { 2 });
+            snap["countries"]["GER"]["focus"]["progress"] = json!(tick as f64 * 3.0);
+        },
+    );
+    let h8 = hour_at(&s, 8);
+    with_probe(
+        s,
+        Probe::new(
+            h8,
+            &["countries", "GER", "research", "tech_count"],
+            json!(12),
+            "research tech_count sweep",
+        ),
+    )
+}
+
+fn fx_country_management(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_country_management",
+        "Per-country politics detail, production queue+stockpile, intel/operatives, trade, and command abilities evolve.",
+        &["requirements:14", "plan:FXSTREAMS:country_management"],
+        &[
+            "clock",
+            "country_identity",
+            "politics_live",
+            "production_live",
+            "intel",
+            "economy",
+            "abilities_live",
+        ],
+        &["La Resistance"],
+        "english",
+        |tick, snap| {
+            let t = tick as i64;
+            let ger = &mut snap["countries"]["GER"];
+            // --- politics detail + command abilities ---
+            ger["politics"]["party_popularities"] = json!({
+                "fascism": 0.60 - tick as f64 * 0.01,
+                "democratic": 0.20,
+                "communism": 0.15,
+                "neutrality": 0.05 + tick as f64 * 0.01
+            });
+            ger["politics"]["ideas"] =
+                json!(["german_reich_spirit", if tick < 6 { "tolerant_society" } else { "hardened_society" }]);
+            ger["politics"]["national_spirits"] = json!(["prussian_army"]);
+            ger["politics"]["laws"] = json!({
+                "economy": if tick < 6 { "civilian_economy" } else { "partial_mobilisation" },
+                "trade": "export_focus",
+                "conscription": "limited_conscription"
+            });
+            ger["politics"]["appointed_advisors"] =
+                json!(["general_staff", if tick < 6 { "captain_of_industry" } else { "war_industrialist" }]);
+            ger["abilities"] = json!([
+                {"ability": "battle_cry", "active": tick % 2 == 0, "cooldown": t},
+                {"ability": "force_attack", "active": false, "cooldown": 0}
+            ]);
+            // --- production queue + stockpile ---
+            ger["production"]["stockpile_total"] = json!(1000.0 + tick as f64 * 50.0);
+            ger["production"]["stockpile"] = json!({"1:1": 900 + t * 10, "2:3": 120 - t});
+            ger["production"]["construction_queue"] = json!([
+                {"id": 900, "template_id": 42, "active_factories": 5, "cost": 7200.0, "produced": tick as f64 * 120.0, "priority": 1}
+            ]);
+            ger["military"]["equipment_stockpile"] = json!([
+                {"archetype": "infantry_equipment", "equip_id": 1, "equip_type": 1, "amount": 900.0 + tick as f64 * 10.0},
+                {"archetype": "artillery_equipment", "equip_id": 2, "equip_type": 3, "amount": 60.0}
+            ]);
+            // --- intel / operatives ---
+            ger["intel"]["agency"] = json!({
+                "name": "Abwehr",
+                "is_created": true,
+                "upgrade_progress": tick as f64 / 11.0,
+                "capacity": {"max_operatives": 3 + t, "usable_slots": 2, "defense": 5}
+            });
+            ger["intel"]["operatives"] = json!([
+                {"op_id": 7001, "name": "Agent Alpha", "skill": 2 + t, "state": if tick < 6 { "on_mission" } else { "on_operation" }, "captured": false}
+            ]);
+            ger["intel"]["operations"] = json!({
+                "priority": 1,
+                "running": if tick >= 6 {
+                    json!([{"op_id": 5001, "type": "coup", "target": "FRA", "duration": 30}])
+                } else {
+                    json!([])
+                },
+                "finished": []
+            });
+            // --- trade ---
+            ger["economy"]["resources"]["produced"] =
+                json!({"steel": 40.0 + tick as f64, "oil": 5.0, "tungsten": 2.0});
+            ger["economy"]["resources"]["exported"] = json!({"steel": 5.0});
+            ger["economy"]["resources"]["to_export"] = json!({"steel": 3.0});
+            ger["diplomacy"]["lend_lease"] = json!([
+                {"contract_id": "10:2", "direction": "incoming", "counterpart": "SOV", "seller": "SOV", "buyer": "GER", "convoys": {"assigned": 4 + t, "total": 10}, "completed": false}
+            ]);
+        },
+    );
+    let h7 = hour_at(&s, 7);
+    let s = with_probe(
+        s,
+        Probe::new(
+            h7,
+            &["countries", "GER", "production", "stockpile_total"],
+            json!(1350.0),
+            "production stockpile_total sweep",
+        ),
+    );
+    with_probe(
+        s,
+        Probe::new(
+            h7,
+            &["countries", "GER", "intel", "operations", "running", "0", "type"],
+            json!("coup"),
+            "intel operation running",
+        ),
+    )
+}
+
+fn fx_designs_catalog(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_designs_catalog",
+        "World design catalog: division templates and equipment variants evolve (regiment count, naming, obsolescence).",
+        &["requirements:14", "plan:FXSTREAMS:designs_catalog"],
+        &["clock", "country_identity", "designs"],
+        &["No Step Back", "By Blood Alone"],
+        "english",
+        |tick, snap| {
+            snap["designs"]["division_templates"] = json!([
+                {"id": "1:1", "type": 1, "country": "GER", "name": "Infanterie", "role": "infantry", "n_regiments": 6 + tick as i64, "n_support": 2},
+                {"id": "2:1", "type": 1, "country": "SOV", "name": "Strelkovaya", "role": "infantry", "n_regiments": 9, "n_support": 1}
+            ]);
+            snap["designs"]["equipment_variants"] = json!({
+                "100:3": {"id": 100, "type": 3, "archetype": "artillery_equipment", "family": "land_other", "name": if tick < 6 { Value::Null } else { json!("le.FH 18") }, "version": tick as i64, "obsolete": false},
+                "200:12": {"id": 200, "type": 12, "archetype": "fighter_equipment", "family": "plane", "name": "Bf 109", "version": 1, "obsolete": tick >= 8}
+            });
+        },
+    );
+    let h8 = hour_at(&s, 8);
+    with_probe(
+        s,
+        Probe::new(
+            h8,
+            &["designs", "division_templates", "0", "n_regiments"],
+            json!(14),
+            "division template regiment growth",
+        ),
+    )
+}
+
+fn fx_occupation_sweep(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_occupation_sweep",
+        "State occupation resistance/compliance (and speeds, law, garrison status) evolve on an occupied state.",
+        &["requirements:14", "plan:FXSTREAMS:occupation_sweep"],
+        &["clock", "country_identity", "state_ownership", "state_control", "state_detail"],
+        &["La Resistance"],
+        "english",
+        |tick, snap| {
+            // GER occupies SOV state 20 (owner stays SOV, controller flips GER).
+            snap["states"]["20"]["controller"] = json!("GER");
+            snap["provinces"]["2000"]["controller"] = json!("GER");
+            snap["states"]["20"]["occupation"] = json!({
+                "resistance": (tick as f64 * 4.0).min(40.0),
+                "resistance_speed": 0.5 - tick as f64 * 0.03,
+                "compliance": (tick as f64 * 2.0).min(25.0),
+                "compliance_speed": 0.2,
+                "occupied_country_tag": "SOV",
+                "operational_status": if tick < 6 { "occupied" } else { "martial_law" }
+            });
+            snap["states"]["20"]["occupation_law"] =
+                json!(if tick < 6 { "civilian_oversight" } else { "harsh_quotas" });
+        },
+    );
+    let h6 = hour_at(&s, 6);
+    with_probe(
+        s,
+        Probe::new(
+            h6,
+            &["states", "20", "occupation", "occupied_country_tag"],
+            json!("SOV"),
+            "occupation occupied-country tag",
+        ),
+    )
+}
+
+fn fx_leader_roster(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_leader_roster",
+        "Country leader plus field-marshal/general/admiral roster with traits and assignments evolve.",
+        &["requirements:14", "plan:FXSTREAMS:leader_roster"],
+        &["clock", "country_identity", "characters", "politics_live"],
+        &["No Step Back"],
+        "english",
+        |tick, snap| {
+            let t = tick as i64;
+            let ger = &mut snap["countries"]["GER"];
+            ger["commanders"]["leader"] = json!({
+                "char_id": 1000, "name": "Country Leader", "token": "GER_leader", "ideology_group": "fascism", "source": "C"
+            });
+            ger["commanders"]["field_marshals"] = json!([
+                {"name": "von Rundstedt", "token": "GER_rundstedt", "level": 4 + t, "experience": tick as f64, "traits": ["old_guard", if tick < 6 { "infantry_leader" } else { "panzer_leader" }], "assignment": if tick < 6 { Value::Null } else { json!({"kind": "army_group", "name": "Heeresgruppe A"}) }}
+            ]);
+            ger["commanders"]["generals"] = json!([
+                {"name": "Guderian", "token": "GER_guderian", "level": 5, "experience": 10.0 + tick as f64, "traits": ["panzer_leader", "guerilla_fighter"], "assignment": {"kind": "army", "name": "2. Armee"}}
+            ]);
+            ger["commanders"]["admirals"] = json!([
+                {"name": "Doenitz", "token": "GER_donitz", "level": 4, "traits": ["seawolf"], "assignment": Value::Null}
+            ]);
+            ger["commanders"]["counts"] =
+                json!({"generals": 1, "field_marshals": 1, "admirals": 1, "advisors": 2, "roster_size": 4 + t});
+        },
+    );
+    let h9 = hour_at(&s, 9);
+    with_probe(
+        s,
+        Probe::new(
+            h9,
+            &["countries", "GER", "commanders", "field_marshals", "0", "level"],
+            json!(13),
+            "field marshal skill growth",
+        ),
+    )
+}
+
+fn fx_power_balance_combat(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_power_balance_combat",
+        "BBA power-balance slider, naval/air combat detail, convoy losses, and raid priorities evolve.",
+        &["requirements:14", "plan:FXSTREAMS:power_balance_combat"],
+        &["clock", "country_identity", "world_meta", "naval_air", "order_of_battle", "events", "raids"],
+        &["By Blood Alone", "Man the Guns"],
+        "english",
+        |tick, snap| {
+            let t = tick as i64;
+            snap["world"]["power_balances"] = json!([
+                {"template": "GER_alignment", "value": -0.5 + tick as f64 * 0.08, "left_side": "hardliners", "right_side": "moderates", "trending_side": if tick < 6 { "left" } else { "right" }, "countries": ["GER"]}
+            ]);
+            snap["naval_combats"] = json!([
+                {"naval_combat_id": 8001, "location_province": 3000, "attacker": "ENG", "defender": "GER", "attacker_task_force": "501:1", "defender_task_force": "600:1", "result_type": if tick < 6 { "naval_battle" } else { "port_strike" }, "progress": tick as f64 / 11.0, "attacker_ships": 8, "defender_ships": 4}
+            ]);
+            snap["air_combats"] = json!([
+                {"air_combat_id": 8500, "strategic_region": 301, "attacker": "ENG", "defender": "GER", "attacker_planes": 100 - t, "defender_planes": 60}
+            ]);
+            snap["world_events"]["sunk_convoys"] = json!([
+                {"month": 100 + t, "convoys": 2 + t, "killer_country": "GER", "owner": "ENG"}
+            ]);
+            snap["world_events"]["convoy_losses_by_owner"] = json!({"ENG": 10 + t});
+            snap["raids"]["countries"] = json!([{"tag": "ENG", "priority": 2}]);
+            snap["raids"]["counters"] =
+                json!({"next_state": 1, "existing_target_num": t, "detectable_target_num": t, "next_target": 5});
+        },
+    );
+    let h8 = hour_at(&s, 8);
+    with_probe(
+        s,
+        Probe::new(
+            h8,
+            &["world", "power_balances", "0", "trending_side"],
+            json!("right"),
+            "power balance trending side flip",
+        ),
+    )
+}
+
+fn fx_scripted_gui_vars(seed: u64) -> Scenario {
+    let s = scenario(
+        seed,
+        "fx_scripted_gui_vars",
+        "Per-country scripted-GUI variable state and world variables/flags evolve (national-mechanic panel inputs).",
+        &["requirements:14", "plan:FXSTREAMS:scripted_gui_vars"],
+        &["clock", "country_identity", "world_meta", "scripted_gui"],
+        &["Together for Victory"],
+        "english",
+        |tick, snap| {
+            let t = tick as f64;
+            snap["countries"]["GER"]["script_variables"] =
+                json!({"inner_circle_loyalty": 10.0 + t, "rk_influence": 0.5});
+            snap["countries"]["USA"] = country("USA", false, "democratic", 361, 25.0);
+            snap["countries"]["USA"]["script_variables"] =
+                json!({"congress_support": 50.0 - t * 2.0, "war_readiness^0": 1.0});
+            snap["world"]["variables"] = json!({"global_tension_mod": t, "campaign_phase^1": 3.0});
+            snap["world"]["flags"] = json!({
+                "war_escalation_started": {"value": tick >= 6, "date": "1936.1.1.0"}
+            });
+        },
+    );
+    let h8 = hour_at(&s, 8);
+    with_probe(
+        s,
+        Probe::new(
+            h8,
+            &["countries", "GER", "script_variables", "inner_circle_loyalty"],
+            json!(18.0),
+            "scripted-GUI country variable sweep",
         ),
     )
 }

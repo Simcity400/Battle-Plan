@@ -695,6 +695,28 @@ pub struct WorldFrame {
     buildings_status: ViewStatus,
     visibility_by_pov: BTreeMap<String, PovVisibilityView>,
     visibility_status: ViewStatus,
+    // --- fx-streams lane: the 12 UI-inventory data streams (UI_COVERAGE_MATRIX §9) ---
+    research_by_country: BTreeMap<String, ResearchView>,
+    research_status: ViewStatus,
+    focus_by_country: BTreeMap<String, FocusView>,
+    focus_status: ViewStatus,
+    politics_detail_by_country: BTreeMap<String, PoliticsDetailView>,
+    politics_detail_status: ViewStatus,
+    production_by_country: BTreeMap<String, ProductionView>,
+    production_status: ViewStatus,
+    intel_by_country: BTreeMap<String, IntelView>,
+    intel_status: ViewStatus,
+    trade_by_country: BTreeMap<String, TradeView>,
+    trade_status: ViewStatus,
+    leaders_by_country: BTreeMap<String, LeaderRosterView>,
+    leaders_status: ViewStatus,
+    occupation_by_state: BTreeMap<u32, OccupationRow>,
+    occupation_status: ViewStatus,
+    power_balance: PowerBalanceView,
+    designs: DesignsView,
+    naval_air_combat: NavalAirCombatView,
+    scripted_gui: ScriptedGuiView,
+    raids: RaidStateView,
     provenance: ProvenanceView,
     coverage_warnings: Vec<String>,
 }
@@ -947,6 +969,20 @@ impl WorldFrame {
             build_topbar_extras(&frame.rest, &mut warnings);
         let (buildings_by_state, buildings_status) = build_buildings(&frame.rest, &mut warnings);
         let (visibility_by_pov, visibility_status) = build_visibility(&frame.rest, &mut warnings);
+        let (research_by_country, research_status) = build_research(&frame.rest, &mut warnings);
+        let (focus_by_country, focus_status) = build_focus(&frame.rest, &mut warnings);
+        let (politics_detail_by_country, politics_detail_status) =
+            build_politics_detail(&frame.rest, &mut warnings);
+        let (production_by_country, production_status) = build_production(&frame.rest, &mut warnings);
+        let (intel_by_country, intel_status) = build_intel(&frame.rest, &mut warnings);
+        let (trade_by_country, trade_status) = build_trade(&frame.rest, &mut warnings);
+        let (leaders_by_country, leaders_status) = build_leaders(&frame.rest, &mut warnings);
+        let (occupation_by_state, occupation_status) = build_occupation(&frame.rest, &mut warnings);
+        let power_balance = build_power_balance(&frame.rest, &mut warnings);
+        let designs = build_designs(&frame.rest, &mut warnings);
+        let naval_air_combat = build_naval_air_combat(&frame.rest, &mut warnings);
+        let scripted_gui = build_scripted_gui(&frame.rest, &mut warnings);
+        let raids = build_raids(&frame.rest, &mut warnings);
         let provenance = build_provenance(&frame.rest, &mut warnings);
         WorldFrame {
             hour_index: frame.hour_index,
@@ -992,6 +1028,27 @@ impl WorldFrame {
             buildings_status,
             visibility_by_pov,
             visibility_status,
+            research_by_country,
+            research_status,
+            focus_by_country,
+            focus_status,
+            politics_detail_by_country,
+            politics_detail_status,
+            production_by_country,
+            production_status,
+            intel_by_country,
+            intel_status,
+            trade_by_country,
+            trade_status,
+            leaders_by_country,
+            leaders_status,
+            occupation_by_state,
+            occupation_status,
+            power_balance,
+            designs,
+            naval_air_combat,
+            scripted_gui,
+            raids,
             provenance,
             coverage_warnings: warnings,
         }
@@ -4100,4 +4157,1088 @@ fn build_provenance(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Pr
         )),
     }
     ProvenanceView { channels, notes }
+}
+
+// ===========================================================================
+// fx-streams lane: the 12 UI-inventory data streams (UI_COVERAGE_MATRIX §9).
+//
+// Additive typed views for the deep-panel data the UI wave gates against.
+// Each mirrors the no-coercion trichotomy of the existing views and is sourced
+// from the REPLAY_SCHEMA.md field names the extractor emits (see
+// REPLAY_DATA_REQUIREMENTS.md §14). The country-scoped views are built through
+// the shared `country_map` pass; state/world-scoped views have bespoke passes.
+// ===========================================================================
+
+// --- 1. research state (REPLAY_SCHEMA §3.4) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResearchProgressRow {
+    pub name: Leaf<String>,
+    pub progress_pct: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResearchView {
+    pub tech_count: Leaf<i64>,
+    pub research_slots: Leaf<i64>,
+    pub in_progress: Leaf<Vec<ResearchProgressRow>>,
+}
+
+impl ResearchView {
+    fn all_unobtained() -> ResearchView {
+        ResearchView {
+            tech_count: Leaf::Unobtained,
+            research_slots: Leaf::Unobtained,
+            in_progress: Leaf::Unobtained,
+        }
+    }
+}
+
+// --- 2. national-focus state (REPLAY_SCHEMA §3.5) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct FocusView {
+    pub focus_tree: Leaf<String>,
+    pub current: Leaf<String>,
+    pub completed_count: Leaf<i64>,
+    pub progress: Leaf<f64>,
+    pub completed: Leaf<Vec<String>>,
+}
+
+impl FocusView {
+    fn all_unobtained() -> FocusView {
+        FocusView {
+            focus_tree: Leaf::Unobtained,
+            current: Leaf::Unobtained,
+            completed_count: Leaf::Unobtained,
+            progress: Leaf::Unobtained,
+            completed: Leaf::Unobtained,
+        }
+    }
+}
+
+// --- 3. politics detail (REPLAY_SCHEMA §3.3) + command abilities (abilities) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoliticsDetailView {
+    pub party_popularities: Leaf<BTreeMap<String, f64>>,
+    pub ideas: Leaf<Vec<String>>,
+    pub national_spirits: Leaf<Vec<String>>,
+    pub law_economy: Leaf<String>,
+    pub law_trade: Leaf<String>,
+    pub law_conscription: Leaf<String>,
+    pub appointed_advisors: Leaf<Vec<String>>,
+    /// Active command abilities (ability tokens) from `countries.<tag>.abilities`.
+    pub command_abilities: Leaf<Vec<String>>,
+}
+
+impl PoliticsDetailView {
+    fn all_unobtained() -> PoliticsDetailView {
+        PoliticsDetailView {
+            party_popularities: Leaf::Unobtained,
+            ideas: Leaf::Unobtained,
+            national_spirits: Leaf::Unobtained,
+            law_economy: Leaf::Unobtained,
+            law_trade: Leaf::Unobtained,
+            law_conscription: Leaf::Unobtained,
+            appointed_advisors: Leaf::Unobtained,
+            command_abilities: Leaf::Unobtained,
+        }
+    }
+}
+
+// --- 4. production queue + stockpile (REPLAY_SCHEMA §3.6 / §3.2) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProductionLineRow {
+    pub id: Leaf<i64>,
+    pub active_factories: Leaf<i64>,
+    pub produced: Leaf<f64>,
+    pub cost: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EquipmentStock {
+    pub archetype: Leaf<String>,
+    pub amount: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProductionView {
+    pub stockpile_total: Leaf<f64>,
+    pub stockpile: Leaf<BTreeMap<String, f64>>,
+    pub construction_queue: Leaf<Vec<ProductionLineRow>>,
+    pub equipment_stockpile: Leaf<Vec<EquipmentStock>>,
+}
+
+impl ProductionView {
+    fn all_unobtained() -> ProductionView {
+        ProductionView {
+            stockpile_total: Leaf::Unobtained,
+            stockpile: Leaf::Unobtained,
+            construction_queue: Leaf::Unobtained,
+            equipment_stockpile: Leaf::Unobtained,
+        }
+    }
+}
+
+// --- 5. intelligence / operatives (REPLAY_SCHEMA §3.9) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct OperativeRow {
+    pub op_id: Leaf<i64>,
+    pub name: Leaf<String>,
+    pub state: Leaf<String>,
+    pub captured: Leaf<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OperationRow {
+    pub op_id: Leaf<i64>,
+    pub op_type: Leaf<String>,
+    pub target: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntelView {
+    pub agency_name: Leaf<String>,
+    pub agency_created: Leaf<bool>,
+    pub agency_upgrade_progress: Leaf<f64>,
+    pub operatives: Leaf<Vec<OperativeRow>>,
+    pub operations_running: Leaf<Vec<OperationRow>>,
+}
+
+impl IntelView {
+    fn all_unobtained() -> IntelView {
+        IntelView {
+            agency_name: Leaf::Unobtained,
+            agency_created: Leaf::Unobtained,
+            agency_upgrade_progress: Leaf::Unobtained,
+            operatives: Leaf::Unobtained,
+            operations_running: Leaf::Unobtained,
+        }
+    }
+}
+
+// --- 6. trade state (REPLAY_SCHEMA §3.1 resources + §3.8 lend_lease) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct TradeContractRow {
+    pub counterpart: Leaf<String>,
+    pub direction: Leaf<String>,
+    pub convoys_assigned: Leaf<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TradeView {
+    pub produced: Leaf<BTreeMap<String, f64>>,
+    pub exported: Leaf<BTreeMap<String, f64>>,
+    pub to_export: Leaf<BTreeMap<String, f64>>,
+    pub contracts: Leaf<Vec<TradeContractRow>>,
+}
+
+impl TradeView {
+    fn all_unobtained() -> TradeView {
+        TradeView {
+            produced: Leaf::Unobtained,
+            exported: Leaf::Unobtained,
+            to_export: Leaf::Unobtained,
+            contracts: Leaf::Unobtained,
+        }
+    }
+}
+
+// --- 7. occupation resistance/compliance (REPLAY_SCHEMA §4, state-scoped) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct OccupationRow {
+    pub resistance: Leaf<f64>,
+    pub resistance_speed: Leaf<f64>,
+    pub compliance: Leaf<f64>,
+    pub compliance_speed: Leaf<f64>,
+    pub occupied_country_tag: Leaf<String>,
+    pub operational_status: Leaf<String>,
+    pub occupation_law: Leaf<String>,
+}
+
+// --- 8. leader roster + traits (REPLAY_SCHEMA §3.10) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeaderRow {
+    pub name: Leaf<String>,
+    pub token: Leaf<String>,
+    pub level: Leaf<i64>,
+    pub traits: Leaf<Vec<String>>,
+    /// Formation the leader commands (assignment.name); `Unobtained` = reserve.
+    pub assignment: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeaderRosterView {
+    pub country_leader_name: Leaf<String>,
+    pub field_marshals: Leaf<Vec<LeaderRow>>,
+    pub generals: Leaf<Vec<LeaderRow>>,
+    pub admirals: Leaf<Vec<LeaderRow>>,
+    pub roster_size: Leaf<i64>,
+}
+
+impl LeaderRosterView {
+    fn all_unobtained() -> LeaderRosterView {
+        LeaderRosterView {
+            country_leader_name: Leaf::Unobtained,
+            field_marshals: Leaf::Unobtained,
+            generals: Leaf::Unobtained,
+            admirals: Leaf::Unobtained,
+            roster_size: Leaf::Unobtained,
+        }
+    }
+}
+
+// --- 9. power-balance state (REPLAY_SCHEMA §18, world-scoped) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowerBalanceRow {
+    pub template: Leaf<String>,
+    pub value: Leaf<f64>,
+    pub left_side: Leaf<String>,
+    pub right_side: Leaf<String>,
+    pub trending_side: Leaf<String>,
+    pub countries: Leaf<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowerBalanceView {
+    pub status: ViewStatus,
+    pub balances: Vec<PowerBalanceRow>,
+}
+
+impl PowerBalanceView {
+    fn with_status(status: ViewStatus) -> PowerBalanceView {
+        PowerBalanceView {
+            status,
+            balances: Vec::new(),
+        }
+    }
+}
+
+// --- 10. templates + equipment variants (REPLAY_SCHEMA §11, world-scoped) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct DivisionTemplateRow {
+    pub template_uid: String,
+    pub country: Leaf<String>,
+    pub name: Leaf<String>,
+    pub role: Leaf<String>,
+    pub n_regiments: Leaf<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EquipmentVariantRow {
+    pub archetype: Leaf<String>,
+    pub family: Leaf<String>,
+    pub name: Leaf<String>,
+    pub obsolete: Leaf<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesignsView {
+    pub status: ViewStatus,
+    pub division_templates: Vec<DivisionTemplateRow>,
+    pub equipment_variants: BTreeMap<String, EquipmentVariantRow>,
+}
+
+impl DesignsView {
+    fn with_status(status: ViewStatus) -> DesignsView {
+        DesignsView {
+            status,
+            division_templates: Vec::new(),
+            equipment_variants: BTreeMap::new(),
+        }
+    }
+}
+
+// --- 11. naval/air combat detail + losses (REPLAY_SCHEMA §7/§17) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct NavalCombatRow {
+    pub combat_id: Leaf<i64>,
+    pub location_province: Leaf<u32>,
+    pub attacker: Leaf<String>,
+    pub defender: Leaf<String>,
+    pub result_type: Leaf<String>,
+    pub progress: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConvoyLossRow {
+    pub killer: Leaf<String>,
+    pub owner: Leaf<String>,
+    pub convoys: Leaf<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NavalAirCombatView {
+    pub status: ViewStatus,
+    pub naval_combats: Vec<NavalCombatRow>,
+    pub sunk_convoys: Leaf<Vec<ConvoyLossRow>>,
+}
+
+// --- 12. scripted-GUI variable state (REPLAY_SCHEMA §3 script_variables / §18) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptedGuiView {
+    pub status: ViewStatus,
+    /// Per-country dynamic script variables (`countries.<tag>.script_variables`).
+    pub by_country: BTreeMap<String, Leaf<BTreeMap<String, f64>>>,
+    pub world_variables: Leaf<BTreeMap<String, f64>>,
+    /// Active global flag names (`world.flags` keys), sorted.
+    pub world_flags: Leaf<Vec<String>>,
+}
+
+// --- small: strategic raid state (REPLAY_SCHEMA §16) ---
+#[derive(Debug, Clone, PartialEq)]
+pub struct RaidStateView {
+    pub status: ViewStatus,
+    pub priorities: BTreeMap<String, i64>,
+    pub next_target: Leaf<i64>,
+}
+
+impl RaidStateView {
+    fn with_status(status: ViewStatus) -> RaidStateView {
+        RaidStateView {
+            status,
+            priorities: BTreeMap::new(),
+            next_target: match status {
+                ViewStatus::DomainAbsent => Leaf::Absent,
+                _ => Leaf::Unobtained,
+            },
+        }
+    }
+}
+
+impl WorldFrame {
+    pub fn research_by_country(&self) -> &BTreeMap<String, ResearchView> {
+        &self.research_by_country
+    }
+    pub fn research(&self, tag: &str) -> Option<&ResearchView> {
+        self.research_by_country.get(tag)
+    }
+    pub fn research_status(&self) -> ViewStatus {
+        self.research_status
+    }
+    pub fn focus_by_country(&self) -> &BTreeMap<String, FocusView> {
+        &self.focus_by_country
+    }
+    pub fn focus(&self, tag: &str) -> Option<&FocusView> {
+        self.focus_by_country.get(tag)
+    }
+    pub fn focus_status(&self) -> ViewStatus {
+        self.focus_status
+    }
+    pub fn politics_detail_by_country(&self) -> &BTreeMap<String, PoliticsDetailView> {
+        &self.politics_detail_by_country
+    }
+    pub fn politics_detail(&self, tag: &str) -> Option<&PoliticsDetailView> {
+        self.politics_detail_by_country.get(tag)
+    }
+    pub fn politics_detail_status(&self) -> ViewStatus {
+        self.politics_detail_status
+    }
+    pub fn production_by_country(&self) -> &BTreeMap<String, ProductionView> {
+        &self.production_by_country
+    }
+    pub fn production(&self, tag: &str) -> Option<&ProductionView> {
+        self.production_by_country.get(tag)
+    }
+    pub fn production_status(&self) -> ViewStatus {
+        self.production_status
+    }
+    pub fn intel_by_country(&self) -> &BTreeMap<String, IntelView> {
+        &self.intel_by_country
+    }
+    pub fn intel(&self, tag: &str) -> Option<&IntelView> {
+        self.intel_by_country.get(tag)
+    }
+    pub fn intel_status(&self) -> ViewStatus {
+        self.intel_status
+    }
+    pub fn trade_by_country(&self) -> &BTreeMap<String, TradeView> {
+        &self.trade_by_country
+    }
+    pub fn trade(&self, tag: &str) -> Option<&TradeView> {
+        self.trade_by_country.get(tag)
+    }
+    pub fn trade_status(&self) -> ViewStatus {
+        self.trade_status
+    }
+    pub fn leaders_by_country(&self) -> &BTreeMap<String, LeaderRosterView> {
+        &self.leaders_by_country
+    }
+    pub fn leaders(&self, tag: &str) -> Option<&LeaderRosterView> {
+        self.leaders_by_country.get(tag)
+    }
+    pub fn leaders_status(&self) -> ViewStatus {
+        self.leaders_status
+    }
+    pub fn occupation_by_state(&self) -> &BTreeMap<u32, OccupationRow> {
+        &self.occupation_by_state
+    }
+    pub fn occupation(&self, state_id: u32) -> Option<&OccupationRow> {
+        self.occupation_by_state.get(&state_id)
+    }
+    pub fn occupation_status(&self) -> ViewStatus {
+        self.occupation_status
+    }
+    pub fn power_balance(&self) -> &PowerBalanceView {
+        &self.power_balance
+    }
+    pub fn power_balance_status(&self) -> ViewStatus {
+        self.power_balance.status
+    }
+    pub fn designs(&self) -> &DesignsView {
+        &self.designs
+    }
+    pub fn designs_status(&self) -> ViewStatus {
+        self.designs.status
+    }
+    pub fn naval_air_combat(&self) -> &NavalAirCombatView {
+        &self.naval_air_combat
+    }
+    pub fn naval_air_combat_status(&self) -> ViewStatus {
+        self.naval_air_combat.status
+    }
+    pub fn scripted_gui(&self) -> &ScriptedGuiView {
+        &self.scripted_gui
+    }
+    pub fn scripted_gui_status(&self) -> ViewStatus {
+        self.scripted_gui.status
+    }
+    pub fn raids(&self) -> &RaidStateView {
+        &self.raids
+    }
+    pub fn raids_status(&self) -> ViewStatus {
+        self.raids.status
+    }
+}
+
+// ---------------------------------------------------------------------------
+// fx-streams shared helpers
+// ---------------------------------------------------------------------------
+
+/// Iterate `countries` once, building one typed view per TAG. Mirrors the
+/// domain handling of `build_topbar_scalars`: a present-but-null / wrong-typed
+/// country entry yields the caller's `unobtained()` value (never dropped).
+fn country_map<T>(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+    unobtained: fn() -> T,
+    build: impl Fn(&Map<String, Value>, &str, &mut Vec<String>) -> T,
+) -> (BTreeMap<String, T>, ViewStatus) {
+    let entries = match rest.get("countries") {
+        Some(Value::Object(entries)) => entries,
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        None => return (BTreeMap::new(), ViewStatus::DomainAbsent),
+        Some(other) => {
+            warnings.push(format!(
+                "countries: present but wrong-typed (expected object, found {}); \
+                 country view unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+    };
+    let mut out = BTreeMap::new();
+    for (tag, entry) in entries {
+        match entry {
+            Value::Object(obj) => {
+                let ctx = format!("countries.{tag}");
+                out.insert(tag.clone(), build(obj, &ctx, warnings));
+            }
+            Value::Null => {
+                out.insert(tag.clone(), unobtained());
+            }
+            other => {
+                warnings.push(format!(
+                    "countries.{tag}: expected object, found {}; leaves treated as unobtained",
+                    json_type_name(other)
+                ));
+                out.insert(tag.clone(), unobtained());
+            }
+        }
+    }
+    (out, ViewStatus::Present)
+}
+
+/// `{key: number}` object at `path` -> typed f64 map (sorted). One non-number
+/// value poisons the whole leaf (fail-closed, with warning).
+fn leaf_f64_map(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<BTreeMap<String, f64>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Object(map)) => {
+            let mut out = BTreeMap::new();
+            for (k, v) in map {
+                match v.as_f64() {
+                    Some(n) => {
+                        out.insert(k.clone(), n);
+                    }
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.{}.{k}: expected number, found {}; whole map treated as unobtained",
+                            path.join("."),
+                            json_type_name(v)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(out)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected object, found {}); \
+                 treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+/// Object keys at `path` -> sorted string list (e.g. `world.flags` names).
+fn object_keys(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<String>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Object(map)) => {
+            let mut keys: Vec<String> = map.keys().cloned().collect();
+            keys.sort();
+            Leaf::Measured(keys)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected object, found {}); \
+                 treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+/// Array-of-objects at `path` -> `Leaf<Vec<T>>` via a per-row builder. A
+/// non-object element poisons the whole leaf (fail-closed, with warning).
+fn leaf_rows<T>(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+    mut row: impl FnMut(&Map<String, Value>, &str, &mut Vec<String>) -> T,
+) -> Leaf<Vec<T>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item.as_object() {
+                    Some(o) => {
+                        let rctx = format!("{ctx}.{}[{i}]", path.join("."));
+                        out.push(row(o, &rctx, warnings));
+                    }
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.{}[{i}]: expected object, found {}; whole list treated as unobtained",
+                            path.join("."),
+                            json_type_name(item)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(out)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected array, found {}); \
+                 treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+/// Extract a single string `field` from each object in the array at `path` ->
+/// `Leaf<Vec<String>>` (e.g. `abilities[].ability`).
+fn leaf_obj_field_list(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    field: &str,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<String>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item.as_object().and_then(|o| o.get(field)).and_then(Value::as_str) {
+                    Some(s) => out.push(s.to_string()),
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.{}[{i}].{field}: expected string, found non-string/absent; \
+                             whole list treated as unobtained",
+                            path.join(".")
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(out)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected array, found {}); \
+                 treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// fx-streams builders
+// ---------------------------------------------------------------------------
+
+fn build_research(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, ResearchView>, ViewStatus) {
+    country_map(rest, warnings, ResearchView::all_unobtained, |obj, ctx, w| ResearchView {
+        tech_count: leaf_i64(obj, &["research", "tech_count"], ctx, w),
+        research_slots: leaf_i64(obj, &["research", "research_slots"], ctx, w),
+        in_progress: leaf_rows(obj, &["research", "in_progress"], ctx, w, |o, c, w| {
+            ResearchProgressRow {
+                name: leaf_string(o, &["name"], c, w),
+                progress_pct: leaf_f64(o, &["progress_pct"], c, w),
+            }
+        }),
+    })
+}
+
+fn build_focus(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, FocusView>, ViewStatus) {
+    country_map(rest, warnings, FocusView::all_unobtained, |obj, ctx, w| FocusView {
+        focus_tree: leaf_string(obj, &["focus", "focus_tree"], ctx, w),
+        current: leaf_string(obj, &["focus", "current"], ctx, w),
+        completed_count: leaf_i64(obj, &["focus", "completed_count"], ctx, w),
+        progress: leaf_f64(obj, &["focus", "progress"], ctx, w),
+        completed: leaf_string_list(obj, &["focus", "completed"], ctx, w),
+    })
+}
+
+fn build_politics_detail(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, PoliticsDetailView>, ViewStatus) {
+    country_map(
+        rest,
+        warnings,
+        PoliticsDetailView::all_unobtained,
+        |obj, ctx, w| PoliticsDetailView {
+            party_popularities: leaf_f64_map(obj, &["politics", "party_popularities"], ctx, w),
+            ideas: leaf_string_list(obj, &["politics", "ideas"], ctx, w),
+            national_spirits: leaf_string_list(obj, &["politics", "national_spirits"], ctx, w),
+            law_economy: leaf_string(obj, &["politics", "laws", "economy"], ctx, w),
+            law_trade: leaf_string(obj, &["politics", "laws", "trade"], ctx, w),
+            law_conscription: leaf_string(obj, &["politics", "laws", "conscription"], ctx, w),
+            appointed_advisors: leaf_string_list(obj, &["politics", "appointed_advisors"], ctx, w),
+            command_abilities: leaf_obj_field_list(obj, &["abilities"], "ability", ctx, w),
+        },
+    )
+}
+
+fn build_production(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, ProductionView>, ViewStatus) {
+    country_map(rest, warnings, ProductionView::all_unobtained, |obj, ctx, w| ProductionView {
+        stockpile_total: leaf_f64(obj, &["production", "stockpile_total"], ctx, w),
+        stockpile: leaf_f64_map(obj, &["production", "stockpile"], ctx, w),
+        construction_queue: leaf_rows(
+            obj,
+            &["production", "construction_queue"],
+            ctx,
+            w,
+            |o, c, w| ProductionLineRow {
+                id: leaf_i64(o, &["id"], c, w),
+                active_factories: leaf_i64(o, &["active_factories"], c, w),
+                produced: leaf_f64(o, &["produced"], c, w),
+                cost: leaf_f64(o, &["cost"], c, w),
+            },
+        ),
+        equipment_stockpile: leaf_rows(
+            obj,
+            &["military", "equipment_stockpile"],
+            ctx,
+            w,
+            |o, c, w| EquipmentStock {
+                archetype: leaf_string(o, &["archetype"], c, w),
+                amount: leaf_f64(o, &["amount"], c, w),
+            },
+        ),
+    })
+}
+
+fn build_intel(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, IntelView>, ViewStatus) {
+    country_map(rest, warnings, IntelView::all_unobtained, |obj, ctx, w| {
+        // `intel.operations` is an object in the deepened schema, but legacy
+        // base rows park it as an empty array; only read `.running` when it is
+        // genuinely an object (an array/absent yields Absent, not a warning).
+        let operations_running = match obj.get("intel").and_then(Value::as_object).and_then(|i| i.get("operations")) {
+            Some(Value::Object(_)) => leaf_rows(obj, &["intel", "operations", "running"], ctx, w, |o, c, w| {
+                OperationRow {
+                    op_id: leaf_i64(o, &["op_id"], c, w),
+                    op_type: leaf_string(o, &["type"], c, w),
+                    target: leaf_string(o, &["target"], c, w),
+                }
+            }),
+            Some(Value::Null) => Leaf::Unobtained,
+            _ => Leaf::Absent,
+        };
+        IntelView {
+            agency_name: leaf_string(obj, &["intel", "agency", "name"], ctx, w),
+            agency_created: leaf_bool(obj, &["intel", "agency", "is_created"], ctx, w),
+            agency_upgrade_progress: leaf_f64(obj, &["intel", "agency", "upgrade_progress"], ctx, w),
+            operatives: leaf_rows(obj, &["intel", "operatives"], ctx, w, |o, c, w| OperativeRow {
+                op_id: leaf_i64(o, &["op_id"], c, w),
+                name: leaf_string(o, &["name"], c, w),
+                state: leaf_string(o, &["state"], c, w),
+                captured: leaf_bool(o, &["captured"], c, w),
+            }),
+            operations_running,
+        }
+    })
+}
+
+fn build_trade(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, TradeView>, ViewStatus) {
+    country_map(rest, warnings, TradeView::all_unobtained, |obj, ctx, w| TradeView {
+        produced: leaf_f64_map(obj, &["economy", "resources", "produced"], ctx, w),
+        exported: leaf_f64_map(obj, &["economy", "resources", "exported"], ctx, w),
+        to_export: leaf_f64_map(obj, &["economy", "resources", "to_export"], ctx, w),
+        contracts: leaf_rows(obj, &["diplomacy", "lend_lease"], ctx, w, |o, c, w| {
+            TradeContractRow {
+                counterpart: leaf_string(o, &["counterpart"], c, w),
+                direction: leaf_string(o, &["direction"], c, w),
+                convoys_assigned: leaf_i64(o, &["convoys", "assigned"], c, w),
+            }
+        }),
+    })
+}
+
+fn build_leaders(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<String, LeaderRosterView>, ViewStatus) {
+    country_map(rest, warnings, LeaderRosterView::all_unobtained, |obj, ctx, w| {
+        let leader_row = |o: &Map<String, Value>, c: &str, w: &mut Vec<String>| LeaderRow {
+            name: leaf_string(o, &["name"], c, w),
+            token: leaf_string(o, &["token"], c, w),
+            level: leaf_i64(o, &["level"], c, w),
+            traits: leaf_string_list(o, &["traits"], c, w),
+            assignment: leaf_string(o, &["assignment", "name"], c, w),
+        };
+        LeaderRosterView {
+            country_leader_name: leaf_string(obj, &["commanders", "leader", "name"], ctx, w),
+            field_marshals: leaf_rows(obj, &["commanders", "field_marshals"], ctx, w, leader_row),
+            generals: leaf_rows(obj, &["commanders", "generals"], ctx, w, leader_row),
+            admirals: leaf_rows(obj, &["commanders", "admirals"], ctx, w, leader_row),
+            roster_size: leaf_i64(obj, &["commanders", "counts", "roster_size"], ctx, w),
+        }
+    })
+}
+
+fn build_occupation(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<u32, OccupationRow>, ViewStatus) {
+    let states = match rest.get("states") {
+        Some(Value::Object(states)) => states,
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        None => return (BTreeMap::new(), ViewStatus::DomainAbsent),
+        Some(other) => {
+            warnings.push(format!(
+                "states: present but wrong-typed (expected object, found {}); \
+                 occupation view unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+    };
+    let mut out = BTreeMap::new();
+    let mut status = ViewStatus::DomainAbsent;
+    for (key, value) in states {
+        let id = match key.parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        let Some(obj) = value.as_object() else { continue };
+        match obj.get("occupation") {
+            Some(Value::Object(occ)) => {
+                let ctx = format!("states.{key}.occupation");
+                out.insert(
+                    id,
+                    OccupationRow {
+                        resistance: leaf_f64(occ, &["resistance"], &ctx, warnings),
+                        resistance_speed: leaf_f64(occ, &["resistance_speed"], &ctx, warnings),
+                        compliance: leaf_f64(occ, &["compliance"], &ctx, warnings),
+                        compliance_speed: leaf_f64(occ, &["compliance_speed"], &ctx, warnings),
+                        occupied_country_tag: leaf_string(
+                            occ,
+                            &["occupied_country_tag"],
+                            &ctx,
+                            warnings,
+                        ),
+                        operational_status: leaf_string(occ, &["operational_status"], &ctx, warnings),
+                        occupation_law: leaf_string(
+                            obj,
+                            &["occupation_law"],
+                            &format!("states.{key}"),
+                            warnings,
+                        ),
+                    },
+                );
+                status = ViewStatus::Present;
+            }
+            // Absent or explicit-null occupation: no active occupation on this
+            // state; skip the row rather than flood the map with unobtained rows.
+            Some(Value::Null) | None => {}
+            Some(other) => warnings.push(format!(
+                "states.{key}.occupation: expected object, found {}; row skipped",
+                json_type_name(other)
+            )),
+        }
+    }
+    (out, status)
+}
+
+fn build_power_balance(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> PowerBalanceView {
+    let (items, status) = array_at_path(
+        rest,
+        &["world", "power_balances"],
+        "world.power_balances",
+        warnings,
+    );
+    let Some(items) = items else {
+        return PowerBalanceView::with_status(status);
+    };
+    let mut balances = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let Some(o) = item.as_object() else {
+            warnings.push(format!(
+                "world.power_balances[{i}]: expected object, found {}; row skipped",
+                json_type_name(item)
+            ));
+            continue;
+        };
+        let ctx = format!("world.power_balances[{i}]");
+        balances.push(PowerBalanceRow {
+            template: leaf_string(o, &["template"], &ctx, warnings),
+            value: leaf_f64(o, &["value"], &ctx, warnings),
+            left_side: leaf_string(o, &["left_side"], &ctx, warnings),
+            right_side: leaf_string(o, &["right_side"], &ctx, warnings),
+            trending_side: leaf_string(o, &["trending_side"], &ctx, warnings),
+            countries: leaf_string_list(o, &["countries"], &ctx, warnings),
+        });
+    }
+    PowerBalanceView {
+        status: ViewStatus::Present,
+        balances,
+    }
+}
+
+fn build_designs(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> DesignsView {
+    let (designs, status) = object_at_path(rest, &["designs"], "designs", warnings);
+    let Some(designs) = designs else {
+        return DesignsView::with_status(status);
+    };
+    let mut division_templates = Vec::new();
+    match designs.get("division_templates") {
+        Some(Value::Array(items)) => {
+            for (i, item) in items.iter().enumerate() {
+                let Some(o) = item.as_object() else {
+                    warnings.push(format!(
+                        "designs.division_templates[{i}]: expected object, found {}; row skipped",
+                        json_type_name(item)
+                    ));
+                    continue;
+                };
+                let ctx = format!("designs.division_templates[{i}]");
+                let template_uid = o
+                    .get("id")
+                    .and_then(value_to_id_string)
+                    .unwrap_or_else(|| format!("template_{i}"));
+                division_templates.push(DivisionTemplateRow {
+                    template_uid,
+                    country: leaf_string(o, &["country"], &ctx, warnings),
+                    name: leaf_string(o, &["name"], &ctx, warnings),
+                    role: leaf_string(o, &["role"], &ctx, warnings),
+                    n_regiments: leaf_i64(o, &["n_regiments"], &ctx, warnings),
+                });
+            }
+        }
+        Some(Value::Null) | None => {}
+        Some(other) => warnings.push(format!(
+            "designs.division_templates: expected array, found {}; ignored",
+            json_type_name(other)
+        )),
+    }
+    let mut equipment_variants = BTreeMap::new();
+    match designs.get("equipment_variants") {
+        Some(Value::Object(map)) => {
+            for (key, value) in map {
+                let Some(o) = value.as_object() else {
+                    warnings.push(format!(
+                        "designs.equipment_variants.{key}: expected object, found {}; row skipped",
+                        json_type_name(value)
+                    ));
+                    continue;
+                };
+                let ctx = format!("designs.equipment_variants.{key}");
+                equipment_variants.insert(
+                    key.clone(),
+                    EquipmentVariantRow {
+                        archetype: leaf_string(o, &["archetype"], &ctx, warnings),
+                        family: leaf_string(o, &["family"], &ctx, warnings),
+                        name: leaf_string(o, &["name"], &ctx, warnings),
+                        obsolete: leaf_bool(o, &["obsolete"], &ctx, warnings),
+                    },
+                );
+            }
+        }
+        Some(Value::Null) | None => {}
+        Some(other) => warnings.push(format!(
+            "designs.equipment_variants: expected object, found {}; ignored",
+            json_type_name(other)
+        )),
+    }
+    DesignsView {
+        status: ViewStatus::Present,
+        division_templates,
+        equipment_variants,
+    }
+}
+
+fn build_naval_air_combat(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> NavalAirCombatView {
+    let (items, combat_status) = array_at_path(rest, &["naval_combats"], "naval_combats", warnings);
+    let mut naval_combats = Vec::new();
+    if let Some(items) = items {
+        for (i, item) in items.iter().enumerate() {
+            let Some(o) = item.as_object() else {
+                warnings.push(format!(
+                    "naval_combats[{i}]: expected object, found {}; row skipped",
+                    json_type_name(item)
+                ));
+                continue;
+            };
+            let ctx = format!("naval_combats[{i}]");
+            naval_combats.push(NavalCombatRow {
+                combat_id: leaf_i64(o, &["naval_combat_id"], &ctx, warnings),
+                location_province: leaf_u32(o, &["location_province"], &ctx, warnings),
+                attacker: leaf_string(o, &["attacker"], &ctx, warnings),
+                defender: leaf_string(o, &["defender"], &ctx, warnings),
+                result_type: leaf_string(o, &["result_type"], &ctx, warnings),
+                progress: leaf_f64(o, &["progress"], &ctx, warnings),
+            });
+        }
+    }
+    let sunk_convoys = leaf_rows(
+        rest,
+        &["world_events", "sunk_convoys"],
+        "snapshot",
+        warnings,
+        |o, c, w| ConvoyLossRow {
+            killer: leaf_string(o, &["killer_country"], c, w),
+            owner: leaf_string(o, &["owner"], c, w),
+            convoys: leaf_i64(o, &["convoys"], c, w),
+        },
+    );
+    let sunk_status = match &sunk_convoys {
+        Leaf::Measured(_) => ViewStatus::Present,
+        Leaf::Unobtained => ViewStatus::DomainUnavailable,
+        Leaf::Absent => ViewStatus::DomainAbsent,
+    };
+    NavalAirCombatView {
+        status: combine_status(combat_status, sunk_status),
+        naval_combats,
+        sunk_convoys,
+    }
+}
+
+fn build_scripted_gui(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> ScriptedGuiView {
+    let (by_country, cstatus) = country_map(
+        rest,
+        warnings,
+        || Leaf::Unobtained,
+        |obj, ctx, w| leaf_f64_map(obj, &["script_variables"], ctx, w),
+    );
+    let world_variables = leaf_f64_map(rest, &["world", "variables"], "snapshot", warnings);
+    let world_flags = object_keys(rest, &["world", "flags"], "world.flags", warnings);
+    let world_status = match (&world_variables, &world_flags) {
+        (Leaf::Measured(_), _) | (_, Leaf::Measured(_)) => ViewStatus::Present,
+        (Leaf::Unobtained, _) | (_, Leaf::Unobtained) => ViewStatus::DomainUnavailable,
+        _ => ViewStatus::DomainAbsent,
+    };
+    ScriptedGuiView {
+        status: combine_status(cstatus, world_status),
+        by_country,
+        world_variables,
+        world_flags,
+    }
+}
+
+fn build_raids(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> RaidStateView {
+    let (raids, status) = object_at_path(rest, &["raids"], "raids", warnings);
+    let Some(raids) = raids else {
+        return RaidStateView::with_status(status);
+    };
+    let mut priorities = BTreeMap::new();
+    if let Some(Value::Array(items)) = raids.get("countries") {
+        for item in items {
+            if let Some(o) = item.as_object() {
+                if let (Some(tag), Some(pri)) = (
+                    o.get("tag").and_then(Value::as_str),
+                    o.get("priority").and_then(Value::as_i64),
+                ) {
+                    priorities.insert(tag.to_string(), pri);
+                }
+            }
+        }
+    }
+    let next_target = match raids.get("counters") {
+        Some(Value::Object(c)) => leaf_i64(c, &["next_target"], "raids.counters", warnings),
+        Some(Value::Null) => Leaf::Unobtained,
+        _ => Leaf::Absent,
+    };
+    RaidStateView {
+        status: ViewStatus::Present,
+        priorities,
+        next_target,
+    }
 }

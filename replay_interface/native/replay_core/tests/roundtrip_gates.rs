@@ -985,6 +985,430 @@ fn rt_player_countries_from_world_scenario_players() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// fx-streams lane — the 12 UI-inventory data streams (UI_COVERAGE_MATRIX §9).
+// Oracle for every assertion is the generator source: what the packed snapshot
+// carries at the raw JSON path == what the typed view must expose.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rt_research_focus() {
+    let t = open_fixture("fx_research_focus");
+    for f in frames(&t) {
+        let r = f.research("GER").expect("GER research");
+        assert_eq!(
+            r.tech_count,
+            exp_i64(raw(&f, &["countries", "GER", "research", "tech_count"])),
+            "tech_count @ {}",
+            f.hour_index()
+        );
+        assert_eq!(
+            r.research_slots,
+            exp_i64(raw(&f, &["countries", "GER", "research", "research_slots"]))
+        );
+        let ip = raw(&f, &["countries", "GER", "research", "in_progress"])
+            .and_then(Value::as_array)
+            .expect("in_progress");
+        let want: Vec<replay_core::ResearchProgressRow> = ip
+            .iter()
+            .map(|o| replay_core::ResearchProgressRow {
+                name: exp_string(o.get("name")),
+                progress_pct: exp_f64(o.get("progress_pct")),
+            })
+            .collect();
+        assert_eq!(
+            r.in_progress,
+            Leaf::Measured(want),
+            "research in_progress @ {}",
+            f.hour_index()
+        );
+
+        let focus = f.focus("GER").expect("GER focus");
+        assert_eq!(
+            focus.current,
+            exp_string(raw(&f, &["countries", "GER", "focus", "current"])),
+            "focus current @ {}",
+            f.hour_index()
+        );
+        assert_eq!(
+            focus.completed_count,
+            exp_i64(raw(&f, &["countries", "GER", "focus", "completed_count"]))
+        );
+        assert_eq!(
+            focus.completed,
+            exp_string_list(raw(&f, &["countries", "GER", "focus", "completed"]))
+        );
+        assert_eq!(
+            focus.progress,
+            exp_f64(raw(&f, &["countries", "GER", "focus", "progress"]))
+        );
+    }
+}
+
+#[test]
+fn rt_country_management() {
+    let t = open_fixture("fx_country_management");
+    for f in frames(&t) {
+        // --- politics detail + command abilities ---
+        let pd = f.politics_detail("GER").expect("GER politics detail");
+        assert_eq!(
+            pd.ideas,
+            exp_string_list(raw(&f, &["countries", "GER", "politics", "ideas"]))
+        );
+        assert_eq!(
+            pd.law_economy,
+            exp_string(raw(&f, &["countries", "GER", "politics", "laws", "economy"])),
+            "law_economy @ {}",
+            f.hour_index()
+        );
+        assert_eq!(
+            pd.appointed_advisors,
+            exp_string_list(raw(&f, &["countries", "GER", "politics", "appointed_advisors"]))
+        );
+        let pp = raw(&f, &["countries", "GER", "politics", "party_popularities"])
+            .and_then(Value::as_object)
+            .expect("party_popularities");
+        let want_pp: BTreeMap<String, f64> =
+            pp.iter().map(|(k, v)| (k.clone(), v.as_f64().unwrap())).collect();
+        assert_eq!(pd.party_popularities, Leaf::Measured(want_pp));
+        let ab = raw(&f, &["countries", "GER", "abilities"])
+            .and_then(Value::as_array)
+            .expect("abilities");
+        let want_ab: Vec<String> = ab
+            .iter()
+            .map(|o| o.get("ability").unwrap().as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            pd.command_abilities,
+            Leaf::Measured(want_ab),
+            "command abilities @ {}",
+            f.hour_index()
+        );
+
+        // --- production queue + stockpile ---
+        let prod = f.production("GER").expect("GER production");
+        assert_eq!(
+            prod.stockpile_total,
+            exp_f64(raw(&f, &["countries", "GER", "production", "stockpile_total"])),
+            "stockpile_total @ {}",
+            f.hour_index()
+        );
+        let eqs = raw(&f, &["countries", "GER", "military", "equipment_stockpile"])
+            .and_then(Value::as_array)
+            .expect("equipment_stockpile");
+        let want_eqs: Vec<replay_core::EquipmentStock> = eqs
+            .iter()
+            .map(|o| replay_core::EquipmentStock {
+                archetype: exp_string(o.get("archetype")),
+                amount: exp_f64(o.get("amount")),
+            })
+            .collect();
+        assert_eq!(prod.equipment_stockpile, Leaf::Measured(want_eqs));
+
+        // --- intel / operatives ---
+        let intel = f.intel("GER").expect("GER intel");
+        assert_eq!(
+            intel.agency_name,
+            exp_string(raw(&f, &["countries", "GER", "intel", "agency", "name"]))
+        );
+        assert_eq!(
+            intel.agency_upgrade_progress,
+            exp_f64(raw(&f, &["countries", "GER", "intel", "agency", "upgrade_progress"]))
+        );
+        let running = raw(&f, &["countries", "GER", "intel", "operations", "running"])
+            .and_then(Value::as_array)
+            .expect("operations running");
+        let want_ops: Vec<replay_core::OperationRow> = running
+            .iter()
+            .map(|o| replay_core::OperationRow {
+                op_id: exp_i64(o.get("op_id")),
+                op_type: exp_string(o.get("type")),
+                target: exp_string(o.get("target")),
+            })
+            .collect();
+        assert_eq!(
+            intel.operations_running,
+            Leaf::Measured(want_ops),
+            "operations running @ {}",
+            f.hour_index()
+        );
+
+        // --- trade ---
+        let trade = f.trade("GER").expect("GER trade");
+        let prod_res = raw(&f, &["countries", "GER", "economy", "resources", "produced"])
+            .and_then(Value::as_object)
+            .expect("produced");
+        let want_prod: BTreeMap<String, f64> = prod_res
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
+            .collect();
+        assert_eq!(trade.produced, Leaf::Measured(want_prod));
+        let ll = raw(&f, &["countries", "GER", "diplomacy", "lend_lease"])
+            .and_then(Value::as_array)
+            .expect("lend_lease");
+        let want_ll: Vec<replay_core::TradeContractRow> = ll
+            .iter()
+            .map(|o| replay_core::TradeContractRow {
+                counterpart: exp_string(o.get("counterpart")),
+                direction: exp_string(o.get("direction")),
+                convoys_assigned: exp_i64(o.get("convoys").and_then(|c| c.get("assigned"))),
+            })
+            .collect();
+        assert_eq!(
+            trade.contracts,
+            Leaf::Measured(want_ll),
+            "trade contracts @ {}",
+            f.hour_index()
+        );
+    }
+}
+
+#[test]
+fn rt_designs_catalog() {
+    let t = open_fixture("fx_designs_catalog");
+    for f in frames(&t) {
+        let d = f.designs();
+        assert_eq!(d.status, ViewStatus::Present);
+        let tmpl0 = &d.division_templates[0];
+        assert_eq!(tmpl0.template_uid, "1:1");
+        assert_eq!(
+            tmpl0.n_regiments,
+            exp_i64(raw(&f, &["designs", "division_templates", "0", "n_regiments"])),
+            "n_regiments @ {}",
+            f.hour_index()
+        );
+        assert_eq!(
+            tmpl0.country,
+            exp_string(raw(&f, &["designs", "division_templates", "0", "country"]))
+        );
+        let var = d.equipment_variants.get("200:12").expect("variant 200:12");
+        assert_eq!(
+            var.obsolete,
+            exp_bool(raw(&f, &["designs", "equipment_variants", "200:12", "obsolete"])),
+            "obsolete @ {}",
+            f.hour_index()
+        );
+        // 100:3 name is explicit-null before tick 6 -> Unobtained, never coerced.
+        let art = d.equipment_variants.get("100:3").expect("variant 100:3");
+        assert_eq!(
+            art.name,
+            exp_string(raw(&f, &["designs", "equipment_variants", "100:3", "name"])),
+            "variant name trichotomy @ {}",
+            f.hour_index()
+        );
+    }
+}
+
+#[test]
+fn rt_occupation_sweep() {
+    let t = open_fixture("fx_occupation_sweep");
+    for f in frames(&t) {
+        assert_eq!(
+            f.occupation_status(),
+            ViewStatus::Present,
+            "occupation present @ {}",
+            f.hour_index()
+        );
+        let occ = f.occupation(20).expect("state 20 occupation");
+        let base = &["states", "20", "occupation"];
+        let p = |k: &str| {
+            let mut path = base.to_vec();
+            path.push(k);
+            raw(&f, &path).cloned()
+        };
+        assert_eq!(
+            occ.resistance,
+            exp_f64(p("resistance").as_ref()),
+            "resistance @ {}",
+            f.hour_index()
+        );
+        assert_eq!(occ.compliance, exp_f64(p("compliance").as_ref()));
+        assert_eq!(
+            occ.occupied_country_tag,
+            exp_string(p("occupied_country_tag").as_ref())
+        );
+        assert_eq!(
+            occ.operational_status,
+            exp_string(p("operational_status").as_ref())
+        );
+        assert_eq!(
+            occ.occupation_law,
+            exp_string(raw(&f, &["states", "20", "occupation_law"])),
+            "occupation_law @ {}",
+            f.hour_index()
+        );
+    }
+}
+
+#[test]
+fn rt_leader_roster() {
+    let t = open_fixture("fx_leader_roster");
+    for f in frames(&t) {
+        let lr = f.leaders("GER").expect("GER leaders");
+        assert_eq!(
+            lr.country_leader_name,
+            exp_string(raw(&f, &["countries", "GER", "commanders", "leader", "name"]))
+        );
+        assert_eq!(
+            lr.roster_size,
+            exp_i64(raw(&f, &["countries", "GER", "commanders", "counts", "roster_size"])),
+            "roster_size @ {}",
+            f.hour_index()
+        );
+        let fms = raw(&f, &["countries", "GER", "commanders", "field_marshals"])
+            .and_then(Value::as_array)
+            .expect("field_marshals");
+        let want: Vec<replay_core::LeaderRow> = fms
+            .iter()
+            .map(|o| replay_core::LeaderRow {
+                name: exp_string(o.get("name")),
+                token: exp_string(o.get("token")),
+                level: exp_i64(o.get("level")),
+                traits: exp_string_list(o.get("traits")),
+                assignment: match o.get("assignment") {
+                    None => Leaf::Absent,
+                    Some(Value::Null) => Leaf::Unobtained,
+                    Some(Value::Object(a)) => exp_string(a.get("name")),
+                    other => panic!("assignment {other:?}"),
+                },
+            })
+            .collect();
+        assert_eq!(
+            lr.field_marshals,
+            Leaf::Measured(want),
+            "field marshals @ {}",
+            f.hour_index()
+        );
+    }
+}
+
+#[test]
+fn rt_power_balance_combat() {
+    let t = open_fixture("fx_power_balance_combat");
+    for f in frames(&t) {
+        let pb = f.power_balance();
+        assert_eq!(pb.status, ViewStatus::Present);
+        let row = &pb.balances[0];
+        assert_eq!(
+            row.trending_side,
+            exp_string(raw(&f, &["world", "power_balances", "0", "trending_side"])),
+            "trending_side @ {}",
+            f.hour_index()
+        );
+        assert_eq!(
+            row.value,
+            exp_f64(raw(&f, &["world", "power_balances", "0", "value"]))
+        );
+        assert_eq!(
+            row.countries,
+            exp_string_list(raw(&f, &["world", "power_balances", "0", "countries"]))
+        );
+
+        let nac = f.naval_air_combat();
+        let nc = &nac.naval_combats[0];
+        assert_eq!(
+            nc.result_type,
+            exp_string(raw(&f, &["naval_combats", "0", "result_type"])),
+            "naval result_type @ {}",
+            f.hour_index()
+        );
+        assert_eq!(nc.progress, exp_f64(raw(&f, &["naval_combats", "0", "progress"])));
+        assert_eq!(
+            nc.location_province,
+            exp_u32(raw(&f, &["naval_combats", "0", "location_province"]))
+        );
+        let sc = raw(&f, &["world_events", "sunk_convoys"])
+            .and_then(Value::as_array)
+            .expect("sunk_convoys");
+        let want: Vec<replay_core::ConvoyLossRow> = sc
+            .iter()
+            .map(|o| replay_core::ConvoyLossRow {
+                killer: exp_string(o.get("killer_country")),
+                owner: exp_string(o.get("owner")),
+                convoys: exp_i64(o.get("convoys")),
+            })
+            .collect();
+        assert_eq!(
+            nac.sunk_convoys,
+            Leaf::Measured(want),
+            "sunk convoys @ {}",
+            f.hour_index()
+        );
+
+        assert_eq!(f.raids().priorities.get("ENG").copied(), Some(2));
+        assert_eq!(
+            f.raids().next_target,
+            exp_i64(raw(&f, &["raids", "counters", "next_target"]))
+        );
+    }
+}
+
+#[test]
+fn rt_scripted_gui_vars() {
+    let t = open_fixture("fx_scripted_gui_vars");
+    for f in frames(&t) {
+        let sg = f.scripted_gui();
+        assert_eq!(
+            sg.status,
+            ViewStatus::Present,
+            "scripted gui present @ {}",
+            f.hour_index()
+        );
+        let gvars = raw(&f, &["countries", "GER", "script_variables"])
+            .and_then(Value::as_object)
+            .expect("GER script_variables");
+        let want_g: BTreeMap<String, f64> =
+            gvars.iter().map(|(k, v)| (k.clone(), v.as_f64().unwrap())).collect();
+        assert_eq!(
+            sg.by_country.get("GER"),
+            Some(&Leaf::Measured(want_g)),
+            "GER script vars @ {}",
+            f.hour_index()
+        );
+        let wvars = raw(&f, &["world", "variables"])
+            .and_then(Value::as_object)
+            .expect("world variables");
+        let want_w: BTreeMap<String, f64> =
+            wvars.iter().map(|(k, v)| (k.clone(), v.as_f64().unwrap())).collect();
+        assert_eq!(sg.world_variables, Leaf::Measured(want_w));
+        let wf = raw(&f, &["world", "flags"])
+            .and_then(Value::as_object)
+            .expect("world flags");
+        let mut want_flags: Vec<String> = wf.keys().cloned().collect();
+        want_flags.sort();
+        assert_eq!(sg.world_flags, Leaf::Measured(want_flags));
+    }
+}
+
+/// Trichotomy for the fx-streams views: a fixture that carries none of the new
+/// data reports absence/emptiness honestly, never a fabricated row/value.
+#[test]
+fn rt_fx_streams_domain_absence() {
+    let t = open_fixture("fx_owner_controller_flip");
+    for f in frames(&t) {
+        // Occupation is explicit-null per state in the base -> no active
+        // occupation rows, DomainAbsent (never an invented resistance row).
+        assert_eq!(
+            f.occupation_status(),
+            ViewStatus::DomainAbsent,
+            "occupation absent @ {}",
+            f.hour_index()
+        );
+        assert!(f.occupation_by_state().is_empty());
+        // world.power_balances = [] -> Present but empty (measured empty).
+        assert!(f.power_balance().balances.is_empty());
+        // naval_combats key absent -> no naval combat rows.
+        assert!(f.naval_air_combat().naval_combats.is_empty());
+        // Present-country empty sub-objects: a genuine measured 0, not Unobtained.
+        assert_eq!(f.research("GER").unwrap().tech_count, Leaf::Measured(0));
+        // Base script_variables {} -> measured empty per country, never null.
+        assert_eq!(
+            f.scripted_gui().by_country.get("GER"),
+            Some(&Leaf::Measured(BTreeMap::new()))
+        );
+    }
+}
+
 #[test]
 fn well_formed_fixtures_emit_no_coverage_warnings() {
     // The fixtures are well-typed, so no view should ever coerce or warn.
@@ -1001,7 +1425,7 @@ fn well_formed_fixtures_emit_no_coverage_warnings() {
     }
 }
 
-const POSITIVE_FIXTURES: [&str; 12] = [
+const POSITIVE_FIXTURES: [&str; 19] = [
     "fx_owner_controller_flip",
     "fx_cosmetic_ideology",
     "fx_war_faction_matrix",
@@ -1014,6 +1438,14 @@ const POSITIVE_FIXTURES: [&str; 12] = [
     "fx_building_damage",
     "fx_pov_visibility",
     "fx_dlc_language_variation",
+    // fx-streams lane: the 12 UI-inventory data streams (UI_COVERAGE_MATRIX §9).
+    "fx_research_focus",
+    "fx_country_management",
+    "fx_designs_catalog",
+    "fx_occupation_sweep",
+    "fx_leader_roster",
+    "fx_power_balance_combat",
+    "fx_scripted_gui_vars",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1103,6 +1535,44 @@ fn assert_state_equal(a: &WorldFrame, b: &WorldFrame, ctx: &str) {
             "{ctx}: visibility {pov}"
         );
     }
+    // fx-streams lane views (additive; seek==play must expose them identically).
+    assert_eq!(
+        a.research_by_country(),
+        b.research_by_country(),
+        "{ctx}: research"
+    );
+    assert_eq!(a.focus_by_country(), b.focus_by_country(), "{ctx}: focus");
+    assert_eq!(
+        a.politics_detail_by_country(),
+        b.politics_detail_by_country(),
+        "{ctx}: politics_detail"
+    );
+    assert_eq!(
+        a.production_by_country(),
+        b.production_by_country(),
+        "{ctx}: production"
+    );
+    assert_eq!(a.intel_by_country(), b.intel_by_country(), "{ctx}: intel");
+    assert_eq!(a.trade_by_country(), b.trade_by_country(), "{ctx}: trade");
+    assert_eq!(
+        a.leaders_by_country(),
+        b.leaders_by_country(),
+        "{ctx}: leaders"
+    );
+    assert_eq!(
+        a.occupation_by_state(),
+        b.occupation_by_state(),
+        "{ctx}: occupation"
+    );
+    assert_eq!(a.power_balance(), b.power_balance(), "{ctx}: power_balance");
+    assert_eq!(a.designs(), b.designs(), "{ctx}: designs");
+    assert_eq!(
+        a.naval_air_combat(),
+        b.naval_air_combat(),
+        "{ctx}: naval_air_combat"
+    );
+    assert_eq!(a.scripted_gui(), b.scripted_gui(), "{ctx}: scripted_gui");
+    assert_eq!(a.raids(), b.raids(), "{ctx}: raids");
 }
 
 #[test]

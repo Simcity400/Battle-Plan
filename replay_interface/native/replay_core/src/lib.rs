@@ -10,11 +10,16 @@ pub mod world;
 
 pub use source::{open_recording, open_recording_game, RawFrame, ReplaySource, SourceError};
 pub use world::{
-    AirSuperiorityRow, BuildingStatus, ChannelCoverage, CombatRow, CountryCore, CountryDiplomacy,
-    CountryIdentity, DiplomacyView, DiplomaticPairState, DivisionRow, DivisionUnitRow,
-    EquipmentAmount, FleetUnitRow, Leaf, MapLayerSource, NavalSupremacyRow, PlayerCountry,
-    PovVisibilityView, ProvenanceView, ProvinceVisibility, SessionMetadataView, ShipCompositionRow,
-    SnowMudCell, SnowMudView, SpeedEvent, SpottedUnitsView, StateBuildings, TimelineLookup,
-    TopbarAlerts, TopbarRatios, TopbarScalars, ViewStatus, WarRelationRow, WeatherRegionRow,
-    WingUnitRow, WorldError, WorldFrame, WorldTimeline,
+    AirSuperiorityRow, BuildingStatus, ChannelCoverage, CombatRow, ConvoyLossRow, CountryCore,
+    CountryDiplomacy, CountryIdentity, DesignsView, DiplomacyView, DiplomaticPairState,
+    DivisionRow, DivisionTemplateRow, DivisionUnitRow, EquipmentAmount, EquipmentStock,
+    EquipmentVariantRow, FleetUnitRow, FocusView, IntelView, Leaf, LeaderRosterView, LeaderRow,
+    MapLayerSource, NavalAirCombatView, NavalCombatRow, NavalSupremacyRow, OccupationRow,
+    OperationRow, OperativeRow, PlayerCountry, PoliticsDetailView, PovVisibilityView,
+    PowerBalanceRow, PowerBalanceView, ProductionLineRow, ProductionView, ProvenanceView,
+    ProvinceVisibility, RaidStateView, ResearchProgressRow, ResearchView, ScriptedGuiView,
+    SessionMetadataView, ShipCompositionRow, SnowMudCell, SnowMudView, SpeedEvent,
+    SpottedUnitsView, StateBuildings, TimelineLookup, TopbarAlerts, TopbarRatios, TopbarScalars,
+    TradeContractRow, TradeView, ViewStatus, WarRelationRow, WeatherRegionRow, WingUnitRow,
+    WorldError, WorldFrame, WorldTimeline,
 };

@@ -56,7 +56,11 @@ fn positive_fixtures_load_and_match_manifest_probes() {
     let positive = manifest["positive"]
         .as_array()
         .expect("positive fixture list");
-    assert_eq!(positive.len(), 12, "one positive fixture per A2 contract");
+    assert_eq!(
+        positive.len(),
+        19,
+        "12 A2 fixtures + 7 fx-streams data-stream fixtures"
+    );
 
     for entry in positive {
         let name = entry["name"].as_str().expect("fixture name");
