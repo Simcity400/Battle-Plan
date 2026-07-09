@@ -54,6 +54,19 @@ pub trait OwnerProvider {
     fn hour_label(&self, hour: i64) -> String {
         format!("hour {hour}")
     }
+    /// The recorded `date` string for an exact recorded hour, when the frame
+    /// carried one. Used to build the transport's date spine (seek-bar ticks +
+    /// jump-to-date). Defaults to `None` (dateless providers degrade honestly).
+    fn date_at(&self, _hour: i64) -> Option<String> {
+        None
+    }
+    /// E6: the observer country picker source, derived from the recording's
+    /// session view. Defaults to fail-closed (no recording session).
+    fn pov_picker(&self) -> crate::observer::PovPicker {
+        crate::observer::PovPicker::Unavailable(
+            "no recording session (static baseline has no player countries)".to_string(),
+        )
+    }
 }
 
 /// Single-frame provider: the grounded 1936 start owners from
@@ -120,6 +133,24 @@ impl RecordingTimeline {
         self.timeline.game_id()
     }
 
+    /// E1 wiring: random-access seek through the `replay_core` hook. Returns
+    /// the resolved recorded hour (at-or-before), or `None` before the first
+    /// frame. Playback uses [`WorldTimeline::seek`] / [`WorldTimeline::play_to`]
+    /// which resolve identically today (see the `seek_equals_play_to`
+    /// conformance gate); the interactive scrub reads owners through the same
+    /// `state_at` primitive.
+    pub fn seek_hour(&self, hour: i64) -> Option<i64> {
+        self.timeline.seek(hour).ok().map(|frame| frame.hour_index())
+    }
+
+    /// E1 wiring: linear play-to through the `replay_core` hook.
+    pub fn play_to_hour(&self, hour: i64) -> Option<i64> {
+        self.timeline
+            .play_to(hour)
+            .ok()
+            .map(|frame| frame.hour_index())
+    }
+
     fn frame_maps(
         &self,
         hour: i64,
@@ -181,6 +212,21 @@ impl OwnerProvider for RecordingTimeline {
             None => format!("hour {hour}"),
         }
     }
+
+    fn date_at(&self, hour: i64) -> Option<String> {
+        self.frame_maps(hour).2
+    }
+
+    fn pov_picker(&self) -> crate::observer::PovPicker {
+        // Player countries are session-level; read them from the first frame's
+        // session view through the typed seam (never a raw snapshot parse).
+        match self.timeline.state_at(self.timeline.first_hour()) {
+            Ok(frame) => crate::observer::povs_from_session(frame.session_metadata()),
+            Err(err) => crate::observer::PovPicker::Unavailable(format!(
+                "session view unavailable: {err}"
+            )),
+        }
+    }
 }
 
 /// Measured owners only; `Absent`/`Unobtained` stay off the map (sentinel).
@@ -237,6 +283,33 @@ mod tests {
         // sentinel, never as a fabricated owner).
         assert!(!owners.contains_key(&2));
         assert!(!owners.contains_key(&3));
+    }
+
+    fn fixture_path(rel: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("fixtures")
+            .join(rel)
+    }
+
+    #[test]
+    fn seek_equals_play_to_on_every_recorded_hour() {
+        // E1/A4: the replay_core seek/play_to hooks resolve identically, and
+        // date_at surfaces the recorded date for the transport spine.
+        let path = fixture_path("positive/fx_owner_controller_flip.battleplan");
+        let source = replay_core::open_recording(&path).expect("open fixture");
+        let timeline = replay_core::WorldTimeline::open(source).expect("timeline");
+        let recording = RecordingTimeline::new(timeline);
+        for &hour in recording.hours() {
+            assert_eq!(
+                recording.seek_hour(hour),
+                recording.play_to_hour(hour),
+                "seek != play_to at hour {hour}"
+            );
+            assert_eq!(recording.seek_hour(hour), Some(hour), "exact-hour resolves");
+            // Every recorded frame in this fixture carries a Clausewitz date.
+            assert!(recording.date_at(hour).is_some(), "date at hour {hour}");
+        }
     }
 
     #[test]

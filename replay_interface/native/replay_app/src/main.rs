@@ -30,12 +30,16 @@
 
 mod bundle;
 mod camera;
+mod clausewitz;
 mod font;
 mod grading_law;
+mod observer;
 mod palette;
 #[cfg(test)]
 mod post_effect;
 mod timeline;
+mod transport;
+mod validate;
 
 #[cfg(windows)]
 mod app;
@@ -66,7 +70,7 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--validate-recording <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path>] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <N>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
@@ -542,6 +546,15 @@ fn main() {
 }
 
 fn run(args: &[String]) -> Result<()> {
+    // E4 open/validate product entry: `--validate-recording <path>` runs the
+    // SHARED validator and reports a readable diagnostic without needing a map
+    // bundle. It is intercepted before `parse_cli` so it works standalone.
+    if let Some(index) = args.iter().position(|arg| arg == "--validate-recording") {
+        let path = args
+            .get(index + 1)
+            .ok_or_else(|| format!("--validate-recording requires a path\n{USAGE}"))?;
+        return run_validate_recording(std::path::Path::new(path));
+    }
     let options = parse_cli(args)?;
     // Fail closed: no bundle, no window; nothing is fabricated.
     let bundle = bundle::MapBundle::load(&options.bundle_dir).map_err(|err| {
@@ -643,6 +656,26 @@ fn run(args: &[String]) -> Result<()> {
             options.postfx_restore_full,
             options.water_full,
         ),
+    }
+}
+
+/// E4: open a recording through the shared validator and print a readable
+/// diagnostic. Exit success on a clean open, error (exit 2) on any rejection —
+/// the specific validator string (schema / hash / modset / version) is
+/// surfaced verbatim in the message.
+fn run_validate_recording(path: &std::path::Path) -> Result<()> {
+    let outcome = validate::open_and_validate(path);
+    println!("{}", outcome.summary());
+    match outcome {
+        validate::OpenOutcome::Opened(report) => {
+            for warning in &report.warnings {
+                eprintln!("replay_app: recording warning: {warning}");
+            }
+            Ok(())
+        }
+        validate::OpenOutcome::Rejected { kind, message } => {
+            Err(format!("{}: {message}", kind.headline()).into())
+        }
     }
 }
 
@@ -1326,6 +1359,54 @@ mod tests {
         assert!(
             message.contains("cargo run --release -p map_viewer -- bundle --game"),
             "{message}"
+        );
+    }
+
+    fn fixture_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("fixtures")
+    }
+
+    #[test]
+    fn validate_recording_cli_opens_positive_fixture() {
+        let path = fixture_root().join("positive/fx_owner_controller_flip.battleplan");
+        run(&args(&[
+            "--validate-recording",
+            &path.to_string_lossy(),
+        ]))
+        .expect("positive fixture must validate-open through the CLI");
+    }
+
+    #[test]
+    fn validate_recording_cli_surfaces_negative_rejection() {
+        // The CLI path surfaces the specific validator string for each negative.
+        let cases = [
+            ("neg_malformed_manifest", "required_features"),
+            ("neg_bad_snapshot_hash", "sha256"),
+            ("neg_modset_mismatch", "disagrees with snapshot provenance.mod"),
+            ("neg_empty_snapshot_index", "empty snapshot index"),
+        ];
+        for (name, expected) in cases {
+            let path = fixture_root().join(format!("negative/{name}.battleplan"));
+            let err = run(&args(&[
+                "--validate-recording",
+                &path.to_string_lossy(),
+            ]))
+            .expect_err("negative fixture must be rejected through the CLI");
+            assert!(
+                err.to_string().contains(expected),
+                "{name}: expected {expected:?}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_recording_cli_requires_a_path() {
+        let err = run(&args(&["--validate-recording"])).expect_err("must fail");
+        assert!(
+            err.to_string().contains("--validate-recording requires a path"),
+            "{err}"
         );
     }
 
