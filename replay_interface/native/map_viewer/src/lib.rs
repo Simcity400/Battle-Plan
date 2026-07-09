@@ -11,6 +11,7 @@ mod border_world_synthesis;
 mod building_files;
 mod bundle_gen;
 mod camera;
+mod cap4_sea_referee;
 mod cli;
 mod color_lut;
 mod constants;
@@ -135,6 +136,9 @@ pub use building_files::{
 pub use camera::{
     hoi4_map_camera_defines_from_bundle, map_wrap_offsets, Hoi4MapCameraDefines,
     ProductionMapCamera, ProductionMapCameraProjection,
+};
+pub use cap4_sea_referee::{
+    find_unique_payload, mine_sea_base_referee, mine_sea_base_referee_round_dir, SeaBaseReferee,
 };
 pub use cli::run_cli;
 pub use color_lut::{

@@ -635,6 +635,90 @@ mod tests {
         );
     }
 
+    // --- CAP4 UNCLAMPED-EXPOSURE PROBE (B9, spec Target 3) -------------------
+    // B9 asks whether the CAP4 live session exercised the UNCLAMPED exposure
+    // branch (raw geometric-mean scene luminance > MIN_HDR_ADJUSTMENT 0.5). The
+    // preserved `session_WAVE1_CAP4` rounds captured the terrain/water/rivers/
+    // trees passes but NO restore_pass bundle (no MainScene/AverageLuminance
+    // payload). The closest proxy to the restore MainScene is the LAST captured
+    // map pass's `om_post_pass` HDR RT (trees pass, 1920x1080 RGBA16F). Reducing
+    // it through the ported chain determines whether the scene was ever bright
+    // enough to leave the floor. Result (both rounds): geo-mean ~0.237, which
+    // CLAMPS to 0.5 -> the unclamped branch was NOT exercised. This gate pins
+    // that finding so a future "CAP4 closes B9" claim fails loudly.
+    const DEFAULT_WAVE1_CAP4_ROUNDS: &str =
+        r"C:\Users\Example\hoi4_capture_corpus_preserved\session_WAVE1_CAP4_rounds";
+    const CAP4_TREES_POST_NEEDLE: &str =
+        "trees_frame_draw_map_frame_shared_payload_om_post_pass_render_target";
+
+    fn cap4_rounds_root() -> std::path::PathBuf {
+        std::env::var("BATTLE_PLAN_WAVE1_CAP4_ROUNDS").or_else(|_| std::env::var("HOI4_WAVE1_CAP4_ROUNDS"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from(DEFAULT_WAVE1_CAP4_ROUNDS))
+    }
+
+    fn find_cap4_payload(dir: &std::path::Path, needle: &str) -> Option<std::path::PathBuf> {
+        let mut hit = None;
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".d3d11") && name.contains(needle) {
+                hit = Some(entry.path());
+            }
+        }
+        hit
+    }
+
+    #[test]
+    fn gate_wave1_cap4_scene_clamps_to_floor_unclamped_branch_unexercised() {
+        for round in ["fow_off_observer_front", "fow_on_pov_front"] {
+            let dir = cap4_rounds_root().join(round);
+            let Some(scene_path) = (dir.is_dir())
+                .then(|| find_cap4_payload(&dir, CAP4_TREES_POST_NEEDLE))
+                .flatten()
+            else {
+                eprintln!(
+                    "gate_wave1_cap4_scene_clamps_to_floor: {} trees post-pass RT absent; skipped",
+                    dir.display()
+                );
+                continue;
+            };
+            let scene = std::fs::read(&scene_path).expect("read CAP4 trees post-pass RT");
+            assert_eq!(
+                scene.len(),
+                1920 * 1080 * 8,
+                "CAP4 scene RT is not 1920x1080 RGBA16F"
+            );
+            let out = scene_average_luminance(
+                &scene,
+                1920,
+                1080,
+                1920 * 8,
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                BOUNDS,
+            )
+            .expect("reduce CAP4 scene");
+            eprintln!(
+                "CAP4 {round}: scene geo-mean {:.5} -> clamp {:.3} (clamped_to_bound={})",
+                out.geometric_mean_luminance, out.clamped, out.clamped_to_bound
+            );
+            // The unclamped branch needs geo-mean > 0.5. CAP4 stays far below.
+            assert!(
+                out.geometric_mean_luminance < BOUNDS.min_hdr_adjustment,
+                "CAP4 {round} geo-mean {} unexpectedly reached the unclamped branch (>= {})",
+                out.geometric_mean_luminance,
+                BOUNDS.min_hdr_adjustment
+            );
+            assert!(out.clamped_to_bound && out.clamped == 0.5);
+            // Observed ~0.236-0.239; a wide band tolerates the trees-vs-final
+            // MainScene proxy gap while still asserting "well below the floor".
+            assert!(
+                (0.15..0.30).contains(&out.geometric_mean_luminance),
+                "CAP4 {round} geo-mean {} outside the expected dim band",
+                out.geometric_mean_luminance
+            );
+        }
+    }
+
     // Perf note (speed-five mandate: frames < 100 ms). Measures the CPU cost of
     // the reduction over a real 1920x1080 scene, isolated from the D3D11 readback
     // (that CopyResource + Map is a fixed staging cost on top). `--ignored` so it
