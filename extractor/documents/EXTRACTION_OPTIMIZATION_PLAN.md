@@ -485,17 +485,48 @@ Phase target (G4): **low-single-digit GB per full game** (from ~300 GB), product
 
 ## Phase 4 — Structural time floor: lossless change-driven extraction
 
+**STATIC-RE SCOUT COMPLETE 2026-07-10 (`lane/phase4-scout`) — see
+`extractor/documents/PHASE4_DIRTY_SIGNAL_SCOUT.md` (full evidence, addresses, decompile
+snippets). Headline results that re-shape this phase:**
+
+- **No engine-native per-object dirty/version signal exists.** Confirmed by static RE of
+  `hoi4.exe` (Ghidra, image base `0x140000000`): the relation opinion writer at `0xd09d50`
+  bumps no version; `CUpdateable` (`updateableinterface.cpp`) is a pure-abstract base with no
+  dirty bit; the only `dirty` strings in the binary are UI tree relayout. The MP desync
+  **checksum is a monolithic O(entire-world) serialize walk** (`0x1f2a20` size 8376 / per-
+  category mgr `0xd96cb0` size 12878), computed on demand, a single hash — **as expensive as
+  the full read and unable to say which row changed. Do NOT build Phase 4 on the checksum.**
+- **The completeness-safe lever is NOT "read only what changed" but "read every value cheaply
+  via the engine's dense mirror arrays + diff host-side"** — this is *complete by construction*
+  (no signal-miss / zero-loss safe) and is exactly what `map_control` already does live at 40×
+  vs `map_detail` (dense `province_array_ptr + id*stride + controller_ptr_offset` read; delta is
+  host-side in `world_fold.rs`, NOT an engine signal). Phase 4 RE work = **per-domain mirror
+  discovery** for the low-churn heavies (`map_detail` first — its twin proves the mirror is
+  real). Where no mirror exists (d53, >100% churn), no change signal helps → per-field lane.
+- **Zero-skip latch (orthogonal to "what changed"):** main-thread hour-boundary hook site found
+  `postHourlyUpdate`, reads the hour counter as `(gs[0x468]-43800000) % 24`, asserts
+  `ThreadIsMainThread()`, fans out via TBB. A non-mutating atomic-store detour at
+  `postHourlyUpdate` latches every hour (never missed) decoupled from the heavy decode; risk
+  HIGH (main-thread sim patch → MP-checksum control gate required). See scout doc §Hour-latch.
+- **Fallback if a heavy has no mirror:** OS `GetWriteWatch`/`PAGE_GUARD` — complete but 4 KiB
+  page-granular and hostile to the game's shared-page heap layout; low selectivity, last resort.
+
+Original scoping (superseded on the dirty-signal question by the scout above, retained for the
+bulk-rewrite fallback):
+
 Bulk-collapse's theoretical floor: converting 3.17 M scattered reads into ~10² region-sized
 reads (~60 MB/frame) costs single-digit ms of memcpy + parse; whether parse can be made
 cheap enough (SIMD/vectorized row extraction) decides if full-walk alone reaches <20 ms.
 Measure after Phase 2 — if deep-war is still >20 ms:
 
-- **Engine dirty/version signal RE** (the gating unknown; no read-only OS dirty-page
-  shortcut exists per `SUB50_REPORT §1.5`). A skip is legal only for provably-unchanged
-  objects. Validation: long shadow soaks where change-driven and full-walk paths run
-  side-by-side and must fold identical for the entire session, plus save-oracle checks,
-  before it may ship (G1 at soak scale). If no sound signal is found, the fallback is
-  deeper bulk-rewrite of the remaining walks + frozen-lane waivers.
+- **Engine dirty/version signal RE** — **RESOLVED: none exists (scout 2026-07-10 above).** A
+  skip is legal only for provably-unchanged objects; since no engine signal proves that, the
+  sanctioned path is the dense-mirror cheap-read + host-diff (complete by construction). A skip
+  is legal only for provably-unchanged objects. Validation: long shadow soaks where change-
+  driven and full-walk paths run side-by-side and must fold identical for the entire session,
+  plus save-oracle checks, before it may ship (G1 at soak scale) — soak design detailed in the
+  scout doc §LIVE VALIDATION PLAN. If no mirror is found for a walk, the fallback is deeper
+  bulk-rewrite of that walk + frozen-lane waivers.
 
 Final target (G2/G3): deep-war warm avg **<20 ms** (internal 12–15 ms) speed-5 zero-skip on
 the dev rig; hourly gate holds at 6 cores.
