@@ -351,7 +351,6 @@ so the registry is complete; do not build.
 |---|---|---|
 | 1 | hourly snapshots in container | extractor LANDED (R1); replay verify pending |
 | 2 | owners/controllers per hour | shape COVERED (§4/§5); rides on 1 |
-<<<<<<< HEAD
 | 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; counter-badge extension OPEN |
 | 4 | session metadata | partial (session header LANDED; speed/pause + DLC display-names OPEN) |
 | 5 | naval supremacy | extractor LANDED (D56); replay ingest pending |
@@ -359,21 +358,10 @@ so the registry is complete; do not build.
 | 7 | cosmetic-tag stream | extractor LANDED (D18); replay ingest pending |
 | 7b | ruling party / ideology | schema shape exists (§3.3, live-collector); ride into snapshots |
 | 8 | naval/air presence | AIR LANDED (D31); NAVAL rows OPEN |
-| 8b | pair relations + faction + capitals | relation flags already live-extracted (d53); fold into snapshots |
+| 8b | pair relations + faction + capitals | relation flags already live-extracted (d53); fold into snapshots. VP-icon column minimum = just at_war + same_faction (FURN-REL decompile) |
 | 9 | localisation joins | partial (static artifact in their contract; verify it ships) |
 | 9b | topbar scalar bindings | schema shapes exist (§3.1–3.3); extended set + outliner OPEN |
 | 10 | building levels live | largely LANDED (D48 incl. damage); replay ingest deferred |
-=======
-| 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; rides on 1 |
-| 4 | session metadata | needed |
-| 5 | naval supremacy | needed |
-| 6 | weather state | needed |
-| 7 | cosmetic-tag stream | schema shape exists; live feed needed |
-| 8 | naval/air presence | raw streams exist; consumable rows needed |
-| 8b | VP/capital icon diplomatic pair-state | needed: same_faction + at_war per viewed/owner pair |
-| 9 | localisation joins | needed |
-| 10 | building levels live | schema shape exists (save-only); deferred |
->>>>>>> lane/render-integration
 | 11 | rail/supply state | deferred |
 | 12 | battle plans | deferred — do not build yet |
 
