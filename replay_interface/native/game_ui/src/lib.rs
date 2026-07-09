@@ -13,6 +13,7 @@ pub mod png;
 pub mod probe;
 pub mod tga;
 pub mod topbar;
+pub mod widget_layout;
 
 use std::fmt;
 use std::io;

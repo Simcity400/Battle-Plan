@@ -782,6 +782,28 @@ struct ResolvedFlag {
     image: RgbaImage,
 }
 
+/// Flag texture folder requested by a render context. Topbar `player_flag` is
+/// pinned by `interface/topbar.gui:91-92` (`GFX_shield_medium`) and the mined
+/// frame9232 82x52 engine quad for that sprite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagSizeFolder {
+    Full,
+    Medium,
+    Small,
+}
+
+impl FlagSizeFolder {
+    fn dir(self) -> &'static str {
+        match self {
+            Self::Full => "gfx/flags",
+            Self::Medium => "gfx/flags/medium",
+            Self::Small => "gfx/flags/small",
+        }
+    }
+}
+
+const TOPBAR_FLAG_SIZE_FOLDER: FlagSizeFolder = FlagSizeFolder::Medium;
+
 /// Ordered flag-texture candidate paths for a country, encoding the engine's
 /// flag-name precedence. The engine identifies a flag by a *flag name* — the
 /// `set_cosmetic_tag` cosmetic tag when present, else the country tag — suffixed
@@ -792,14 +814,24 @@ struct ResolvedFlag {
 ///   * cosmetic `RAJ_UK.tga` ships but `RAJ_UK_neutrality.tga` does NOT, so a
 ///     cosmetic's base flag must be tried before the real tag's flags.
 /// Therefore all candidates for the cosmetic name precede all candidates for the
-/// real tag. `gfx/flags` (full-res), `medium/`, and `small/` ship as parallel
-/// per-name sets; the size folder is the render context's (residual: the exact
-/// size-folder selection law is UNTRACED — see UI_LAYOUT_LAW.md).
+/// real tag. This helper returns full-size `gfx/flags` candidates; use
+/// [`flag_candidates_for_size`] when a `.gui`/`.gfx` render context pins a
+/// `medium/` or `small/` folder.
 pub fn flag_candidates(
     tag: Option<&str>,
     ideology: Option<&str>,
     cosmetic_tag: Option<&str>,
     explicit: Option<&str>,
+) -> Vec<String> {
+    flag_candidates_for_size(tag, ideology, cosmetic_tag, explicit, FlagSizeFolder::Full)
+}
+
+pub fn flag_candidates_for_size(
+    tag: Option<&str>,
+    ideology: Option<&str>,
+    cosmetic_tag: Option<&str>,
+    explicit: Option<&str>,
+    size_folder: FlagSizeFolder,
 ) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(explicit) = explicit {
@@ -814,23 +846,23 @@ pub fn flag_candidates(
     if let Some(tag) = tag {
         names.push(tag.to_ascii_uppercase());
     }
+    let dir = size_folder.dir();
     for name in names {
-        for dir in ["gfx/flags", "gfx/flags/medium", "gfx/flags/small"] {
-            if let Some(ideology) = ideology {
-                out.push(format!("{dir}/{name}_{ideology}.tga"));
-            }
-            out.push(format!("{dir}/{name}.tga"));
+        if let Some(ideology) = ideology {
+            out.push(format!("{dir}/{name}_{ideology}.tga"));
         }
+        out.push(format!("{dir}/{name}.tga"));
     }
     out
 }
 
 fn resolve_flag(resolver: &AssetResolver, binding: &TopbarBinding) -> Result<Option<ResolvedFlag>> {
-    let candidates = flag_candidates(
+    let candidates = flag_candidates_for_size(
         binding.country_tag.as_deref(),
         binding.country_ideology.as_deref(),
         binding.cosmetic_tag.as_deref(),
         binding.flag_texture.as_deref(),
+        TOPBAR_FLAG_SIZE_FOLDER,
     );
     for candidate in candidates {
         if resolver.resolve_optional_file(&candidate)?.is_some() {
@@ -948,7 +980,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn flag_variant_prefers_full_size_ideology_before_medium() {
+    fn topbar_flag_variant_uses_medium_size_folder() {
         let root = temp_root("flag_order");
         write_tga(&root.join("gfx/flags/IRE_neutrality.tga"), [0, 255, 0, 255]);
         write_tga(
@@ -963,8 +995,8 @@ mod tests {
         };
 
         let flag = resolve_flag(&resolver, &binding).unwrap().unwrap();
-        assert_eq!(flag.rel_path, "gfx/flags/IRE_neutrality.tga");
-        assert_eq!(flag.image.pixels[0..3], [0, 255, 0]);
+        assert_eq!(flag.rel_path, "gfx/flags/medium/IRE_neutrality.tga");
+        assert_eq!(flag.image.pixels[0..3], [0, 0, 255]);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -984,12 +1016,31 @@ mod tests {
     }
 
     #[test]
+    fn sized_flag_candidates_stay_in_requested_folder() {
+        let cands = flag_candidates_for_size(
+            Some("raj"),
+            Some("neutrality"),
+            Some("RAJ_UK"),
+            None,
+            FlagSizeFolder::Medium,
+        );
+        assert_eq!(cands[0], "gfx/flags/medium/RAJ_UK_neutrality.tga");
+        assert_eq!(cands[1], "gfx/flags/medium/RAJ_UK.tga");
+        assert!(cands
+            .iter()
+            .all(|cand| cand.starts_with("gfx/flags/medium/")));
+    }
+
+    #[test]
     fn cosmetic_base_flag_beats_real_tag_flag() {
         let root = temp_root("flag_cosmetic");
         // The cosmetic's ideology variant is ABSENT; its base is present. The
         // real tag's ideology flag also exists but must NOT win.
-        write_tga(&root.join("gfx/flags/RAJ_UK.tga"), [10, 20, 30, 255]);
-        write_tga(&root.join("gfx/flags/RAJ_neutrality.tga"), [200, 0, 0, 255]);
+        write_tga(&root.join("gfx/flags/medium/RAJ_UK.tga"), [10, 20, 30, 255]);
+        write_tga(
+            &root.join("gfx/flags/medium/RAJ_neutrality.tga"),
+            [200, 0, 0, 255],
+        );
         let resolver = AssetResolver::new(vec![root.clone()]);
         let binding = TopbarBinding {
             country_tag: Some("RAJ".to_string()),
@@ -998,7 +1049,7 @@ mod tests {
             ..TopbarBinding::default()
         };
         let flag = resolve_flag(&resolver, &binding).unwrap().unwrap();
-        assert_eq!(flag.rel_path, "gfx/flags/RAJ_UK.tga");
+        assert_eq!(flag.rel_path, "gfx/flags/medium/RAJ_UK.tga");
         let _ = fs::remove_dir_all(root);
     }
 

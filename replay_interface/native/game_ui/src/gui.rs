@@ -276,10 +276,17 @@ fn is_known_element_type(kind: &str) -> bool {
             | "containerwindowtype"
             | "icontype"
             | "buttontype"
+            | "extendedscrollbartype"
             | "instanttextboxtype"
+            | "smoothlistboxtype"
             | "gridboxtype"
+            | "guibuttontype"
+            | "decreasebutton"
+            | "increasebutton"
             | "listboxtype"
+            | "slider"
             | "scrollbartype"
+            | "track"
     )
 }
 

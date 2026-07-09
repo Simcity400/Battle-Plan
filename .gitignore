@@ -53,6 +53,7 @@ replay_interface/native/**/proof_out/
 #     scratch scripts; may contain local machine/Ghidra paths -> never commit) ---
 re_scratch/
 re_scratch/crack_archive/
+.re_scratch/
 
 # --- Local memory-reader cracking/probe outputs ---
 # Scratch convention: one-off reverse-engineering probes and generated oracle
