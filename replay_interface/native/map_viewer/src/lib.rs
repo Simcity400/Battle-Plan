@@ -28,6 +28,7 @@ mod light_law;
 mod luminance_law;
 mod map_furniture;
 mod map_label_capture;
+mod map_mode_terrain_resource;
 mod map_label_law;
 mod map_static_data;
 mod map_text;
@@ -267,6 +268,16 @@ pub use mapmode_infrastructure::{
 pub use mod_resolver::{
     sensitive_file_overrides, GameFileResolver, GameFileResolverOptions, GameFileResolverStats,
     SensitiveFileOverrideReport,
+};
+pub use map_mode_terrain_resource::{
+    classify_resource_deposits, classify_terrain_map_mode, parse_resource_definitions,
+    parse_state_resource_deposits, parse_terrain_category_colors, province_terrain_fill,
+    resource_definitions_from_resolver, resource_deposit_set_from_resolver, resource_state_fill,
+    resource_state_overlay, terrain_category_colors_from_resolver, terrain_map_mode_from_resolver,
+    ResourceDefinition, ResourceDepositSet, ResourceStateOverlay, TerrainMapMode,
+    RESOURCE_DEFINITIONS_SOURCE, RESOURCE_DEPOSITS_STATES_DIR, RESOURCE_ICON_STRIP_SOURCE,
+    TERRAIN_CATEGORIES_SOURCE, TERRAIN_DEFINITION_CSV_SOURCE, VANILLA_RESOURCE_DEFINITIONS,
+    VANILLA_TERRAIN_CATEGORY_COLORS,
 };
 pub use naval_supremacy_tint::{
     classify_naval_regions, naval_region_set_from_resolver, naval_supremacy_tints,

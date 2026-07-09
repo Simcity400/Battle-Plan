@@ -44,10 +44,10 @@ noted where known but flagged runtime.
 | 3 | **Air** (strategic air) | `mapmode_button_3` / `ui_mapmode_strategic_air` / F3 | strategic-region air-activity tint | item 8 (air region activity, LANDED extractor-side) | **law-known** (`mapmode_air.rs`: FILE status colours `STRATEGIC_AIR_COLOR_*` + full-region geometry + controller-colour omniscient fill; POV good/avg/bad thresholds UNKNOWN) | POV superiority-ratio thresholds + overlay-alpha capture |
 | 4 | **Operatives / intelligence** | `mapmode_button_4` / `ui_mapmode_operatives` | intel-network / operative-presence coloring | **NEW: intel/operatives state** | not-started | intel-mode RE (LaR-gated) |
 | 5 | **Supply** | `mapmode_button_5` / `ui_mapmode_supply` / F4 | supply-area coloring (hub range / supply value) | item 11 (rail/supply, deferred) | not-started | supply-mode RE + supply-graph render |
-| 6 | **Terrain** | `mapmode_button_6` / `ui_mapmode_terrain` / F5 | province terrain-type fill (static files, no recording) | none (files: `map/terrain`, `00_terrain.txt`) | **law-known** (static terrain colors file-derivable) | terrain-mode color table cite |
+| 6 | **Terrain** | `mapmode_button_6` / `ui_mapmode_terrain` / F5 | province terrain-type fill (static files, no recording) | none (files: `definition.csv` col6, `00_terrain.txt`) | **DONE (data law, M1a 2026-07-09)** — `map_mode_terrain_resource::classify_terrain_map_mode`; province→category (`definition.csv` col6)→`00_terrain.txt categories color`; gate: 14 categories cited, 13,414/13,414 provinces classified, **0 unclassified** | none (fill law closed; pixel raster into GB field capture-gated as with other modes) |
 | 7 | **Resistance** | `mapmode_button_7` / `ui_mapmode_resistance` / F6 | per-state resistance level gradient | **NEW: occupation/resistance state** | not-started | resistance-mode gradient RE (LaR-gated) |
 | 8 | **Compliance** | `mapmode_button_8` / `ui_mapmode_compliance` / F7 | per-state compliance level gradient | **NEW: occupation/compliance state** | not-started | compliance-mode gradient RE (LaR-gated) |
-| 9 | **Resource** | `mapmode_button_9` / `ui_mapmode_resource` / F8 | state resource-deposit coloring (static deposits + control) | item 2 (control) + files (`map/resources`, `00_resources.txt`) | **law-known** (deposits file-derivable) | resource-mode color/threshold cite |
+| 9 | **Resource** | `mapmode_button_9` / `ui_mapmode_resource` / F8 | state resource-deposit overlay (static deposits + control) | item 2 (control) + files (`00_resources.txt`, `history/states`) | **law-known — deposits DONE, fill UNKNOWN (M1a 2026-07-09)** — `map_mode_terrain_resource`; 7 resource defs (icon_frame 1..7, `00_resources.txt`) + deposits from `history/states` (gate: 467 states, 717 entries, per-resource counts/totals cited); overlay=strip icon (`GFX_resources_strip`). **Per-resource map FILL color/threshold has NO shipped-file source → UNKNOWN, fail-closed (`resource_state_fill`→None, no guess)** | resource-mode FILL color = engine RE + strategic capture; deposit/icon law closed |
 | 10 | **Infrastructure** | `mapmode_button_10` / `ui_mapmode_infrastructure` / F9 | per-state infrastructure level gradient | item 10 (buildings — infrastructure level) | **law-known** (`mapmode_infrastructure.rs`: FILE gradient `MAP_MODE_INFRA_RANGE_COLOR_FROM/TO` + FILE ceiling `infrastructure.level_cap.state_max`=5; level from buildings view; linear-over-[0,state_max] DERIVED) | confirm engine normalises over state_max vs dynamic map max (capture) |
 | 11 | **Factions** | `mapmode_button_11` / `ui_mapmode_factions` / F10 | faction-membership coloring — engine `game_map_mode_factions` layer | item 8b (faction membership) | **law-known** (hard-coded layer; color = faction/leader) | faction-mode color rule cite |
 | 12 | **Raids** (naval/air raids) | `mapmode_button_12` / `ui_mapmode_raids` | raid-target / naval-raid coloring | **NEW: raid state** (or item 8 naval) | not-started | raid-mode RE (BBA/MtG-gated) |
@@ -88,11 +88,17 @@ a replay render option, several already have law.
 - **Display toggles/overlays = 6** (day/night, player-counters, counter-color,
   allied-plans, fog, radar) — not modes.
 - **Status of the 16 modes:**
-  - `done` = **1** (political — COL3 fill law + borders).
+  - `done` = **1** (political — COL3 fill law + borders); **terrain** data law is now
+    also implemented (M1a: province→category→`00_terrain.txt` color, 0 unclassified),
+    pending only the shared GB-field pixel raster that gates every mode.
   - `law-known` = **10** (naval, terrain, resource, factions, states, diplomacy,
     players, ideology, **air** (`mapmode_air.rs`, M1d), **infrastructure**
     (`mapmode_infrastructure.rs`, M1d) — fill law file-derivable or ported,
-    gating/binding remains).
+    gating/binding remains). **M1a (2026-07-09)** closed the file-derivable half of
+    TWO of these: **terrain** (fully static, DONE — 14 category colors cited) and
+    **resource** (deposits+icon-frame DONE from `00_resources.txt`+`history/states`;
+    per-resource map FILL color has **no shipped-file source → UNKNOWN/fail-closed**,
+    an engine-RE/capture item, so resource is not fully closed).
   - `not-started` = **5** (operatives, supply, resistance, compliance, raids —
     need mode-specific RE + a new/deferred data stream).
 - **New data dependencies for map modes** (fold into REPLAY_DATA_REQUIREMENTS):
