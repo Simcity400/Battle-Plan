@@ -22,3 +22,11 @@ winapi = { version = "0.3.9", features = [
     "unknwnbase",
     "winerror",
 ] }
+
+[dev-dependencies]
+# Fixture-driven placement gate (C2): open the A2 fixtures through the real
+# ReplaySource / WorldTimeline and prove placement == generator ground truth.
+# Test-only on purpose — map_viewer stays decoupled from replay_core in
+# production (replay_app is the wiring layer), matching the other recording-fed
+# consumers (naval_supremacy_tint, map_furniture) which take primitive inputs.
+replay_core = { path = "../replay_core" }

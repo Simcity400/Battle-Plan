@@ -245,6 +245,17 @@ Degrades to empty seas/skies.
 `world_fold.rs:3920`, D31) -- replay-side ingest pending. NAVAL task-force
 rows remain OPEN as specified above.
 
+**PLACEMENT GAP (C2 lane 2026-07-09):** the on-map air-wing placement
+(`map_viewer::unit_placement`) needs an on-map **airbase province** per wing.
+Today `WingUnitRow` exposes only `air_base` (an opaque id string like
+`"3000:1"`), `state_id`, and `strategic_region_id` — none is a clean province,
+so wing placement falls back to a FIT (the air-base **state**'s representative
+province). Add an explicit `air_base_province` (or make `air_base` resolvable
+to a province) to the per-hour air-wing row so wings anchor at their actual
+airbase locator instead of a state centroid. Divisions
+(`location_province`) and fleet task forces (`location_province`) already carry
+a clean on-map province and place FILE-derived; only air wings are FIT.
+
 ## 8b. Diplomatic pair-state, faction membership, capitals (MAP FURNITURE + WAR OVERLAYS)
 
 Three small per-country/per-pair streams, all with existing schema shapes

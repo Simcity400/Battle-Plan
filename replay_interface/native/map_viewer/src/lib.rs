@@ -57,6 +57,7 @@ mod tree_second_subdraw;
 mod types;
 mod underwater_pass;
 mod unit_counter_assets;
+mod unit_placement;
 mod util;
 mod water_law;
 mod weather_law;
@@ -394,6 +395,13 @@ pub use unit_counter_assets::{
     UNIT_COUNTER_MAPICONS_GFX_SOURCE, UNIT_COUNTER_MAPICONS_GUI_SOURCE,
     UNIT_COUNTER_SUBUNITICONS_GFX_SOURCE, UNIT_COUNTER_TEXTICONS_GFX_SOURCE,
     UNIT_COUNTER_UNITVIEW_GFX_SOURCE, UNIT_COUNTER_UNITVIEW_GUI_SOURCE,
+};
+pub use unit_placement::{
+    place_division, place_divisions, place_fleet, place_fleets, place_frame_inputs, place_wing,
+    place_wings, AnchorProvenance, AnchorProvinceSource, DivisionPlacementInput,
+    FleetPlacementInput, PlacementStatus, ProvinceAnchor, ProvinceAnchorTable, UnitKind,
+    UnitPlacement, UnitPlacementSet, WingPlacementInput, WorldAnchor, UNIT_PLACEMENT_MAP_PLANE_X,
+    UNIT_PLACEMENT_MAP_PLANE_Z, UNIT_STACK_BASE_SLOT_KIND,
 };
 pub use water_law::{
     apply_underwater_light_absorption, lean_flattened_det, lean_specular_peak,
