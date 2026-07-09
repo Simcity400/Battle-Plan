@@ -1,4 +1,4 @@
-# Extraction Optimization Plan — sub-20 ms frames + lean replays (2026-07-09)
+﻿# Extraction Optimization Plan — sub-20 ms frames + lean replays (2026-07-09)
 
 Owner: extraction lane. Status: PLAN (approved targets, implementation not started).
 Codex CLI is unavailable until the user re-enables it; no step below may depend on it.
@@ -247,6 +247,32 @@ deflate-6 9.37x @ 52.6 MiB/s.** Legacy deflate containers remain readable. Remai
 snapshot-term elimination via the D1 shared decoder crate (in progress — replay_core
 consumes the stream directly; snapshots move to debug profile), keyframe/binary snapshot
 format only if the decoder-crate route stalls.
+
+## LIVE VALIDATION SESSION 2026-07-09 NIGHT — results of record
+
+Run: runs/live_validation_20260709_221706 (+ probe in live_validation_20260709_215202).
+- **d53 SHADOW GATE PASSED**: domain53_relation_shadow_mismatches == 0 on every frame with
+  both paths live. The exact-offset relation reader is live-proven; the legacy scan may be
+  retired next cleanup.
+- **Light save probe** (restarted game, ~13.5 h/s): frame avg 36.4 ms, 1/162 hours skipped
+  (cold frame), ~0.69 MB/hour (~17x smaller than baseline), host peak 604 MB.
+- **Deep late-war save** (~6 h/s, the game 8.2 GB): frame avg 151.5 ms p95 263.6, 370/1,790
+  hours skipped (20.7%), 12.9 GB/300 s raw (~9.1 MB/hour). NOT a paired A/B vs the morning
+  baseline (different save depth — 21 h/s vs 6 h/s); it maps the remaining gap on heavy
+  worlds. CONCLUSION: **Phase 4 (lossless change-driven capture) is formally necessary**
+  for deep-war sub-20 ms; read-collapse+delta alone do not defeat work-scales-with-world.
+- Delta effectiveness on deep war: d51 0.3% changed, d41 8.3%, d44 10.0% (all working);
+  **d48 79.2%** — suspect tolerated-partial tracker stalls re-emitting vs stale baselines
+  (INVESTIGATE; possible fix = collector sparse-merge advance on tolerated-partial,
+  keeping fold identical); **d53 ~full-churn** — genuine hourly opinion drift; the zstd-93
+  container layer (163x measured on this redundancy class) is the intended absorber, and
+  per-field delta encoding is a candidate follow-up.
+- **New bottleneck of record: the post-capture fold** (~5 MB/s single-threaded serde_json)
+  — 12.9 GB folds for ~40 min. Validation sessions killed it after manifest write (numbers
+  live in the manifest). Fix candidates: parallel per-hour fold, faster canonical
+  serialization, or skip host fold in production once replay_core consumes the stream via
+  replay_decoder (D1). Session tooling: --replay-zstd-level plumbed (validation uses 3);
+  emit-mode-full stage optional.
 
 ## Phase 3 (original spec below)
 
