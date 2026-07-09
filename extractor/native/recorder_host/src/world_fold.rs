@@ -758,9 +758,20 @@ pub struct WorldFold {
     /// current hour only. D23 owns canonical state resources/buildings fields.
     domain48_known_this_hour: bool,
     domain48_unknown_this_hour: bool,
-    /// D48 row-state accumulator. Full-replaced by baselines, patched by deltas,
-    /// retained across unknown hours, and rendered only for proven hours.
+    /// D48 per-hour PROJECTED row state. Full-replaced by baselines, patched by
+    /// deltas, sparse-merged by tolerated-partial frames, retained across unknown
+    /// hours, and rendered only for proven hours. This is what the hour's snapshot
+    /// reflects (so a tolerated-partial hour still shows its sparse-merged rows).
     domain48_state: Option<Domain48FoldState>,
+    /// D48 DELTA BASELINE. The row state the next delta frame is applied onto.
+    /// Advanced ONLY on clean (baseline) and delta frames — a tolerated-partial
+    /// frame NEVER mutates it, mirroring the collector's `tracker.last_*` which is
+    /// only advanced under the same conditions (collector `lib.rs` emit-mode:
+    /// partial returns early without advancing the tracker). Keeping this separate
+    /// from `domain48_state` prevents a tolerated-partial frame's transient rows
+    /// (phantom rows / reverted values) from leaking into the accumulator the next
+    /// delta is diffed against — matching d53's two-accumulator design.
+    domain48_delta_state: Option<Domain48FoldState>,
     /// D53 diplomacy/intel/operative validated slice, projected only for the
     /// current hour under 53-owned keys.
     domain53_known_this_hour: bool,
@@ -1070,6 +1081,7 @@ impl WorldFold {
             map_detail_province_state_ids: BTreeMap::new(),
             map_detail_province_buildings: BTreeMap::new(),
             map_detail_live: None,
+            domain48_delta_state: None,
             domain48_known_this_hour: false,
             domain48_unknown_this_hour: false,
             domain48_state: None,
@@ -10275,7 +10287,20 @@ impl WorldFold {
         }
 
         let frame = decoded.frame;
-        let mut state = if delta || expected_partial {
+        // Seed the working state (mirrors d53's clean/delta/partial split):
+        // - DELTA frame: seed from the DELTA BASELINE (`domain48_delta_state`), NOT
+        //   the projected state. The collector computed this delta against its
+        //   `tracker.last_*` (which a tolerated-partial frame never advanced), so
+        //   applying it onto that same baseline is the only correct fold. Seeding
+        //   from `domain48_state` (which a partial may have sparse-merged into)
+        //   would re-introduce the partial's transient phantom/reverted rows.
+        // - PARTIAL frame: seed from the projected state and sparse-merge (retain
+        //   omitted rows), preserving the tolerance's original intent for this
+        //   hour's snapshot.
+        // - CLEAN frame: full replace from empty.
+        let mut state = if delta {
+            self.domain48_delta_state.clone().unwrap_or_default()
+        } else if expected_partial {
             self.domain48_state.clone().unwrap_or_default()
         } else {
             Domain48FoldState::default()
@@ -10411,6 +10436,13 @@ impl WorldFold {
             extra.insert("source".into(), json!("C"));
         }
 
+        // Advance the DELTA BASELINE only on clean/delta frames — a
+        // tolerated-partial frame must NEVER mutate it (it is exactly the
+        // collector's `tracker.last_*` advance condition). The projected state
+        // always reflects this frame (including a partial's sparse merge).
+        if !expected_partial {
+            self.domain48_delta_state = Some(state.clone());
+        }
         self.domain48_state = Some(state);
         self.domain48_known_this_hour = true;
         self.domain48_unknown_this_hour = false;
@@ -10648,15 +10680,29 @@ impl WorldFold {
             }
         }
         for row in decoded.operatives {
+            let op_id = domain53_row_key(row.op_id);
             if domain53_row_deleted(row.op_id) {
-                let op_id = domain53_row_key(row.op_id);
                 for overlay in self.domain53_country_overlays_this_hour.values_mut() {
                     domain53_remove_by_key(&mut overlay.operatives, op_id, |r| r.op_id);
                 }
             } else {
+                // Operatives are GLOBALLY unique by op_id, but stored per-owner. A
+                // delta that changes an operative's owner (A -> B) upserts under B;
+                // the collector keys operatives globally and emits an owner change as
+                // a plain upsert (no tombstone under A). Without dropping the stale
+                // copy under A the operative would appear under BOTH owners in delta
+                // mode, whereas full emission rebuilds hourly and never duplicates
+                // (adversarial review Finding 2). RELOCATE: scan every OTHER owner's
+                // overlay and remove this op_id before upserting under the new owner.
+                let new_owner = row.owner_tag_db_id;
+                for (owner_tag, overlay) in self.domain53_country_overlays_this_hour.iter_mut() {
+                    if *owner_tag != new_owner {
+                        domain53_remove_by_key(&mut overlay.operatives, op_id, |r| r.op_id);
+                    }
+                }
                 let overlay = self
                     .domain53_country_overlays_this_hour
-                    .entry(row.owner_tag_db_id)
+                    .entry(new_owner)
                     .or_default();
                 domain53_upsert_by_key(&mut overlay.operatives, row, |r| r.op_id);
             }

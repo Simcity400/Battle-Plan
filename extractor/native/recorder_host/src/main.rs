@@ -18107,6 +18107,83 @@ mod tests {
             .contains("game_hour_raw 100: compact domain fuel_live data_record_count 2 != 1")));
     }
 
+    // Finding 3 (verify/harden): the delta design's loss-safety depends on a lost
+    // (missing) or duplicated per-hour data record for a SCHEDULED domain
+    // HARD-FAILING the hourly requirement — never warn-and-continue. This asserts
+    // the full chain: a missing/duplicate data record produces a coverage error
+    // that `compact_hourly_problems` promotes to `scheduled_domain_coverage_failed`,
+    // which drives `hourly_met = false` and quarantines the replay.
+    #[test]
+    fn compact_missing_or_duplicate_per_hour_data_record_fails_hourly_gate() {
+        // fuel_live (domain 10) requires a per-hour data record.
+        assert!(compact_contract::requires_data_record(10));
+
+        // Missing data record at hour 101 (perf + frame_end only).
+        let mut missing_raw = Vec::new();
+        let mut sequence = 1;
+        append_test_fuel_compact_frame(&mut missing_raw, &mut sequence, 100, 47);
+        append_test_compact_record(
+            &mut missing_raw,
+            sequence,
+            101,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_500, 1, 1, 1, 1),
+        );
+        sequence += 1;
+        append_test_compact_record(
+            &mut missing_raw,
+            sequence,
+            101,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_250, 1),
+        );
+
+        let missing_summary = summarize_compact_stream(&missing_raw);
+        let missing_coverage = compact_domain_coverage_errors(&missing_summary, &[10]);
+        let missing_problems = compact_hourly_problems(&missing_summary, 0, &missing_coverage);
+        assert!(
+            missing_coverage
+                .iter()
+                .any(|err| err.contains("missing compact domain fuel_live data record")),
+            "{missing_coverage:?}"
+        );
+        assert!(
+            missing_problems.contains(&"scheduled_domain_coverage_failed".to_string()),
+            "a lost per-hour data record must fail the hourly gate, not warn-and-continue: {missing_problems:?}"
+        );
+
+        // Duplicate data record at hour 100.
+        let mut dup_raw = Vec::new();
+        let mut dup_sequence = 1;
+        append_test_fuel_compact_frame(&mut dup_raw, &mut dup_sequence, 100, 47);
+        append_test_compact_record(
+            &mut dup_raw,
+            dup_sequence,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(48, 3_932_160, 14_950_400, 65_536, -32_768)]),
+        );
+        dup_sequence += 1;
+        append_test_fuel_compact_frame(&mut dup_raw, &mut dup_sequence, 101, 49);
+
+        let dup_summary = summarize_compact_stream(&dup_raw);
+        let dup_coverage = compact_domain_coverage_errors(&dup_summary, &[10]);
+        let dup_problems = compact_hourly_problems(&dup_summary, 0, &dup_coverage);
+        assert!(
+            dup_coverage
+                .iter()
+                .any(|err| err.contains("data_record_count 2 != 1")),
+            "{dup_coverage:?}"
+        );
+        assert!(
+            dup_problems.contains(&"scheduled_domain_coverage_failed".to_string()),
+            "a duplicated per-hour data record must fail the hourly gate: {dup_problems:?}"
+        );
+    }
+
     #[test]
     fn compact_coverage_requires_division_equipment_data_record_per_frame() {
         let mut raw = Vec::new();
@@ -21272,6 +21349,205 @@ mod tests {
         }
     }
 
+    // Regression for the d53 operative owner-change duplicate (adversarial review
+    // Finding 2). Operatives are globally unique by op_id; the collector emits an
+    // owner change (A -> B) as a plain upsert (no tombstone under A, since op_id
+    // still exists). The fold stores operatives per-owner, so without relocating
+    // the operative it ends up under BOTH owners in delta mode while full emission
+    // (rebuilt hourly) shows it only under the current owner. The sequence below
+    // moves op_id 100 across three owners (1 -> 2 -> 3) between delta frames and
+    // asserts delta-fold == full-fold at every hour.
+    #[test]
+    fn compact_diplomacy_intel_operatives_owner_change_does_not_duplicate() {
+        use diplomacy_intel_operatives_live::compact as d53;
+
+        fn country(tag_db_id: u32, faction_group: i32) -> d53::CountryDiplomacyRow {
+            d53::CountryDiplomacyRow {
+                tag_db_id,
+                faction_group,
+                at_war_count: 0,
+                casualties: 0,
+            }
+        }
+
+        fn operative(owner: u32, op_id: u32, skill: u32) -> d53::OperativeRow {
+            d53::OperativeRow {
+                owner_tag_db_id: owner,
+                op_id,
+                detected: true,
+                captured: false,
+                skill: Some(skill),
+                experience_raw: Some(50_000),
+                name_hash: 0x5000 + u64::from(op_id),
+                state_hash: 0x6000 + op_id,
+                lifecycle_flag: Some(2),
+            }
+        }
+
+        fn frame(
+            mut snapshot: d53::DiplomacyIntelSnapshot,
+            delta: bool,
+        ) -> d53::DiplomacyIntelSnapshot {
+            snapshot.status_flags = d53::STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
+                | if delta { COMPACT_STATUS_DELTA_DATA } else { 0 };
+            snapshot.changed_rows = Some(snapshot.row_count());
+            snapshot
+        }
+
+        fn append_d53_frame(
+            raw: &mut Vec<u8>,
+            next_sequence: &mut u64,
+            game_hour_raw: i32,
+            frame: &d53::DiplomacyIntelSnapshot,
+        ) {
+            let row_count = frame.row_count();
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                53,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(
+                    900,
+                    row_count,
+                    row_count,
+                    row_count,
+                    row_count,
+                    frame.status_flags,
+                ),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                53,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d53::encode_payload(frame),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *next_sequence += 1;
+        }
+
+        fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
+            fold_compact_snapshots(raw)
+                .into_iter()
+                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .collect()
+        }
+
+        // Country rows keep every owner's overlay alive independently of the
+        // operative, so the ONLY thing that can differ between full and delta folds
+        // is whether op_id 100 duplicates across owners.
+        let full0 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(1, 10), country(2, 20)],
+                operatives: vec![operative(1, 100, 3)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            false,
+        );
+        // Hour 1 truth: op 100 now owned by country 2.
+        let full1 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(1, 10), country(2, 20)],
+                operatives: vec![operative(2, 100, 3)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            false,
+        );
+        // Hour 2 truth: a new country 3 appears and op 100 moves to it.
+        let full2 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(1, 10), country(2, 20), country(3, 30)],
+                operatives: vec![operative(3, 100, 3)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            false,
+        );
+
+        // Delta hour 1: countries 1 & 2 unchanged (not emitted); op 100 changed
+        // owner -> emitted as an upsert under owner 2, with NO tombstone under 1.
+        let delta1 = frame(
+            d53::DiplomacyIntelSnapshot {
+                operatives: vec![operative(2, 100, 3)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            true,
+        );
+        // Delta hour 2: new country 3 emitted; op 100 upserts under owner 3.
+        let delta2 = frame(
+            d53::DiplomacyIntelSnapshot {
+                countries: vec![country(3, 30)],
+                operatives: vec![operative(3, 100, 3)],
+                ..d53::DiplomacyIntelSnapshot::default()
+            },
+            true,
+        );
+
+        let mut full_raw = Vec::new();
+        let mut full_seq = 1u64;
+        let mut delta_raw = Vec::new();
+        let mut delta_seq = 1u64;
+        let game_hour_raw = 60_759_360;
+        for (index, full) in [&full0, &full1, &full2].iter().enumerate() {
+            append_d53_frame(
+                &mut full_raw,
+                &mut full_seq,
+                game_hour_raw + index as i32,
+                full,
+            );
+        }
+        for (index, delta) in [&full0, &delta1, &delta2].iter().enumerate() {
+            append_d53_frame(
+                &mut delta_raw,
+                &mut delta_seq,
+                game_hour_raw + index as i32,
+                delta,
+            );
+        }
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        let delta_summary = summarize_compact_stream(&delta_raw);
+        assert!(
+            full_summary.parse_errors.is_empty(),
+            "{:?}",
+            full_summary.parse_errors
+        );
+        assert!(
+            delta_summary.parse_errors.is_empty(),
+            "{:?}",
+            delta_summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&full_summary, &[53]).is_empty());
+        assert!(compact_domain_coverage_errors(&delta_summary, &[53]).is_empty());
+
+        let delta_snapshots = canonical_snapshots(&delta_raw);
+        let full_snapshots = canonical_snapshots(&full_raw);
+        assert_eq!(delta_snapshots.len(), full_snapshots.len());
+        for (index, (delta, full)) in delta_snapshots
+            .iter()
+            .zip(full_snapshots.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                delta,
+                full,
+                "operative owner-change snapshot {index} mismatch (duplicate under old owner?)\nDELTA: {}\nFULL: {}",
+                String::from_utf8_lossy(delta),
+                String::from_utf8_lossy(full)
+            );
+        }
+    }
+
     #[test]
     fn compact_scripted_state_delta_lossless_gate_matches_full_snapshots() {
         use scripted_state_flags_variables_live_lane::scripted_state_domain51_gate::compact as d51;
@@ -22783,6 +23059,226 @@ mod tests {
             canonical_snapshots(&delta_raw),
             canonical_snapshots(&full_raw)
         );
+    }
+
+    // Regression for the d48 tolerated-partial delta-baseline leak (adversarial
+    // review Finding 1). A tolerated-PARTIAL frame sparse-merges into the hour's
+    // PROJECTED state (correct — its snapshot shows those rows) but must NOT enter
+    // the DELTA BASELINE the next delta is diffed against, because the collector's
+    // `tracker.last_*` is likewise never advanced on a partial frame. Two failure
+    // sequences the old single-accumulator design got wrong:
+    //   (a) phantom row  — a row present only in the partial hour, absent in-game
+    //       by the next delta hour, was kept forever in delta mode.
+    //   (b) reverted value — a value that changed in the partial hour then reverted
+    //       by the next delta hour retained the transient value in delta mode.
+    // Both are exercised together below; the fold must be byte-identical to the
+    // full-emission stream at every hour.
+    #[test]
+    fn compact_construction_buildings_state_damage_partial_does_not_leak_into_delta_baseline() {
+        fn source_flags() -> u32 {
+            domain48::SOURCE_FLAG_DLL_NATIVE
+                | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+                | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+                | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+        }
+
+        fn construction_row(line_id: u32, produced_raw: i32) -> domain48::ConstructionQueueRow {
+            domain48::ConstructionQueueRow {
+                tag_db_id: 1,
+                line_id,
+                template_id: Some(20_013),
+                active_factories: 5,
+                cost_raw: 10_000_000,
+                produced_raw,
+                priority: 0,
+                target_state_id: Some(42),
+                created_date_raw: Some(60_827_043 + line_id),
+            }
+        }
+
+        fn state_building(type_id: u32, level: u32) -> domain48::BuildingRow {
+            domain48::BuildingRow {
+                scope: domain48::SCOPE_STATE,
+                location_id: 42,
+                state_id: 42,
+                type_id,
+                level,
+                healthy_level: Some(level),
+            }
+        }
+
+        fn resource_row(resource_id: u32, amount_raw: i32) -> domain48::StateResourceRow {
+            domain48::StateResourceRow {
+                state_id: 42,
+                resource_id,
+                amount_raw,
+            }
+        }
+
+        fn frame(
+            status_flags: u32,
+            construction_rows: Vec<domain48::ConstructionQueueRow>,
+            building_rows: Vec<domain48::BuildingRow>,
+            resource_rows: Vec<domain48::StateResourceRow>,
+        ) -> domain48::LaneFrame {
+            domain48::LaneFrame {
+                game_hour_raw: 0,
+                status_flags,
+                source_flags: source_flags(),
+                observed_country_roots: 1,
+                observed_state_roots: 1,
+                observed_province_roots: 1,
+                construction_rows,
+                building_rows,
+                resource_rows,
+            }
+        }
+
+        fn append_domain48_frame(
+            raw: &mut Vec<u8>,
+            next_sequence: &mut u64,
+            game_hour_raw: i32,
+            frame: &domain48::LaneFrame,
+        ) {
+            let row_count = frame
+                .construction_rows
+                .len()
+                .saturating_add(frame.building_rows.len())
+                .saturating_add(frame.resource_rows.len())
+                .min(u32::MAX as usize) as u32;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                48,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload_with_status(
+                    500,
+                    row_count,
+                    row_count,
+                    row_count,
+                    row_count,
+                    frame.status_flags,
+                ),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                48,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &domain48::encode_lane_frame(frame),
+            );
+            *next_sequence += 1;
+            append_test_compact_record(
+                raw,
+                *next_sequence,
+                game_hour_raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_200, 1),
+            );
+            *next_sequence += 1;
+        }
+
+        fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
+            fold_compact_snapshots(raw)
+                .into_iter()
+                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .collect()
+        }
+
+        // Hour 0: clean baseline. Row 88 does NOT exist; row 77 == 5_000_000;
+        // state building 0x2fab == level 5; resource 0x3e03 == 2_500_000.
+        let full0 = frame(
+            0,
+            vec![construction_row(77, 5_000_000)],
+            vec![state_building(0x2fab, 5)],
+            vec![resource_row(0x3e03, 2_500_000)],
+        );
+        // Hour 1: tolerated PARTIAL. Introduces a PHANTOM construction row 88 and a
+        // phantom state building 0x3000, and TRANSIENTLY changes row 77 -> 9_000_000,
+        // building 0x2fab -> level 9, and resource 0x3e03 -> 9_999_999. This frame is
+        // byte-identical between the full and delta streams (the collector emits a
+        // partial the same way in both emit modes), so the hour-1 snapshot must fold
+        // identically; the divergence risk is entirely in hour 2's baseline.
+        let partial1 = frame(
+            COMPACT_STATUS_PARTIAL_DATA,
+            vec![
+                construction_row(77, 9_000_000),
+                construction_row(88, 4_000_000),
+            ],
+            vec![state_building(0x2fab, 9), state_building(0x3000, 3)],
+            vec![resource_row(0x3e03, 9_999_999)],
+        );
+        // Hour 2 in-game truth == hour 0 EXCEPT state building 0x2fab advances to
+        // level 6 (a genuine change). Row 88 is gone, 0x3000 is gone, row 77 has
+        // reverted to 5_000_000, resource reverted to 2_500_000.
+        let full2 = frame(
+            0,
+            vec![construction_row(77, 5_000_000)],
+            vec![state_building(0x2fab, 6)],
+            vec![resource_row(0x3e03, 2_500_000)],
+        );
+        // The collector diffs hour-2 truth against its tracker, which still holds the
+        // hour-0 baseline (the partial never advanced it): the only change vs hour 0
+        // is building 0x2fab 5 -> 6. No row 88 (never in the tracker -> no upsert, no
+        // tombstone), no 0x3000, no row-77 change, no resource change.
+        let delta2 = frame(
+            COMPACT_STATUS_DELTA_DATA,
+            Vec::new(),
+            vec![state_building(0x2fab, 6)],
+            Vec::new(),
+        );
+
+        let mut full_raw = Vec::new();
+        let mut full_seq = 1u64;
+        let mut delta_raw = Vec::new();
+        let mut delta_seq = 1u64;
+        let game_hour_raw = 60_759_360;
+        for (index, full) in [&full0, &partial1, &full2].iter().enumerate() {
+            append_domain48_frame(
+                &mut full_raw,
+                &mut full_seq,
+                game_hour_raw + index as i32,
+                full,
+            );
+        }
+        for (index, delta) in [&full0, &partial1, &delta2].iter().enumerate() {
+            append_domain48_frame(
+                &mut delta_raw,
+                &mut delta_seq,
+                game_hour_raw + index as i32,
+                delta,
+            );
+        }
+
+        let full_summary = summarize_compact_stream(&full_raw);
+        let delta_summary = summarize_compact_stream(&delta_raw);
+        assert!(
+            full_summary.parse_errors.is_empty(),
+            "{:?}",
+            full_summary.parse_errors
+        );
+        assert!(
+            delta_summary.parse_errors.is_empty(),
+            "{:?}",
+            delta_summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&full_summary, &[48]).is_empty());
+        assert!(compact_domain_coverage_errors(&delta_summary, &[48]).is_empty());
+
+        let full_snapshots = canonical_snapshots(&full_raw);
+        let delta_snapshots = canonical_snapshots(&delta_raw);
+        assert_eq!(
+            full_snapshots.len(),
+            3,
+            "expected one snapshot per captured hour"
+        );
+        // The whole point: a tolerated-partial frame's transient/phantom rows must
+        // not survive into the next delta hour. Byte-identical to full emission.
+        assert_eq!(delta_snapshots, full_snapshots);
     }
 
     #[test]
