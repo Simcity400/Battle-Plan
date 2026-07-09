@@ -76,10 +76,10 @@ spec may introduce a bare vanilla path join.
 
 ## 1. Current state (2026-07-09, branch `claude/replay-engine-extraction-18b40f`)
 
-- **Tests:** **1036 passed / 0 failed** across `map_viewer`, `replay_app`,
+- **Tests:** **1214 passed / 0 failed** across `map_viewer`, `replay_app`,
   `game_ui`, `replay_core`, `terrain_capture` (incl. all pool/oracle/fixture
-  gate suites). Was 820 at plan authoring; +216 from the 2026-07-09
-  orchestration wave (see §1a).
+  gate suites). Was 820 at plan authoring; 1036 after wave-1; +178 from the
+  2026-07-09 wave-2/3/4 orchestration (see §1a).
 - **Fidelity ledger** (`FIDELITY_LEDGER.md` §1, LEDGER3 recount 2026-07-09 after
   the 8-lane wave + OBJ-1 fold): **90 FILE / 24 CAPTURE / 34 FIT / 49 UNKNOWN**
   map-render parameter rows (was 78/24/38/46 pre-wave). Net wave-2 movement:
@@ -108,6 +108,43 @@ spec may introduce a bare vanilla path join.
   building damage already landed in `extractor/` per the 2026-07-09
   reconciliation sweep — evidence the schema in REPLAY_DATA_REQUIREMENTS.md is
   being honored, which de-risks fixture fidelity.
+
+## 1a-bis. Progress log — 2026-07-09 orchestration waves 2–4 (full-scope pivot)
+
+Merged (each verified independently: own workspace test runs, pyghidra/​shader-
+file citation audits on the RE lanes, diff-scope review, `--ours` on the
+transient ledger-totals conflicts pending a fresh recount). Full-workspace gate
+**1214 / 0** at the end of wave 4.
+
+- **A5 keying swap DONE** (critical path): political fill / borders / labels /
+  furniture key off `WorldTimeline` via `map_viewer/keying.rs`
+  (`KeyingTables::from_world_frame`), byte-identical to the static path at t0,
+  divergence-gated on flip fixtures. Unblocked all of C/D. Also fixed
+  `player_countries` (reads `world.scenario.players`).
+- **Static-map residuals:** B1 water tail 8,534→8,537/8,560 + f32-noise-floor
+  proof; B1 island loops pinch-handedness POOL-REFUTED (docs-only, RE target
+  set — BORD12); B2 labels kerning/advance + atlas-mips CLOSED (FILE),
+  emission flood-fill pyghidra-confirmed; B3 buildings material-texture law
+  93/93; B4 trees scatter FILE-gated 8/8; B5 rivers palette + width (fabricated
+  table retired); B6 shadow-PCF + camera-interp UNKNOWN/FIT→FILE (gates C7
+  h=50); C5 rails files-first; cap4 mining CLOSED B12 sea (was FoW), sharpened
+  B9/B11 asks.
+- **Dynamic war content:** C2 unit placement (unitstacks FILE anchors,
+  step-hold); C3 battle-bubble asset chain 17/17; C6 naval supremacy tint;
+  weather/snow feed (c-weather, winter-confound fix).
+- **UI + playback:** D1/D2 topbar+ideology bindings; D3/D4 outliner+diplomacy
+  panels; D6 clock + D7 populate-or-descope sweep; E1/E4/E6 transport /
+  validate / observer-POV shell; F4 mid-playback anomaly policy; G3 blocker
+  registry; rc-reconcile closed replay_core diplomacy/air/alerts/ratio views.
+- **Full-scope pivot (2026-07-09 user directive):** v1 now targets EVERY UI
+  panel + ALL map modes (not the informational shell). Backbone landed:
+  `UI_COVERAGE_MATRIX.md` (133 panel files / 2,009 windows / 105 in-scope, 3–6
+  populated) + `MAPMODE_COVERAGE_MATRIX.md` (16 modes + 6 toggles: 1 done,
+  8 law-known, 7 not-started); Phase D + E3 rewritten; new §6a wave plan
+  (U1 war-HUD / M1 8 law-known modes / U2 event-decision chrome). This is the
+  large remaining body of work — see the two matrices for the residual ledger.
+
+---
 
 ## 1a. Progress log — 2026-07-09 orchestration wave 1
 
