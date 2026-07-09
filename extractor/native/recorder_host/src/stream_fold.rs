@@ -16,6 +16,7 @@
 //! by the recorder host during finalization and by the `stream_fold` offline
 //! tool (which also re-folds old recordings and measures peak memory).
 
+use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
 
@@ -23,6 +24,7 @@ use compact_contract::{
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
 };
+use snapshot::sha256::{to_hex, Sha256};
 
 use crate::world_fold::{FoldedSnapshotFile, WorldFold};
 
@@ -49,6 +51,14 @@ pub struct FoldStreamStats {
     pub stop_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoldedSnapshotReportRow {
+    pub hour_index: i64,
+    pub date: String,
+    pub snapshot_hash: String,
+    pub snapshot_bytes: usize,
+}
+
 /// Fold an on-disk compact stream file into per-game-hour snapshot files under
 /// `snapshot_dir`, in bounded memory. Returns the spilled snapshot descriptors
 /// (in emit order) plus the pass accounting.
@@ -66,6 +76,55 @@ pub fn fold_compact_stream_file(
         .finish_file_backed()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     Ok((files, stats))
+}
+
+/// Hash spilled snapshot files for the offline report. When `discard_snapshots`
+/// is true, each file is removed only after its hash and byte count are captured.
+pub fn hash_folded_snapshot_files(
+    files: &[FoldedSnapshotFile],
+    discard_snapshots: bool,
+) -> io::Result<Vec<FoldedSnapshotReportRow>> {
+    let mut rows = Vec::with_capacity(files.len());
+    for f in files {
+        let snapshot_hash = sha256_file(&f.path)
+            .map_err(|e| io::Error::new(e.kind(), format!("hash {}: {e}", f.path.display())))?;
+        rows.push(FoldedSnapshotReportRow {
+            hour_index: f.hour_index,
+            date: f.date.clone(),
+            snapshot_hash,
+            snapshot_bytes: f.byte_len,
+        });
+        if discard_snapshots {
+            std::fs::remove_file(&f.path).map_err(|e| {
+                io::Error::new(e.kind(), format!("remove {}: {e}", f.path.display()))
+            })?;
+        }
+    }
+    Ok(rows)
+}
+
+pub fn snapshot_chain_hash(rows: &[FoldedSnapshotReportRow]) -> String {
+    let mut chain = Sha256::new();
+    for row in rows {
+        chain.update(row.hour_index.to_le_bytes().as_slice());
+        chain.update(row.snapshot_hash.as_bytes());
+        chain.update(b"\n");
+    }
+    to_hex(&chain.finalize())
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(to_hex(&hasher.finalize()))
 }
 
 /// Drive the production fold over a record stream with a bounded carry buffer.
@@ -347,5 +406,52 @@ mod tests {
         assert_eq!(files[0].hour_index, HOUR_A);
         assert_eq!(files[1].hour_index, HOUR_B);
         assert!(stats.truncated_tail_bytes > 0, "incomplete tail reported");
+    }
+
+    #[test]
+    fn discard_snapshot_reports_match_keep_mode_and_remove_files() {
+        let dir = TmpDir::new("discard");
+        let stream = three_hour_stream();
+
+        let keep_path = dir.0.join("keep.bin");
+        std::fs::write(&keep_path, &stream).unwrap();
+        let (keep_files, keep_stats) =
+            fold_compact_stream_file(&keep_path, "gid", &dir.0.join("keep_snaps")).unwrap();
+        assert_eq!(keep_stats.hours_emitted, 3);
+        let keep_rows = hash_folded_snapshot_files(&keep_files, false).unwrap();
+        let keep_chain_hash = snapshot_chain_hash(&keep_rows);
+        assert_eq!(keep_rows.len(), 3);
+        for f in &keep_files {
+            assert!(
+                f.path.exists(),
+                "keep mode should retain {}",
+                f.path.display()
+            );
+        }
+
+        let discard_path = dir.0.join("discard.bin");
+        std::fs::write(&discard_path, &stream).unwrap();
+        let (discard_files, discard_stats) =
+            fold_compact_stream_file(&discard_path, "gid", &dir.0.join("discard_snaps")).unwrap();
+        assert_eq!(discard_stats.hours_emitted, 3);
+        let discard_rows = hash_folded_snapshot_files(&discard_files, true).unwrap();
+        let discard_chain_hash = snapshot_chain_hash(&discard_rows);
+
+        assert_eq!(discard_rows, keep_rows);
+        assert_eq!(discard_chain_hash, keep_chain_hash);
+        for f in &discard_files {
+            assert!(
+                !f.path.exists(),
+                "discard mode should remove {}",
+                f.path.display()
+            );
+        }
+        assert!(
+            std::fs::read_dir(dir.0.join("discard_snaps"))
+                .unwrap()
+                .next()
+                .is_none(),
+            "discard snapshot directory should be empty"
+        );
     }
 }

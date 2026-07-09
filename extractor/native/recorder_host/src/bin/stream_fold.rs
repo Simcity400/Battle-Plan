@@ -10,17 +10,18 @@
 //! the one production fold — and (c) re-fold an old recording's raw stream.
 //!
 //! Usage:
-//!   stream_fold <collector_stream.bin> <out_snapshot_dir> [--game-id ID] [--json report.json]
+//!   stream_fold <collector_stream.bin> <out_snapshot_dir> [--game-id ID] [--json report.json] [--discard-snapshots]
 
 use std::fs::File;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use recorder_host::proc_mem::peak_memory;
-use recorder_host::stream_fold::fold_compact_stream_file;
+use recorder_host::stream_fold::{
+    fold_compact_stream_file, hash_folded_snapshot_files, snapshot_chain_hash,
+};
 use serde_json::{json, Value};
-use snapshot::sha256::{to_hex, Sha256};
 
 fn main() -> ExitCode {
     match run() {
@@ -37,6 +38,7 @@ fn run() -> Result<(), String> {
     let mut positional: Vec<String> = Vec::new();
     let mut game_id = "fold_check".to_string();
     let mut json_out: Option<String> = None;
+    let mut discard_snapshots = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -48,10 +50,13 @@ fn run() -> Result<(), String> {
                 i += 1;
                 json_out = Some(args.get(i).ok_or("--json requires a path")?.clone());
             }
+            "--discard-snapshots" => {
+                discard_snapshots = true;
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "stream_fold <collector_stream.bin> <out_snapshot_dir> \
-                     [--game-id ID] [--json report.json]"
+                     [--game-id ID] [--json report.json] [--discard-snapshots]"
                 );
                 return Ok(());
             }
@@ -61,7 +66,7 @@ fn run() -> Result<(), String> {
         i += 1;
     }
     if positional.len() != 2 {
-        return Err("usage: stream_fold <stream.bin> <out_snapshot_dir> [--game-id ID] [--json report.json]".into());
+        return Err("usage: stream_fold <stream.bin> <out_snapshot_dir> [--game-id ID] [--json report.json] [--discard-snapshots]".into());
     }
     let stream_path = PathBuf::from(&positional[0]);
     let out_dir = PathBuf::from(&positional[1]);
@@ -71,23 +76,20 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("streaming fold {}: {e}", stream_path.display()))?;
     let elapsed = start.elapsed();
 
-    // Hash each spilled snapshot file (streaming) to produce the per-hour hashes
-    // that mirror `fold_check hash`'s `snapshot_hash` (identical when game_id matches).
-    let mut hours: Vec<Value> = Vec::with_capacity(files.len());
-    let mut chain = Sha256::new();
-    for f in &files {
-        let sha = sha256_file(&f.path).map_err(|e| format!("hash {}: {e}", f.path.display()))?;
-        chain.update(f.hour_index.to_le_bytes().as_slice());
-        chain.update(sha.as_bytes());
-        chain.update(b"\n");
-        hours.push(json!({
-            "hour_index": f.hour_index,
-            "date": f.date,
-            "snapshot_hash": sha,
-            "snapshot_bytes": f.byte_len,
-        }));
-    }
-    let chain_hash = to_hex(&chain.finalize());
+    let hour_rows = hash_folded_snapshot_files(&files, discard_snapshots)
+        .map_err(|e| format!("snapshot report: {e}"))?;
+    let chain_hash = snapshot_chain_hash(&hour_rows);
+    let hours: Vec<Value> = hour_rows
+        .iter()
+        .map(|row| {
+            json!({
+                "hour_index": row.hour_index,
+                "date": row.date,
+                "snapshot_hash": row.snapshot_hash,
+                "snapshot_bytes": row.snapshot_bytes,
+            })
+        })
+        .collect();
 
     let peak = peak_memory();
     let report = json!({
@@ -125,18 +127,4 @@ fn run() -> Result<(), String> {
         None => print!("{text}"),
     }
     Ok(())
-}
-
-fn sha256_file(path: &Path) -> std::io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(to_hex(&hasher.finalize()))
 }
