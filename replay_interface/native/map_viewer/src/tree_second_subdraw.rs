@@ -335,6 +335,13 @@ mod tests {
             Some(PathBuf::from(
                 r"C:\Users\Example\AppData\Local\hoi4_captures\live_trees_measure",
             )),
+            // Durable preserved corpus copy (read-only B4 evidence).
+            Some(PathBuf::from(
+                r"C:\Users\Example\hoi4_capture_corpus_preserved\live_trees_measure",
+            )),
+            Some(PathBuf::from(
+                r"C:\Users\Example\hoi4_capture_corpus_preserved\live_PAN2",
+            )),
             Some(PathBuf::from(
                 r"C:\Users\Example\AppData\Local\hoi4_captures\live_PAN_chunks",
             )),

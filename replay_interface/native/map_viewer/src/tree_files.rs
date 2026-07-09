@@ -677,6 +677,30 @@ mod tests {
 
     const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
 
+    /// Resolve the `live_trees_measure` trees-pass capture directory. Prefers an
+    /// explicit `TREES_MEASURE_CAPTURE_DIR` override, then the live capture dir,
+    /// then the durable preserved corpus copy
+    /// (`hoi4_capture_corpus_preserved\live_trees_measure`, the read-only B4
+    /// evidence corpus). Returns `None` (skip) when none exist, so CI without the
+    /// corpus stays green.
+    fn trees_measure_capture_dir() -> Option<std::path::PathBuf> {
+        [
+            std::env::var("TREES_MEASURE_CAPTURE_DIR").ok(),
+            Some(r"C:\Users\Example\AppData\Local\hoi4_captures\live_trees_measure".to_string()),
+            Some(
+                r"C:\Users\Example\hoi4_capture_corpus_preserved\live_trees_measure".to_string(),
+            ),
+            Some(
+                r"C:\Users\Example\AppData\Local\Claude_pzs8sxrjxfjjc.data-backup-20260709-103135\LocalCache\Local\hoi4_captures\live_trees_measure"
+                    .to_string(),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .map(std::path::PathBuf::from)
+        .find(|dir| dir.join(TREES_FRAME_BUNDLE_FILE).is_file())
+    }
+
     /// TEMPLATE-MATCH gate (MAP-OBJECTS lane, 2026-07-09): the captured PAN2
     /// trees_pass template (IA slot 0: 6720 bytes / stride 56 = 120 vertices;
     /// index buffer 432 bytes R16 = 216 indices; DrawIndexedInstanced 216x37)
@@ -830,19 +854,7 @@ mod tests {
     ///    DrawIndexedInstanced instance count — 8/8 exact.
     #[test]
     fn gate_tree_scatter_chunk_law_vs_live_trees_measure() {
-        let capture_dir = [
-            std::env::var("TREES_MEASURE_CAPTURE_DIR").ok(),
-            Some(r"C:\Users\Example\AppData\Local\hoi4_captures\live_trees_measure".to_string()),
-            Some(
-                r"C:\Users\Example\AppData\Local\Claude_pzs8sxrjxfjjc.data-backup-20260709-103135\LocalCache\Local\hoi4_captures\live_trees_measure"
-                    .to_string(),
-            ),
-        ]
-        .into_iter()
-        .flatten()
-        .map(std::path::PathBuf::from)
-        .find(|dir| dir.join(TREES_FRAME_BUNDLE_FILE).is_file());
-        let Some(capture_dir) = capture_dir else {
+        let Some(capture_dir) = trees_measure_capture_dir() else {
             eprintln!("skipping tree scatter chunk law gate: no live_trees_measure capture");
             return;
         };
@@ -1055,6 +1067,111 @@ mod tests {
         println!(
             "gate_tree_scatter: {exact}/8 captured instance counts reproduced exactly from \
              map/trees.bmp chunk law (chunks x {cx0}..={cx1}, z {cz0}..={cz1}, cam_y {cam_y})"
+        );
+    }
+
+    /// SEASON CB1 gate (B4): the tree VS constant buffer 1 declared by
+    /// `gfx/FX/tree.shader` `ConstantBuffer( 1, 32 )` is
+    /// `float4x4 ShadowMapTextureMatrix; float vSeasonLerp; float vSeasonColumn;
+    /// float vTreeFade;` (64 + 4 + 4 + 4 = 76 B, padded to 80). This gate proves
+    /// the three season/fade scalars against the captured `live_trees_measure`
+    /// trees_pass and derives `vTreeFade` from shipped files:
+    ///
+    /// * `vTreeFade` (FILE): the camera-height fade the PS emits as the tree
+    ///   output alpha (`return float4( vColor, vTreeFade )`). It equals
+    ///   `saturate( (TREE_FADE_FAR - vCamPos.y) / (TREE_FADE_FAR - TREE_FADE_NEAR) )`
+    ///   with `TREE_FADE_NEAR = 250.0`, `TREE_FADE_FAR = 350.0`
+    ///   (`common/defines/00_graphics.lua:1068-1069`) and `vCamPos.y` from the
+    ///   scene CB0. At the captured `cam_y = 348.0697` that is
+    ///   `(350 - 348.0697)/100 = 0.019303`, matched to < 1e-4 against every draw.
+    /// * `vSeasonLerp` / `vSeasonColumn` (CAPTURE): the season-atlas blend factor
+    ///   and column index. Constant across all 8 draws (a single dated snapshot);
+    ///   both are 0.0 in this capture. The date -> (column, lerp) map is CPU-side
+    ///   and remains UNKNOWN (see LANE_REPORT.md / FIDELITY_LEDGER §2.11).
+    #[test]
+    fn gate_tree_season_cb1_vs_live_trees_measure() {
+        // File-cited fade window (00_graphics.lua:1068-1069).
+        const TREE_FADE_NEAR: f32 = 250.0;
+        const TREE_FADE_FAR: f32 = 350.0;
+
+        let Some(capture_dir) = trees_measure_capture_dir() else {
+            eprintln!("skipping tree season CB1 gate: no live_trees_measure capture");
+            return;
+        };
+        let bundle =
+            NativeD3d11TerrainBundle::load_trees(capture_dir.join(TREES_FRAME_BUNDLE_FILE))
+                .expect("live_trees_measure trees bundle");
+        let draws = &bundle.frame.draws;
+        assert_eq!(draws.len(), 8, "live_trees_measure trees_pass draw count");
+
+        // Camera height from the canonical scene CB0 (vCamPos.y at byte 212).
+        let cb0_binding = draws[0]
+            .constant_buffers
+            .iter()
+            .find(|cb| cb.stage == "VS" && cb.slot == 0)
+            .expect("VS CB0");
+        let cb0 = read_map_frame_buffer_bytes(&capture_dir, cb0_binding, "scene CB0")
+            .expect("scene CB0 bytes");
+        assert_eq!(cb0.len(), 416, "canonical scene CB0 size");
+        let cam_y = f32::from_le_bytes(cb0[212..216].try_into().unwrap());
+        let expected_fade =
+            ((TREE_FADE_FAR - cam_y) / (TREE_FADE_FAR - TREE_FADE_NEAR)).clamp(0.0, 1.0);
+
+        let mut season_lerp: Option<f32> = None;
+        let mut season_column: Option<f32> = None;
+        let mut checked = 0usize;
+        for draw in draws {
+            let cb1_binding = draw
+                .constant_buffers
+                .iter()
+                .find(|cb| cb.stage == "VS" && cb.slot == 1)
+                .expect("VS CB1");
+            let cb1 = read_map_frame_buffer_bytes(&capture_dir, cb1_binding, "tree season CB1")
+                .expect("tree season CB1 bytes");
+            assert_eq!(
+                cb1.len(),
+                80,
+                "tree ConstantBuffer(1) is 80 bytes (mat4 + 3 floats padded)"
+            );
+            // ShadowMapTextureMatrix = bytes 0..64, then the 3 scalars.
+            let v_season_lerp = f32::from_le_bytes(cb1[64..68].try_into().unwrap());
+            let v_season_column = f32::from_le_bytes(cb1[68..72].try_into().unwrap());
+            let v_tree_fade = f32::from_le_bytes(cb1[72..76].try_into().unwrap());
+
+            // vTreeFade is FILE-derivable from the camera height + fade window.
+            assert!(
+                (v_tree_fade - expected_fade).abs() < 1e-4,
+                "draw {}: captured vTreeFade {v_tree_fade} vs file law {expected_fade} \
+                 (cam_y {cam_y}, window [{TREE_FADE_NEAR},{TREE_FADE_FAR}])",
+                draw.draw_index
+            );
+
+            // Season scalars are one dated snapshot: identical across every draw.
+            match season_lerp {
+                None => season_lerp = Some(v_season_lerp),
+                Some(prev) => assert_eq!(
+                    prev.to_bits(),
+                    v_season_lerp.to_bits(),
+                    "vSeasonLerp must be constant across the trees pass"
+                ),
+            }
+            match season_column {
+                None => season_column = Some(v_season_column),
+                Some(prev) => assert_eq!(
+                    prev.to_bits(),
+                    v_season_column.to_bits(),
+                    "vSeasonColumn must be constant across the trees pass"
+                ),
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 8, "all 8 tree draws gated");
+        println!(
+            "gate_tree_season_cb1: 8/8 draws vTreeFade == file law {expected_fade:.6} \
+             (cam_y {cam_y}); vSeasonLerp {:?} vSeasonColumn {:?} (CAPTURE snapshot; \
+             date->season map UNKNOWN)",
+            season_lerp.unwrap(),
+            season_column.unwrap()
         );
     }
 
