@@ -16,6 +16,15 @@ pub struct Camera {
     pub zoom: f64,
     map_w: f64,
     map_h: f64,
+    /// Allowed vertical over-pan beyond the map's TOP (north, bmp y=0) edge,
+    /// in map pixels (== world units). Ground truth is the shipped
+    /// `CAMERA_OUTSIDE_MAP_DISTANCE_TOP` define (00_graphics.lua:1184),
+    /// wired from the resolver-read `Hoi4MapCameraDefines`; defaults to 0
+    /// (clamp exactly to the map edge) until the defines are applied.
+    overpan_top: f64,
+    /// `CAMERA_OUTSIDE_MAP_DISTANCE_BOTTOM` (00_graphics.lua:1185), same
+    /// convention for the BOTTOM (south) edge.
+    overpan_bottom: f64,
 }
 
 impl Camera {
@@ -29,9 +38,20 @@ impl Camera {
             zoom: 1.0,
             map_w,
             map_h,
+            overpan_top: 0.0,
+            overpan_bottom: 0.0,
         };
         camera.reset_fit(screen_w, screen_h);
         camera
+    }
+
+    /// Ground the off-map vertical pan clamp from the shipped camera defines
+    /// (`CAMERA_OUTSIDE_MAP_DISTANCE_TOP/BOTTOM`, 00_graphics.lua:1184-1185,
+    /// resolver-read). Replaces the former clamp-to-edge PROXY.
+    pub fn set_offmap_overpan(&mut self, top: f64, bottom: f64, screen_h: f64) {
+        self.overpan_top = top.max(0.0);
+        self.overpan_bottom = bottom.max(0.0);
+        self.normalize(screen_h);
     }
 
     /// Reset to whole-map fit for the given screen size.
@@ -98,16 +118,22 @@ impl Camera {
     }
 
     /// Wrap the horizontal center and clamp the vertical center so the
-    /// visible window stays on the map (or centers when zoomed out past
-    /// full map height).
+    /// visible window stays on the map plus the shipped off-map over-pan
+    /// margins (`CAMERA_OUTSIDE_MAP_DISTANCE_TOP/BOTTOM`; 0 until wired), or
+    /// centers when zoomed out past that full extent.
     pub fn normalize(&mut self, screen_h: f64) {
         self.center_x = self.center_x.rem_euclid(self.map_w);
         let visible_h = screen_h.max(1.0) / self.zoom;
-        if visible_h >= self.map_h {
-            self.center_y = self.map_h * 0.5;
+        // bmp-style y-down: the map TOP (north) edge is y = 0, so the top
+        // margin extends the range downward past 0 and the bottom margin
+        // past map_h.
+        let lo = -self.overpan_top;
+        let hi = self.map_h + self.overpan_bottom;
+        if visible_h >= hi - lo {
+            self.center_y = (lo + hi) * 0.5;
         } else {
             let half = visible_h * 0.5;
-            self.center_y = self.center_y.clamp(half, self.map_h - half);
+            self.center_y = self.center_y.clamp(lo + half, hi - half);
         }
     }
 }
@@ -203,5 +229,52 @@ mod tests {
         camera.center_y = 3.0;
         camera.normalize(SCREEN_H);
         assert_close(camera.center_y, 1024.0, "letterbox centers map");
+    }
+
+    #[test]
+    fn gate_offmap_overpan_clamp_matches_camera_defines() {
+        // Item-5 gate: with the shipped CAMERA_OUTSIDE_MAP_DISTANCE_TOP/BOTTOM
+        // = 200/200 (00_graphics.lua:1184-1185) applied, the camera may pan
+        // EXACTLY 200 map px beyond each vertical edge and no further.
+        let mut camera = Camera::fit(5632, 2048, SCREEN_W, SCREEN_H);
+        camera.zoom = 2.0; // visible height 360, half = 180
+        camera.set_offmap_overpan(200.0, 200.0, SCREEN_H);
+        // Top (north, y = 0): the window top edge may reach y = -200.
+        camera.center_y = -99999.0;
+        camera.normalize(SCREEN_H);
+        assert_close(camera.center_y, -200.0 + 180.0, "top over-pan clamp");
+        // Bottom (south, y = map_h): window bottom edge may reach 2048 + 200.
+        camera.center_y = 99999.0;
+        camera.normalize(SCREEN_H);
+        assert_close(
+            camera.center_y,
+            2048.0 + 200.0 - 180.0,
+            "bottom over-pan clamp",
+        );
+        // Interior positions are untouched.
+        camera.center_y = 700.0;
+        camera.normalize(SCREEN_H);
+        assert_close(camera.center_y, 700.0, "interior pan untouched");
+        // Zero margins reproduce the old clamp exactly (default behavior).
+        camera.set_offmap_overpan(0.0, 0.0, SCREEN_H);
+        camera.center_y = -99999.0;
+        camera.normalize(SCREEN_H);
+        assert_close(camera.center_y, 180.0, "zero-margin top clamp unchanged");
+    }
+
+    #[test]
+    fn gate_offmap_overpan_letterbox_centers_full_extent() {
+        // When the view covers the map PLUS both margins, the letterbox
+        // centers the extended extent [-top, map_h + bottom].
+        let mut camera = Camera::fit(5632, 2048, SCREEN_W, SCREEN_H);
+        camera.set_offmap_overpan(200.0, 200.0, SCREEN_H);
+        camera.zoom = 0.05; // visible height 14400 >> 2048 + 400
+        camera.center_y = 3.0;
+        camera.normalize(SCREEN_H);
+        assert_close(
+            camera.center_y,
+            (-200.0 + 2048.0 + 200.0) * 0.5,
+            "letterbox centers map+margins (== map center for equal margins)",
+        );
     }
 }

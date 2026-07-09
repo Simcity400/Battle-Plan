@@ -4638,6 +4638,298 @@ mod tests {
         );
     }
 
+    // ---- NIGHT2 (2026-07-09): gates for the ported night path (FIDELITY
+    // LEDGER 2.13). The mechanism is the shipped-HLSL port above
+    // (`calc_globe_normal` fxh:347, `day_night_factor` fxh:358/361,
+    // `nightify_color` fxh:370, `day_night_with_blend` fxh:393). Product
+    // validation stays capture-gated (no FoW.w != 0 frame exists); these are
+    // the synthetic unit gates + the captured-day-state byte-noop proof.
+
+    #[test]
+    fn gate_fow_gate_zero_makes_ported_night_path_a_byte_noop() {
+        // Every captured scene CB0 carries
+        // vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed.w == 0, and
+        // DayNightFactor multiplies by that gate (standardfuncsgfx.fxh:361).
+        // So on the captured day state the ported night path must change
+        // NOTHING: factor == +0.0 exactly and day_night_with_blend returns the
+        // input color bit-for-bit (lerp_f32(a, b, 0) = a + (b-a)*0 = a).
+        let mut scene = test_scene_cb0_with_camera_and_fade(800.0, 0.0);
+        scene.v_fow_opacity_fow_time_snow_mud_fade_max_game_speed[3] = 0.0;
+        let constants = test_map_frame_shader_constants();
+        let colors = [
+            Vec3 {
+                x: 0.6,
+                y: 0.4,
+                z: 0.2,
+            },
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            Vec3 {
+                x: 0.031_25,
+                y: 12.5,
+                z: 0.007_812_5,
+            },
+        ];
+        let positions = [
+            Vec3 {
+                x: 0.5,
+                y: 1.0,
+                z: 0.5,
+            },
+            Vec3 {
+                x: 31.0,
+                y: 2.0,
+                z: 63.0,
+            },
+            Vec3 {
+                x: 63.5,
+                y: 0.0,
+                z: 0.5,
+            },
+        ];
+        for hour_phase in [0.0f32, 1.0 / 24.0, 0.25, 16.0 / 24.0, 0.99] {
+            scene.day_night_hour_sun_dir[0] = hour_phase;
+            for pos in positions {
+                let globe = calc_globe_normal(scene, constants, pos);
+                let factor = day_night_factor(scene, globe, FEATHER_MIN, FEATHER_MAX);
+                assert_eq!(
+                    factor.to_bits(),
+                    0.0f32.to_bits(),
+                    "FoW.w == 0 must gate the day/night factor to +0.0 exactly \
+                     (hour phase {hour_phase}, pos {pos:?})"
+                );
+                for color in colors {
+                    for blend in [0.0f32, 0.2, 1.0] {
+                        let out = day_night_with_blend(scene, color, globe, blend);
+                        for (lane, (o, c)) in [(out.x, color.x), (out.y, color.y), (out.z, color.z)]
+                            .into_iter()
+                            .enumerate()
+                        {
+                            assert_eq!(
+                                o.to_bits(),
+                                c.to_bits(),
+                                "night path must be a byte-noop at FoW.w == 0 \
+                                 (lane {lane}, hour {hour_phase}, blend {blend})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gate_ambient_light_day_state_is_pure_day_rig() {
+        // AmbientLight (fxh:456-470) at day (day_factor == 0) must return the
+        // pure DAY rig contribution bit-exactly: lerp(day, boosted-night, 0)
+        // == day. With neg_fog_multiplier == 0 the normal adjustment (fxh:459)
+        // is also an exact identity lerp, so the whole result is the
+        // hand-computable sum of squared components times the day faces.
+        let day = [
+            DAY_AMBIENT_MAP_POS_X,
+            DAY_AMBIENT_MAP_NEG_X,
+            DAY_AMBIENT_MAP_POS_Y,
+            DAY_AMBIENT_MAP_NEG_Y,
+            DAY_AMBIENT_MAP_POS_Z,
+            DAY_AMBIENT_MAP_NEG_Z,
+        ];
+        let normals = [
+            Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: 0.0,
+                y: -1.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: 0.36,
+                y: 0.48,
+                z: -0.8,
+            },
+        ];
+        for normal in normals {
+            let out = ambient_light(normal, 0.0, 0.0);
+            let sq = mul_vec3(normal, normal);
+            let pick = |neg: bool, base: usize| day[base + neg as usize];
+            let expected = add_vec3(
+                add_vec3(
+                    scale_vec3(pick(normal.x < 0.0, 0), sq.x),
+                    scale_vec3(pick(normal.y < 0.0, 2), sq.y),
+                ),
+                scale_vec3(pick(normal.z < 0.0, 4), sq.z),
+            );
+            for (lane, (o, e)) in [
+                (out.x, expected.x),
+                (out.y, expected.y),
+                (out.z, expected.z),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert_eq!(
+                    o.to_bits(),
+                    e.to_bits(),
+                    "day-state ambient must be the pure day rig (normal {normal:?}, lane {lane})"
+                );
+            }
+        }
+        // And at full night (day_factor == 1) the boosted night faces drive it:
+        // normal (0,-1,0) selects NightAmbientMapNegY = (0, 0, 0.1) * 3.0.
+        let night_out = ambient_light(
+            Vec3 {
+                x: 0.0,
+                y: -1.0,
+                z: 0.0,
+            },
+            1.0,
+            0.0,
+        );
+        assert!((night_out.z - 0.1 * NIGHT_AMBIENT_BOOST).abs() < 1e-6);
+        assert!(night_out.x.abs() < 1e-6 && night_out.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn gate_day_night_factor_feather_ramp_endpoints_and_gate_scale() {
+        // DayNightFactor = saturate((dot - vMin)/(vMax - vMin)) * FoW.w
+        // (fxh:358-361) with FEATHER_MIN/MAX = -0.01/+0.01 (fxh:324-325).
+        let mut scene = test_scene_cb0_with_camera_and_fade(800.0, 0.0);
+        scene.day_night_hour_sun_dir = [0.0, 0.0, 0.0, 1.0]; // sun dir = +z
+        scene.v_fow_opacity_fow_time_snow_mud_fade_max_game_speed[3] = 1.0;
+        let globe = |d: f32| Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: d,
+        };
+        let f = |scene, d| day_night_factor(scene, globe(d), FEATHER_MIN, FEATHER_MAX);
+        assert_eq!(f(scene, FEATHER_MIN), 0.0, "ramp floor at dot == vMin");
+        assert_eq!(f(scene, FEATHER_MAX), 1.0, "ramp ceiling at dot == vMax");
+        assert!((f(scene, 0.0) - 0.5).abs() < 1e-6, "ramp midpoint");
+        assert_eq!(f(scene, -1.0), 0.0, "fully day side saturates to 0");
+        assert_eq!(f(scene, 1.0), 1.0, "fully night side saturates to 1");
+        // The gate scales the whole factor (fxh:361).
+        scene.v_fow_opacity_fow_time_snow_mud_fade_max_game_speed[3] = 0.5;
+        assert_eq!(f(scene, 1.0), 0.5, "FoW.w scales the factor");
+        // The moon window constants are a same-width feather (fxh:326-327).
+        assert_eq!(MOON_FEATHER_MIN, FEATHER_MIN);
+        assert_eq!(MOON_FEATHER_MAX, FEATHER_MAX);
+    }
+
+    #[test]
+    fn gate_nightify_and_blend_match_hand_computed_shader_reference() {
+        // Hand-computed from the shipped HLSL (fxh:370-394) for
+        // day = (0.6, 0.4, 0.2), blend = 1: Grey = 0.37 (fxh:375), night =
+        // saturate(lerp(0.37, 0.37*(0.2,0.7,1.2), 0.25)) = (0.296, 0.34225,
+        // 0.3885) (fxh:376), desaturation = 0.8 (fxh:373), color * 0.5
+        // (NIGHT_DARKNESS, fxh:380) = (0.1784, 0.1769, 0.1754).
+        let day = Vec3 {
+            x: 0.6,
+            y: 0.4,
+            z: 0.2,
+        };
+        let n = nightify_color(day, 1.0);
+        assert!((n.x - 0.1784).abs() < 2e-6, "nightify r {}", n.x);
+        assert!((n.y - 0.1769).abs() < 2e-6, "nightify g {}", n.y);
+        assert!((n.z - 0.1754).abs() < 2e-6, "nightify b {}", n.z);
+        // blend = 0: no desaturation, but NIGHT_DARKNESS still halves (the
+        // night look is never a plain passthrough: fxh:380 multiplies last).
+        let n0 = nightify_color(day, 0.0);
+        assert_eq!(n0.x.to_bits(), (day.x * NIGHT_DARKNESS).to_bits());
+        assert_eq!(n0.y.to_bits(), (day.y * NIGHT_DARKNESS).to_bits());
+        assert_eq!(n0.z.to_bits(), (day.z * NIGHT_DARKNESS).to_bits());
+        // Full-gate full-night blend caps at NIGHT_OPACITY = 0.85 (fxh:393):
+        // out = lerp(day, nightified, 1.0 * 0.85); hand-computed
+        // = (0.24164, 0.210365, 0.17909).
+        let mut scene = test_scene_cb0_with_camera_and_fade(800.0, 0.0);
+        scene.day_night_hour_sun_dir = [0.0, 0.0, 0.0, 1.0];
+        scene.v_fow_opacity_fow_time_snow_mud_fade_max_game_speed[3] = 1.0;
+        let night_globe = Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        let out = day_night_with_blend(scene, day, night_globe, 1.0);
+        assert!((out.x - 0.24164).abs() < 2e-6, "blend r {}", out.x);
+        assert!((out.y - 0.210365).abs() < 2e-6, "blend g {}", out.y);
+        assert!((out.z - 0.17909).abs() < 2e-6, "blend b {}", out.z);
+    }
+
+    #[test]
+    fn gate_calc_globe_normal_geometry() {
+        // CalcGlobeNormal (fxh:347-356) on the real 5632x2048 map constants.
+        let constants = MapFrameTerrainShaderConstants {
+            map_size_x: 5632.0,
+            map_size_y: 2048.0,
+            map_pow2_x: 1.0,
+            map_pow2_y: 1.0,
+            fow_pow2_x: 1.0,
+            fow_pow2_y: 1.0,
+        };
+        let mut scene = test_scene_cb0_with_camera_and_fade(800.0, 0.0);
+        scene.day_night_hour_sun_dir[0] = 0.0;
+        let at = |scene, x: f32, z: f32| calc_globe_normal(scene, constants, Vec3 { x, y: 0.0, z });
+        // Greenwich (world x == GMT_OFFSET == 2793) at the map's mid-latitude,
+        // phase 0: longitude angle 0 -> normal (0, y, +z). Hand-computed:
+        // y_param = 0.17 + 0.76*0.5 = 0.55, y = -cos(0.55*3.1415) = 0.15607,
+        // normalized -> (0, 0.18227, 0.98325).
+        let greenwich = at(scene, GMT_OFFSET, 1024.0);
+        assert!(greenwich.x.abs() < 1e-6, "greenwich x {}", greenwich.x);
+        assert!(
+            (greenwich.y - 0.182268).abs() < 1e-5,
+            "greenwich y {}",
+            greenwich.y
+        );
+        assert!(
+            (greenwich.z - 0.983249).abs() < 1e-5,
+            "greenwich z {}",
+            greenwich.z
+        );
+        // Unit length everywhere sampled.
+        for (x, z) in [(0.0, 0.0), (2816.0, 1024.0), (5000.0, 2000.0)] {
+            let g = at(scene, x, z);
+            assert!((length_vec3(g) - 1.0).abs() < 1e-5, "unit at ({x},{z})");
+        }
+        // Half a map east = the antipodal longitude: x and z negate.
+        let antipode = at(scene, GMT_OFFSET + 2816.0, 1024.0);
+        assert!((antipode.z + greenwich.z).abs() < 1e-5, "antipodal z");
+        // The shader's truncated turn constant (6.2831, fxh:354) makes
+        // sin(half-turn) ~ 4.6e-5 rather than 0 -- port faithfully reproduces it.
+        assert!(
+            antipode.x.abs() < 1e-4,
+            "antipodal x {} (sin(6.2831/2) scale)",
+            antipode.x
+        );
+        // The hour phase rotates the terminator: phase 0.5 == +half-map shift.
+        scene.day_night_hour_sun_dir[0] = 0.5;
+        let phased = at(scene, GMT_OFFSET, 1024.0);
+        assert!(
+            (phased.z - antipode.z).abs() < 1e-5,
+            "phase == longitude shift"
+        );
+        // South pole offset: the missing-globe clamp keeps y strictly inside
+        // (-1, 1) at the map edges (SOUTH/NORTH_POLE_OFFSET, fxh:330-331).
+        scene.day_night_hour_sun_dir[0] = 0.0;
+        let south = at(scene, GMT_OFFSET, 0.0);
+        let north = at(scene, GMT_OFFSET, 2047.0);
+        assert!(south.y < 0.0 && south.y > -1.0, "south y {}", south.y);
+        assert!(north.y > 0.0 && north.y < 1.0, "north y {}", north.y);
+    }
+
     #[test]
     fn shader_source_vector3_constant_gate_fails_closed_on_fow_color_drift() {
         let root = temp_test_dir("shader_source_vector3_constant_gate");

@@ -1383,6 +1383,50 @@ impl MapRenderer {
         Some(self.captured.stats())
     }
 
+    /// The resolver/bundle-read the game camera defines (00_graphics.lua) this
+    /// renderer's production camera obeys.
+    pub fn camera_defines(&self) -> Hoi4MapCameraDefines {
+        self.captured.camera_defines
+    }
+
+    /// Engine-defines wheel zoom: map the app camera's screen zoom to the
+    /// production camera height (the same `height_for_screen_zoom` law the
+    /// renderer itself applies), step it by `notches` wheel steps of
+    /// `CAMERA_ZOOM_SPEED` scaled toward `CAMERA_ZOOM_SPEED_DISTANCE_MULT`
+    /// with height (00_graphics.lua:1187-1189), clamp to
+    /// `CAMERA_MIN/MAX_HEIGHT` (:1495-1496), and return the multiplicative
+    /// screen-zoom factor that realizes the new height. Replaces the old
+    /// fixed 1.2^notches interaction proxy with the shipped defines.
+    pub fn wheel_zoom_screen_factor(&self, zoom: f64, screen_w: u32, notches: f64) -> Result<f64> {
+        let projection = self.captured.camera_projection;
+        let defines = self.captured.camera_defines;
+        let screen_w = screen_w.max(1) as f32;
+        let height = projection.height_for_screen_zoom(
+            zoom as f32,
+            screen_w,
+            defines.min_height(),
+            defines.max_height(),
+        )?;
+        let stepped = defines.wheel_zoom_stepped_height(height, notches as f32);
+        let new_zoom = projection.screen_zoom_for_height(stepped, screen_w)?;
+        if !(new_zoom.is_finite() && new_zoom > 0.0) {
+            return Err(format!(
+                "wheel zoom produced an invalid screen zoom {new_zoom} at height {stepped}"
+            )
+            .into());
+        }
+        let factor = f64::from(new_zoom) / zoom.max(f64::MIN_POSITIVE);
+        // Direction guard: when the app camera sits OUTSIDE the engine zoom
+        // range (e.g. the whole-map fit view is farther out than
+        // CAMERA_MAX_HEIGHT allows), a further zoom-out must be a no-op, not a
+        // snap back into range; symmetric for zoom-in at CAMERA_MIN_HEIGHT.
+        Ok(if notches >= 0.0 {
+            factor.max(1.0)
+        } else {
+            factor.min(1.0)
+        })
+    }
+
     /// COLOR-lane debug readback (`--dump-hdr`): see
     /// [`CapturedPassLayer::dump_hdr_mainscene`]. Fails closed when no
     /// captured pass is active (there is no HDR MainScene without one).

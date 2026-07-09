@@ -19,7 +19,6 @@ use crate::{Result, TimelineMode};
 
 // Interaction tuning constants (not visual claims).
 const KEY_PAN_SCREEN_PX_PER_SEC: f64 = 900.0;
-const WHEEL_ZOOM_STEP: f64 = 1.2;
 /// Autoplay speed: ~4 timeline hours per wall-clock second.
 const AUTOPLAY_SECONDS_PER_HOUR: f64 = 0.25;
 const MAX_FRAME_DT: f64 = 0.25;
@@ -85,6 +84,17 @@ pub fn run(
         f64::from(gfx.width),
         f64::from(gfx.height),
     );
+    // Ground the off-map pan clamp from the shipped camera defines
+    // (CAMERA_OUTSIDE_MAP_DISTANCE_TOP/BOTTOM, 00_graphics.lua:1184-1185,
+    // resolver/bundle-read), replacing the old clamp-to-edge proxy.
+    {
+        let defines = renderer.camera_defines();
+        camera.set_offmap_overpan(
+            f64::from(defines.outside_map_distance_top()),
+            f64::from(defines.outside_map_distance_bottom()),
+            f64::from(gfx.height),
+        );
+    }
 
     let mut hour_index = 0usize;
     let mut uploaded_hour_index: Option<usize> = None;
@@ -198,7 +208,12 @@ pub fn run(
                 }
                 WindowEvent::Wheel { delta, x, y } => {
                     let notches = f64::from(delta) / 120.0;
-                    let factor = WHEEL_ZOOM_STEP.powf(notches);
+                    // Engine-defines wheel zoom (CAMERA_ZOOM_SPEED /
+                    // _DISTANCE_MULT / CAMERA_MIN/MAX_HEIGHT via the
+                    // renderer's height ladder), replacing the fixed
+                    // 1.2^notches interaction proxy.
+                    let factor =
+                        renderer.wheel_zoom_screen_factor(camera.zoom, gfx.width, notches)?;
                     camera.zoom_at(
                         f64::from(x) + 0.5,
                         f64::from(y) + 0.5,

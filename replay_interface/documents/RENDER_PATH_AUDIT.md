@@ -46,6 +46,32 @@ Because the values were already file-correct, finding 2 was a *provenance-hygien
 fix, not a fidelity bug. It is closed so the mod-compat mandate's "every render
 constant is citation-traceable" is literally satisfied.
 
+**CONST-SWEEP re-verification (2026-07-09, per-constant pass over
+`constants.rs:5-143`):** every citation opened against the shipped files and
+value-checked. Result: **all values file-correct; three citations corrected,
+zero uncited constants remain**:
+1. `MUD_NOISE_TILING = 0.01` was cited to `constants.fxh:61-63`, which does NOT
+   contain it — the true source is the inline literal
+   `tex2D( SnowNoise, vPos.xz * 0.01f )` in `GetMudColor`,
+   `standardfuncsgfx.fxh:241`. Citation corrected in place.
+2. `MOON_FEATHER_MIN/MAX` carried a lineless "moon-light cross-fade constants"
+   note — pinned to `standardfuncsgfx.fxh:326-327`.
+3. `FOG_BEGIN/END/MAX` sat under the `fow.fxh:20-21` comment (which covers only
+   `BRIGHT/DARK_FOW_COLOR`) — given their own `constants.fxh:153-155` citation.
+Additionally `SOUTH/NORTH_POLE_OFFSET` gained the shader mirror lines
+(`standardfuncsgfx.fxh:330-331`). Spot-verified against the shipped files this
+pass: `TERRAIN_*` (constants.fxh:53-56), `COLORMAP_*` (:93-94),
+`CITY_LIGHTS_*` (:49-50), `MUD_*` (:61-63/:69-70), `SNOW_*` (:65-68/:75-78/
+:80-85), `DAY/NIGHT_AMBIENT_MAP_*` (:17-29), `FOG_COLOR` (:152), `GB_*`
+(:195-209), `SEC_MAP_TILE` (:216), `BORDER_*_FACTOR` (:204-206),
+`SHADOW_WEIGHT_TERRAIN` (:170), FOW colors (fow.fxh:20-21), `SEC_CAM_MIN/MAX
+300/1200` (`cam_distance(300.0, 1200.0)` inside `CalculateOccupationMask`,
+standardfuncsgfx.fxh:964-976 — also runtime-gated by
+`validate_occupation_mask_shader_source`), `LIGHT_INDEX/DATA_TEXTURE_SIZE
+64/128` (tiled_pointlights.fxh:11-12), `GMT_OFFSET`/`FEATHER_*`/`NIGHT_*`
+(above). The remainder of the file (`:184+`) is DXGI/D3D11 SDK enums and
+bundle schema strings — excluded by scope as before.
+
 ---
 
 ## (i) Hard-coded vanilla paths bypassing the resolver

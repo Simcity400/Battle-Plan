@@ -11,8 +11,163 @@ use std::path::{Path, PathBuf};
 // The captured class-3 run ramps from width 0.0 to about 1.1 world units over
 // the first 11 stations, then holds near 1.1.
 pub(crate) const RIVER_VERTEX_STRIDE_BYTES: u32 = 32;
-const RIVER_SOURCE_FADE_STEPS: f32 = 17.0;
+// Capture-fitted (PAN2 class-3 run): stations to reach full width. NOT a
+// shipped define; tracked FIT (FIDELITY_LEDGER 2.10).
 const RIVER_SOURCE_WIDTH_RAMP_STEPS: f32 = 11.0;
+
+/// `rivers.bmp` palette-split defines, shipped in
+/// `common/defines/00_defines.lua:936-938` (comment "color indices for
+/// rivers"): `RIVER_SMALL_START_INDEX = 0`, `RIVER_SMALL_STOP_INDEX = 6`,
+/// `RIVER_LARGE_STOP_INDEX = 11` — palette indices `0..=6` are SMALL rivers,
+/// `7..=11` are LARGE rivers, and anything above `11` is not a river pixel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RiverPaletteDefines {
+    /// `RIVER_SMALL_START_INDEX` (00_defines.lua:936).
+    pub small_start_index: u8,
+    /// `RIVER_SMALL_STOP_INDEX` (00_defines.lua:937).
+    pub small_stop_index: u8,
+    /// `RIVER_LARGE_STOP_INDEX` (00_defines.lua:938).
+    pub large_stop_index: u8,
+}
+
+pub const RIVER_PALETTE_DEFINES_SOURCE: &str = "common/defines/00_defines.lua";
+pub const RIVER_FADE_DEFINES_SOURCE: &str = "common/defines/00_graphics.lua";
+
+impl RiverPaletteDefines {
+    /// Read the palette split through the mod-aware resolver.
+    pub fn from_resolver(resolver: &GameFileResolver) -> Result<Self> {
+        let path =
+            resolver.resolve_required(RIVER_PALETTE_DEFINES_SOURCE, "river palette defines")?;
+        let text =
+            fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+        Self::from_defines_source(&text)
+    }
+
+    /// Parse the three `RIVER_*_INDEX` defines from `00_defines.lua` text.
+    pub fn from_defines_source(source: &str) -> Result<Self> {
+        let small_start_index = parse_lua_u8_define(source, "RIVER_SMALL_START_INDEX")?;
+        let small_stop_index = parse_lua_u8_define(source, "RIVER_SMALL_STOP_INDEX")?;
+        let large_stop_index = parse_lua_u8_define(source, "RIVER_LARGE_STOP_INDEX")?;
+        let defines = Self {
+            small_start_index,
+            small_stop_index,
+            large_stop_index,
+        };
+        defines.validate()?;
+        Ok(defines)
+    }
+
+    fn validate(self) -> Result<()> {
+        if self.small_start_index > self.small_stop_index
+            || self.small_stop_index >= self.large_stop_index
+        {
+            return Err(format!(
+                "river palette defines are inconsistent: small {}..={} / large ..={}",
+                self.small_start_index, self.small_stop_index, self.large_stop_index
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Whether a `rivers.bmp` palette index is a river pixel at all.
+    pub fn is_river_pixel(self, value: u8) -> bool {
+        (self.small_start_index..=self.large_stop_index).contains(&value)
+    }
+
+    /// SMALL river: `RIVER_SMALL_START_INDEX ..= RIVER_SMALL_STOP_INDEX`.
+    pub fn is_small_river(self, value: u8) -> bool {
+        (self.small_start_index..=self.small_stop_index).contains(&value)
+    }
+
+    /// LARGE river: `RIVER_SMALL_STOP_INDEX+1 ..= RIVER_LARGE_STOP_INDEX`.
+    pub fn is_large_river(self, value: u8) -> bool {
+        value > self.small_stop_index && value <= self.large_stop_index
+    }
+}
+
+/// River ending fade window, shipped in `common/defines/00_graphics.lua:993-994`
+/// (`RIVER_FADE_FROM = 20.0` "the last river endings got faded out, X distance
+/// from the ending...", `RIVER_FADE_TO = 3.0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RiverFadeDefines {
+    /// `RIVER_FADE_FROM` (00_graphics.lua:993).
+    pub fade_from: f32,
+    /// `RIVER_FADE_TO` (00_graphics.lua:994).
+    pub fade_to: f32,
+}
+
+impl RiverFadeDefines {
+    /// Read the fade window through the mod-aware resolver.
+    pub fn from_resolver(resolver: &GameFileResolver) -> Result<Self> {
+        let path = resolver.resolve_required(RIVER_FADE_DEFINES_SOURCE, "river fade defines")?;
+        let text =
+            fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+        Self::from_graphics_source(&text)
+    }
+
+    /// Parse `RIVER_FADE_FROM`/`RIVER_FADE_TO` from `00_graphics.lua` text.
+    pub fn from_graphics_source(source: &str) -> Result<Self> {
+        let fade_from = parse_lua_f32_define(source, "RIVER_FADE_FROM")?;
+        let fade_to = parse_lua_f32_define(source, "RIVER_FADE_TO")?;
+        if !(fade_from.is_finite() && fade_to.is_finite() && fade_from > fade_to && fade_to >= 0.0)
+        {
+            return Err(format!(
+                "river fade defines are inconsistent: RIVER_FADE_FROM {fade_from} / RIVER_FADE_TO {fade_to}"
+            )
+            .into());
+        }
+        Ok(Self { fade_from, fade_to })
+    }
+
+    /// The fade span in stations (map units along the centerline):
+    /// `RIVER_FADE_FROM − RIVER_FADE_TO` = 17.0 for vanilla — exactly the
+    /// value the old capture-fitted `RIVER_SOURCE_FADE_STEPS = 17.0` carried
+    /// (decoded from the PAN2 class-3 run), so replacing the uncited literal
+    /// with this defines-derived span is byte-identical for vanilla. The
+    /// identification "source-fade ramp length == FADE_FROM − FADE_TO" is a
+    /// documented reading grounded by that numeric match; the engine's exact
+    /// per-strip fade smoothing remains UNTRACED (see river_world_synthesis).
+    pub fn fade_span_stations(self) -> f32 {
+        self.fade_from - self.fade_to
+    }
+}
+
+fn parse_lua_f32_define(source: &str, key: &str) -> Result<f32> {
+    let mut parsed = None;
+    for line in source.lines() {
+        let code = line.split("--").next().unwrap_or(line).trim();
+        let Some(rest) = code.strip_prefix(key) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        let token = rest[1..]
+            .trim_start()
+            .trim_end_matches(',')
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| format!("{key} has no numeric value"))?
+            .trim_end_matches(',');
+        let value = token
+            .parse::<f32>()
+            .map_err(|err| format!("{key} value {token:?} is not a number: {err}"))?;
+        if parsed.replace(value).is_some() {
+            return Err(format!("{key} is defined more than once").into());
+        }
+    }
+    parsed.ok_or_else(|| format!("defines source is missing {key}").into())
+}
+
+fn parse_lua_u8_define(source: &str, key: &str) -> Result<u8> {
+    let value = parse_lua_f32_define(source, key)?;
+    if value < 0.0 || value > u8::MAX as f32 || value.fract() != 0.0 {
+        return Err(format!("{key} value {value} is not a u8 palette index").into());
+    }
+    Ok(value as u8)
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RiverMeshSynthesisStats {
@@ -122,15 +277,28 @@ impl MapLayerSynthesisInputs {
 }
 
 #[allow(dead_code)]
-pub fn synthesize_river_mesh_from_bundle_dir(bundle_dir: &Path) -> Result<RiverMeshSynthesis> {
+/// Synthesize from a bundle dir, reading the river palette/fade defines
+/// through the recording's mod-aware resolver (MOD_COMPATIBILITY.md).
+pub fn synthesize_river_mesh_from_bundle_dir(
+    bundle_dir: &Path,
+    resolver: &GameFileResolver,
+) -> Result<RiverMeshSynthesis> {
     let inputs = MapLayerSynthesisInputs::from_bundle_dir(bundle_dir)?;
-    synthesize_river_mesh(&inputs)
+    synthesize_river_mesh(
+        &inputs,
+        RiverPaletteDefines::from_resolver(resolver)?,
+        RiverFadeDefines::from_resolver(resolver)?,
+    )
 }
 
-pub fn synthesize_river_mesh(inputs: &MapLayerSynthesisInputs) -> Result<RiverMeshSynthesis> {
+pub fn synthesize_river_mesh(
+    inputs: &MapLayerSynthesisInputs,
+    palette: RiverPaletteDefines,
+    fade: RiverFadeDefines,
+) -> Result<RiverMeshSynthesis> {
     let rivers = inputs.load_rivers()?;
     let heightmap = inputs.load_heightmap()?;
-    synthesize_river_mesh_from_images(&rivers, &heightmap)
+    synthesize_river_mesh_from_images(&rivers, &heightmap, palette, fade)
 }
 
 pub(crate) fn synthesize_river_world_indices(
@@ -207,6 +375,8 @@ pub(crate) fn synthesize_river_world_indices(
 pub(crate) fn synthesize_river_mesh_from_images(
     rivers: &IndexImage,
     heightmap: &IndexImage,
+    palette: RiverPaletteDefines,
+    fade: RiverFadeDefines,
 ) -> Result<RiverMeshSynthesis> {
     if rivers.width != heightmap.width || rivers.height != heightmap.height {
         return Err(format!(
@@ -218,17 +388,24 @@ pub(crate) fn synthesize_river_mesh_from_images(
     let mut class_counts = BTreeMap::new();
     let mut river_pixel_count = 0usize;
     for value in &rivers.pixels {
-        if is_river_pixel(*value) {
+        if palette.is_river_pixel(*value) {
             *class_counts.entry(*value).or_insert(0) += 1;
             river_pixel_count += 1;
         }
     }
 
-    let polylines = trace_river_polylines(rivers);
+    let polylines = trace_river_polylines(rivers, palette);
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for polyline in &polylines {
-        append_river_polyline_mesh(polyline, rivers, heightmap, &mut vertices, &mut indices)?;
+        append_river_polyline_mesh(
+            polyline,
+            rivers,
+            heightmap,
+            fade,
+            &mut vertices,
+            &mut indices,
+        )?;
     }
 
     let stats = RiverMeshSynthesisStats {
@@ -374,6 +551,7 @@ fn append_river_polyline_mesh(
     polyline: &[usize],
     rivers: &IndexImage,
     heightmap: &IndexImage,
+    fade: RiverFadeDefines,
     vertices: &mut Vec<u8>,
     indices: &mut Vec<u32>,
 ) -> Result<()> {
@@ -401,7 +579,10 @@ fn append_river_polyline_mesh(
             .unwrap_or(1.1);
         let width_ramp = (station / RIVER_SOURCE_WIDTH_RAMP_STEPS).clamp(0.0, 1.0);
         let width = base_width * width_ramp;
-        let alpha = (station / RIVER_SOURCE_FADE_STEPS).clamp(0.0, 1.0);
+        // Source-ending fade over RIVER_FADE_FROM - RIVER_FADE_TO stations
+        // (00_graphics.lua:993-994; vanilla span 17.0 == the old PAN2-fitted
+        // RIVER_SOURCE_FADE_STEPS literal, so vanilla output is byte-identical).
+        let alpha = (station / fade.fade_span_stations()).clamp(0.0, 1.0);
         let half = width * 0.5;
         let left_x = center_x - nx * half;
         let left_z = center_z - nz * half;
@@ -456,12 +637,12 @@ fn push_river_vertex(
     }
 }
 
-fn trace_river_polylines(rivers: &IndexImage) -> Vec<Vec<usize>> {
+fn trace_river_polylines(rivers: &IndexImage, palette: RiverPaletteDefines) -> Vec<Vec<usize>> {
     let river_pixels = rivers
         .pixels
         .iter()
         .enumerate()
-        .filter_map(|(index, value)| is_river_pixel(*value).then_some(index))
+        .filter_map(|(index, value)| palette.is_river_pixel(*value).then_some(index))
         .collect::<Vec<_>>();
     let river_set = river_pixels.iter().copied().collect::<HashSet<_>>();
     let mut visited_edges = HashSet::new();
@@ -636,10 +817,6 @@ fn world_z_to_bmp_y(z: f32, height: usize) -> usize {
     ((height - 1) as f32 - z.round()).clamp(0.0, (height - 1) as f32) as usize
 }
 
-fn is_river_pixel(value: u8) -> bool {
-    value <= 11
-}
-
 fn normalized_edge(a: usize, b: usize) -> (usize, usize) {
     if a <= b {
         (a, b)
@@ -769,7 +946,13 @@ mod tests {
             height: 4,
             pixels: vec![100; 16],
         };
-        let mesh = synthesize_river_mesh_from_images(&rivers, &heightmap).expect("mesh");
+        let mesh = synthesize_river_mesh_from_images(
+            &rivers,
+            &heightmap,
+            vanilla_river_palette_defines(),
+            vanilla_river_fade_defines(),
+        )
+        .expect("mesh");
         assert_eq!(mesh.stats.vertex_stride_bytes, 32);
         assert_eq!(mesh.stats.index_format, DXGI_FORMAT_R32_UINT);
         assert!(mesh.stats.vertex_count >= 6);
@@ -780,5 +963,116 @@ mod tests {
         assert!(x.is_finite());
         assert_eq!(y, 10.0);
         assert!(z.is_finite());
+    }
+
+    /// The vanilla palette values, parsed from the VERBATIM shipped define
+    /// lines (00_defines.lua:936-938) rather than typed as bare numbers.
+    fn vanilla_river_palette_defines() -> RiverPaletteDefines {
+        RiverPaletteDefines::from_defines_source(
+            r#"
+	RIVER_SMALL_START_INDEX = 0,                   -- color indices for rivers
+	RIVER_SMALL_STOP_INDEX = 6,
+	RIVER_LARGE_STOP_INDEX = 11,
+"#,
+        )
+        .expect("vanilla river palette defines")
+    }
+
+    /// Vanilla fade window, from the verbatim 00_graphics.lua:993-994 lines.
+    fn vanilla_river_fade_defines() -> RiverFadeDefines {
+        RiverFadeDefines::from_graphics_source(
+            r#"
+	RIVER_FADE_FROM = 20.0, -- the last river endings got faded out, X distance from the ending...
+	RIVER_FADE_TO = 3.0,
+"#,
+        )
+        .expect("vanilla river fade defines")
+    }
+
+    #[test]
+    fn gate_river_palette_defines_boundaries() {
+        // Item gate: the small/large/river-at-all boundaries land exactly on
+        // the shipped indices 0 / 6 / 11 (00_defines.lua:936-938).
+        let palette = vanilla_river_palette_defines();
+        assert_eq!(
+            (
+                palette.small_start_index,
+                palette.small_stop_index,
+                palette.large_stop_index
+            ),
+            (0, 6, 11)
+        );
+        // River-at-all boundary: 0..=11 in, 12 out.
+        assert!(palette.is_river_pixel(0), "index 0 is a river pixel");
+        assert!(
+            palette.is_river_pixel(11),
+            "index 11 is the last river pixel"
+        );
+        assert!(!palette.is_river_pixel(12), "index 12 is not a river pixel");
+        assert!(!palette.is_river_pixel(255), "sea/land fill is not a river");
+        // Small/large split boundary: 6 small, 7 large.
+        assert!(palette.is_small_river(0) && palette.is_small_river(6));
+        assert!(!palette.is_small_river(7));
+        assert!(palette.is_large_river(7) && palette.is_large_river(11));
+        assert!(!palette.is_large_river(6) && !palette.is_large_river(12));
+        // Every index is exactly one of small/large/not-river.
+        for value in 0u8..=20 {
+            let states = [palette.is_small_river(value), palette.is_large_river(value)];
+            assert_eq!(
+                states.iter().filter(|s| **s).count() == 1,
+                palette.is_river_pixel(value),
+                "index {value} must be exactly one class iff it is a river pixel"
+            );
+        }
+        // Malformed orderings fail closed.
+        assert!(RiverPaletteDefines::from_defines_source(
+            "RIVER_SMALL_START_INDEX = 7,\nRIVER_SMALL_STOP_INDEX = 6,\nRIVER_LARGE_STOP_INDEX = 11,"
+        )
+        .is_err());
+        assert!(RiverPaletteDefines::from_defines_source(
+            "RIVER_SMALL_START_INDEX = 0,\nRIVER_SMALL_STOP_INDEX = 11,\nRIVER_LARGE_STOP_INDEX = 11,"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_river_fade_defines_span_matches_retired_fitted_literal() {
+        // RIVER_FADE_FROM − RIVER_FADE_TO = 20.0 − 3.0 = 17.0 — bit-exactly
+        // the retired capture-fitted RIVER_SOURCE_FADE_STEPS literal, so the
+        // defines-driven fade span is a byte-noop for vanilla synthesis.
+        let fade = vanilla_river_fade_defines();
+        assert_eq!(fade.fade_from, 20.0);
+        assert_eq!(fade.fade_to, 3.0);
+        assert_eq!(fade.fade_span_stations().to_bits(), 17.0f32.to_bits());
+        // Inconsistent windows fail closed.
+        assert!(RiverFadeDefines::from_graphics_source(
+            "RIVER_FADE_FROM = 3.0,\nRIVER_FADE_TO = 20.0,"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_vanilla_defines_files_carry_the_river_palette_and_fade() {
+        // End-to-end resolver-shaped proof against the real shipped files.
+        let game_dir =
+            std::path::PathBuf::from(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
+        if !game_dir.is_dir() {
+            eprintln!("skipping vanilla river defines gate: install absent");
+            return;
+        }
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let palette = RiverPaletteDefines::from_resolver(&resolver).expect("palette defines");
+        assert_eq!(
+            (
+                palette.small_start_index,
+                palette.small_stop_index,
+                palette.large_stop_index
+            ),
+            (0, 6, 11),
+            "shipped 00_defines.lua river indices drifted"
+        );
+        let fade = RiverFadeDefines::from_resolver(&resolver).expect("fade defines");
+        assert_eq!(fade.fade_span_stations().to_bits(), 17.0f32.to_bits());
+        println!("vanilla river defines gate: palette 0/6/11, fade span 17.0 (files)");
     }
 }

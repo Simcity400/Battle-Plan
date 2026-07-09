@@ -166,6 +166,46 @@ pub mod defines {
     /// before saturate.
     pub const NIGHT_AMBIENT_BOOST: f32 = 3.0;
 
+    // --- common/defines/00_graphics.lua:1052-1058 ("hsv color ambient light") ---
+    // The CB0 `Ambient{Pos,Neg}{X,Y,Z}` compose inputs (AMBIENT1, 2026-07-09).
+    // These HSV triples, pushed through the shader's own manual-input HSV->RGB
+    // (`HSVtoRGB`, standardfuncsgfx.fxh:145-152, which ends in `ToLinear` =
+    // pow 2.2), reproduce the captured CB0 ambient rig BIT-EXACTLY (residual
+    // 0.0 on all 18 components across the hour-swept corpus samples). See
+    // `cb0_ambient_rig_from_hsv_defines`. NOTE: these are NOT the shader-side
+    // `DayAmbientMap*` constants (constants.fxh:17-22) — those are a separate
+    // per-pixel map-shader rig; constants.fxh:31 says it directly: "regular
+    // unit ambient colors set from defines. this is night".
+    /// `AMBIENT_LIGHT_POS_X` (00_graphics.lua:1053) HSV — right face.
+    pub const AMBIENT_LIGHT_POS_X_HSV: [f32; 3] = [0.2, 0.2, 0.2];
+    /// `AMBIENT_LIGHT_NEG_X` (00_graphics.lua:1054) HSV — left face.
+    pub const AMBIENT_LIGHT_NEG_X_HSV: [f32; 3] = [0.4, 0.1, 0.6];
+    /// `AMBIENT_LIGHT_POS_Y` (00_graphics.lua:1055) HSV — "kills everything".
+    pub const AMBIENT_LIGHT_POS_Y_HSV: [f32; 3] = [0.0, 0.0, 0.0];
+    /// `AMBIENT_LIGHT_NEG_Y` (00_graphics.lua:1056) HSV — from under (V=0, so
+    /// it composes to black exactly like the captured field).
+    pub const AMBIENT_LIGHT_NEG_Y_HSV: [f32; 3] = [0.35, 0.2, 0.0];
+    /// `AMBIENT_LIGHT_POS_Z` (00_graphics.lua:1057) HSV — top face.
+    pub const AMBIENT_LIGHT_POS_Z_HSV: [f32; 3] = [0.6, 0.2, 0.924];
+    /// `AMBIENT_LIGHT_NEG_Z` (00_graphics.lua:1058) HSV — bottom face.
+    pub const AMBIENT_LIGHT_NEG_Z_HSV: [f32; 3] = [0.55, 0.1, 0.9];
+
+    /// `NightAmbient*` (gfx/FX/constants.fxh:32-37) — the NIGHT counterpart of
+    /// the CB0 day ambient rig for the unit/mesh path: `standardfuncsgfx.fxh`
+    /// pairs the CB0 `Ambient*` fields (day) with these constants (night) in
+    /// `AmbientLight(..., DayAmbientColors_, NightAmbientColors_)` (fxh:712-728),
+    /// blending per pixel by the day/night factor with `NIGHT_AMBIENT_BOOST`
+    /// (fxh:468-470). Order matches the CB0 field order
+    /// [PosX, NegX, PosY, NegY, PosZ, NegZ].
+    pub const NIGHT_AMBIENT: [[f32; 3]; 6] = [
+        [2.0, 2.0, 2.0], // NightAmbientPosX (constants.fxh:32)
+        [0.2, 0.2, 0.2], // NightAmbientNegX (constants.fxh:33)
+        [0.1, 0.1, 0.1], // NightAmbientPosY (constants.fxh:34)
+        [0.0, 0.0, 0.0], // NightAmbientNegY (constants.fxh:35)
+        [3.0, 3.0, 3.0], // NightAmbientPosZ (constants.fxh:36)
+        [0.8, 0.8, 0.8], // NightAmbientNegZ (constants.fxh:37)
+    ];
+
     /// The captured `vVirtualMoonPos.z` is a constant 1448 in every mined
     /// capture. It is UNEXPLAINED by any single shipped define (`MOON_LATITUDE`
     /// is 0/"NOT USED"). Two file-grounded arithmetic identities both hit 1448
@@ -232,6 +272,11 @@ pub struct SceneLighting {
     pub sun_specular_intensity: f32,
     /// `CubemapIntensity`.
     pub cubemap_intensity: f32,
+    /// The engine-composed CB0 ambient rig, in CB0 field order
+    /// `[AmbientPosX, AmbientNegX, AmbientPosY, AmbientNegY, AmbientPosZ,
+    /// AmbientNegZ]`. Composed from the `AMBIENT_LIGHT_*` HSV defines — see
+    /// [`cb0_ambient_rig_from_hsv_defines`].
+    pub ambient_rig: [[f32; 3]; 6],
 }
 
 impl SceneLighting {
@@ -253,6 +298,14 @@ impl SceneLighting {
             moon_diffuse_intensity: read_f4(cb0, MOON_DIFFUSE_INTENSITY)?,
             sun_specular_intensity: read_f1(cb0, SUN_SPECULAR_INTENSITY)?,
             cubemap_intensity: read_f1(cb0, CUBEMAP_INTENSITY)?,
+            ambient_rig: [
+                read_f3(cb0, AMBIENT_POS_X)?,
+                read_f3(cb0, AMBIENT_NEG_X)?,
+                read_f3(cb0, AMBIENT_POS_Y)?,
+                read_f3(cb0, AMBIENT_NEG_Y)?,
+                read_f3(cb0, AMBIENT_POS_Z)?,
+                read_f3(cb0, AMBIENT_NEG_Z)?,
+            ],
         })
     }
 
@@ -325,6 +378,154 @@ fn hsv_to_rgb_post(hsv6: [f32; 3]) -> [f32; 3] {
 pub fn diffuse_color_rgb_from_hsv_define(hsv_dial01: [f32; 3]) -> [f32; 3] {
     let rgb = hsv_to_rgb_post([hsv_dial01[0] * 6.0, hsv_dial01[1], hsv_dial01[2]]);
     [rgb[0].powf(2.2), rgb[1].powf(2.2), rgb[2].powf(2.2)]
+}
+
+/// the game's `Hue` (standardfuncsgfx.fxh:136-142) — the *manual-input* hue ramp
+/// (H on the 0..1 dial, scaled by 6 inside), distinct from `HuePost`
+/// (fxh:91) used by the diffuse-color path. Saturated per the shader.
+fn hue_manual(h01: f32) -> [f32; 3] {
+    let h6 = h01 * 6.0;
+    let r = (h6 - 3.0).abs() - 1.0;
+    let g = 2.0 - (h6 - 2.0).abs();
+    let b = 2.0 - (h6 - 4.0).abs();
+    [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
+}
+
+/// the game's manual-input `HSVtoRGB` (standardfuncsgfx.fxh:145-152):
+/// `ToLinear(((Hue(H) - 1) * S + 1) * V)` with `ToLinear = pow(rgb, 2.2)`
+/// (fxh:48). The shader's own comment: "used for manual input, converts to
+/// linear". This is the transform the engine applies to the `AMBIENT_LIGHT_*`
+/// HSV defines when it writes the CB0 `Ambient{Pos,Neg}{X,Y,Z}` fields.
+pub fn hsv_to_rgb_manual_linear(hsv_dial01: [f32; 3]) -> [f32; 3] {
+    let [h, s, v] = hsv_dial01;
+    let hue = hue_manual(h);
+    let val = |c: f32| (((c - 1.0) * s + 1.0) * v).powf(2.2);
+    [val(hue[0]), val(hue[1]), val(hue[2])]
+}
+
+/// The vanilla `AMBIENT_LIGHT_*` HSV defines (00_graphics.lua:1053-1058) in
+/// CB0 ambient field order `[PosX, NegX, PosY, NegY, PosZ, NegZ]`.
+pub fn vanilla_ambient_light_hsv_defines() -> [[f32; 3]; 6] {
+    [
+        defines::AMBIENT_LIGHT_POS_X_HSV,
+        defines::AMBIENT_LIGHT_NEG_X_HSV,
+        defines::AMBIENT_LIGHT_POS_Y_HSV,
+        defines::AMBIENT_LIGHT_NEG_Y_HSV,
+        defines::AMBIENT_LIGHT_POS_Z_HSV,
+        defines::AMBIENT_LIGHT_NEG_Z_HSV,
+    ]
+}
+
+/// AMBIENT1 — the CB0 ambient-rig COMPOSE law (files-first, capture-validated).
+///
+/// The engine writes the scene CB0 `Ambient{Pos,Neg}{X,Y,Z}` fields (offsets
+/// 272..364) as `HSVtoRGB(AMBIENT_LIGHT_*)` — the manual-input HSV→linear
+/// transform ([`hsv_to_rgb_manual_linear`]) applied to the six
+/// `AMBIENT_LIGHT_*` HSV defines (00_graphics.lua:1053-1058). Validated
+/// BIT-EXACT (residual 0.0 on all 18 components) against the real hour-swept
+/// scene CB0 corpus (session_CAPFIX2_FULL_2 samples embedded in the tests);
+/// the captured rig is also HOUR-INVARIANT (hour 1 and hour 6 samples carry
+/// byte-identical ambient), consistent with the compose reading no day/night
+/// state.
+///
+/// IMPORTANT provenance correction (vs the earlier ledger reading): the CB0
+/// field is NOT an engine-side day/night-blended ambient. The day/night
+/// ambient blend + `NIGHT_AMBIENT_BOOST` happen PER PIXEL inside the shaders
+/// (`AmbientLight`, standardfuncsgfx.fxh:456-470), which pair the CB0 fields
+/// (day) with the `NightAmbient*` constants (night, constants.fxh:32-37,
+/// [`defines::NIGHT_AMBIENT`]) on the unit/mesh path — or pair the
+/// `DayAmbientMap*`/`NightAmbientMap*` constants.fxh rigs on the map path,
+/// with no CB0 involvement at all. At the captured day state
+/// (`DayNightFactor == 0` because `FoW.w == 0`) the in-shader blend returns
+/// the day array unchanged, so this compose IS the whole captured value.
+pub fn cb0_ambient_rig_from_hsv_defines(hsv6: [[f32; 3]; 6]) -> [[f32; 3]; 6] {
+    [
+        hsv_to_rgb_manual_linear(hsv6[0]),
+        hsv_to_rgb_manual_linear(hsv6[1]),
+        hsv_to_rgb_manual_linear(hsv6[2]),
+        hsv_to_rgb_manual_linear(hsv6[3]),
+        hsv_to_rgb_manual_linear(hsv6[4]),
+        hsv_to_rgb_manual_linear(hsv6[5]),
+    ]
+}
+
+/// Max absolute per-component residual between a captured CB0 ambient rig and
+/// a composed one.
+pub fn ambient_rig_residual(captured: &[[f32; 3]; 6], composed: &[[f32; 3]; 6]) -> f32 {
+    let mut worst = 0.0f32;
+    for (cap, law) in captured.iter().zip(composed.iter()) {
+        for (c, l) in cap.iter().zip(law.iter()) {
+            worst = worst.max((c - l).abs());
+        }
+    }
+    worst
+}
+
+/// Parse the six `AMBIENT_LIGHT_*` HSV defines from `00_graphics.lua` source
+/// text (mod-aware callers resolve the file through `GameFileResolver` and pass
+/// the text here; this module stays dependency-free). Returns them in CB0
+/// ambient field order. Fails closed if any key is missing or malformed.
+pub fn ambient_light_hsv_defines_from_graphics_source(
+    source: &str,
+) -> Result<[[f32; 3]; 6], String> {
+    const KEYS: [&str; 6] = [
+        "AMBIENT_LIGHT_POS_X",
+        "AMBIENT_LIGHT_NEG_X",
+        "AMBIENT_LIGHT_POS_Y",
+        "AMBIENT_LIGHT_NEG_Y",
+        "AMBIENT_LIGHT_POS_Z",
+        "AMBIENT_LIGHT_NEG_Z",
+    ];
+    let mut out = [[0.0f32; 3]; 6];
+    let mut found = [false; 6];
+    for raw in source.lines() {
+        // Strip lua comments; keys sit at top level as `KEY = { h, s, v },`.
+        let code = raw.split("--").next().unwrap_or(raw).trim();
+        let Some((lhs, rhs)) = code.split_once('=') else {
+            continue;
+        };
+        let key = lhs.trim();
+        let Some(slot) = KEYS.iter().position(|k| *k == key) else {
+            continue;
+        };
+        let open = rhs.find('{').ok_or_else(|| {
+            format!("00_graphics.lua {key} has no {{ h, s, v }} table on its line")
+        })?;
+        let close = rhs[open + 1..]
+            .find('}')
+            .ok_or_else(|| format!("00_graphics.lua {key} table is unterminated on its line"))?;
+        let inner = &rhs[open + 1..open + 1 + close];
+        let mut triple = [0.0f32; 3];
+        let mut count = 0usize;
+        for token in inner.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            if count >= 3 {
+                count += 1;
+                break;
+            }
+            triple[count] = token
+                .parse::<f32>()
+                .map_err(|err| format!("00_graphics.lua {key} component {count}: {err}"))?;
+            count += 1;
+        }
+        if count != 3 {
+            return Err(format!(
+                "00_graphics.lua {key} must have exactly 3 HSV components, found {count}"
+            ));
+        }
+        if found[slot] {
+            return Err(format!("00_graphics.lua defines {key} more than once"));
+        }
+        out[slot] = triple;
+        found[slot] = true;
+    }
+    if let Some(missing) = KEYS.iter().zip(found.iter()).find(|(_, f)| !**f) {
+        return Err(format!("00_graphics.lua is missing {}", missing.0));
+    }
+    Ok(out)
 }
 
 /// Residuals of the files-derived laws against one captured [`SceneLighting`].
@@ -851,6 +1052,135 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- AMBIENT1: the CB0 ambient-rig compose law, on REAL swept bytes ----
+
+    /// The captured CB0 ambient rig from session_CAPFIX2_FULL_2 hour 1 (decoded
+    /// from `SWEEP_FULL2_HOUR1_HEX` offsets 272..364), kept as literals so the
+    /// gate prints a meaningful diff if either the decode or the law drifts.
+    const CAPTURED_AMBIENT_RIG_FULL2: [[f32; 3]; 6] = [
+        [0.026501026, 0.028991185, 0.0177445095], // AmbientPosX
+        [0.25779015, 0.32503697, 0.2836704],      // AmbientNegX
+        [0.0, 0.0, 0.0],                          // AmbientPosY
+        [0.0, 0.0, 0.0],                          // AmbientNegY
+        [0.51437086, 0.63436645, 0.84038514],     // AmbientPosZ
+        [0.62902367, 0.7417052, 0.79311013],      // AmbientNegZ
+    ];
+
+    #[test]
+    fn gate_cb0_ambient_rig_composes_bit_exact_from_ambient_light_defines() {
+        // THE item-1 gate: the CB0 Ambient{Pos,Neg}{X,Y,Z} fields captured from
+        // the engine must be reproduced by composing the AMBIENT_LIGHT_* HSV
+        // defines (00_graphics.lua:1053-1058) through the shader's manual-input
+        // HSVtoRGB (standardfuncsgfx.fxh:145-152, ToLinear pow 2.2).
+        let composed = cb0_ambient_rig_from_hsv_defines(vanilla_ambient_light_hsv_defines());
+        for hex in [SWEEP_FULL2_HOUR1_HEX, SWEEP_FULL2_HOUR6_HEX] {
+            let s = SceneLighting::from_cb0_bytes(&hexbytes(hex)).unwrap();
+            let residual = ambient_rig_residual(&s.ambient_rig, &composed);
+            assert_eq!(
+                residual, 0.0,
+                "composed ambient rig residual {residual} vs captured (must be bit-exact)"
+            );
+            // Bit-exactness, component by component (not just |delta| == 0).
+            for (face, (cap, law)) in s.ambient_rig.iter().zip(composed.iter()).enumerate() {
+                for lane in 0..3 {
+                    assert_eq!(
+                        cap[lane].to_bits(),
+                        law[lane].to_bits(),
+                        "ambient face {face} lane {lane}: captured {} vs composed {}",
+                        cap[lane],
+                        law[lane]
+                    );
+                }
+            }
+        }
+        // And the literal expectation table matches the decode (guards the
+        // offsets themselves).
+        let s = SceneLighting::from_cb0_bytes(&hexbytes(SWEEP_FULL2_HOUR1_HEX)).unwrap();
+        assert_eq!(s.ambient_rig, CAPTURED_AMBIENT_RIG_FULL2);
+    }
+
+    #[test]
+    fn ambient_rig_is_hour_invariant_in_swept_capture() {
+        // The captured ambient carries no day/night state: hour 1 and hour 6
+        // samples (same date, unpaused sweep) are byte-identical. The per-pixel
+        // day/night ambient blend lives in the shader (AmbientLight,
+        // standardfuncsgfx.fxh:456-470), not in the CB0 compose.
+        let h1 = SceneLighting::from_cb0_bytes(&hexbytes(SWEEP_FULL2_HOUR1_HEX)).unwrap();
+        let h6 = SceneLighting::from_cb0_bytes(&hexbytes(SWEEP_FULL2_HOUR6_HEX)).unwrap();
+        for face in 0..6 {
+            for lane in 0..3 {
+                assert_eq!(
+                    h1.ambient_rig[face][lane].to_bits(),
+                    h6.ambient_rig[face][lane].to_bits(),
+                    "ambient face {face} lane {lane} moved between hours 1 and 6"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cb0_ambient_compose_is_not_the_day_ambient_map_rig() {
+        // Negative control for the (corrected) provenance: the CB0 ambient is
+        // NOT the shader-side DayAmbientMap* rig (constants.fxh:17-22). E.g.
+        // DayAmbientMapPosX = (0.1, 0.1, 0.05) vs captured (0.0265, 0.0290,
+        // 0.0177). The right-face comparison alone separates them by > 0.07.
+        let composed = cb0_ambient_rig_from_hsv_defines(vanilla_ambient_light_hsv_defines());
+        let day_ambient_map_pos_x = [0.1f32, 0.1, 0.05];
+        let delta = (composed[0][0] - day_ambient_map_pos_x[0]).abs();
+        assert!(
+            delta > 0.05,
+            "CB0 PosX unexpectedly matches DayAmbientMapPosX (delta {delta})"
+        );
+    }
+
+    #[test]
+    fn ambient_light_defines_parse_from_lua_source() {
+        // Verbatim 00_graphics.lua:1052-1058 lines (comments included).
+        let source = r#"
+	-- hsv color ambient light
+	AMBIENT_LIGHT_POS_X = { 0.2,  0.2, 0.2 }, -- right
+	AMBIENT_LIGHT_NEG_X = { 0.4,  0.1, 0.6 }, -- left
+	AMBIENT_LIGHT_POS_Y = { 0.0,  0.0, 0.0 },-- kills everything
+	AMBIENT_LIGHT_NEG_Y = { 0.35, 0.2, 0.0 },-- from under
+	AMBIENT_LIGHT_POS_Z = { 0.6,  0.2, 0.924 }, -- top
+	AMBIENT_LIGHT_NEG_Z = { 0.55, 0.1, 0.9 }, -- bottom
+"#;
+        let parsed = ambient_light_hsv_defines_from_graphics_source(source)
+            .expect("parse AMBIENT_LIGHT_* from lua source");
+        assert_eq!(parsed, vanilla_ambient_light_hsv_defines());
+        // Fail-closed on a missing key.
+        let err = ambient_light_hsv_defines_from_graphics_source("AMBIENT_LIGHT_POS_X = { 0 }")
+            .expect_err("must fail closed");
+        assert!(err.contains("AMBIENT_LIGHT_POS_X"), "{err}");
+    }
+
+    #[test]
+    fn gate_vanilla_graphics_lua_ambient_defines_compose_to_captured_rig() {
+        // End-to-end: real shipped 00_graphics.lua -> parse -> compose ->
+        // captured CB0 bits. Skips when the vanilla install is absent.
+        let path = std::path::Path::new(
+            r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\common\defines\00_graphics.lua",
+        );
+        let Ok(source) = std::fs::read_to_string(path) else {
+            eprintln!("skipping vanilla ambient-defines gate: {path:?} absent");
+            return;
+        };
+        let parsed = ambient_light_hsv_defines_from_graphics_source(&source)
+            .expect("parse AMBIENT_LIGHT_* from the shipped 00_graphics.lua");
+        assert_eq!(
+            parsed,
+            vanilla_ambient_light_hsv_defines(),
+            "shipped defines drifted from the cited vanilla values"
+        );
+        let composed = cb0_ambient_rig_from_hsv_defines(parsed);
+        let s = SceneLighting::from_cb0_bytes(&hexbytes(SWEEP_FULL2_HOUR1_HEX)).unwrap();
+        let residual = ambient_rig_residual(&s.ambient_rig, &composed);
+        assert_eq!(residual, 0.0, "file->law->CB0 residual {residual}");
+        println!(
+            "vanilla ambient-defines gate: shipped lua -> composed rig bit-exact (residual 0)"
+        );
     }
 
     #[test]

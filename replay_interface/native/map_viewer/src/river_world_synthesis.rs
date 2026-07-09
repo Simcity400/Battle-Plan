@@ -49,7 +49,12 @@ pub const HEIGHTMAP_BMP_SOURCE: &str = "map/heightmap.bmp";
 const RIVERS_PASS_BUNDLE_FILE: &str = "map_frame_rivers_pass_bundle.json";
 /// Merged captured-index law: a centerline step above this splits strips.
 const RIVER_STRIP_BREAK_DISTANCE: f32 = 8.0;
+/// `RIVER_LARGE_STOP_INDEX = 11` (common/defines/00_defines.lua:938) — the last
+/// rivers.bmp palette index that is a river pixel (small 0..=6, large 7..=11
+/// per 00_defines.lua:936-938; see `RiverPaletteDefines`).
 const RIVER_MAX_CLASS: u8 = 11;
+/// Measured: classes 0..=2 are source/flow markers with no steady width; the
+/// captured-VB width law starts at class 3. NOT a shipped define.
 const RIVER_FIRST_WIDTH_CLASS: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

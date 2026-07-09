@@ -69,12 +69,22 @@ which fails closed on any dims/mips/faces/coverage mismatch) instead of the
 the resolver-resolved `reflection.dds`, uploading the captured payload is
 files-first-equivalent to loading the shipped file.
 
-**Tracked follow-up (orthodox files-first):** decode `reflection.dds` through the
-resolver directly into the cube payload and byte-verify it against the captured
-hash (the same `substitute_synthesized_terrain_id_map` pattern already used for
-`TerrainIDMap`). This is a pure refinement — the pixels are proven identical — and
-is deferred only because it needs the resolver threaded into the water-pass prep.
-It is **not** a capture dependency: the shipped file is the source of truth.
+**Follow-up CLOSED (2026-07-08/09 — runtime resolver-decode landed + gated):**
+the replay-time upload now decodes `map/terrain/reflection.dds` through the
+mod-aware resolver into the captured 128-aligned 54-subresource layout
+(`reflection_cube_law.rs::decode_reflection_cube_payload`, threaded via
+`with_reflection_resolver` from `cli.rs` / `replay_app/render.rs` into
+`d3d11_device.rs` `prepare_shader_resources`), and byte-verifies the decode
+against the captured payload whenever one is on disk — a mismatch is FATAL,
+never a silent fallback to captured bytes. Byte-noop PROVEN for vanilla:
+`gate_vanilla_reflection_dds_decodes_to_captured_payload_fnv` decodes the real
+shipped DDS and reproduces the captured upload byte stream exactly
+(2,112,768 B, FNV-1a64 `e267c5bfc5d499c8`, all 54 subresources), and
+`resolver_decode_byte_equals_captured_payload_from_assets` performs full
+byte-equality when the captured payload is available. The shape-contract check
+(`native_d3d11_validate_shipped_reflection_cube_contract`) is retained. A mod
+that retextures `reflection.dds` (same shape) now renders ITS cube pixels; the
+ledger row is **FILE**, no longer CAPTURE(file-equivalent).
 
 ---
 

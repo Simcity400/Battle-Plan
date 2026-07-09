@@ -29,16 +29,21 @@ pub(crate) const GMT_OFFSET: f32 = 2793.0;
 pub(crate) const FEATHER_MIN: f32 = -0.01;
 pub(crate) const FEATHER_MAX: f32 = 0.01;
 
-// gfx/FX/standardfuncsgfx.fxh moon-light cross-fade constants.
+// gfx/FX/standardfuncsgfx.fxh:326-327 (moon-light cross-fade feather).
 pub(crate) const MOON_FEATHER_MIN: f32 = -0.01;
 pub(crate) const MOON_FEATHER_MAX: f32 = 0.01;
 
-// common/defines/00_graphics.lua:936-937; also mirrored in the day/night shader.
+// common/defines/00_graphics.lua:936-937; mirrored in the day/night shader at
+// gfx/FX/standardfuncsgfx.fxh:330-331.
 pub(crate) const SOUTH_POLE_OFFSET: f32 = 0.17;
 pub(crate) const NORTH_POLE_OFFSET: f32 = 0.93;
 
 // gfx/FX/constants.fxh:61-63 and 69-70.
 pub(crate) const MUD_TILING: f32 = 0.09;
+// NOT in constants.fxh: the mud snow-noise tiling is the inline literal
+// `tex2D( SnowNoise, vPos.xz * 0.01f )` in GetMudColor,
+// gfx/FX/standardfuncsgfx.fxh:241 (the earlier constants.fxh:61-63 citation
+// was wrong; corrected 2026-07-09).
 pub(crate) const MUD_NOISE_TILING: f32 = 0.01;
 pub(crate) const MUD_NORMAL_CUTOFF: f32 = 10.982;
 pub(crate) const MUD_STRENGHTEN: f32 = 1.0;
@@ -154,6 +159,7 @@ pub(crate) const DARK_FOW_COLOR: Vec3 = Vec3 {
     y: 0.08,
     z: 0.1,
 };
+// gfx/FX/constants.fxh:153-155 (distance fog; FOG_COLOR above is :152).
 pub(crate) const FOG_BEGIN: f32 = 1.0;
 pub(crate) const FOG_END: f32 = 150.0;
 pub(crate) const FOG_MAX: f32 = 0.35;

@@ -637,6 +637,45 @@ mod tests {
     /// in CI (where those bundle/game assets are absent) and is run explicitly
     /// against the checked-out capture. Set the env var to run it.
     #[test]
+    fn gate_vanilla_reflection_dds_decodes_to_captured_payload_fnv() {
+        // Self-contained capture-equality proof (no capture corpus needed on
+        // disk): the captured ReflectionCubeMap upload payload measured
+        // 2,112,768 bytes with FNV-1a64 e267c5bfc5d499c8 (recorded in the
+        // capture bundle and in the WATER1 evidence; see WATER_LAW.md §1 -- all
+        // 54 subresources byte-identical to the shipped DDS). Decoding the
+        // REAL shipped map/terrain/reflection.dds through the resolver into
+        // the captured 128-aligned layout must reproduce exactly that byte
+        // stream, so the runtime resolver-decode is a byte-noop for vanilla.
+        let game_dir =
+            std::path::PathBuf::from(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
+        if !game_dir.is_dir() {
+            eprintln!("skipping vanilla reflection FNV gate: vanilla install absent");
+            return;
+        }
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let binding = vanilla_reflection_binding(256, 9);
+        assert_eq!(
+            binding.subresources.len(),
+            54,
+            "vanilla cube binding must carry all 6 faces x 9 mips"
+        );
+        assert_eq!(binding.byte_len, 2_112_768, "captured layout byte length");
+        let decoded = decode_reflection_cube_payload(&resolver, &binding)
+            .expect("resolver-decode shipped reflection.dds");
+        assert_eq!(decoded.len(), 2_112_768, "decoded byte length");
+        assert_eq!(
+            fnv1a64(&decoded),
+            0xe267_c5bf_c5d4_99c8,
+            "resolver-decoded shipped reflection.dds must reproduce the captured \
+             upload payload (FNV-1a64 over all 2,112,768 bytes / 54 subresources)"
+        );
+        println!(
+            "vanilla reflection FNV gate: shipped DDS -> captured layout reproduces \
+             the captured payload (2112768 B, fnv e267c5bfc5d499c8)"
+        );
+    }
+
+    #[test]
     fn resolver_decode_byte_equals_captured_payload_from_assets() {
         let Ok(asset_dir) = std::env::var("REFLECTION_CUBE_PROOF_DIR") else {
             eprintln!(

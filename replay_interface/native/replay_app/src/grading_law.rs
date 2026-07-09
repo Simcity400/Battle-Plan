@@ -75,6 +75,10 @@ struct HeightVolume {
     day: Option<String>,
     night: Option<String>,
     height: f32,
+    /// `fade_distance` (shipped: 200/200/0 at posteffect_volumes.txt:352/362/372)
+    /// — the camera-height span above this volume's floor over which the grade
+    /// cross-fades from the next-lower volume into this one.
+    fade_distance: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,6 +90,11 @@ struct RegionVolume {
     night_winter: Option<String>,
     position: Vec3,
     size: Vec3,
+    /// Region-box `fade_distance` (spatial edge fade). Parsed for completeness;
+    /// the engine's spatial fade law for region boxes is UNTRACED and NOT
+    /// implemented (region selection stays hard containment).
+    #[allow(dead_code)]
+    fade_distance: f32,
 }
 
 /// The full parsed `posteffect_volumes.txt` table.
@@ -190,6 +199,7 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
         day: None,
         night: None,
         height: 0.0,
+        fade_distance: 0.0,
     };
     let mut cur_region = RegionVolume {
         name: String::new(),
@@ -207,6 +217,7 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
             y: 0.0,
             z: 0.0,
         },
+        fade_distance: 0.0,
     };
 
     for raw_line in text.lines() {
@@ -238,6 +249,7 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
                     day: None,
                     night: None,
                     height: 0.0,
+                    fade_distance: 0.0,
                 };
             } else if in_volumes_container && key_part == "posteffect_volume" {
                 block = Block::RegionVolume;
@@ -258,6 +270,7 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
                         y: 0.0,
                         z: 0.0,
                     },
+                    fade_distance: 0.0,
                 };
             }
         } else if let Some((key, value)) = line.split_once('=') {
@@ -285,6 +298,17 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
                             cur_height.name
                         )),
                     },
+                    "fade_distance" => {
+                        match value.split_whitespace().next().map(str::parse::<f32>) {
+                            Some(Ok(d)) if d.is_finite() && d >= 0.0 => {
+                                cur_height.fade_distance = d
+                            }
+                            _ => parse_errors.push(format!(
+                                "posteffect_height_volume '{}' has unparseable fade_distance {value:?}",
+                                cur_height.name
+                            )),
+                        }
+                    }
                     _ => {}
                 },
                 Block::RegionVolume => match key {
@@ -311,6 +335,17 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
                             cur_region.name
                         )),
                     },
+                    "fade_distance" => {
+                        match value.split_whitespace().next().map(str::parse::<f32>) {
+                            Some(Ok(d)) if d.is_finite() && d >= 0.0 => {
+                                cur_region.fade_distance = d
+                            }
+                            _ => parse_errors.push(format!(
+                                "posteffect_volume '{}' has unparseable fade_distance {value:?}",
+                                cur_region.name
+                            )),
+                        }
+                    }
                     _ => {}
                 },
                 Block::None => {}
@@ -526,6 +561,106 @@ impl PostEffectVolumeTable {
             middle_grey,
         })
     }
+
+    /// PER-FRAME recompose (GRADE2, 2026-07-09): resolve the grade for the
+    /// frame's camera, folding the height-volume `fade_distance` cross-fade.
+    ///
+    /// Law (all inputs shipped in posteffect_volumes.txt): the winning height
+    /// volume `V` is the greatest `height <= camera.y` (unchanged); when the
+    /// camera sits within `V.fade_distance` above `V.height` and a lower
+    /// volume `L` exists, the frame's grade is the cross-fade
+    /// `lerp(L, V, t)` with `t = (camera.y − V.height) / V.fade_distance`
+    /// (shipped fade_distance: 200/200/0 at :352/:362/:372). This makes the
+    /// grade CONTINUOUS across the volume floor: at `camera.y == V.height`
+    /// the blend is exactly `L`, matching the selection just below the floor.
+    /// The blended-LUT mechanism is the engine's own `lut_blender.shader`
+    /// (`lerp(base, blend, vBlendFactor2)`, lut_blender.shader:94-104); the
+    /// t-anchor (fade upward from the floor) is the documented law choice —
+    /// the engine's C++ blend-factor source is UNTRACED. Region volumes keep
+    /// hard containment (their spatial fade is UNTRACED and not implemented).
+    ///
+    /// Returns the winning grade plus, when a fade is active (`0 <= t < 1`),
+    /// the lower-volume grade and the winning volume's blend weight `t`.
+    pub fn resolve_grade_per_frame(
+        &self,
+        state: GradingSelectionState,
+    ) -> Result<PerFrameGrade, String> {
+        let primary = self.resolve_grade(state)?;
+        // Region-volume wins bypass the height stack (hard containment).
+        for volume in &self.region_volumes {
+            if Self::region_contains(volume, state.camera) {
+                return Ok(PerFrameGrade {
+                    primary,
+                    cross_fade: None,
+                });
+            }
+        }
+        // Winning height volume + the next-lower volume in the stack.
+        let mut winner: Option<&HeightVolume> = None;
+        for volume in &self.height_volumes {
+            if state.camera[1] >= volume.height
+                && winner.map(|b| volume.height > b.height).unwrap_or(true)
+            {
+                winner = Some(volume);
+            }
+        }
+        let Some(winner) = winner else {
+            return Ok(PerFrameGrade {
+                primary,
+                cross_fade: None,
+            });
+        };
+        let mut lower: Option<&HeightVolume> = None;
+        for volume in &self.height_volumes {
+            if volume.height < winner.height
+                && lower.map(|b| volume.height > b.height).unwrap_or(true)
+            {
+                lower = Some(volume);
+            }
+        }
+        let (Some(lower), true) = (lower, winner.fade_distance > 0.0) else {
+            return Ok(PerFrameGrade {
+                primary,
+                cross_fade: None,
+            });
+        };
+        let t = (state.camera[1] - winner.height) / winner.fade_distance;
+        if !(0.0..1.0).contains(&t) {
+            return Ok(PerFrameGrade {
+                primary,
+                cross_fade: None,
+            });
+        }
+        let lower_name =
+            Self::pick_field(&lower.day, &lower.night, state.night).ok_or_else(|| {
+                format!(
+                    "posteffect_height_volume '{}' has no {} value for the cross-fade",
+                    lower.name,
+                    if state.night { "night" } else { "day" }
+                )
+            })?;
+        let lower_grade = ResolvedGrade {
+            value_name: lower_name.clone(),
+            selection_reason: format!(
+                "cross-fade lower volume '{}' (height {}) under '{}' (height {}, fade_distance {}), t = {t:.4}",
+                lower.name, lower.height, winner.name, winner.height, winner.fade_distance
+            ),
+            lut_rel_path: self.resolved_lut(&lower_name)?,
+            middle_grey: self.resolved_middle_grey(&lower_name)?,
+        };
+        Ok(PerFrameGrade {
+            primary,
+            cross_fade: Some((lower_grade, t)),
+        })
+    }
+}
+
+/// A per-frame grade: the winning volume's grade plus an optional active
+/// height cross-fade (lower-volume grade + the WINNER's blend weight `t`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PerFrameGrade {
+    pub primary: ResolvedGrade,
+    pub cross_fade: Option<(ResolvedGrade, f32)>,
 }
 
 /// Load and parse `posteffect_volumes.txt` through the resolver (mod-aware).
@@ -628,6 +763,124 @@ pub fn lut_to_rgba8(lut: &ColorCorrectionLut) -> Vec<u8> {
     out
 }
 
+/// Cross-fade two decoded LUTs texel-wise and quantize like [`lut_to_rgba8`].
+/// The blend law is the engine's own `lut_blender.shader` pixel shader
+/// (`lerp(base, blend, vBlendFactor2)`, lut_blender.shader:94-104) evaluated
+/// on the CPU; `upper_blend` is the weight of `upper` (the engine's
+/// `vBlendFactor2`). At `upper_blend == 0.0`/`1.0` this reduces bit-exactly to
+/// `lut_to_rgba8(lower)`/`lut_to_rgba8(upper)` (`a + (b-a)*0 == a`).
+pub fn blend_luts_to_rgba8(
+    lower: &ColorCorrectionLut,
+    upper: &ColorCorrectionLut,
+    upper_blend: f32,
+) -> Result<Vec<u8>, String> {
+    if lower.texels.len() != upper.texels.len()
+        || lower.width != upper.width
+        || lower.height != upper.height
+    {
+        return Err(format!(
+            "cross-fade LUT shape mismatch: {}x{} ({} texels) vs {}x{} ({} texels)",
+            lower.width,
+            lower.height,
+            lower.texels.len(),
+            upper.width,
+            upper.height,
+            upper.texels.len()
+        ));
+    }
+    if !(0.0..=1.0).contains(&upper_blend) {
+        return Err(format!(
+            "cross-fade blend factor {upper_blend} out of [0,1]"
+        ));
+    }
+    let mut out = Vec::with_capacity(lower.texels.len() * 4);
+    for (lo, hi) in lower.texels.iter().zip(upper.texels.iter()) {
+        for channel in 0..3 {
+            let value = lo[channel] + (hi[channel] - lo[channel]) * upper_blend;
+            out.push((value * 255.0).round().clamp(0.0, 255.0) as u8);
+        }
+        out.push(0xFF);
+    }
+    Ok(out)
+}
+
+/// PER-FRAME files-derived grade (GRADE2): like [`file_derived_grade`] but
+/// recomposed for the frame's own camera, folding the height-volume
+/// `fade_distance` cross-fade (blended LUT bytes + lerped MiddleGrey). With no
+/// active fade this is exactly the [`file_derived_grade`] composition, so the
+/// once-at-construction grade at the captured camera is reproduced
+/// byte-identically (gated).
+pub fn file_derived_grade_per_frame(
+    resolver: &GameFileResolver,
+    state: GradingSelectionState,
+    measured_average_luminance: Option<f32>,
+) -> Result<FileDerivedGrade, String> {
+    let table = load_posteffect_volume_table(resolver)?;
+    let defines = load_graphics_grading_defines(resolver)?;
+    let per_frame = table.resolve_grade_per_frame(state)?;
+    let resolved = per_frame.primary.clone();
+    let lut = color_correction_lut_from_resolver(resolver, &resolved.lut_rel_path)
+        .map_err(|e| e.to_string())?;
+    if lut.width != 1024 || lut.height != 32 {
+        return Err(format!(
+            "composed LUT {} is {}x{}, expected 1024x32",
+            resolved.lut_rel_path, lut.width, lut.height
+        ));
+    }
+    let (color_cube_rgba8, resolved, fade_note) = match &per_frame.cross_fade {
+        None => (lut_to_rgba8(&lut), resolved, String::new()),
+        Some((lower_grade, t)) => {
+            let lower_lut = color_correction_lut_from_resolver(resolver, &lower_grade.lut_rel_path)
+                .map_err(|e| e.to_string())?;
+            if lower_lut.width != 1024 || lower_lut.height != 32 {
+                return Err(format!(
+                    "cross-fade LUT {} is {}x{}, expected 1024x32",
+                    lower_grade.lut_rel_path, lower_lut.width, lower_lut.height
+                ));
+            }
+            let bytes = blend_luts_to_rgba8(&lower_lut, &lut, *t)?;
+            // MiddleGrey rides the same lerp as the LUT (one PostEffectBase
+            // state per frame).
+            let blended = ResolvedGrade {
+                value_name: resolved.value_name.clone(),
+                selection_reason: format!(
+                    "{}; ACTIVE height cross-fade: {}",
+                    resolved.selection_reason, lower_grade.selection_reason
+                ),
+                lut_rel_path: resolved.lut_rel_path.clone(),
+                middle_grey: lower_grade.middle_grey
+                    + (resolved.middle_grey - lower_grade.middle_grey) * t,
+            };
+            let note = format!(
+                "; fade t={t:.4} from '{}' (mg {:.3})",
+                lower_grade.value_name, lower_grade.middle_grey
+            );
+            (bytes, blended, note)
+        }
+    };
+    let average_luminance =
+        measured_average_luminance.unwrap_or_else(|| steady_state_average_luminance(&defines));
+    if !(average_luminance.is_finite() && average_luminance > 0.0) {
+        return Err(format!(
+            "adaptation average luminance {average_luminance} is not a positive finite value"
+        ));
+    }
+    let source_note = format!(
+        "files-first per-frame grade: {} -> lut {} (mod-resolver), MiddleGrey {:.3}, AvgLum {:.3}{fade_note}",
+        resolved.selection_reason,
+        resolved.lut_rel_path,
+        resolved.middle_grey,
+        average_luminance,
+    );
+    Ok(FileDerivedGrade {
+        resolved,
+        lut,
+        color_cube_rgba8,
+        average_luminance,
+        source_note,
+    })
+}
+
 /// Compose the full files-derived grade for a frame: select the volume, load the
 /// LUT tga and defines through the resolver, and compute the adaptation. Fails
 /// closed (naming the gap) if any file or key is missing for the modset.
@@ -707,18 +960,33 @@ posteffect_values = {
     lut = "gfx/world/colorcorrection_green.tga"
     tonemap_middlegrey = 0.3
 }
+posteffect_values = {
+    name = mid_distance
+    inherit = standard
+    lut = "gfx/world/colorcorrection_midrange.tga"
+    tonemap_middlegrey = 0.45
+}
 posteffect_volumes = {
     posteffect_height_volume = {
         name = "Base Highest"
         posteffect_values_day = max_distance
         posteffect_values_night = max_distance_night
         height = 1600
+        fade_distance = 200
+    }
+    posteffect_height_volume = {
+        name = "Base Medium"
+        posteffect_values_day = mid_distance
+        posteffect_values_night = mid_distance_night
+        height = 900
+        fade_distance = 200
     }
     posteffect_height_volume = {
         name = "Base"
         posteffect_values_day = default
         posteffect_values_night = default_night
         height = 0
+        fade_distance = 0
     }
     posteffect_volume = {
         name = EuropeandRussia
@@ -815,6 +1083,162 @@ posteffect_volumes = {
         assert!((defines.min_hdr_adjustment - 0.5).abs() < 1e-6);
         assert!((defines.max_hdr_adjustment - 1.0).abs() < 1e-6);
         assert!((steady_state_average_luminance(&defines) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gate_height_sweep_cross_fades_between_adjacent_volumes_with_file_values() {
+        // GRADE2 item gate: sweep the camera height across the Base Medium
+        // (900, fade 200) and Base Highest (1600, fade 200) floors — the same
+        // fade_distance values the shipped file carries at
+        // posteffect_volumes.txt:352/362/372 — and check the cross-fade uses
+        // ONLY those parsed file values.
+        let table = sample_table();
+        let at = |y: f32| {
+            table
+                .resolve_grade_per_frame(GradingSelectionState {
+                    camera: [200.0, y, 200.0],
+                    night: false,
+                    winter: false,
+                })
+                .expect("per-frame grade")
+        };
+        // Below every fade: pure lowest volume.
+        let low = at(500.0);
+        assert_eq!(low.primary.value_name, "default");
+        assert!(low.cross_fade.is_none());
+        // At the Base Medium floor: winner flips to mid_distance with t = 0 —
+        // the blend is exactly the lower volume, so the grade is CONTINUOUS.
+        let floor = at(900.0);
+        assert_eq!(floor.primary.value_name, "mid_distance");
+        let (lower, t) = floor.cross_fade.expect("fade active at the floor");
+        assert_eq!(lower.value_name, "default");
+        assert!(t.abs() < 1e-6, "t at floor = {t}");
+        // Mid-fade: t = (1000 - 900) / 200 = 0.5 (file height + file fade).
+        let mid = at(1000.0);
+        let (lower, t) = mid.cross_fade.expect("fade active inside the window");
+        assert_eq!(mid.primary.value_name, "mid_distance");
+        assert_eq!(lower.value_name, "default");
+        assert!((t - 0.5).abs() < 1e-6, "t mid-window = {t}");
+        // Past the fade window: pure mid_distance.
+        let past = at(1101.0);
+        assert_eq!(past.primary.value_name, "mid_distance");
+        assert!(past.cross_fade.is_none());
+        // Second boundary: 1650 -> t = (1650 - 1600)/200 = 0.25 into
+        // max_distance from mid_distance.
+        let upper = at(1650.0);
+        assert_eq!(upper.primary.value_name, "max_distance");
+        let (lower, t) = upper.cross_fade.expect("fade active above 1600");
+        assert_eq!(lower.value_name, "mid_distance");
+        assert!((t - 0.25).abs() < 1e-6, "t = {t}");
+        // The captured camera height (2958) is far above 1600 + 200: NO fade.
+        let captured = at(2958.0);
+        assert_eq!(captured.primary.value_name, "max_distance");
+        assert!(
+            captured.cross_fade.is_none(),
+            "no height fade may be active at the captured camera"
+        );
+        // MiddleGrey lerp on the file values: mid-window blend at t = 0.5
+        // between default (0.55) and mid_distance (0.45) = 0.5.
+        let (lower, t) = at(1000.0).cross_fade.unwrap();
+        let blended = lower.middle_grey
+            + (table.resolved_middle_grey("mid_distance").unwrap() - lower.middle_grey) * t;
+        assert!((blended - 0.5).abs() < 1e-6, "blended MiddleGrey {blended}");
+    }
+
+    #[test]
+    fn blend_luts_reduces_to_endpoints_bit_exactly() {
+        let make = |v: f32| ColorCorrectionLut {
+            width: 2,
+            height: 1,
+            slice_size: 1,
+            texels: vec![[v, v * 0.5, 1.0 - v], [0.25, v, 0.75]],
+        };
+        let lower = make(0.2);
+        let upper = make(0.9);
+        assert_eq!(
+            blend_luts_to_rgba8(&lower, &upper, 0.0).unwrap(),
+            lut_to_rgba8(&lower),
+            "t = 0 must be the lower LUT bit-exactly"
+        );
+        assert_eq!(
+            blend_luts_to_rgba8(&lower, &upper, 1.0).unwrap(),
+            lut_to_rgba8(&upper),
+            "t = 1 must be the upper LUT bit-exactly"
+        );
+        // Interior blend follows lut_blender.shader's lerp then quantizes.
+        let half = blend_luts_to_rgba8(&lower, &upper, 0.5).unwrap();
+        assert_eq!(
+            half[0],
+            ((0.2f32 + (0.9 - 0.2) * 0.5) * 255.0).round() as u8
+        );
+        // Shape mismatch fails closed.
+        let tiny = ColorCorrectionLut {
+            width: 1,
+            height: 1,
+            slice_size: 1,
+            texels: vec![[0.0, 0.0, 0.0]],
+        };
+        assert!(blend_luts_to_rgba8(&lower, &tiny, 0.5).is_err());
+    }
+
+    #[test]
+    fn gate_per_frame_recompose_is_byte_identical_at_captured_camera() {
+        // GRADE2 byte-noop proof: at the captured restore_gate_1 camera
+        // (2816, 2958, 1400) the per-frame recompose must reproduce the
+        // once-at-construction grade BYTE-IDENTICALLY (no fade is active at
+        // 2958, so the paths must agree exactly).
+        let game_dir = std::path::PathBuf::from(VANILLA_GAME_DIR);
+        if !game_dir.is_dir() {
+            eprintln!("skipping per-frame grade byte-noop gate: vanilla install absent");
+            return;
+        }
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let state = GradingSelectionState {
+            camera: [2816.0, 2958.0, 1400.0],
+            night: false,
+            winter: false,
+        };
+        let construction = file_derived_grade(&resolver, state, None).expect("construction grade");
+        let per_frame =
+            file_derived_grade_per_frame(&resolver, state, None).expect("per-frame grade");
+        assert_eq!(
+            per_frame.color_cube_rgba8, construction.color_cube_rgba8,
+            "per-frame LUT bytes must equal the construction grade at the captured camera"
+        );
+        assert_eq!(
+            per_frame.resolved.value_name,
+            construction.resolved.value_name
+        );
+        assert_eq!(
+            per_frame.resolved.middle_grey.to_bits(),
+            construction.resolved.middle_grey.to_bits(),
+            "MiddleGrey must be bit-identical"
+        );
+        assert_eq!(
+            per_frame.average_luminance.to_bits(),
+            construction.average_luminance.to_bits()
+        );
+        // And the shipped file's own height volumes drive a REAL cross-fade
+        // just above the Base Highest floor (1600 + 100 -> t = 0.5 with the
+        // shipped fade_distance 200 at posteffect_volumes.txt:352).
+        let fade_state = GradingSelectionState {
+            camera: [2816.0, 1700.0, 1400.0],
+            night: false,
+            winter: false,
+        };
+        let table = load_posteffect_volume_table(&resolver).expect("table");
+        let faded = table
+            .resolve_grade_per_frame(fade_state)
+            .expect("faded grade");
+        let (lower, t) = faded
+            .cross_fade
+            .expect("shipped fade_distance 200 must be active at height 1700");
+        assert_eq!(faded.primary.value_name, "max_distance");
+        assert_eq!(lower.value_name, "mid_distance");
+        assert!((t - 0.5).abs() < 1e-6, "shipped-file fade t {t}");
+        println!(
+            "per-frame grade byte-noop gate: captured camera identical; shipped fade t=0.5 at 1700"
+        );
     }
 
     #[test]

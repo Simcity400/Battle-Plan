@@ -285,18 +285,32 @@ RESULT: LUT EXACT, MiddleGrey EXACT, AverageLuminance EXACT
 
 ---
 
-## Known scope boundaries (not yet modeled)
+## Known scope boundaries
 
-- **Grade is composed once at construction**, not per drawn frame. `MapRenderer::new`
-  builds the grade for a high-altitude day view (`day_night_hour = None`,
-  `winter = false`); the live per-frame day/night passed to `draw` does not
-  recompose it. Correct for the static full-map dump this lane targets; a full
-  per-frame replay grade would recompose on camera/hour/season change.
-- **`fade_distance` transitions are ignored.** `posteffect_height_volume` /
-  `posteffect_volume` declare `fade_distance` (blends between adjacent volumes);
-  the law selects the single winning volume with no cross-fade. The captured
-  frame is not in a fade band, so this does not affect the validation, but
-  boundary frames would differ from the game.
+- **Per-frame recompose LAW implemented + gated (GRADE2, 2026-07-09); render
+  wiring pending.** `grading_law.rs` now carries the per-frame composition:
+  `resolve_grade_per_frame` selects the height volume for the frame camera and
+  folds the `fade_distance` cross-fade (shipped 200/200/0 at
+  posteffect_volumes.txt:352/362/372) — the frame's grade is
+  `lerp(lower_volume, winner, t)` with `t = (camY − winner.height) /
+  winner.fade_distance`, continuous across the floor (`t = 0` equals the lower
+  volume exactly). LUT blending uses the engine's own `lut_blender.shader`
+  law (`lerp(base, blend, vBlendFactor2)`, lut_blender.shader:94-104) on the
+  CPU (`blend_luts_to_rgba8`, endpoint-bit-exact); MiddleGrey rides the same
+  lerp. The t-anchor (fade upward from the floor) is a documented law choice —
+  the engine's C++ blend-factor source is UNTRACED; region-box `fade_distance`
+  (spatial) is parsed but NOT implemented (hard containment retained).
+  GATES: `gate_per_frame_recompose_is_byte_identical_at_captured_camera`
+  (byte-noop at the captured camera 2958 vs the once-at-construction grade +
+  a REAL shipped-file fade `t = 0.5` at height 1700);
+  `gate_height_sweep_cross_fades_between_adjacent_volumes_with_file_values`
+  (sweep across both floors, file values only);
+  `blend_luts_reduces_to_endpoints_bit_exactly`.
+  **Residual:** `MapRenderer::new` still composes ONCE at construction for the
+  high-altitude view (`RESTORE_GRADE_VIEW_CAMERA_HEIGHT = 2958`); wiring
+  `file_derived_grade_per_frame` into the render loop (LUT texture re-upload +
+  bloom re-resolve on volume change) is the remaining step, tracked in
+  FIDELITY_LEDGER §2.1.
 
 ## Residual engine-side unknowns
 

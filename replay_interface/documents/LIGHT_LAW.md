@@ -95,7 +95,7 @@ Residuals are `captured − law`, max over the 1212 mined samples.
 | `MoonDiffuseIntensity.a` | 2.5 | `MOON_INTENSITY` (line 1064) | 0 |
 | `SunSpecularIntensity` | 1.0 | `SUN_SPECULAR_INTENSITY` (line 1062) | 0 |
 | `CubemapIntensity` | 1.0 | `CUBEMAP_INTENSITY` (line 1066) | 0 |
-| `Ambient{Pos,Neg}{X,Y,Z}` | per-frame | **engine-composed** final ambient (NOT the raw `DayAmbientMap*` defines; already day/night-blended + boosted) | — |
+| `Ambient{Pos,Neg}{X,Y,Z}` | constant across the swept corpus | **FILE (AMBIENT1, 2026-07-09)**: `HSVtoRGB(AMBIENT_LIGHT_*)` — the six `AMBIENT_LIGHT_*` HSV defines (00_graphics.lua:1053-1058) through the shader's manual-input `HSVtoRGB` (`ToLinear(((Hue(H)−1)·S+1)·V)`, standardfuncsgfx.fxh:136-152) (§6b) | **0 (bit-exact, all 18 components)** |
 | `vCamPos`, `vCamLookAtDir`, `vGlobalTime`, `HdrRange`, `Shadow/FOWFadeFactor`, `MinMeshAlpha`, `NegFogMultiplier`, `GB_TextureHeight` | vary | engine runtime per-frame state (not lighting-law) | — |
 
 **Every files-derivable field reproduces its capture with residual 0** (colors
@@ -336,6 +336,50 @@ Verified exactly:
 `CubemapIntensity = CUBEMAP_INTENSITY = 1.0`. Encoded in
 `light_law.rs::diffuse_color_rgb_from_hsv_define` and
 `diffuse_color_hsv_to_linear_law_matches_captured_rgb`.
+
+### 6b. AMBIENT1 — the CB0 ambient-rig compose law (CLOSED 2026-07-09, bit-exact)
+
+The CB0 `Ambient{Pos,Neg}{X,Y,Z}` fields (offsets 272..364) are **composed from
+shipped defines**, not runtime state:
+
+```
+Ambient<face> = ToLinear( ((Hue(H) − 1) · S + 1) · V )   over AMBIENT_LIGHT_<face> = {H, S, V}
+```
+
+* Inputs: the six `AMBIENT_LIGHT_*` HSV defines, `00_graphics.lua:1053-1058`
+  (block comment "hsv color ambient light", line 1052).
+* Transform: the shader's own **manual-input** `HSVtoRGB`
+  (`standardfuncsgfx.fxh:145-152`, comment "used for manual input, converts to
+  linear"), built on `Hue` (fxh:136-142) and `ToLinear = pow(rgb, 2.2)`
+  (fxh:48). NOTE: this is the `Hue` ramp, **not** the `HuePost` path the
+  diffuse-color law (§6) uses — the two disagree on the red lane for these
+  inputs, and only the manual path matches the captured bits.
+* Validation: **bit-exact, residual 0.0 on all 18 components**, against the
+  real hour-swept session_CAPFIX2_FULL_2 CB0 samples (embedded in
+  `light_law.rs` tests), plus an end-to-end gate that parses the shipped
+  `00_graphics.lua` and reproduces the captured bits
+  (`gate_vanilla_graphics_lua_ambient_defines_compose_to_captured_rig`).
+* The rig is **hour-invariant** in the unpaused sweep (hours 1..6
+  byte-identical ambient), consistent with the compose reading no clock.
+
+**Provenance CORRECTION (supersedes the earlier reading):** this field was
+previously documented as "engine-composed final ambient (already
+day/night-blended + boosted)". That is **refuted**: the day/night ambient
+blend and `NIGHT_AMBIENT_BOOST` (constants.fxh:14) are applied **per pixel in
+the shaders** (`AmbientLight`, standardfuncsgfx.fxh:456-470, gated by the
+day/night factor), pairing the CB0 fields (day) with the `NightAmbient*`
+constants (constants.fxh:32-37) on the unit/mesh path (fxh:712-728) — or
+using the `DayAmbientMap*`/`NightAmbientMap*` constants (constants.fxh:17-29)
+on the map path with **no CB0 involvement**. Exactly as constants.fxh:31 says:
+"regular unit ambient colors set from defines. this is night". At the captured
+day state (`DayNightFactor == 0`) the in-shader blend is an exact no-op, so
+the compose above is the entire captured value.
+
+Encoded in `light_law.rs`: `hsv_to_rgb_manual_linear`,
+`cb0_ambient_rig_from_hsv_defines`,
+`ambient_light_hsv_defines_from_graphics_source` (resolver callers pass the
+mod-resolved lua text), `defines::AMBIENT_LIGHT_*_HSV`,
+`defines::NIGHT_AMBIENT`.
 
 ---
 
