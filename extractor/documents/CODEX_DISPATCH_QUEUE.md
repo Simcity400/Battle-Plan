@@ -12,7 +12,11 @@ Orchestrator-owned. Method: `documents/LANE_WORKFLOW.md`. Context brief every la
 | 1R2 | Re-review of Job-1 diff | A | — | **CLOSED** (ran, merged) |
 | 2 | Acquire/process split (or its burial) | C | — | OPEN — fork input partially in: lane-wall walls now live in every production manifest (see below); ~60/40 split says BOTH paths viable; next concrete lever = prefetch live A/B (plumbing landed 1b8ed7d66) |
 | 3 | Prefetch-dist control plumbing | — | — | IMPLEMENTED (orchestrator) 1b8ed7d66; suites green (collector 348/0, recorder_host 178+192/0, lane 114/0); Codex Mode-A gate DISPATCHED (thread in `~/.claude/codex_threads_hoi4.txt`) |
-| 4 | Confirmed-complete / bridge expected-absence design | A→C | truthful production gates | Codex design analysis DISPATCHED (same thread file); implement after verdict |
+| 4 | Confirmed-complete / bridge expected-absence design | A | — | **DESIGN CLOSED 2026-07-10** — Codex analysis REFUTED the missing-bridge premise (verified: statuses decode SOURCE/PARTIAL not BRIDGE; d43=188k rows, d69=27.7k groups captured). Design of record: `CONFIRMED_COMPLETE_DESIGN.md` (typed SourceDisposition + auto prerequisite plan + tri-state latch completion; defects first). Spawns jobs 5–7 |
+| 5 | **d47 emit defect** (adapter builds 39.5M rows, emits 0; 1,560 frame parse errors, SOURCE\|PARTIAL every frame) | C | REAL live data loss | READY — top-priority extractor defect |
+| 6 | d43/d69 chronic-flag attribution (SOURCE/PARTIAL while data flows) | A→C | truthful gates | READY after job 5 |
+| 7 | d17 war-relations segment coverage (silently absent without war_relation_bridge, unflagged) | C | zero-silent-gap | READY — anchored native reader or explicit segment accounting |
+| 8 | SourceDisposition + prerequisite-plan implementation (design §2–5) | C multi-lane | truthful confirmed-complete | AFTER jobs 5–7 |
 
 2026-07-10 lane-wall finding (orchestrator): per-domain critical-path walls (`lw_d*`) are
 POPULATED in every advancing-game production manifest (`compact_stream.lane_wall`); the earlier
