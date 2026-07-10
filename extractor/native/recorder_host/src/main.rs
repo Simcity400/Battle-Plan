@@ -1783,6 +1783,9 @@ fn repack_writer_config(
     Ok(Config {
         pid: 0,
         dll: PathBuf::new(),
+        // Repack never writes a new raw stream; the transparent reader decodes
+        // whichever storage form exists, so capture-time compression is moot.
+        stream_compression: compact_stream::StreamCompression::None,
         out_dir: repack.run_dir.clone(),
         duration_ms: 0,
         sample_ms: 0,
@@ -1933,11 +1936,29 @@ fn fold_and_repack_existing_run_dir(repack: RepackConfig) -> Result<(), String> 
             })
             .ok_or_else(|| "manifest host_finalize.stream_sha256 is invalid".to_string())?
             .to_ascii_lowercase(),
+        stored_byte_count: fs::metadata(&raw_path)
+            .map_err(|e| format!("stat compact stream failed: {e}"))?
+            .len(),
     };
-    let raw_len = fs::metadata(&raw_path)
-        .map_err(|e| format!("stat compact stream failed: {e}"))?
-        .len();
-    if raw_len != capture.byte_count {
+    let raw_len = capture.stored_byte_count;
+    let stream_is_compressed = compact_stream::detect(&raw_path)
+        .map_err(|e| format!("detect stream compression failed: {e}"))?
+        != compact_stream::StreamCompression::None;
+    if stream_is_compressed {
+        // Stored length is the compressed size; decoded integrity is enforced
+        // by the SHA-over-decoded-bytes comparison during packing. When the
+        // manifest recorded a stored size, pin it here too.
+        if let Some(recorded_stored) = host_finalize
+            .get("stream_stored_bytes")
+            .and_then(Value::as_u64)
+        {
+            if raw_len != recorded_stored {
+                return Err(format!(
+                    "compressed stream stored length {raw_len} differs from recorded stored bytes {recorded_stored}"
+                ));
+            }
+        }
+    } else if raw_len != capture.byte_count {
         return Err(format!(
             "compact stream length {raw_len} differs from recorded capture bytes {}",
             capture.byte_count
@@ -27999,6 +28020,8 @@ mod tests {
         let capture = PipeCapture {
             byte_count: raw.len() as u64,
             sha256: to_hex(&Sha256::digest(&raw)),
+            // Raw fixture: stored == decoded.
+            stored_byte_count: raw.len() as u64,
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",
