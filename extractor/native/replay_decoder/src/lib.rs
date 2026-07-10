@@ -34,8 +34,8 @@
 //! `O(current fold state + one hour's snapshot)`, independent of stream length.
 //! (The container source is the one exception: it materializes the verified
 //! stream entry in RAM first — see [`open`] — because the container reader has
-//! no streaming-entry API yet. Use a raw `collector_stream.bin` for multi-GiB
-//! fold passes.)
+//! no streaming-entry API yet. Use a standalone raw or zstd `collector_stream.bin`
+//! for large fold passes.)
 //!
 //! # Example (a `replay_core` consumer)
 //!
@@ -57,8 +57,7 @@
 //! ```
 
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::File;
-use std::io::{self, BufReader, Cursor, Read};
+use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use compact_contract::{
@@ -287,7 +286,7 @@ pub struct OpenOptions {
 /// [`seek_to_hour`], which re-opens the stream to re-fold from a seek point.
 #[derive(Debug, Clone)]
 pub enum Source {
-    /// A raw `collector_stream.bin` (starts with `H4CR`).
+    /// A raw or zstd-compressed collector_stream.bin (decodes to H4CR).
     StreamFile(PathBuf),
     /// A `.battleplan` container (its `collector_compact_stream` entry is used).
     Container(PathBuf),
@@ -298,7 +297,7 @@ impl Source {
     /// filename), exactly as the `fold_check` gate does.
     pub fn detect(path: impl AsRef<Path>) -> Result<Source, OpenError> {
         let path = path.as_ref();
-        let mut f = File::open(path)?;
+        let mut f = compact_stream::open(path)?;
         let mut magic = [0u8; 4];
         let read = read_up_to(&mut f, &mut magic)?;
         if read >= 4 && &magic == compact_contract::COMPACT_RECORD_MAGIC {
@@ -307,7 +306,7 @@ impl Source {
             Ok(Source::Container(path.to_path_buf()))
         } else {
             Err(OpenError::UnrecognizedInput(format!(
-                "{}: leading bytes {:02x?}; expected an H4CR stream or a .battleplan container",
+                "{}: decoded leading bytes {:02x?}; expected an H4CR stream or a .battleplan container",
                 path.display(),
                 &magic[..read.min(4)]
             )))
@@ -318,16 +317,18 @@ impl Source {
     pub fn open_cursor(&self, opts: &OpenOptions) -> Result<HourCursor, OpenError> {
         match self {
             Source::StreamFile(path) => {
-                let file = File::open(path)?;
-                let total_len = file.metadata()?.len();
+                let file = compact_stream::open(path)?;
+                let compressed = file.compression() == compact_stream::StreamCompression::Zstd;
+                let total_len = if compressed { 0 } else { file.encoded_len() };
                 let game_id = opts
                     .game_id
                     .clone()
                     .unwrap_or_else(|| DEFAULT_GAME_ID.to_string());
-                Ok(HourCursor::from_reader(
-                    Box::new(BufReader::with_capacity(CHUNK, file)),
+                Ok(HourCursor::from_reader_compressed(
+                    Box::new(file),
                     total_len,
                     game_id,
+                    compressed,
                 ))
             }
             Source::Container(path) => {
@@ -443,6 +444,8 @@ pub struct HourCursor {
     chunk: Vec<u8>,
     /// Absolute decoded-stream offset of `carry[0]` (bytes already drained).
     processed: u64,
+    /// Total decoded bytes pulled from the reader (needed when zstd hides length).
+    decoded_read: u64,
     total_len: u64,
     ready: VecDeque<WorldHour>,
     /// DOMAIN_DATA counts since the last FRAME_END (the domains feeding the hour
@@ -452,6 +455,8 @@ pub struct HourCursor {
     meta: StreamMeta,
     /// EOF or a hard framing stop reached; no more records will be produced.
     done: bool,
+    /// Underlying reader is a checksummed zstd stream (see `from_reader_compressed`).
+    compressed: bool,
     // --- index building (free during a normal pass) ---
     /// Decoded offset of the first record of the hour currently being assembled.
     cur_hour_start: u64,
@@ -461,6 +466,20 @@ pub struct HourCursor {
 
 impl HourCursor {
     fn from_reader(reader: Box<dyn Read>, total_len: u64, game_id: String) -> HourCursor {
+        Self::from_reader_compressed(reader, total_len, game_id, false)
+    }
+
+    /// `compressed` = the underlying reader is a checksummed zstd stream. On such
+    /// a source an H4CR framing stop BEFORE physical EOF must not end gracefully
+    /// (the zstd footer + content checksum would never be validated); the cursor
+    /// drains to EOF to force that check and hard-errors. Raw sources keep the
+    /// tolerant torn-tail behavior the deep-war corpus relies on.
+    fn from_reader_compressed(
+        reader: Box<dyn Read>,
+        total_len: u64,
+        game_id: String,
+        compressed: bool,
+    ) -> HourCursor {
         HourCursor {
             reader,
             fold: WorldFold::new(game_id.clone()),
@@ -468,6 +487,7 @@ impl HourCursor {
             pos: 0,
             chunk: vec![0u8; CHUNK],
             processed: 0,
+            decoded_read: 0,
             total_len,
             ready: VecDeque::new(),
             cur_counts: BTreeMap::new(),
@@ -477,9 +497,24 @@ impl HourCursor {
             },
             meta: StreamMeta::new(game_id),
             done: false,
+            compressed,
             cur_hour_start: 0,
             index_hours: Vec::new(),
             first_hour_seen: false,
+        }
+    }
+
+    /// Drain the underlying reader to physical EOF, discarding decoded bytes but
+    /// forcing a checksummed zstd source to validate its final frame footer. Any
+    /// storage-layer corruption surfaces here as the error it should have been.
+    fn drain_verify(&mut self) -> Result<u64, DecodeError> {
+        let mut sink = [0u8; 64 * 1024];
+        let mut residual = 0u64;
+        loop {
+            match self.reader.read(&mut sink).map_err(DecodeError::Io)? {
+                0 => return Ok(residual),
+                n => residual += n as u64,
+            }
         }
     }
 
@@ -552,6 +587,20 @@ impl HourCursor {
                     Ok(h) => h,
                     Err(e) => {
                         self.stats.stop_reason = Some(framing_stop_message(e, record_start_abs));
+                        if self.compressed {
+                            // A framing stop before physical EOF means the zstd
+                            // footer + content checksum were never validated.
+                            // Drain to EOF to force that check: corruption of the
+                            // decoded content fails the checksum here; if the
+                            // storage layer is intact, the framing stop itself is
+                            // a hard error (valid-checksum bytes that are
+                            // H4CR-invalid = capture-time garbage).
+                            let residual = self.drain_verify()?;
+                            self.finalize_done();
+                            return Err(DecodeError::Io(compact_stream::framing_stop_error(
+                                residual,
+                            )));
+                        }
                         self.finalize_done();
                         return Ok(());
                     }
@@ -607,6 +656,7 @@ impl HourCursor {
                 self.finalize_done();
                 return Ok(());
             }
+            self.decoded_read = self.decoded_read.saturating_add(n as u64);
             self.carry.extend_from_slice(&self.chunk[..n]);
         }
     }
@@ -624,8 +674,12 @@ impl HourCursor {
     /// Record the final byte/hour accounting and mark the cursor exhausted.
     fn finalize_done(&mut self) {
         self.compact_carry();
+        if self.total_len == 0 {
+            self.stats.stream_bytes = self.decoded_read;
+        }
         self.stats.bytes_folded = self.processed;
-        self.stats.truncated_tail_bytes = self.total_len.saturating_sub(self.processed);
+        self.stats.truncated_tail_bytes =
+            self.stats.stream_bytes.saturating_sub(self.processed);
         self.stats.hours_emitted = self.fold.emitted_hours_count() as u64;
         self.done = true;
     }
@@ -852,6 +906,7 @@ fn skip_decoded_bytes(cursor: &mut HourCursor, offset: u64) -> Result<(), Decode
             break;
         }
         remaining -= got as u64;
+        cursor.decoded_read = cursor.decoded_read.saturating_add(got as u64);
     }
     cursor.processed = offset - remaining;
     Ok(())

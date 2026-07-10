@@ -10,6 +10,29 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
 };
 use std::io::Cursor;
+use std::path::PathBuf;
+
+struct TmpDir(PathBuf);
+impl TmpDir {
+    fn new(tag: &str) -> Self {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "hoi4_fold_check_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for TmpDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 // --- synthetic stream builders -------------------------------------------
 
@@ -298,6 +321,34 @@ fn truncated_tail_reports_complete_hours_only() {
     assert!(
         run.totals.truncated_tail_bytes > 0,
         "incomplete tail is reported"
+    );
+}
+
+#[test]
+fn torn_zstd_frame_is_a_hard_fold_check_error() {
+    let dir = TmpDir::new("torn_zstd");
+    let (stream, _) = synthetic_stream();
+    let raw_path = dir.0.join("raw.bin");
+    let zstd_path = dir.0.join("compressed.bin");
+    std::fs::write(&raw_path, stream).unwrap();
+    compact_stream::encode_file(
+        &raw_path,
+        &zstd_path,
+        compact_stream::StreamCompression::Zstd,
+    )
+    .unwrap();
+
+    let mut stored = std::fs::read(&zstd_path).unwrap();
+    stored.pop().expect("checksummed zstd frame is non-empty");
+    std::fs::write(&zstd_path, stored).unwrap();
+
+    let err = match run_input(&zstd_path) {
+        Ok(_) => panic!("fold_check must reject a torn zstd frame"),
+        Err(err) => err,
+    };
+    assert!(
+        err.contains("incomplete zstd frame"),
+        "unexpected error: {err}"
     );
 }
 

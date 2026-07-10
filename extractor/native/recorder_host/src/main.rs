@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{c_char, c_void, OsStr};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -723,6 +723,9 @@ struct Config {
     /// Passed through the JSON control block to the injected DLL as
     /// `reader_concurrency`, the same channel as `extraction_perf_gate`.
     reader_concurrency: u32,
+    /// File-boundary storage encoding for collector_stream.bin. The decoded bytes
+    /// remain the exact collector-emitted H4CR stream.
+    stream_compression: compact_stream::StreamCompression,
     compression_profile: CompressionProfile,
     /// Optional pre-built static artifacts to pack into the production container.
     /// Each entry names a well-known artifact and the on-disk path to its JSON
@@ -1115,8 +1118,10 @@ fn run() -> Result<(), String> {
     let capture = {
         let pipe_name = pipe_name.clone();
         let raw_path = raw_path.clone();
-        let pipe_thread =
-            thread::spawn(move || capture_pipe_to_file(&pipe_name, pipe_timeout_ms, &raw_path));
+        let stream_compression = cfg.stream_compression;
+        let pipe_thread = thread::spawn(move || {
+            capture_pipe_to_file(&pipe_name, pipe_timeout_ms, &raw_path, stream_compression)
+        });
         attach_hook(cfg.pid, &cfg.dll, hook_hold_ms)?;
         pipe_thread
             .join()
@@ -1203,11 +1208,9 @@ fn run() -> Result<(), String> {
             )
         }
         StreamFormat::Compact => {
-            // Memory-map the on-disk stream so the full summarize pass runs without a
-            // session-proportional heap allocation (file-backed, evictable pages).
-            let stream_map = recorder_host::mmap::Mmap::open(&raw_path)
-                .map_err(|e| format!("map raw stream failed: {e}"))?;
-            let summary = summarize_compact_stream(&stream_map);
+            // Decode raw or zstd storage record-by-record. Peak memory is bounded
+            // by the largest H4CR record rather than the full capture.
+            let summary = summarize_compact_stream_file(&raw_path)?;
             let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
             let coverage_errors = compact_domain_coverage_errors(&summary, &expected_domain_ids);
             let gate_status = compact_gate_status(&summary);
@@ -1341,6 +1344,15 @@ fn run() -> Result<(), String> {
         obj.insert(
             "production_profile".to_string(),
             production_profile_summary.as_json(),
+        );
+        obj.insert(
+            "stream_storage".to_string(),
+            json!({
+                "compression": cfg.stream_compression.as_str(),
+                "decoded_bytes": capture.byte_count,
+                "stored_bytes": capture.stored_byte_count,
+                "decoded_sha256": capture.sha256,
+            }),
         );
     }
     let pretty = serde_json::to_vec_pretty(&manifest)
@@ -2022,6 +2034,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut static_gfx_icon_manifest: Option<PathBuf> = None;
     let mut replay_zstd_level: Option<i32> = None;
     let mut replay_zstd_window_log: Option<u32> = None;
+    let mut stream_compression: Option<compact_stream::StreamCompression> = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -2174,6 +2187,15 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 hour_latch_queue_cap =
                     parse_u32(args.get(i), "--hour-latch-queue-cap")?.clamp(1, 65_535);
             }
+            "--stream-compression" => {
+                i += 1;
+                let value = required(args.get(i), "--stream-compression")?;
+                stream_compression = Some(
+                    compact_stream::StreamCompression::parse(&value).ok_or_else(|| {
+                        format!("invalid --stream-compression {value}; expected zstd|none")
+                    })?,
+                );
+            }
             "--replay-zstd-level" => {
                 i += 1;
                 replay_zstd_level = Some(parse_i32(args.get(i), "--replay-zstd-level")?);
@@ -2267,6 +2289,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 }
             })
         })
+<<<<<<< HEAD
         .unwrap_or(StreamFormat::Json);
     if hour_latch_enabled && stream_format != StreamFormat::Compact {
         return Err(
@@ -2274,10 +2297,33 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 .to_string(),
         );
     }
+=======
+        .unwrap_or(if production {
+            StreamFormat::Compact
+        } else {
+            StreamFormat::Json
+        });
+>>>>>>> lane/production-stream-size
     // `--production` (legacy) and either profile both expand the production
     // domain set. `production` here means "capture the production domain profile
     // + its required static-artifact accounting", which the debug profile also
     // wants.
+    // Raw stream storage is profile-aware and independently overridable.
+    let stream_compression = stream_compression.unwrap_or(match profile {
+        Some(compact_contract::CaptureProfile::Production) => {
+            compact_stream::StreamCompression::Zstd
+        }
+        Some(compact_contract::CaptureProfile::Debug) => compact_stream::StreamCompression::None,
+        None if production => compact_stream::StreamCompression::Zstd,
+        None => compact_stream::StreamCompression::None,
+    });
+    if stream_format != StreamFormat::Compact
+        && stream_compression != compact_stream::StreamCompression::None
+    {
+        return Err(
+            "--stream-compression zstd requires --stream-format compact".to_string(),
+        );
+    }
     let production = production
         || preset
             .map(|preset| preset.use_production_domains)
@@ -2346,6 +2392,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         d48_emit_mode,
         d53_relation_read_mode,
         reader_concurrency,
+        stream_compression,
         compression_profile,
         static_artifacts: {
             let mut requested = Vec::new();
@@ -2511,7 +2558,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -2539,8 +2586,14 @@ fn usage() -> String {
       min_game_hours=48. debug => compact stream, production domain set,\n\
       compact_country_frame=off (full provenance), RC counters ON, sidecar logs\n\
       ON, min_game_hours=12. Any explicit individual flag OVERRIDES its preset\n\
-      value. Omitting --profile is exact legacy behavior (no preset applied).\n\
+      value. Omitting --profile applies no preset; plain probes stay JSON/raw,\n\
+      while legacy --production resolves to compact/zstd.\n\
       (--stream-format json is a divergent dead path and is never a profile.)\n\
+      \n\
+      Raw stream compression: collector_stream.bin defaults to zstd for\n\
+      --profile production and legacy --production, and to raw for debug /\n\
+      non-production probes. --stream-compression zstd|none overrides either.\n\
+      Compression is file-boundary-only; decoded H4CR and fold semantics do not change.\n\
       \n\
       Replay compression: --replay-zstd-level and --replay-zstd-window-log tune\n\
       the .battleplan Zstandard writer. Defaults preserve the container-v2\n\
@@ -3886,6 +3939,8 @@ fn write_native_replay_container_streaming(
     let streaming_entries = vec![StreamingFileEntry {
         path: stream_entry_path.clone(),
         file_path: raw_path,
+        source_compression: cfg.stream_compression,
+        decoded_len: Some(capture.byte_count),
         role: "collector_compact_stream",
         hour_index: None,
         sha256: Some(capture.sha256.clone()),
@@ -3958,6 +4013,7 @@ fn build_host_finalize_telemetry(
     let mut block = json!({
         "streaming": true,
         "stream_bytes": capture.byte_count,
+        "stream_stored_bytes": capture.stored_byte_count,
         "stream_sha256": capture.sha256,
     });
     let obj = block.as_object_mut().unwrap();
@@ -4602,7 +4658,10 @@ fn target_thread_ids(pid: Dword, primary_thread_id: Dword) -> Vec<Dword> {
 /// packed stream entry is later verified (by re-reading from disk) to hash to
 /// exactly this value.
 struct PipeCapture {
+    /// Exact decoded bytes received from the collector pipe.
     byte_count: u64,
+    /// Bytes occupied by collector_stream.bin after file-boundary encoding.
+    stored_byte_count: u64,
     sha256: String,
 }
 
@@ -4630,6 +4689,7 @@ fn capture_pipe_to_file(
     pipe_name: &str,
     timeout_ms: u64,
     out_path: &Path,
+    compression: compact_stream::StreamCompression,
 ) -> Result<PipeCapture, String> {
     let pipe_wide = wide(OsStr::new(pipe_name));
     let handle = unsafe {
@@ -4669,16 +4729,15 @@ fn capture_pipe_to_file(
         thread::sleep(Duration::from_millis(25));
     }
 
-    let file = match fs::File::create(out_path) {
-        Ok(f) => f,
+    let mut writer = match compact_stream::StreamWriter::create(out_path, compression) {
+        Ok(writer) => writer,
         Err(e) => {
             unsafe {
                 CloseHandle(handle);
             }
-            return Err(format!("create raw stream file failed: {e}"));
+            return Err(format!("create stream file failed: {e}"));
         }
     };
-    let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
     let mut hasher = Sha256::new();
     let mut total: u64 = 0;
     let read_deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -4727,10 +4786,9 @@ fn capture_pipe_to_file(
     unsafe {
         CloseHandle(handle);
     }
-    if let Err(e) = writer.flush() {
-        return Err(format!("flush raw stream failed: {e}"));
+    if let Err(e) = writer.finish() {
+        return Err(format!("finish stream file failed: {e}"));
     }
-    drop(writer);
     if let Some(e) = write_err {
         return Err(e);
     }
@@ -4740,8 +4798,12 @@ fn capture_pipe_to_file(
     if total == 0 {
         Err("collector pipe returned no bytes".to_string())
     } else {
+        let stored_byte_count = fs::metadata(out_path)
+            .map_err(|e| format!("stat stream file failed: {e}"))?
+            .len();
         Ok(PipeCapture {
             byte_count: total,
+            stored_byte_count,
             sha256: to_hex(&hasher.finalize()),
         })
     }
@@ -4816,25 +4878,146 @@ fn summarize_frames(raw: &[u8]) -> Summary {
     summary
 }
 
+#[cfg(test)]
 fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
     let mut summary = CompactSummary {
         total_bytes: raw.len(),
         ..CompactSummary::default()
     };
-    let mut offset = 0usize;
-    let mut previous_sequence: Option<u64> = None;
-    // the game campaign hour counts are small enough that this finalized-hour set stays bounded.
-    let mut finalized_hours: BTreeSet<i32> = BTreeSet::new();
-    let mut delta_baselines_seen: BTreeSet<u16> = BTreeSet::new();
-    while offset < raw.len() {
-        let remaining = raw.len().saturating_sub(offset);
+    let mut previous_sequence = None;
+    let mut finalized_hours = BTreeSet::new();
+    let mut delta_baselines_seen = BTreeSet::new();
+    summarize_compact_stream_chunk(
+        raw,
+        0,
+        &mut summary,
+        &mut previous_sequence,
+        &mut finalized_hours,
+        &mut delta_baselines_seen,
+    );
+    finalize_compact_summary(summary)
+}
+
+fn summarize_compact_stream_file(path: &Path) -> Result<CompactSummary, String> {
+    let mut reader =
+        compact_stream::open(path).map_err(|e| format!("open compact stream failed: {e}"))?;
+    let mut summary = CompactSummary::default();
+    let mut previous_sequence = None;
+    let mut finalized_hours = BTreeSet::new();
+    let mut delta_baselines_seen = BTreeSet::new();
+    let mut decoded_offset = 0usize;
+
+    loop {
+        let mut header = [0u8; COMPACT_RECORD_HEADER_LEN];
+        let header_bytes = read_stream_up_to(&mut reader, &mut header)
+            .map_err(|e| format!("read compact stream header failed: {e}"))?;
+        if header_bytes == 0 {
+            break;
+        }
+        if header_bytes < COMPACT_RECORD_HEADER_LEN {
+            summarize_compact_stream_chunk(
+                &header[..header_bytes],
+                decoded_offset,
+                &mut summary,
+                &mut previous_sequence,
+                &mut finalized_hours,
+                &mut delta_baselines_seen,
+            );
+            decoded_offset = decoded_offset.saturating_add(header_bytes);
+            break;
+        }
+
+        let framing_valid = &header[0..4] == COMPACT_RECORD_MAGIC
+            && read_u16_le(&header, 4) == COMPACT_RECORD_VERSION
+            && read_u16_le(&header, 6) as usize == COMPACT_RECORD_HEADER_LEN;
+        if !framing_valid {
+            summarize_compact_stream_chunk(
+                &header,
+                decoded_offset,
+                &mut summary,
+                &mut previous_sequence,
+                &mut finalized_hours,
+                &mut delta_baselines_seen,
+            );
+            decoded_offset = decoded_offset.saturating_add(header_bytes);
+            decoded_offset = decoded_offset.saturating_add(
+                std::io::copy(&mut reader, &mut std::io::sink())
+                    .map_err(|e| format!("drain malformed compact stream failed: {e}"))?
+                    as usize,
+            );
+            break;
+        }
+
+        let payload_len = read_u32_le(&header, 24) as usize;
+        let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+        let mut record = Vec::new();
+        record
+            .try_reserve_exact(record_len)
+            .map_err(|e| format!("reserve compact record of {record_len} bytes failed: {e}"))?;
+        record.extend_from_slice(&header);
+        record.resize(record_len, 0);
+        let payload_bytes = read_stream_up_to(
+            &mut reader,
+            &mut record[COMPACT_RECORD_HEADER_LEN..record_len],
+        )
+        .map_err(|e| format!("read compact stream payload failed: {e}"))?;
+        let available_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_bytes);
+        summarize_compact_stream_chunk(
+            &record[..available_len],
+            decoded_offset,
+            &mut summary,
+            &mut previous_sequence,
+            &mut finalized_hours,
+            &mut delta_baselines_seen,
+        );
+        decoded_offset = decoded_offset.saturating_add(available_len);
+        if payload_bytes < payload_len {
+            break;
+        }
+    }
+
+    summary.total_bytes = decoded_offset;
+    Ok(finalize_compact_summary(summary))
+}
+
+fn read_stream_up_to(reader: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
+fn finalize_compact_summary(mut summary: CompactSummary) -> CompactSummary {
+    summary.unique_hours = summary.frame_end_hour_counts.keys().copied().collect();
+    summary.first_hour = summary.unique_hours.first().copied();
+    summary.last_hour = summary.unique_hours.last().copied();
+    summary.skipped_hours = skipped_hours(&summary.unique_hours);
+    summary
+}
+
+fn summarize_compact_stream_chunk(
+    raw: &[u8],
+    offset_base: usize,
+    summary: &mut CompactSummary,
+    previous_sequence: &mut Option<u64>,
+    finalized_hours: &mut BTreeSet<i32>,
+    delta_baselines_seen: &mut BTreeSet<u16>,
+) {
+    let mut cursor = 0usize;
+    while cursor < raw.len() {
+        let offset = offset_base.saturating_add(cursor);
+        let remaining = raw.len().saturating_sub(cursor);
         if remaining < COMPACT_RECORD_HEADER_LEN {
             summary.parse_errors.push(format!(
                 "offset {offset}: truncated header with {remaining} byte(s) remaining"
             ));
             break;
         }
-        let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
+        let header = &raw[cursor..cursor + COMPACT_RECORD_HEADER_LEN];
         if &header[0..4] != COMPACT_RECORD_MAGIC {
             summary
                 .parse_errors
@@ -4868,15 +5051,15 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
             ));
             break;
         }
-        if let Some(previous) = previous_sequence {
+        if let Some(previous) = *previous_sequence {
             if sequence <= previous {
                 summary.ordering_errors.push(format!(
                     "offset {offset}: sequence {sequence} did not advance past {previous}"
                 ));
             }
         }
-        previous_sequence = Some(sequence);
-        let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
+        *previous_sequence = Some(sequence);
+        let payload_start = cursor + COMPACT_RECORD_HEADER_LEN;
         let payload_end = payload_start + payload_len;
         let payload = &raw[payload_start..payload_end];
 
@@ -4891,11 +5074,11 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                 domain_id,
                 record_flags,
                 payload,
-                &mut summary,
+                summary,
             );
             // MUST advance past this record before `continue` (the normal
             // advance at the loop tail is skipped) or the decode loops forever.
-            offset = offset.saturating_add(record_len);
+            cursor = cursor.saturating_add(record_len);
             continue;
         }
 
@@ -4911,7 +5094,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
         {
             summary.late_records_after_frame_end =
                 summary.late_records_after_frame_end.saturating_add(1);
-            add_compact_domain_problem(&mut summary, domain_id, "late_record_after_frame_end", 1);
+            add_compact_domain_problem(summary, domain_id, "late_record_after_frame_end", 1);
         }
         match record_type {
             COMPACT_RECORD_TYPE_DOMAIN_PERF => {
@@ -4928,7 +5111,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     let unit_count = read_u32_le(payload, 24) as u64;
                     let changed_unit_count = read_u32_le(payload, 28) as u64;
                     let status_flags = read_u32_le(payload, 32);
-                    add_compact_global_status_flags(&mut summary, domain_id, status_flags);
+                    add_compact_global_status_flags(summary, domain_id, status_flags);
                     *summary
                         .per_hour_perf_domain_counts
                         .entry(game_hour_raw)
@@ -4959,7 +5142,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         domain_id,
                         record_flags,
                         payload,
-                        &mut summary,
+                        summary,
                     );
                 }
             }
@@ -4990,247 +5173,247 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         .insert(game_hour_raw);
                 }
                 track_delta_baseline_for_summary(
-                    &mut summary,
-                    &mut delta_baselines_seen,
+                    summary,
+                    delta_baselines_seen,
                     domain_id,
                     payload,
                 );
                 match domain_id {
-                    10 => decode_compact_fuel_data_payload(offset, payload, &mut summary),
-                    11 => decode_compact_production_data_payload(offset, payload, &mut summary),
-                    12 => decode_compact_focus_data_payload(offset, payload, &mut summary),
-                    13 => decode_compact_tech_data_payload(offset, payload, &mut summary),
-                    14 => decode_compact_politics_data_payload(offset, payload, &mut summary),
+                    10 => decode_compact_fuel_data_payload(offset, payload, summary),
+                    11 => decode_compact_production_data_payload(offset, payload, summary),
+                    12 => decode_compact_focus_data_payload(offset, payload, summary),
+                    13 => decode_compact_tech_data_payload(offset, payload, summary),
+                    14 => decode_compact_politics_data_payload(offset, payload, summary),
                     15 => decode_compact_politics_residuals_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
-                    16 => decode_compact_decisions_data_payload(offset, payload, &mut summary),
-                    17 => decode_compact_diplomacy_data_payload(offset, payload, &mut summary),
+                    16 => decode_compact_decisions_data_payload(offset, payload, summary),
+                    17 => decode_compact_diplomacy_data_payload(offset, payload, summary),
                     18 => {
-                        decode_compact_country_identity_data_payload(offset, payload, &mut summary)
+                        decode_compact_country_identity_data_payload(offset, payload, summary)
                     }
-                    20 => decode_compact_divisions_data_payload(offset, payload, &mut summary),
-                    21 => decode_compact_land_combats_data_payload(offset, payload, &mut summary),
-                    22 => decode_compact_map_control_data_payload(offset, payload, &mut summary),
-                    23 => decode_compact_map_detail_data_payload(offset, payload, &mut summary),
-                    24 => decode_compact_weather_data_payload(offset, payload, &mut summary),
+                    20 => decode_compact_divisions_data_payload(offset, payload, summary),
+                    21 => decode_compact_land_combats_data_payload(offset, payload, summary),
+                    22 => decode_compact_map_control_data_payload(offset, payload, summary),
+                    23 => decode_compact_map_detail_data_payload(offset, payload, summary),
+                    24 => decode_compact_weather_data_payload(offset, payload, summary),
                     26 => decode_compact_division_equipment_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
-                    27 => decode_compact_army_orders_data_payload(offset, payload, &mut summary),
-                    28 => decode_compact_oob_command_data_payload(offset, payload, &mut summary),
-                    29 => decode_compact_ships_data_payload(offset, payload, &mut summary),
-                    30 => decode_compact_air_wings_data_payload(offset, payload, &mut summary),
+                    27 => decode_compact_army_orders_data_payload(offset, payload, summary),
+                    28 => decode_compact_oob_command_data_payload(offset, payload, summary),
+                    29 => decode_compact_ships_data_payload(offset, payload, summary),
+                    30 => decode_compact_air_wings_data_payload(offset, payload, summary),
                     31 => decode_compact_air_region_activity_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
                     32 => {
-                        decode_compact_air_wing_loadouts_data_payload(offset, payload, &mut summary)
+                        decode_compact_air_wing_loadouts_data_payload(offset, payload, summary)
                     }
                     33 => {
-                        decode_compact_air_variant_defs_data_payload(offset, payload, &mut summary)
+                        decode_compact_air_variant_defs_data_payload(offset, payload, summary)
                     }
                     34 => {
-                        decode_compact_air_base_status_data_payload(offset, payload, &mut summary)
+                        decode_compact_air_base_status_data_payload(offset, payload, summary)
                     }
                     35 => {
-                        decode_compact_air_variant_stats_data_payload(offset, payload, &mut summary)
+                        decode_compact_air_variant_stats_data_payload(offset, payload, summary)
                     }
                     36 => decode_compact_air_variant_reserves_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
                     37 => decode_compact_stockpile_variant_defs_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
                     38 => decode_compact_air_superiority_inputs_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
                     39 => decode_compact_air_variant_upgrades_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
                     40 => decode_compact_stockpile_variant_upgrades_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
-                    41 => decode_compact_projects_data_payload(offset, payload, &mut summary),
+                    41 => decode_compact_projects_data_payload(offset, payload, summary),
                     42 => decode_compact_air_combat_losses_live_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
-                    43 => decode_compact_market_trade_data_payload(offset, payload, &mut summary),
+                    43 => decode_compact_market_trade_data_payload(offset, payload, summary),
                     44 => decode_compact_supply_logistics_attrition_data_payload(
                         offset,
                         payload,
-                        &mut summary,
+                        summary,
                     ),
                     COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE => {
                         decode_compact_frd_depth_data_payload(
                             offset,
                             payload,
                             record_flags,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES => {
                         decode_compact_air_variant_archetypes_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE => {
                         decode_compact_characters_leaders_cabinet_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE => {
                         decode_compact_construction_buildings_state_damage_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE => {
                         decode_compact_scripted_state_flags_variables_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_OCCUPATION_RESISTANCE_COMPLIANCE_LIVE => {
                         decode_compact_occupation_resistance_compliance_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE => {
                         decode_compact_diplomacy_intel_operatives_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE => {
                         decode_compact_army_battleplans_depth_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE => {
                         decode_compact_land_combat_detail_events_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE => {
                         decode_compact_naval_missions_status_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE => {
                         decode_compact_naval_combat_lifecycle_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE => {
                         decode_compact_naval_combat_members_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE => {
                         decode_compact_session_multiplayer_metadata_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE => {
                         decode_compact_capitulation_war_state_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE => {
                         decode_compact_air_loss_stats_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE => {
                         decode_compact_hub_motorization_live_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE => {
                         decode_compact_country_core_scalars_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_DELAYED_EVENTS_LIVE => {
-                        decode_compact_delayed_events_data_payload(offset, payload, &mut summary)
+                        decode_compact_delayed_events_data_payload(offset, payload, summary)
                     }
                     COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE => {
                         decode_compact_special_project_programs_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE => {
                         decode_compact_occupation_state_extras_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE => {
                         decode_compact_country_dynamic_modifiers_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     COMPACT_DOMAIN_SESSION_HEADER_LIVE => {
-                        decode_compact_session_header_data_payload(offset, payload, &mut summary)
+                        decode_compact_session_header_data_payload(offset, payload, summary)
                     }
                     COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE => {
                         decode_compact_tech_sharing_groups_data_payload(
                             offset,
                             payload,
-                            &mut summary,
+                            summary,
                         )
                     }
                     other => summary.parse_errors.push(format!(
@@ -5264,13 +5447,8 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     .push(format!("offset {offset}: unknown record type {other}"));
             }
         }
-        offset = offset.saturating_add(record_len);
+        cursor = cursor.saturating_add(record_len);
     }
-    summary.unique_hours = summary.frame_end_hour_counts.keys().copied().collect();
-    summary.first_hour = summary.unique_hours.first().copied();
-    summary.last_hour = summary.unique_hours.last().copied();
-    summary.skipped_hours = skipped_hours(&summary.unique_hours);
-    summary
 }
 
 fn decode_compact_fuel_data_payload(offset: usize, payload: &[u8], summary: &mut CompactSummary) {
@@ -17596,6 +17774,50 @@ mod tests {
     }
 
     #[test]
+    fn compressed_file_summary_matches_raw_slice_summary() {
+        let dir = TmpDir::new("compressed_summary");
+        let raw_path = dir.join("raw.bin");
+        let encoded_path = dir.join("collector_stream.bin");
+        let mut raw = Vec::new();
+        let frame_end_payload = vec![0u8; 32];
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            101,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload,
+        );
+        fs::write(&raw_path, &raw).unwrap();
+        compact_stream::encode_file(
+            &raw_path,
+            &encoded_path,
+            compact_stream::StreamCompression::Zstd,
+        )
+        .unwrap();
+
+        let expected = summarize_compact_stream(&raw);
+        let actual = summarize_compact_stream_file(&encoded_path).unwrap();
+        assert_eq!(actual.total_bytes, expected.total_bytes);
+        assert_eq!(actual.record_count, expected.record_count);
+        assert_eq!(actual.frame_end_record_count, expected.frame_end_record_count);
+        assert_eq!(actual.total_payload_bytes, expected.total_payload_bytes);
+        assert_eq!(actual.unique_hours, expected.unique_hours);
+        assert_eq!(actual.frame_end_hour_counts, expected.frame_end_hour_counts);
+        assert_eq!(actual.ordering_errors, expected.ordering_errors);
+        assert_eq!(actual.parse_errors, expected.parse_errors);
+        assert_eq!(actual.frame_times_us, expected.frame_times_us);
+    }
+
+    #[test]
     fn embedded_manifest_pre_pack_copy_has_host_finalize_marker() {
         let dir = TmpDir::new("manifest_prepack");
         let manifest_path = dir.join("native_session_manifest.json");
@@ -17606,6 +17828,7 @@ mod tests {
         .unwrap();
         let capture = PipeCapture {
             byte_count: 123,
+            stored_byte_count: 45,
             sha256: "abc123".to_string(),
         };
         let fold_stats = recorder_host::stream_fold::FoldStreamStats {
@@ -27395,6 +27618,7 @@ mod tests {
             d48_emit_mode: D48EmitMode::Delta,
             d53_relation_read_mode: D53RelationReadMode::Offsets,
             reader_concurrency: 0,
+            stream_compression: compact_stream::StreamCompression::None,
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
             skip_host_fold: false,
@@ -27553,6 +27777,7 @@ mod tests {
         fs::write(&raw_path, &raw).unwrap();
         let capture = PipeCapture {
             byte_count: raw.len() as u64,
+            stored_byte_count: raw.len() as u64,
             sha256: to_hex(&Sha256::digest(&raw)),
         };
 
@@ -27666,6 +27891,7 @@ mod tests {
         fs::write(&raw_path, &raw).unwrap();
         let capture = PipeCapture {
             byte_count: raw.len() as u64,
+            stored_byte_count: raw.len() as u64,
             sha256: to_hex(&Sha256::digest(&raw)),
         };
         let manifest = json!({
@@ -28076,6 +28302,10 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cfg.reader_concurrency, 12);
+        assert_eq!(
+            cfg.stream_compression,
+            compact_stream::StreamCompression::Zstd
+        );
         let explicit = parse_args(vec![
             "--pid".to_string(),
             "1234".to_string(),
@@ -28214,6 +28444,10 @@ mod tests {
             Some(compact_contract::CaptureProfile::Production)
         );
         assert_eq!(cfg.stream_format, StreamFormat::Compact);
+        assert_eq!(
+            cfg.stream_compression,
+            compact_stream::StreamCompression::Zstd
+        );
         assert!(
             cfg.production,
             "production profile uses the production domain set"
@@ -28249,6 +28483,10 @@ mod tests {
 
         assert_eq!(cfg.profile, Some(compact_contract::CaptureProfile::Debug));
         assert_eq!(cfg.stream_format, StreamFormat::Compact);
+        assert_eq!(
+            cfg.stream_compression,
+            compact_stream::StreamCompression::None
+        );
         assert!(
             cfg.production,
             "debug profile still uses the production domain set"
@@ -28284,6 +28522,8 @@ mod tests {
                 "--min-game-hours",
                 "9",
                 "--lightweight-root-frame",
+                "--stream-compression",
+                "none",
             ],
         ))
         .unwrap();
@@ -28300,6 +28540,19 @@ mod tests {
         assert_eq!(cfg.reader_concurrency, 4);
         assert_eq!(cfg.min_game_hours, 9);
         assert!(cfg.lightweight_root_frame);
+        assert_eq!(
+            cfg.stream_compression,
+            compact_stream::StreamCompression::None
+        );
+        let debug_override = parse_args(profile_test_args(
+            &dir,
+            &["--profile", "debug", "--stream-compression", "zstd"],
+        ))
+        .unwrap();
+        assert_eq!(
+            debug_override.stream_compression,
+            compact_stream::StreamCompression::Zstd
+        );
         // Not overridden -> preset value retained.
         assert!(cfg.compact_country_frame);
         assert_eq!(cfg.stream_format, StreamFormat::Compact);
@@ -28325,6 +28578,10 @@ mod tests {
         assert!(!cfg.lightweight_root_frame);
         assert_eq!(cfg.min_game_hours, 12);
         assert_eq!(cfg.reader_concurrency, 0);
+        assert_eq!(
+            cfg.stream_compression,
+            compact_stream::StreamCompression::None
+        );
         assert!(cfg.scheduled_domains.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -28566,6 +28823,7 @@ mod tests {
             d48_emit_mode: D48EmitMode::Delta,
             d53_relation_read_mode: D53RelationReadMode::Offsets,
             reader_concurrency: 0,
+            stream_compression: compact_stream::StreamCompression::None,
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
             skip_host_fold: false,

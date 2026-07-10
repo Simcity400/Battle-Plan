@@ -18,16 +18,16 @@ minutes.
 
 Pipeline (compact/production path):
 
-1. **Capture streams to disk.** `capture_pipe_to_file` writes every pipe byte
-   straight into `collector_stream.bin` through a `BufWriter`, computing a rolling
-   SHA-256 and byte count on the way. Nothing accumulates in memory (the old path
-   buffered the entire multi-GB stream in a `Vec<u8>` — the 27 GB working-set
-   defect this replaces).
-2. **Summarize over a memory map.** The manifest gate (`summarize_compact_stream`,
-   coverage/hourly checks, per-domain perf/status accounting) runs over a
-   read-only memory map (`mmap::Mmap`) of the on-disk stream. Its pages are
-   file-backed and evictable, so peak *private* bytes do not scale with stream
-   length and the scan never OOMs under pressure.
+1. **Capture compresses at the file boundary.** `capture_pipe_to_file` hashes and
+   counts every collector pipe byte, then writes it through the shared
+   `compact_stream::StreamWriter`. Production and legacy `--production` captures
+   default to one streaming Zstandard frame; debug defaults to raw bytes. Nothing
+   accumulates in memory, and the collector DLL, game thread, and H4CR wire bytes
+   are unchanged.
+2. **Summarize through a transparent reader.** The manifest gate auto-detects raw
+   versus zstd storage and reads one complete H4CR record at a time. Coverage,
+   hourly checks, and per-domain perf/status accounting use the existing record
+   decoder body unchanged; peak input memory is bounded by the largest record.
 3. **Streaming fold.** `stream_fold::fold_compact_stream_file` reads the stream in
    8 MiB chunks, frames each `H4CR` record against a small carry buffer, and drives
    the one production fold (`WorldFold::ingest_record`). The fold is file-backed
@@ -35,10 +35,12 @@ Pipeline (compact/production path):
    disk, and *released* the moment its `FRAME_END` closes. The framing is the same
    contract `fold_check` walks, so streaming snapshots are hash-identical to the
    batch fold (gate **G1**).
-4. **Streaming pack.** `snapshot::pack_streaming_zstd_to_writer` appends the raw stream
-   as a `StreamingFileEntry`: it is compressed and written to the container in
-   bounded chunks (a trailing zip data descriptor carries the deferred crc/sizes;
-   the true sizes live in the central directory, which is the reader's authority).
+4. **Streaming pack.** `snapshot::pack_streaming_zstd_to_writer` transparently
+   decodes the standalone stream when it is zstd-backed, then writes the canonical
+   H4CR bytes as the container entry through the existing ZIP-Zstandard encoder.
+   This is bounded-memory and does not double-compress or change the logical entry
+   (a trailing zip data descriptor carries the deferred crc/sizes; the true sizes
+   live in the central directory, which is the reader's authority).
    Small entries (index/timeline/manifest/static) stay in RAM; snapshots are read
    one file at a time. The stream entry's manifest sha256 is the capture rolling
    hash (no re-read to hash it). Tiny entries stay STORE; large `collector_raw/*`
@@ -77,7 +79,8 @@ Telemetry fields:
 - `host_finalize.peak_working_set_bytes` — peak working set (includes resident
   file-backed/mapped pages, which the OS evicts under pressure).
 - `host_finalize.finalize_seconds` — post-capture finalize wall time.
-- `host_finalize.stream_bytes` / `stream_sha256` — capture byte count + rolling hash.
+- `host_finalize.stream_bytes` / `stream_sha256` — decoded capture byte count + rolling hash.
+- `host_finalize.stream_stored_bytes` — standalone on-disk bytes after file-boundary compression.
 - `host_finalize.fold.*` — hours emitted, record counts, truncated-tail bytes.
 - `host_finalize.verify.*` — entries verified and
   `stream_sha256_matches_capture` (the streaming byte-compare result).
@@ -85,11 +88,12 @@ Telemetry fields:
 ### Offline tools
 
 - `stream_fold <collector_stream.bin> <out_dir> [--game-id ID] [--json report.json]`
-  runs the identical streaming fold offline: it re-folds an old recording's raw
-  stream, reports its own peak private/working-set bytes, and prints per-hour
+  runs the identical streaming fold offline: it auto-detects raw or zstd storage,
+  reports its own peak private/working-set bytes, and prints per-hour
   `snapshot_hash`es that match `fold_check hash` on the same stream (G1, when
   `--game-id` matches; default `fold_check`).
-- `fold_check hash|compare` — the G1 fold-equivalence gate (see `../fold_check`).
+- `fold_check hash|compare` — the G1 fold-equivalence gate (see `../fold_check`); raw and zstd stream files are transparent inputs.
+- `compact_stream compress|decompress <input> <output>` — lossless standalone utility. Use `cargo run --release -p compact_stream -- decompress ...` for header-only Python tools that expect byte zero to be `H4CR`; those tools do not automatically understand a production `collector_stream.bin`, whose byte zero is the zstd frame magic.
 
 ## Capture profiles (`--profile production|debug`)
 
@@ -112,7 +116,8 @@ coverage gate consumes. Only instrumentation **cost** is toggled.
 
 | Knob | `production` | `debug` | Legacy (no `--profile`) |
 |---|---|---|---|
-| `stream_format` | compact | compact | json |
+| `stream_format` | compact | compact | json (`--production` -> compact) |
+| `collector_stream.bin` storage | zstd | raw | raw (`--production` -> zstd) |
 | production domain set | scheduled | scheduled | only if `--production` |
 | `compact_country_frame` | on | off (full provenance) | off |
 | `reader_concurrency` | 12 | 0 (unbounded) | 0 (`--production` -> 12) |
@@ -124,9 +129,9 @@ coverage gate consumes. Only instrumentation **cost** is toggled.
 - **Override semantics:** any explicitly-passed individual flag wins over its
   preset value (`--extraction-perf-gate`, `--sidecar-log`, `--compact-country-frame`,
   `--lightweight-root-frame`, `--reader-concurrency N`, `--min-game-hours N`,
-  `--stream-format ...`). The collector DLL applies the same fallback for any
+  `--stream-format ...`, `--stream-compression zstd|none`). The collector DLL applies the same fallback for any
   preset field a control file leaves unset (e.g. the Python dev harness).
-- **Omitting `--profile` is exact legacy behavior** — no preset is applied.
+- **Omitting `--profile` applies no preset.** A plain legacy probe stays JSON/raw; legacy `--production` now resolves to compact/zstd so production artifacts cannot be multi-GB raw streams.
 - **`DOMAIN_PERF` records are emitted in BOTH profiles** (they are NOT gated on
   `extraction_perf_gate`). They are ~0.1 % of stream bytes but are load-bearing:
   the host coverage gate (`compact_domain_coverage_errors`) requires exactly one

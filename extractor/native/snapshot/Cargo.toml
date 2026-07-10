@@ -5,6 +5,7 @@ edition = "2021"
 description = "Forward-compatible READ-ONLY reader for the replay snapshot store"
 
 [dependencies]
+compact_stream = { path = "../compact_stream" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # DEFLATE compatibility for old .battleplan ZIP containers. SHA-256 + the

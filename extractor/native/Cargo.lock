@@ -94,6 +94,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "compact_stream"
+version = "0.1.0"
+dependencies = [
+ "zstd",
+]
+
+[[package]]
 name = "construction_buildings_state_damage_live"
 version = "0.1.0"
 dependencies = [
@@ -168,6 +175,7 @@ name = "fold_check"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "compact_stream",
  "replay_decoder",
  "serde_json",
  "snapshot",
@@ -323,6 +331,7 @@ dependencies = [
  "capitulation_war_state_live",
  "characters_leaders_cabinet_live",
  "compact_contract",
+ "compact_stream",
  "construction_buildings_state_damage_live",
  "diplomacy_intel_operatives_live",
  "hub_motorization_live_lane",
@@ -342,6 +351,7 @@ name = "replay_decoder"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "compact_stream",
  "recorder_host",
  "serde_json",
  "snapshot",
@@ -421,6 +431,7 @@ checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 name = "snapshot"
 version = "0.1.0"
 dependencies = [
+ "compact_stream",
  "crc32fast",
  "flate2",
  "serde",

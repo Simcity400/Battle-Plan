@@ -32,10 +32,11 @@ fold_check compare <a> <b> [--out report.json] [--sample N]
 ```
 
 `<input>` is a `collector_stream.bin` **or** a `.battleplan` container. The kind
-is auto-detected from the leading bytes (`H4CR` = raw stream, `PK\x03\x04` = zip
-container); for a container the manifest-verified `collector_compact_stream`
-entry is extracted and folded. The raw-stream path is streamed in 8 MiB chunks so
-a multi-GB stream never resides fully in memory (only the fold's working world
+is auto-detected from leading bytes. Raw H4CR, zstd-compressed H4CR, and
+`PK\x03\x04` replay containers are accepted transparently; for a container the
+manifest-verified `collector_compact_stream`
+entry is extracted and folded. Standalone inputs are decoded in bounded chunks, so
+even a legacy multi-GB raw stream never resides fully in memory (only the fold's working world
 state, plus one hour's snapshot at a time, is held). Streams that end mid-hour
 are handled gracefully: complete hours are reported and the incomplete tail is
 noted in `totals.truncated_tail_bytes`.

@@ -891,6 +891,8 @@ mod tests {
         let streaming = vec![StreamingFileEntry {
             path: "payload/g/collector_raw/collector_stream.bin".into(),
             file_path: &stream_path,
+            source_compression: compact_stream::StreamCompression::None,
+            decoded_len: None,
             role: "collector_compact_stream",
             hour_index: None,
             sha256: Some(stream_sha.clone()),
@@ -1016,6 +1018,8 @@ mod tests {
         let streaming = vec![StreamingFileEntry {
             path: "payload/g/collector_raw/collector_stream.bin".into(),
             file_path: &stream_path,
+            source_compression: compact_stream::StreamCompression::None,
+            decoded_len: None,
             role: "collector_compact_stream",
             hour_index: None,
             sha256: Some(stream_sha.clone()),
@@ -1082,6 +1086,8 @@ mod tests {
         let streaming = vec![StreamingFileEntry {
             path: "payload/g/collector_raw/collector_stream.bin".into(),
             file_path: &stream_path,
+            source_compression: compact_stream::StreamCompression::None,
+            decoded_len: None,
             role: "collector_compact_stream",
             hour_index: None,
             sha256: Some(stream_sha.clone()),
@@ -1183,6 +1189,74 @@ mod tests {
     }
 
     #[test]
+    fn zstd_source_is_decoded_before_replay_packing() {
+        let dir = TmpDir::new("zstd_source_pack");
+        let raw_path = dir.join("raw.bin");
+        let encoded_path = dir.join("collector_stream.bin");
+        let replay_path = dir.join("encoded_source.battleplan");
+        let raw = vec![0x5au8; 256 * 1024];
+        fs::write(&raw_path, &raw).unwrap();
+        compact_stream::encode_file(
+            &raw_path,
+            &encoded_path,
+            compact_stream::StreamCompression::Zstd,
+        )
+        .unwrap();
+
+        let stream_sha = to_hex(&Sha256::digest(&raw));
+        let index = br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#;
+        let timeline = br#"{}"#;
+        let borrowed = vec![
+            BorrowedPackEntry {
+                path: "payload/g/index.json".into(),
+                bytes: index,
+                role: "index",
+                hour_index: None,
+            },
+            BorrowedPackEntry {
+                path: "payload/g/timeline.json".into(),
+                bytes: timeline,
+                role: "timeline",
+                hour_index: None,
+            },
+        ];
+        let streaming = vec![StreamingFileEntry {
+            path: "payload/g/collector_raw/collector_stream.bin".into(),
+            file_path: &encoded_path,
+            source_compression: compact_stream::StreamCompression::Zstd,
+            decoded_len: Some(raw.len() as u64),
+            role: "collector_compact_stream",
+            hour_index: None,
+            sha256: Some(stream_sha.clone()),
+        }];
+        let mut out = fs::File::create(&replay_path).unwrap();
+        pack_streaming_zstd_to_writer(
+            "g",
+            &borrowed,
+            &[],
+            &streaming,
+            &PackIdentity::default(),
+            &mut out,
+        )
+        .unwrap();
+        drop(out);
+
+        let report =
+            verify_replay_container_streaming(&replay_path, "g", "collector_compact_stream")
+                .unwrap();
+        assert_eq!(report.stream_entry_sha256.as_deref(), Some(stream_sha.as_str()));
+        assert_eq!(report.stream_entry_bytes, raw.len() as u64);
+        let container = crate::Container::open(&replay_path, &crate::ExpectedIdentity::default())
+            .unwrap();
+        assert_eq!(
+            container
+                .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
+                .unwrap(),
+            raw
+        );
+    }
+
+    #[test]
     fn corrupted_zstd_entry_is_rejected() {
         let dir = TmpDir::new("zstd_corrupt");
         let (container_path, _, _) = build_zstd_streaming_container(&dir, "zstd_corrupt");
@@ -1217,6 +1291,8 @@ mod tests {
         let streaming = vec![StreamingFileEntry {
             path: "payload/g/collector_raw/collector_stream.bin".into(),
             file_path: stream_path.as_path(),
+            source_compression: compact_stream::StreamCompression::None,
+            decoded_len: None,
             role: "collector_compact_stream",
             hour_index: None,
             sha256: Some(stream_sha.clone()),
@@ -1584,6 +1660,8 @@ mod tests {
         let streaming = vec![StreamingFileEntry {
             path: "payload/g/collector_raw/s.bin".into(),
             file_path: &stream_path,
+            source_compression: compact_stream::StreamCompression::None,
+            decoded_len: None,
             role: "collector_compact_stream",
             hour_index: None,
             sha256: None, // exercise the pack-side hash path

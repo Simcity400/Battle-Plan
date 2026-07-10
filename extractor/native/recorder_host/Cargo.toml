@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+compact_stream = { path = "../compact_stream" }
 compact_contract = { path = "../compact_contract" }
 air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
 hub_motorization_live_lane = { path = "../lanes/hub_motorization_live" }

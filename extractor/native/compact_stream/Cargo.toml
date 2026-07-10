@@ -1,0 +1,12 @@
+[package]
+name = "compact_stream"
+version = "0.1.0"
+edition = "2021"
+description = "Transparent raw/zstd file-boundary codec for H4CR compact streams"
+
+[dependencies]
+zstd = "0.13.3"
+
+[[bin]]
+name = "compact_stream"
+path = "src/main.rs"

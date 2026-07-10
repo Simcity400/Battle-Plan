@@ -15,6 +15,9 @@ snapshot = { path = "../snapshot" }
 compact_contract = { path = "../compact_contract" }
 serde_json = "1"
 
+[dev-dependencies]
+compact_stream = { path = "../compact_stream" }
+
 [[bin]]
 name = "fold_check"
 path = "src/main.rs"

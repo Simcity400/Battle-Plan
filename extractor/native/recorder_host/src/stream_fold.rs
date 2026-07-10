@@ -17,7 +17,7 @@
 //! tool (which also re-folds old recordings and measures peak memory).
 
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, Read};
 use std::path::Path;
 
 use compact_contract::{
@@ -36,7 +36,7 @@ const CHUNK: usize = 8 * 1024 * 1024;
 /// two can be cross-checked). Never grows with stream length.
 #[derive(Debug, Default, Clone)]
 pub struct FoldStreamStats {
-    /// Total bytes of the on-disk stream file.
+    /// Total decoded H4CR bytes (independent of raw vs zstd on-disk storage).
     pub stream_bytes: u64,
     /// Bytes consumed as whole, well-framed records.
     pub bytes_folded: u64,
@@ -68,11 +68,11 @@ pub fn fold_compact_stream_file(
     game_id: &str,
     snapshot_dir: &Path,
 ) -> io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)> {
-    let file = std::fs::File::open(stream_path)?;
-    let total_len = file.metadata()?.len();
-    let reader = BufReader::with_capacity(CHUNK, file);
+    let reader = compact_stream::open(stream_path)?;
+    let compressed = reader.compression() == compact_stream::StreamCompression::Zstd;
+    let total_len = if compressed { 0 } else { reader.encoded_len() };
     let mut fold = WorldFold::new_file_backed(game_id, snapshot_dir)?;
-    let stats = drive_fold(reader, total_len, &mut fold)?;
+    let stats = drive_fold_compressed(reader, total_len, &mut fold, compressed)?;
     let files = fold
         .finish_file_backed()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -127,16 +127,18 @@ pub fn fold_compact_stream_file_parallel(
                 .map(|k| {
                     scope.spawn(
                         move || -> io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)> {
-                            let file = std::fs::File::open(stream_path)?;
-                            let total_len = file.metadata()?.len();
-                            let reader = BufReader::with_capacity(CHUNK, file);
+                            let reader = compact_stream::open(stream_path)?;
+                            let compressed = reader.compression()
+                                == compact_stream::StreamCompression::Zstd;
+                            let total_len = if compressed { 0 } else { reader.encoded_len() };
                             let mut fold = WorldFold::new_file_backed_strided(
                                 game_id,
                                 snapshot_dir,
                                 workers as u64,
                                 k as u64,
                             )?;
-                            let stats = drive_fold(reader, total_len, &mut fold)?;
+                            let stats =
+                                drive_fold_compressed(reader, total_len, &mut fold, compressed)?;
                             let files = fold
                                 .finish_file_backed()
                                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -264,6 +266,21 @@ pub fn drive_fold<R: Read>(
     total_len: u64,
     fold: &mut WorldFold,
 ) -> io::Result<FoldStreamStats> {
+    drive_fold_compressed(reader.by_ref(), total_len, fold, false)
+}
+
+/// `compressed` = the reader is a checksummed zstd stream. On such a source an
+/// H4CR framing stop before physical EOF drains the reader to EOF (forcing the
+/// zstd footer + content-checksum check) and then hard-errors — corruption of
+/// the decoded content fails the checksum, and an intact-storage framing stop
+/// is itself garbage. Raw sources keep the tolerant torn-tail behavior the
+/// deep-war corpus relies on.
+pub fn drive_fold_compressed<R: Read>(
+    mut reader: R,
+    total_len: u64,
+    fold: &mut WorldFold,
+    compressed: bool,
+) -> io::Result<FoldStreamStats> {
     let mut stats = FoldStreamStats {
         stream_bytes: total_len,
         ..FoldStreamStats::default()
@@ -271,12 +288,14 @@ pub fn drive_fold<R: Read>(
     let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
     let mut chunk = vec![0u8; CHUNK];
     let mut processed: u64 = 0;
+    let mut decoded_read: u64 = 0;
 
     'read: loop {
         let n = reader.read(&mut chunk)?;
         if n == 0 {
             break;
         }
+        decoded_read = decoded_read.saturating_add(n as u64);
         carry.extend_from_slice(&chunk[..n]);
 
         let mut off = 0usize;
@@ -334,14 +353,37 @@ pub fn drive_fold<R: Read>(
         processed += off as u64;
         carry.drain(0..off);
         if hard_stop {
+            if compressed {
+                // Force zstd footer + content-checksum validation before
+                // trusting this stop; a corrupt frame errors here rather than
+                // reading as a clean short fold.
+                let mut sink = [0u8; 64 * 1024];
+                loop {
+                    match reader.read(&mut sink)? {
+                        0 => break,
+                        _ => continue,
+                    }
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "H4CR framing stopped before physical EOF on a compressed \
+                         stream at byte {processed} (storage checksum valid, so the \
+                         decoded content itself is corrupt)"
+                    ),
+                ));
+            }
             break 'read;
         }
     }
 
     // A file-backed fold spills as it goes; `emitted_hours` is the authoritative
     // count of closed game-hours in either mode.
+    if total_len == 0 {
+        stats.stream_bytes = decoded_read;
+    }
     stats.bytes_folded = processed;
-    stats.truncated_tail_bytes = total_len.saturating_sub(processed);
+    stats.truncated_tail_bytes = stats.stream_bytes.saturating_sub(processed);
     stats.hours_emitted = fold.emitted_hours_count() as u64;
     Ok(stats)
 }
@@ -531,6 +573,174 @@ mod tests {
         assert_eq!(files[0].hour_index, HOUR_A);
         assert_eq!(files[1].hour_index, HOUR_B);
         assert!(stats.truncated_tail_bytes > 0, "incomplete tail reported");
+    }
+
+    #[test]
+    fn torn_zstd_frame_at_complete_record_boundary_fails_fold() {
+        let dir = TmpDir::new("zstd_trunc");
+        let stream = three_hour_stream();
+        let raw_path = dir.0.join("raw.bin");
+        let zstd_path = dir.0.join("compressed.bin");
+        std::fs::write(&raw_path, &stream).unwrap();
+        compact_stream::encode_file(
+            &raw_path,
+            &zstd_path,
+            compact_stream::StreamCompression::Zstd,
+        )
+        .unwrap();
+
+        let mut stored = std::fs::read(&zstd_path).unwrap();
+        stored.pop().expect("checksummed zstd frame is non-empty");
+        std::fs::write(&zstd_path, stored).unwrap();
+
+        let err = match fold_compact_stream_file(&zstd_path, "gid", &dir.0.join("snaps")) {
+            Ok(_) => panic!("stream_fold must reject a torn zstd frame"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(err.to_string().contains("incomplete zstd frame"));
+    }
+
+    // Review finding (fix round 2): corruption that mangles a record HEADER
+    // makes framing stop gracefully BEFORE the zstd footer, bypassing the
+    // content checksum. On a compressed source that must now hard-error; on a
+    // raw source the tolerant stop-with-reason behavior is preserved exactly.
+    #[test]
+    fn header_corruption_in_compressed_stream_fails_fold_loudly() {
+        let dir = TmpDir::new("zstd_hdr_flip");
+        let clean = three_hour_stream();
+        let mut corrupted = clean.clone();
+        // First record starts at 0; walk one record forward with the public
+        // framing primitive and clobber the SECOND record's magic byte, so
+        // framing stops mid-stream inside checksummed-valid zstd bytes.
+        let h = parse_compact_record_header(&clean).unwrap();
+        let second = h.record_len();
+        corrupted[second] ^= 0xFF;
+
+        let raw_path = dir.0.join("raw.bin");
+        let zstd_src = dir.0.join("src.bin");
+        let zstd_path = dir.0.join("compressed.bin");
+        std::fs::write(&raw_path, &corrupted).unwrap();
+        std::fs::write(&zstd_src, &corrupted).unwrap();
+        compact_stream::encode_file(
+            &zstd_src,
+            &zstd_path,
+            compact_stream::StreamCompression::Zstd,
+        )
+        .unwrap();
+
+        // Compressed: hard error, never a clean short fold.
+        let err = match fold_compact_stream_file(&zstd_path, "gid", &dir.0.join("zs")) {
+            Ok(_) => panic!("compressed header corruption must fail the fold"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("framing stopped before physical EOF"),
+            "unexpected error: {err}"
+        );
+
+        // Raw: byte-identical tolerant behavior (stop reason preserved; the
+        // corruption sits before hour A's FRAME_END, so no hour completes).
+        let (files, stats) =
+            fold_compact_stream_file(&raw_path, "gid", &dir.0.join("raws")).unwrap();
+        assert!(files.is_empty(), "corruption before the first FRAME_END emits no hours");
+        assert!(stats.stop_reason.is_some(), "raw stop keeps its diagnostic");
+    }
+
+    /// Scripted reader discriminating the post-framing-stop drain: serves a
+    /// prepared chunk, then either errors (checksum found during drain) or
+    /// EOFs (intact storage ⇒ the framing stop is the hard error).
+    struct ScriptedReader {
+        prefix: Vec<u8>,
+        served: bool,
+        tail_error: Option<(io::ErrorKind, &'static str)>,
+    }
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if !self.served {
+                self.served = true;
+                let n = self.prefix.len().min(buf.len());
+                buf[..n].copy_from_slice(&self.prefix[..n]);
+                assert_eq!(n, self.prefix.len(), "test prefix must fit one chunk");
+                return Ok(n);
+            }
+            match self.tail_error {
+                Some((kind, msg)) => Err(io::Error::new(kind, msg)),
+                None => Ok(0),
+            }
+        }
+    }
+
+    fn one_record_then_garbage() -> Vec<u8> {
+        let clean = three_hour_stream();
+        let first_len = parse_compact_record_header(&clean).unwrap().record_len();
+        let mut bytes = clean[..first_len].to_vec();
+        bytes.extend_from_slice(b"XXXXGARBAGEHEADERXXXXGARBAGEHEADER");
+        bytes
+    }
+
+    #[test]
+    fn fold_drain_after_framing_stop_propagates_the_storage_root_error() {
+        let reader = ScriptedReader {
+            prefix: one_record_then_garbage(),
+            served: false,
+            tail_error: Some((io::ErrorKind::InvalidData, "simulated zstd checksum mismatch")),
+        };
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold_compressed(reader, 0, &mut fold, true)
+            .expect_err("checksum error during drain must surface");
+        assert!(
+            err.to_string().contains("simulated zstd checksum mismatch"),
+            "root error must propagate, got: {err}"
+        );
+    }
+
+    #[test]
+    fn fold_framing_stop_with_intact_storage_is_itself_the_hard_error() {
+        let reader = ScriptedReader {
+            prefix: one_record_then_garbage(),
+            served: false,
+            tail_error: None,
+        };
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold_compressed(reader, 0, &mut fold, true)
+            .expect_err("compressed framing stop must not end cleanly");
+        assert!(
+            err.to_string().contains("framing stopped before physical EOF"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // The PARALLEL fold call site must also thread compressed=true (a review
+    // finding: only raw fixtures exercised the parallel path, so flipping its
+    // flag to false went undetected).
+    #[test]
+    fn parallel_fold_rejects_compressed_header_corruption() {
+        let dir = TmpDir::new("zstd_par_hdr");
+        let clean = three_hour_stream();
+        let mut corrupted = clean.clone();
+        let first_len = parse_compact_record_header(&clean).unwrap().record_len();
+        corrupted[first_len] ^= 0xFF;
+        let src = dir.0.join("src.bin");
+        let zstd_path = dir.0.join("compressed.bin");
+        std::fs::write(&src, &corrupted).unwrap();
+        compact_stream::encode_file(&src, &zstd_path, compact_stream::StreamCompression::Zstd)
+            .unwrap();
+        let err = match fold_compact_stream_file_parallel(
+            &zstd_path,
+            "gid",
+            &dir.0.join("snaps"),
+            2,
+        ) {
+            Ok(_) => panic!("parallel fold must reject compressed header corruption"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("framing stopped before physical EOF"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

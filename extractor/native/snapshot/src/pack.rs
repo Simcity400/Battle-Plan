@@ -64,6 +64,12 @@ pub struct FileBackedPackEntry<'a> {
 pub struct StreamingFileEntry<'a> {
     pub path: String,
     pub file_path: &'a Path,
+    /// Storage encoding of file_path. The container entry always receives the
+    /// decoded bytes, so its payload and manifest hash remain canonical H4CR.
+    pub source_compression: compact_stream::StreamCompression,
+    /// Exact decoded byte length when source_compression is zstd. Supplying this
+    /// avoids a separate decompression pass merely to size the manifest entry.
+    pub decoded_len: Option<u64>,
     pub role: &'static str,
     pub hour_index: Option<i64>,
     pub sha256: Option<String>,
@@ -534,13 +540,8 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
     for e in streaming_entries {
         validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
         let (sha, len) = match &e.sha256 {
-            Some(sha) => {
-                // Trust the caller's digest but still need the byte length for the
-                // manifest; stat the file rather than re-hashing it.
-                let len = fs::metadata(e.file_path)?.len();
-                (sha.clone(), len)
-            }
-            None => sha256_file(e.file_path)?,
+            Some(sha) => (sha.clone(), streaming_entry_decoded_len(e)?),
+            None => sha256_streaming_entry(e)?,
         };
         push_manifest_entry(&e.path, sha, len, e.role, e.hour_index);
     }
@@ -614,7 +615,7 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
             &mut written,
             &mut zip64_used,
             &e.path,
-            e.file_path,
+            e,
             compression,
             compression_profile,
         )?;
@@ -848,6 +849,35 @@ fn planned_zip_file_count(parts: &[usize], extra: usize) -> std::io::Result<usiz
     Ok(total)
 }
 
+fn streaming_entry_decoded_len(entry: &StreamingFileEntry<'_>) -> std::io::Result<u64> {
+    if let Some(len) = entry.decoded_len {
+        return Ok(len);
+    }
+    if entry.source_compression == compact_stream::StreamCompression::None {
+        return Ok(fs::metadata(entry.file_path)?.len());
+    }
+    let mut reader =
+        compact_stream::open_with_compression(entry.file_path, entry.source_compression)?;
+    std::io::copy(&mut reader, &mut std::io::sink())
+}
+
+fn sha256_streaming_entry(entry: &StreamingFileEntry<'_>) -> std::io::Result<(String, u64)> {
+    let mut reader =
+        compact_stream::open_with_compression(entry.file_path, entry.source_compression)?;
+    let mut hasher = Sha256::new();
+    let mut len = 0u64;
+    let mut buf = vec![0u8; STREAM_CHUNK];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        len = len.saturating_add(n as u64);
+    }
+    Ok((to_hex(&hasher.finalize()), len))
+}
+
 fn sha256_file(path: &Path) -> Result<(String, u64), PackError> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -874,13 +904,22 @@ fn write_zip_file_from_path<W: Write>(
     compression: PackCompression,
     compression_profile: CompressionProfile,
 ) -> std::io::Result<()> {
+    let entry = StreamingFileEntry {
+        path: name.to_string(),
+        file_path: path,
+        source_compression: compact_stream::StreamCompression::None,
+        decoded_len: None,
+        role: "",
+        hour_index: None,
+        sha256: None,
+    };
     write_zip_file_streaming_with_entry_limit(
         out,
         central,
         written,
         zip64_used,
         name,
-        path,
+        &entry,
         compression,
         compression_profile,
         MAX_CONTAINER_ENTRY_BYTES,
@@ -927,7 +966,7 @@ fn write_zip_file_streaming<W: Write>(
     written: &mut u64,
     zip64_used: &mut bool,
     name: &str,
-    path: &Path,
+    entry: &StreamingFileEntry<'_>,
     compression: PackCompression,
     compression_profile: CompressionProfile,
 ) -> std::io::Result<()> {
@@ -937,7 +976,7 @@ fn write_zip_file_streaming<W: Write>(
         written,
         zip64_used,
         name,
-        path,
+        entry,
         compression,
         compression_profile,
         STREAMING_MAX_CONTAINER_ENTRY_BYTES,
@@ -950,13 +989,13 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
     written: &mut u64,
     zip64_used: &mut bool,
     name: &str,
-    path: &Path,
+    entry: &StreamingFileEntry<'_>,
     compression: PackCompression,
     compression_profile: CompressionProfile,
     entry_limit: u64,
 ) -> std::io::Result<()> {
     let lho = *written;
-    let file_len = fs::metadata(path)?.len();
+    let file_len = streaming_entry_decoded_len(entry)?;
     let zip_compression = compression.method_for_entry(name, file_len);
     let method = zip_compression.method();
     // general-purpose bit 3: crc-32 and sizes are in a trailing data descriptor.
@@ -979,7 +1018,8 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
     write_all_counted(out, written, name.as_bytes())?;
 
     // --- stream the payload, hashing + measuring as we go ---
-    let mut file = fs::File::open(path)?;
+    let mut file =
+        compact_stream::open_with_compression(entry.file_path, entry.source_compression)?;
     let mut hasher = crc32fast::Hasher::new();
     let mut data_len: u64 = 0;
     let mut buf = vec![0u8; STREAM_CHUNK];
@@ -1468,6 +1508,15 @@ mod tests {
         let stream_path = dir.join("stream.bin");
         fs::write(&stream_path, b"0123456789abcdef").unwrap();
 
+        let entry = StreamingFileEntry {
+            path: "payload/g/collector_raw/stream.bin".to_string(),
+            file_path: &stream_path,
+            source_compression: compact_stream::StreamCompression::None,
+            decoded_len: None,
+            role: "collector_compact_stream",
+            hour_index: None,
+            sha256: None,
+        };
         let mut out = Vec::new();
         let mut central = Vec::new();
         let mut written = 0u64;
@@ -1478,7 +1527,7 @@ mod tests {
             &mut written,
             &mut zip64_used,
             "payload/g/collector_raw/stream.bin",
-            &stream_path,
+            &entry,
             PackCompression::Store,
             CompressionProfile::default(),
             8,
