@@ -718,6 +718,15 @@ struct Config {
     /// the DLL control file; `offsets` (the default) preserves current behavior.
     /// `shadow` is the live-validation gate path.
     d53_relation_read_mode: D53RelationReadMode,
+    /// Per-session d53 prefetch-distance overrides (relation pair loop / flat
+    /// candidate loops), written into the DLL control file as
+    /// `prefetch_dist_relation` / `prefetch_dist_candidates`. `None` = field is
+    /// `null` = the lane keeps its env/default distances (relation 16,
+    /// candidates 32). Control-file delivery exists because the env-var channel
+    /// cannot reach an already-running game — required for the live prefetch
+    /// A/B. Perf-only hint; never changes rows/bytes/errors.
+    prefetch_dist_relation: Option<u32>,
+    prefetch_dist_candidates: Option<u32>,
     /// Plan-v2 P2b lever A: bound the collector's per-frame reader fan-out to at
     /// most this many concurrently-running domain workers (0 = unbounded = legacy).
     /// Passed through the JSON control block to the injected DLL as
@@ -1178,6 +1187,8 @@ fn run() -> Result<(), String> {
                     "d44_emit_mode": cfg.d44_emit_mode.as_str(),
                     "d48_emit_mode": cfg.d48_emit_mode.as_str(),
                     "d53_relation_read_mode": cfg.d53_relation_read_mode.as_str(),
+                    "prefetch_dist_relation": cfg.prefetch_dist_relation,
+                    "prefetch_dist_candidates": cfg.prefetch_dist_candidates,
                     "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
@@ -1271,6 +1282,8 @@ fn run() -> Result<(), String> {
                     "d44_emit_mode": cfg.d44_emit_mode.as_str(),
                     "d48_emit_mode": cfg.d48_emit_mode.as_str(),
                     "d53_relation_read_mode": cfg.d53_relation_read_mode.as_str(),
+                    "prefetch_dist_relation": cfg.prefetch_dist_relation,
+                    "prefetch_dist_candidates": cfg.prefetch_dist_candidates,
                     "reader_concurrency": cfg.reader_concurrency,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
@@ -1811,6 +1824,8 @@ fn repack_writer_config(
         d44_emit_mode: D44EmitMode::Delta,
         d48_emit_mode: D48EmitMode::Delta,
         d53_relation_read_mode: D53RelationReadMode::Offsets,
+        prefetch_dist_relation: None,
+        prefetch_dist_candidates: None,
         reader_concurrency: 0,
         compression_profile,
         static_artifacts: repack.static_artifacts.clone(),
@@ -2042,6 +2057,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut d44_emit_mode = D44EmitMode::Delta;
     let mut d48_emit_mode = D48EmitMode::Delta;
     let mut d53_relation_read_mode = D53RelationReadMode::Offsets;
+    let mut prefetch_dist_relation: Option<u32> = None;
+    let mut prefetch_dist_candidates: Option<u32> = None;
     let mut reader_concurrency = None;
     let mut skip_host_fold = false;
     let mut hour_latch_enabled = false;
@@ -2191,6 +2208,16 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                         "invalid --d53-relation-read-mode {value}; expected offsets|scan|shadow"
                     )
                 })?;
+            }
+            "--prefetch-dist-relation" => {
+                i += 1;
+                prefetch_dist_relation =
+                    Some(parse_u32(args.get(i), "--prefetch-dist-relation")?);
+            }
+            "--prefetch-dist-candidates" => {
+                i += 1;
+                prefetch_dist_candidates =
+                    Some(parse_u32(args.get(i), "--prefetch-dist-candidates")?);
             }
             "--reader-concurrency" => {
                 i += 1;
@@ -2408,6 +2435,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         d44_emit_mode,
         d48_emit_mode,
         d53_relation_read_mode,
+        prefetch_dist_relation,
+        prefetch_dist_candidates,
         reader_concurrency,
         stream_compression,
         compression_profile,
@@ -4541,6 +4570,10 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "d44_emit_mode": cfg.d44_emit_mode.as_str(),
         "d48_emit_mode": cfg.d48_emit_mode.as_str(),
         "d53_relation_read_mode": cfg.d53_relation_read_mode.as_str(),
+        // `None` serializes as `null`; the DLL's parse_json_u32 yields None for
+        // null, so absent-override round-trips exactly (env/default preserved).
+        "prefetch_dist_relation": cfg.prefetch_dist_relation,
+        "prefetch_dist_candidates": cfg.prefetch_dist_candidates,
         "reader_concurrency": cfg.reader_concurrency,
         // lane/hour-latch: zero-skip hour-boundary latch (default OFF). When on, a
         // dedicated thread polls only the hour counter every `hour_latch_poll_ms`
@@ -27634,6 +27667,8 @@ mod tests {
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
             d53_relation_read_mode: D53RelationReadMode::Offsets,
+        prefetch_dist_relation: None,
+        prefetch_dist_candidates: None,
             reader_concurrency: 0,
             stream_compression: compact_stream::StreamCompression::None,
             compression_profile: CompressionProfile::default(),
@@ -28713,6 +28748,55 @@ mod tests {
     }
 
     #[test]
+    fn prefetch_dist_overrides_parse_and_write_control() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_prefetch_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Absent flags -> None -> `null` in the control file, so the DLL keeps
+        // its env/default distances (parse_json_u32 yields None for null).
+        let cfg_default = parse_args(profile_test_args(&dir, &[])).unwrap();
+        assert_eq!(cfg_default.prefetch_dist_relation, None);
+        assert_eq!(cfg_default.prefetch_dist_candidates, None);
+        write_control_file(&cfg_default, "tok").unwrap();
+        let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
+        assert!(
+            control.contains("\"prefetch_dist_relation\":null"),
+            "control: {control}"
+        );
+        assert!(control.contains("\"prefetch_dist_candidates\":null"));
+
+        // Explicit values flow into the control file verbatim, including the
+        // meaningful 0 (prefetch OFF) — every live-sweep arm must be expressible.
+        let cfg_set = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--prefetch-dist-relation",
+                "8",
+                "--prefetch-dist-candidates",
+                "0",
+            ],
+        ))
+        .unwrap();
+        assert_eq!(cfg_set.prefetch_dist_relation, Some(8));
+        assert_eq!(cfg_set.prefetch_dist_candidates, Some(0));
+        write_control_file(&cfg_set, "tok").unwrap();
+        let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
+        assert!(
+            control.contains("\"prefetch_dist_relation\":8"),
+            "control: {control}"
+        );
+        assert!(control.contains("\"prefetch_dist_candidates\":0"));
+
+        // Garbage is a hard parse error, never a silent fallback.
+        assert!(parse_args(profile_test_args(&dir, &["--prefetch-dist-relation", "x"])).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn production_profile_summary_populates_mismatch_lists() {
         let cfg = test_config(
             vec!["fuel_live", "country_identity", "unknown_future"],
@@ -28841,6 +28925,8 @@ mod tests {
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
             d53_relation_read_mode: D53RelationReadMode::Offsets,
+        prefetch_dist_relation: None,
+        prefetch_dist_candidates: None,
             reader_concurrency: 0,
             stream_compression: compact_stream::StreamCompression::None,
             compression_profile: CompressionProfile::default(),

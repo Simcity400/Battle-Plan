@@ -1581,14 +1581,66 @@ fn parse_prefetch_dist(raw: Option<&str>, default: usize) -> usize {
     }
 }
 
-/// Runtime lookahead distance for the d53 relation pair loop, read ONCE from
-/// `BATTLE_PLAN_PREFETCH_DIST_RELATION` on first use and cached in a `OnceLock` (the env
-/// is NOT read per-pair — that would perturb the measurement). Falls back to
-/// [`PREFETCH_DIST_RELATION_DEFAULT`] (16) when the env var is absent/garbage. A
-/// cached value of `0` DISABLES prefetch for the relation loop (the caller skips
-/// the whole lookahead block, issuing no hint). Hint-only; default is identical
-/// to the pre-override behavior.
+/// Sentinel meaning "no per-session override installed" in the override slots
+/// below. `usize::MAX` can never arrive through the control channel (the control
+/// field is a `u32`), and an env-var `usize::MAX` remains reachable via the
+/// [`prefetch_dist_relation`] env fallback, so no representable distance is lost.
+const PREFETCH_OVERRIDE_UNSET: usize = usize::MAX;
+
+/// Per-session control-file override for the relation-loop prefetch distance.
+/// Unlike the env cache this slot is RE-SETTABLE: the collector control parse
+/// writes it (value or reset) at every session start, so a DLL that stays
+/// resident across capture sessions in one game process can never leak the
+/// previous session's override into the next (the live A/B correctness rule).
+static PREFETCH_DIST_RELATION_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(PREFETCH_OVERRIDE_UNSET);
+
+/// Per-session control-file override for the flat-candidate-loop prefetch
+/// distance. Same reset semantics as [`PREFETCH_DIST_RELATION_OVERRIDE`].
+static PREFETCH_DIST_CANDIDATES_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(PREFETCH_OVERRIDE_UNSET);
+
+/// Installs (`Some(dist)`) or clears (`None`) the per-session relation-loop
+/// prefetch-distance override delivered via `collector_control.json`
+/// (`prefetch_dist_relation`). Call BEFORE the first d53 frame of the session;
+/// the getters read the override per-frame (one atomic load), so a later call
+/// affects subsequent frames only. An installed override takes precedence over
+/// `BATTLE_PLAN_PREFETCH_DIST_RELATION`, which the game process env cannot deliver to
+/// an already-running game — the entire reason this channel exists. `0` disables
+/// prefetch, exactly like the env contract.
+pub fn set_prefetch_dist_relation_override(dist: Option<usize>) {
+    PREFETCH_DIST_RELATION_OVERRIDE.store(
+        dist.unwrap_or(PREFETCH_OVERRIDE_UNSET),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Installs or clears the per-session candidate-loop prefetch-distance override
+/// (`prefetch_dist_candidates` in the control file). Contract identical to
+/// [`set_prefetch_dist_relation_override`].
+pub fn set_prefetch_dist_candidates_override(dist: Option<usize>) {
+    PREFETCH_DIST_CANDIDATES_OVERRIDE.store(
+        dist.unwrap_or(PREFETCH_OVERRIDE_UNSET),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Runtime lookahead distance for the d53 relation pair loop. Precedence:
+/// per-session control override (see [`set_prefetch_dist_relation_override`])
+/// beats `BATTLE_PLAN_PREFETCH_DIST_RELATION`, which is read ONCE on first use and
+/// cached in a `OnceLock` (the env is NOT read per-pair — that would perturb the
+/// measurement). Falls back to [`PREFETCH_DIST_RELATION_DEFAULT`] (16) when
+/// neither is set (or the env var is garbage). A value of `0` DISABLES prefetch
+/// for the relation loop (the caller skips the whole lookahead block, issuing no
+/// hint). Hint-only; the un-overridden default is identical to the pre-override
+/// behavior. Called once per frame (the loop hoists the result), so the extra
+/// atomic load is not on the per-pair path.
 fn prefetch_dist_relation() -> usize {
+    let overridden =
+        PREFETCH_DIST_RELATION_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    if overridden != PREFETCH_OVERRIDE_UNSET {
+        return overridden;
+    }
     static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
         parse_prefetch_dist(
@@ -1599,13 +1651,19 @@ fn prefetch_dist_relation() -> usize {
 }
 
 /// Runtime lookahead distance for the flat candidate loops (`read_operatives`,
-/// `read_operations`, `read_war_rows_from_validated_addrs`), read ONCE from
-/// `BATTLE_PLAN_PREFETCH_DIST_CANDIDATES` on first use and cached in a `OnceLock` (never
-/// per-candidate). Falls back to [`PREFETCH_DIST_CANDIDATES_DEFAULT`] (32) when
-/// the env var is absent/garbage. A cached value of `0` DISABLES prefetch for
-/// those loops (the caller skips the lookahead block). Hint-only; default is
-/// identical to the pre-override behavior.
+/// `read_operations`, `read_war_rows_from_validated_addrs`). Precedence:
+/// per-session control override (see [`set_prefetch_dist_candidates_override`])
+/// beats `BATTLE_PLAN_PREFETCH_DIST_CANDIDATES`, read ONCE and cached in a `OnceLock`
+/// (never per-candidate). Falls back to [`PREFETCH_DIST_CANDIDATES_DEFAULT`]
+/// (32) when neither is set (or the env var is garbage). A value of `0` DISABLES
+/// prefetch for those loops (the caller skips the lookahead block). Hint-only;
+/// the un-overridden default is identical to the pre-override behavior.
 fn prefetch_dist_candidates() -> usize {
+    let overridden =
+        PREFETCH_DIST_CANDIDATES_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    if overridden != PREFETCH_OVERRIDE_UNSET {
+        return overridden;
+    }
     static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
         parse_prefetch_dist(
@@ -4788,6 +4846,38 @@ mod tests {
         assert_eq!(parse_prefetch_dist(Some("0"), 16), 0);
         assert_eq!(parse_prefetch_dist(Some("0"), 32), 0);
         assert_eq!(parse_prefetch_dist(Some(" 0 "), 32), 0);
+    }
+
+    // The override slots are process-global, so all their transitions are locked
+    // in ONE sequential test (parallel test threads mutating them would race);
+    // the slots are restored to UNSET at the end so no other test observes them.
+    #[test]
+    fn prefetch_dist_overrides_win_reset_and_restore() {
+        // Relation: override installed -> getter returns it verbatim, including
+        // the meaningful 0 (prefetch OFF) — the control channel must be able to
+        // express every arm of the live sweep.
+        set_prefetch_dist_relation_override(Some(8));
+        assert_eq!(prefetch_dist_relation(), 8);
+        set_prefetch_dist_relation_override(Some(0));
+        assert_eq!(prefetch_dist_relation(), 0);
+        // Reset -> falls back to the env/default path. That path's value depends
+        // on the dev shell (env var honored via the OnceLock), so assert only
+        // that the installed value no longer leaks — using a sentinel no sane
+        // shell would export, so the assertion cannot collide with a real env.
+        set_prefetch_dist_relation_override(Some(999_983));
+        assert_eq!(prefetch_dist_relation(), 999_983);
+        set_prefetch_dist_relation_override(None);
+        assert_ne!(prefetch_dist_relation(), 999_983);
+        // Candidates: same contract.
+        set_prefetch_dist_candidates_override(Some(999_983));
+        assert_eq!(prefetch_dist_candidates(), 999_983);
+        set_prefetch_dist_candidates_override(None);
+        assert_ne!(prefetch_dist_candidates(), 999_983);
+        // A re-install after a reset must stick (the resident-DLL/second-session
+        // scenario the atomic exists for — a OnceLock would refuse this).
+        set_prefetch_dist_relation_override(Some(16));
+        assert_eq!(prefetch_dist_relation(), 16);
+        set_prefetch_dist_relation_override(None);
     }
 
     // P3: the shared-sweep needle order MUST line up with the field order

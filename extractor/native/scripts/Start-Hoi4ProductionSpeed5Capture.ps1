@@ -44,6 +44,15 @@
     # Validation sessions pass a low level (e.g. 3) so finalize takes seconds.
     [int]$ReplayZstdLevel = 0,
 
+    # d53 prefetch-distance overrides for the live A/B sweep, passed through to
+    # recorder_host as --prefetch-dist-relation / --prefetch-dist-candidates and
+    # delivered to the injected DLL via the control file (the env-var channel
+    # cannot reach an already-running game). -1 = launcher passes nothing (the
+    # lane keeps env/default: relation 16, candidates 32). 0 = prefetch OFF.
+    [int]$PrefetchDistRelation = -1,
+
+    [int]$PrefetchDistCandidates = -1,
+
     # The capture-run path defers the expensive host fold by default. Opt in to
     # the legacy inline fold only when the extra turnaround is deliberate.
     [switch]$RunHostFold,
@@ -338,6 +347,16 @@ if ($EmitModeAll.Length -gt 0) {
     }
 }
 
+if ($PrefetchDistRelation -ge 0) {
+    $runArgs += "--prefetch-dist-relation"
+    $runArgs += "$PrefetchDistRelation"
+}
+
+if ($PrefetchDistCandidates -ge 0) {
+    $runArgs += "--prefetch-dist-candidates"
+    $runArgs += "$PrefetchDistCandidates"
+}
+
 $commandLine = "& `"$collectorRecord`" " + ($runArgs | ForEach-Object {
     if ($_ -match "\s") { "`"$_`"" } else { $_ }
 }) -join " "
@@ -348,12 +367,7 @@ Set-Content -LiteralPath $commandPath -Value $commandLine -Encoding UTF8
 $deferredFoldScript = Join-Path $scriptDir "Invoke-DeferredFold.ps1"
 $deferredFoldCommand = "& `"$deferredFoldScript`" -RunDir `"$OutDir`""
 
-$d53RelationDisplay = if ($ReplayZstdLevel -gt 0) {
-    $runArgs += "--replay-zstd-level"
-    $runArgs += "$ReplayZstdLevel"
-}
-
-if ($D53RelationReadMode.Length -gt 0) { $D53RelationReadMode } else { "(default)" }
+$d53RelationDisplay = if ($D53RelationReadMode.Length -gt 0) { $D53RelationReadMode } else { "(default)" }
 $emitModeDisplay = if ($EmitModeAll.Length -gt 0) { $EmitModeAll } else { "(default)" }
 $hostFoldDisplay = if ($RunHostFold) { "inline" } else { "deferred" }
 $maxTurnaroundDisplay = Invariant-Number -Value $MaxTurnaroundMinutes
