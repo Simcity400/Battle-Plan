@@ -2289,21 +2289,17 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 }
             })
         })
-<<<<<<< HEAD
-        .unwrap_or(StreamFormat::Json);
+        .unwrap_or(if production {
+            StreamFormat::Compact
+        } else {
+            StreamFormat::Json
+        });
     if hour_latch_enabled && stream_format != StreamFormat::Compact {
         return Err(
             "--hour-latch requires --stream-format compact (or a compact --profile); refusing to silently run without the latch"
                 .to_string(),
         );
     }
-=======
-        .unwrap_or(if production {
-            StreamFormat::Compact
-        } else {
-            StreamFormat::Json
-        });
->>>>>>> lane/production-stream-size
     // `--production` (legacy) and either profile both expand the production
     // domain set. `production` here means "capture the production domain profile
     // + its required static-artifact accounting", which the debug profile also
