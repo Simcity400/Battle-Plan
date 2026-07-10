@@ -425,6 +425,9 @@ Both are inert by default, which is why they were allowed to merge. **Neither ma
 until (a) the independent adversarial gate runs clean, and (b) their live gates pass (hour-latch:
 shadow-soak + paired A/B + 6-core run; d53: paired A/B confirming the +46–68 ms/frame cost).
 
+Paste-ready gate prompts + the next lane (three-phase timing instrumentation) are queued in
+`CODEX_DISPATCH_QUEUE.md` — dispatch the moment Codex quota returns; nothing needs re-derivation.
+
 Note the lanes' *own* Codex reviews did run and were valuable: hour-latch's returned REFUTED and
 exposed a real bug (a stale sweep read fabricated a false reload + duplicate capture); d53's
 returned REFUTED and exposed **two real silent-data-loss bugs** its own fuzzer had missed
