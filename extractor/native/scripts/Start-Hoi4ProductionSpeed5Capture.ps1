@@ -44,6 +44,14 @@
     # Validation sessions pass a low level (e.g. 3) so finalize takes seconds.
     [int]$ReplayZstdLevel = 0,
 
+    # The capture-run path defers the expensive host fold by default. Opt in to
+    # the legacy inline fold only when the extra turnaround is deliberate.
+    [switch]$RunHostFold,
+
+    [double]$MaxTurnaroundMinutes = 15,
+
+    [switch]$AcknowledgeLongRun,
+
     [switch]$DryRun
 )
 
@@ -161,16 +169,6 @@ $staticIdeaTechLocXref = Join-Path $gameDefsOut "idea_tech_loc_xref\idea_tech_lo
 $staticShipDefinitions = Join-Path $gameDefsOut "ship_definitions_static\ship_definitions_static\ship_definitions_catalog.json"
 $staticGfxIconManifest = Join-Path $gameDefsOut "gfx_icon_manifest\gfx_icon_asset_manifest_static\gfx_icon_manifest_catalog.json"
 
-Assert-File -Path $staticTemplatesEquipmentCatalog -Label "templates/equipment static catalog"
-Assert-File -Path $staticLocalisationJoin -Label "localisation static join"
-Assert-File -Path $staticDecisionsDefinitions -Label "decisions static catalog"
-Assert-File -Path $staticIdeaTechLocXref -Label "idea/tech localisation xref"
-Assert-File -Path $staticShipDefinitions -Label "ship definitions static catalog"
-Assert-File -Path $staticGfxIconManifest -Label "GFX icon manifest"
-
-if ($Hoi4Pid -eq 0) {
-    $Hoi4Pid = Resolve-SingleHoi4Pid
-}
 
 if ($DurationSeconds -le 0) {
     switch ($Mode) {
@@ -208,6 +206,44 @@ if ($EstimatedMegabytesPerSecond -le 0) {
 }
 if ($DurationSeconds -le 0) {
     throw "-DurationSeconds must be greater than zero."
+}
+if ($MaxTurnaroundMinutes -le 0) {
+    throw "-MaxTurnaroundMinutes must be greater than zero."
+}
+
+# Capture duration plus two minutes for launch/pack overhead is the binding
+# deferred-fold estimate. Inline folding additionally uses the measured
+# 16.6 MB/s host-fold throughput against the estimated raw stream size.
+$turnaroundStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$turnaroundMarginSeconds = 120.0
+$foldMegabytesPerSecond = 16.6
+$projectedFoldSeconds = 0.0
+if ($RunHostFold) {
+    $estimatedStreamMegabytes = $DurationSeconds * $EstimatedMegabytesPerSecond
+    $projectedFoldSeconds = $estimatedStreamMegabytes / $foldMegabytesPerSecond
+}
+$projectedTurnaroundSeconds = $DurationSeconds + $turnaroundMarginSeconds + $projectedFoldSeconds
+$maxTurnaroundSeconds = $MaxTurnaroundMinutes * 60.0
+if (-not $AcknowledgeLongRun -and $projectedTurnaroundSeconds -gt $maxTurnaroundSeconds) {
+    $projectedTurnaroundMinutes = Invariant-Number -Value ($projectedTurnaroundSeconds / 60.0)
+    $maxTurnaroundDisplay = Invariant-Number -Value $MaxTurnaroundMinutes
+    $estimateBasis = if ($RunHostFold) {
+        "-DurationSeconds plus a 2-minute margin and estimated host fold at $foldMegabytesPerSecond MB/s"
+    } else {
+        "-DurationSeconds plus a 2-minute margin"
+    }
+    throw "Projected capture-run turnaround is $projectedTurnaroundMinutes minutes ($estimateBasis), exceeding -MaxTurnaroundMinutes $maxTurnaroundDisplay. Shorten the capture or pass -AcknowledgeLongRun deliberately."
+}
+
+Assert-File -Path $staticTemplatesEquipmentCatalog -Label "templates/equipment static catalog"
+Assert-File -Path $staticLocalisationJoin -Label "localisation static join"
+Assert-File -Path $staticDecisionsDefinitions -Label "decisions static catalog"
+Assert-File -Path $staticIdeaTechLocXref -Label "idea/tech localisation xref"
+Assert-File -Path $staticShipDefinitions -Label "ship definitions static catalog"
+Assert-File -Path $staticGfxIconManifest -Label "GFX icon manifest"
+
+if ($Hoi4Pid -eq 0) {
+    $Hoi4Pid = Resolve-SingleHoi4Pid
 }
 
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -281,6 +317,10 @@ $runArgs = @(
     "--static-gfx-icon-manifest", $staticGfxIconManifest
 )
 
+if (-not $RunHostFold) {
+    $runArgs += "--skip-host-fold"
+}
+
 if ($ReplayZstdLevel -gt 0) {
     $runArgs += "--replay-zstd-level"
     $runArgs += "$ReplayZstdLevel"
@@ -305,6 +345,9 @@ $commandLine = "& `"$collectorRecord`" " + ($runArgs | ForEach-Object {
 $commandPath = Join-Path $OutDir "production_command.ps1"
 Set-Content -LiteralPath $commandPath -Value $commandLine -Encoding UTF8
 
+$deferredFoldScript = Join-Path $scriptDir "Invoke-DeferredFold.ps1"
+$deferredFoldCommand = "& `"$deferredFoldScript`" -RunDir `"$OutDir`""
+
 $d53RelationDisplay = if ($ReplayZstdLevel -gt 0) {
     $runArgs += "--replay-zstd-level"
     $runArgs += "$ReplayZstdLevel"
@@ -312,14 +355,29 @@ $d53RelationDisplay = if ($ReplayZstdLevel -gt 0) {
 
 if ($D53RelationReadMode.Length -gt 0) { $D53RelationReadMode } else { "(default)" }
 $emitModeDisplay = if ($EmitModeAll.Length -gt 0) { $EmitModeAll } else { "(default)" }
-Write-Host "mode=$Mode profile=$CaptureProfile pid=$Hoi4Pid duration_s=$durationArg min_game_hours=$MinGameHours sample_ms=$SampleMs reader_concurrency=$ReaderConcurrency d53_relation_read_mode=$d53RelationDisplay emit_mode_all=$emitModeDisplay"
+$hostFoldDisplay = if ($RunHostFold) { "inline" } else { "deferred" }
+$maxTurnaroundDisplay = Invariant-Number -Value $MaxTurnaroundMinutes
+$projectedTurnaroundDisplay = Invariant-Number -Value ($projectedTurnaroundSeconds / 60.0)
+$projectedFoldDisplay = Invariant-Number -Value ($projectedFoldSeconds / 60.0)
+Write-Host "mode=$Mode profile=$CaptureProfile pid=$Hoi4Pid duration_s=$durationArg min_game_hours=$MinGameHours sample_ms=$SampleMs reader_concurrency=$ReaderConcurrency d53_relation_read_mode=$d53RelationDisplay emit_mode_all=$emitModeDisplay host_fold=$hostFoldDisplay max_turnaround_min=$maxTurnaroundDisplay projected_turnaround_min=$projectedTurnaroundDisplay projected_fold_min=$projectedFoldDisplay"
 Write-Host "out_dir=$OutDir"
 Write-Host "command_file=$commandPath"
 
 if ($DryRun) {
     Write-Host "DRY RUN capture: $commandLine"
+    Write-Host "deferred_fold_command=$deferredFoldCommand"
     exit 0
 }
 
 $logPath = Join-Path $OutDir "collector_record.console.log"
 Invoke-Checked -Exe $collectorRecord -Arguments $runArgs -LogPath $logPath
+Write-Host "deferred_fold_command=$deferredFoldCommand"
+$turnaroundStopwatch.Stop()
+$actualTurnaroundMinutes = $turnaroundStopwatch.Elapsed.TotalMinutes
+$actualTurnaroundDisplay = Invariant-Number -Value $actualTurnaroundMinutes
+Write-Host "actual_turnaround_min=$actualTurnaroundDisplay max_turnaround_min=$maxTurnaroundDisplay"
+if ($actualTurnaroundMinutes -gt $MaxTurnaroundMinutes) {
+    $warningMessage = "TURNAROUND LIMIT EXCEEDED: actual capture-run turnaround was $actualTurnaroundDisplay minutes, above -MaxTurnaroundMinutes $maxTurnaroundDisplay."
+    Write-Warning $warningMessage
+    Write-Host "WARNING: $warningMessage" -ForegroundColor Yellow
+}

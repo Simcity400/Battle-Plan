@@ -763,6 +763,13 @@ struct StaticArtifactRequest {
     path: PathBuf,
 }
 
+#[derive(Debug)]
+struct RepackConfig {
+    run_dir: PathBuf,
+    workers: usize,
+    static_artifacts: Vec<StaticArtifactRequest>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProductionProfileSummary {
     enabled: bool,
@@ -1082,7 +1089,11 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let cfg = parse_args(env::args().skip(1).collect())?;
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--fold-and-repack-existing-run-dir") {
+        return fold_and_repack_existing_run_dir(parse_repack_args(&args)?);
+    }
+    let cfg = parse_args(args)?;
     fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("create out dir failed: {e}"))?;
     let raw_path = cfg.out_dir.join(cfg.stream_format.stream_file_name());
     let manifest_path = cfg.out_dir.join("native_session_manifest.json");
@@ -1282,6 +1293,10 @@ fn run() -> Result<(), String> {
             )
         }
     };
+    let replay_packaging = replay_packaging_manifest_json(&cfg)?;
+    if let Some(obj) = manifest.as_object_mut() {
+        obj.insert("replay_packaging".to_string(), replay_packaging);
+    }
     let gate_problems = manifest_hourly_problems(&manifest);
     let replay_path = replay_path_for_gate(&cfg.out_dir, hourly_met);
     let normal_quarantine = (!hourly_met).then(|| quarantine_normal_replay(&normal_replay_path));
@@ -1520,6 +1535,445 @@ fn run() -> Result<(), String> {
         ));
     }
     println!("{}", manifest_path.display());
+    Ok(())
+}
+
+fn parse_repack_args(args: &[String]) -> Result<RepackConfig, String> {
+    if args.len() < 2 || args[0] != "--fold-and-repack-existing-run-dir" {
+        return Err(
+            "usage: collector_record --fold-and-repack-existing-run-dir RUN_DIR [--workers N] [static artifact flags]"
+                .to_string(),
+        );
+    }
+
+    let run_dir = PathBuf::from(&args[1]);
+    let mut workers = recorder_host::stream_fold::default_fold_workers();
+    let mut static_templates_equipment_catalog: Option<PathBuf> = None;
+    let mut static_localisation_join: Option<PathBuf> = None;
+    let mut static_decisions_definitions: Option<PathBuf> = None;
+    let mut static_idea_tech_loc_xref: Option<PathBuf> = None;
+    let mut static_ship_definitions: Option<PathBuf> = None;
+    let mut static_gfx_icon_manifest: Option<PathBuf> = None;
+    let mut i = 2usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--workers" => {
+                i += 1;
+                workers = required(args.get(i), "--workers")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("--workers expects a positive integer: {e}"))?;
+                if workers == 0 {
+                    return Err("--workers must be >= 1".to_string());
+                }
+            }
+            "--static-templates-equipment-catalog" => {
+                if static_templates_equipment_catalog.is_some() {
+                    return Err(
+                        "duplicate --static-templates-equipment-catalog is not allowed".to_string(),
+                    );
+                }
+                i += 1;
+                static_templates_equipment_catalog =
+                    Some(PathBuf::from(required(args.get(i), &args[i - 1])?));
+            }
+            "--static-localisation-join" => {
+                if static_localisation_join.is_some() {
+                    return Err("duplicate --static-localisation-join is not allowed".to_string());
+                }
+                i += 1;
+                static_localisation_join =
+                    Some(PathBuf::from(required(args.get(i), &args[i - 1])?));
+            }
+            "--static-decisions-definitions" => {
+                if static_decisions_definitions.is_some() {
+                    return Err(
+                        "duplicate --static-decisions-definitions is not allowed".to_string(),
+                    );
+                }
+                i += 1;
+                static_decisions_definitions =
+                    Some(PathBuf::from(required(args.get(i), &args[i - 1])?));
+            }
+            "--static-idea-tech-loc-xref" => {
+                if static_idea_tech_loc_xref.is_some() {
+                    return Err(
+                        "duplicate --static-idea-tech-loc-xref is not allowed".to_string(),
+                    );
+                }
+                i += 1;
+                static_idea_tech_loc_xref =
+                    Some(PathBuf::from(required(args.get(i), &args[i - 1])?));
+            }
+            "--static-ship-definitions" => {
+                if static_ship_definitions.is_some() {
+                    return Err("duplicate --static-ship-definitions is not allowed".to_string());
+                }
+                i += 1;
+                static_ship_definitions =
+                    Some(PathBuf::from(required(args.get(i), &args[i - 1])?));
+            }
+            "--static-gfx-icon-manifest" => {
+                if static_gfx_icon_manifest.is_some() {
+                    return Err("duplicate --static-gfx-icon-manifest is not allowed".to_string());
+                }
+                i += 1;
+                static_gfx_icon_manifest =
+                    Some(PathBuf::from(required(args.get(i), &args[i - 1])?));
+            }
+            other => return Err(format!("unknown fold-and-repack flag {other}")),
+        }
+        i += 1;
+    }
+
+    let mut static_artifacts = Vec::new();
+    if let Some(path) = static_templates_equipment_catalog {
+        static_artifacts.push(StaticArtifactRequest {
+            name: STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+            path,
+        });
+    }
+    if let Some(path) = static_localisation_join {
+        static_artifacts.push(StaticArtifactRequest {
+            name: STATIC_ARTIFACT_LOCALISATION_JOIN,
+            path,
+        });
+    }
+    if let Some(path) = static_decisions_definitions {
+        static_artifacts.push(StaticArtifactRequest {
+            name: STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+            path,
+        });
+    }
+    if let Some(path) = static_idea_tech_loc_xref {
+        static_artifacts.push(StaticArtifactRequest {
+            name: STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+            path,
+        });
+    }
+    if let Some(path) = static_ship_definitions {
+        static_artifacts.push(StaticArtifactRequest {
+            name: STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+            path,
+        });
+    }
+    if let Some(path) = static_gfx_icon_manifest {
+        static_artifacts.push(StaticArtifactRequest {
+            name: STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+            path,
+        });
+    }
+
+    Ok(RepackConfig {
+        run_dir,
+        workers,
+        static_artifacts,
+    })
+}
+
+fn replay_packaging_manifest_json(cfg: &Config) -> Result<Value, String> {
+    let game_id = replay_game_id(&cfg.session_id);
+    let mut static_artifacts = Vec::with_capacity(cfg.static_artifacts.len());
+    for request in &cfg.static_artifacts {
+        let resolved = resolve_static_artifact(&game_id, request)?;
+        static_artifacts.push(json!({
+            "name": request.name,
+            "sha256": to_hex(&Sha256::digest(&resolved.bytes)),
+        }));
+    }
+    Ok(json!({
+        "created_utc": created_utc_label(),
+        "compression": {
+            "zstd_level": cfg.compression_profile.zstd_level,
+            "zstd_window_log": cfg.compression_profile.zstd_window_log,
+        },
+        "static_artifacts": static_artifacts,
+    }))
+}
+
+fn replay_packaging_created_utc(manifest: &Value) -> Option<String> {
+    manifest
+        .get("replay_packaging")
+        .and_then(|value| value.get("created_utc"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn recorded_replay_compression_profile(manifest: &Value) -> Result<CompressionProfile, String> {
+    let compression = manifest
+        .get("replay_packaging")
+        .and_then(|value| value.get("compression"))
+        .ok_or_else(|| "manifest replay_packaging.compression is missing".to_string())?;
+    let zstd_level = compression
+        .get("zstd_level")
+        .and_then(Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| "manifest replay_packaging.compression.zstd_level is invalid".to_string())?;
+    let zstd_window_log = compression
+        .get("zstd_window_log")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| {
+            "manifest replay_packaging.compression.zstd_window_log is invalid".to_string()
+        })?;
+    let profile = CompressionProfile {
+        zstd_level,
+        zstd_window_log,
+    };
+    profile
+        .validate()
+        .map_err(|e| format!("manifest replay compression profile is invalid: {e}"))?;
+    Ok(profile)
+}
+
+fn recorded_static_artifacts(manifest: &Value) -> Result<Vec<(String, String)>, String> {
+    manifest
+        .get("replay_packaging")
+        .and_then(|value| value.get("static_artifacts"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "manifest replay_packaging.static_artifacts is missing".to_string())?
+        .iter()
+        .map(|value| {
+            let name = value
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    "manifest replay_packaging.static_artifacts contains an invalid name".to_string()
+                })?;
+            let sha256 = value
+                .get("sha256")
+                .and_then(Value::as_str)
+                .filter(|sha| {
+                    sha.len() == 64 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "manifest replay_packaging static artifact {name:?} has an invalid sha256"
+                    )
+                })?;
+            Ok((name.to_string(), sha256.to_ascii_lowercase()))
+        })
+        .collect()
+}
+
+fn repack_writer_config(
+    repack: &RepackConfig,
+    manifest: &Value,
+    compression_profile: CompressionProfile,
+) -> Result<Config, String> {
+    let session_id = manifest
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "manifest session_id is missing".to_string())?
+        .to_string();
+    Ok(Config {
+        pid: 0,
+        dll: PathBuf::new(),
+        out_dir: repack.run_dir.clone(),
+        duration_ms: 0,
+        sample_ms: 0,
+        dwell_ms: 0,
+        min_game_hours: 0,
+        scheduled_domains: Vec::new(),
+        production: false,
+        lightweight_root_frame: true,
+        special_projects_scan: false,
+        compact_country_frame: true,
+        division_body_bridge: None,
+        special_projects_bridge: None,
+        idea_group_filter: None,
+        advisor_token_filter: None,
+        session_id,
+        stream_format: StreamFormat::Compact,
+        profile: None,
+        sidecar_log: false,
+        extraction_perf_gate: false,
+        d53_emit_mode: D53EmitMode::Delta,
+        d51_emit_mode: D51EmitMode::Delta,
+        d41_emit_mode: D41EmitMode::Delta,
+        d44_emit_mode: D44EmitMode::Delta,
+        d48_emit_mode: D48EmitMode::Delta,
+        d53_relation_read_mode: D53RelationReadMode::Offsets,
+        reader_concurrency: 0,
+        compression_profile,
+        static_artifacts: repack.static_artifacts.clone(),
+        skip_host_fold: false,
+        hour_latch_enabled: false,
+        hour_latch_poll_ms: 2,
+        hour_latch_queue_cap: 64,
+    })
+}
+
+fn fold_and_repack_existing_run_dir(repack: RepackConfig) -> Result<(), String> {
+    let manifest_path = repack.run_dir.join("native_session_manifest.json");
+    let raw_path = repack.run_dir.join("collector_stream.bin");
+    if !repack.run_dir.is_dir() {
+        return Err(format!(
+            "fold-and-repack run directory not found: {}",
+            repack.run_dir.display()
+        ));
+    }
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "fold-and-repack manifest not found: {}",
+            manifest_path.display()
+        ));
+    }
+    if !raw_path.is_file() {
+        return Err(format!(
+            "fold-and-repack compact stream not found: {}",
+            raw_path.display()
+        ));
+    }
+
+    let manifest_bytes =
+        fs::read(&manifest_path).map_err(|e| format!("read run manifest failed: {e}"))?;
+    let manifest: Value = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| format!("parse run manifest failed: {e}"))?;
+    if manifest.get("stream_format").and_then(Value::as_str) != Some("compact") {
+        return Err("fold-and-repack requires manifest stream_format=compact".to_string());
+    }
+    if manifest
+        .get("host_finalize")
+        .and_then(|value| value.get("fold"))
+        .and_then(|value| value.get("skipped"))
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            "fold-and-repack requires a manifest with host_finalize.fold.skipped=true".to_string(),
+        );
+    }
+
+    let game_id = manifest
+        .get("replay_game_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "manifest replay_game_id is missing".to_string())?
+        .to_string();
+    replay_packaging_created_utc(&manifest)
+        .ok_or_else(|| "manifest replay_packaging.created_utc is missing".to_string())?;
+    let compression_profile = recorded_replay_compression_profile(&manifest)?;
+    let recorded_static_artifacts = recorded_static_artifacts(&manifest)?;
+    let expected_static_artifact_names = recorded_static_artifacts
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let supplied_static_artifact_names = repack
+        .static_artifacts
+        .iter()
+        .map(|request| request.name.to_string())
+        .collect::<Vec<_>>();
+    if supplied_static_artifact_names != expected_static_artifact_names {
+        return Err(format!(
+            "fold-and-repack static artifact set differs from the recorded packaging inputs: recorded={expected_static_artifact_names:?} supplied={supplied_static_artifact_names:?}"
+        ));
+    }
+    for (request, (_, expected_sha256)) in repack
+        .static_artifacts
+        .iter()
+        .zip(recorded_static_artifacts.iter())
+    {
+        let resolved = resolve_static_artifact(&game_id, request)?;
+        let actual_sha256 = to_hex(&Sha256::digest(&resolved.bytes));
+        if actual_sha256 != *expected_sha256 {
+            return Err(format!(
+                "fold-and-repack static artifact {} changed since capture: recorded sha256 {} current sha256 {}",
+                request.name, expected_sha256, actual_sha256
+            ));
+        }
+    }
+
+    let replay_file = manifest
+        .get("replay_file")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "manifest replay_file is missing".to_string())?;
+    let replay_file_path = Path::new(replay_file);
+    if replay_file_path.components().count() != 1 || replay_file_path.file_name() != Some(OsStr::new(replay_file)) {
+        return Err(format!(
+            "manifest replay_file must be a leaf file name, got {replay_file:?}"
+        ));
+    }
+    let replay_path = repack.run_dir.join(replay_file);
+    if !replay_path.is_file() {
+        return Err(format!(
+            "existing skipped-fold replay container not found: {}",
+            replay_path.display()
+        ));
+    }
+
+    let host_finalize = manifest
+        .get("host_finalize")
+        .ok_or_else(|| "manifest host_finalize is missing".to_string())?;
+    let capture = PipeCapture {
+        byte_count: host_finalize
+            .get("stream_bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "manifest host_finalize.stream_bytes is missing".to_string())?,
+        sha256: host_finalize
+            .get("stream_sha256")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            .ok_or_else(|| "manifest host_finalize.stream_sha256 is invalid".to_string())?
+            .to_ascii_lowercase(),
+    };
+    let raw_len = fs::metadata(&raw_path)
+        .map_err(|e| format!("stat compact stream failed: {e}"))?
+        .len();
+    if raw_len != capture.byte_count {
+        return Err(format!(
+            "compact stream length {raw_len} differs from recorded capture bytes {}",
+            capture.byte_count
+        ));
+    }
+
+    let cfg = repack_writer_config(&repack, &manifest, compression_profile)?;
+    let finalize_started = Instant::now();
+    let snapshot_spill_dir = create_unique_snapshot_spill_dir(&repack.run_dir)?;
+    let result = (|| -> Result<
+        (
+            recorder_host::stream_fold::FoldStreamStats,
+            snapshot::StreamVerifyReport,
+        ),
+        String,
+    > {
+        let (snapshot_files, fold_stats) =
+            recorder_host::stream_fold::fold_compact_stream_file_parallel(
+                &raw_path,
+                &game_id,
+                &snapshot_spill_dir,
+                repack.workers,
+            )
+            .map_err(|e| format!("streaming deferred fold failed: {e}"))?;
+        let verify = write_native_replay_container_streaming(
+            &cfg,
+            &raw_path,
+            &capture,
+            &snapshot_files,
+            Some(&fold_stats),
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )?;
+        Ok((fold_stats, verify))
+    })();
+    cleanup_snapshot_spill_dir(&snapshot_spill_dir);
+    let (fold_stats, verify) = result?;
+
+    update_host_finalize_telemetry(
+        &manifest_path,
+        &capture,
+        finalize_started.elapsed(),
+        Some(&fold_stats),
+        false,
+        Some(&verify),
+    )?;
+    println!("{}", replay_path.display());
     Ok(())
 }
 
@@ -3439,7 +3893,9 @@ fn write_native_replay_container_streaming(
 
     let identity = PackIdentity {
         schema_version: Some("native_collector_session_v1".to_string()),
-        created_utc: Some(created_utc_label()),
+        created_utc: Some(
+            replay_packaging_created_utc(manifest).unwrap_or_else(created_utc_label),
+        ),
         ..Default::default()
     };
     let (tmp, mut tmp_file) = create_unique_replay_temp(replay_path)?;
@@ -3499,15 +3955,23 @@ fn build_host_finalize_telemetry(
     verify: Option<&snapshot::StreamVerifyReport>,
     embedded_pre_pack_copy: bool,
 ) -> Value {
-    let peak = recorder_host::proc_mem::peak_memory();
     let mut block = json!({
         "streaming": true,
-        "peak_private_bytes": peak.map(|p| p.peak_private_bytes),
-        "peak_working_set_bytes": peak.map(|p| p.peak_working_set_bytes),
         "stream_bytes": capture.byte_count,
         "stream_sha256": capture.sha256,
     });
     let obj = block.as_object_mut().unwrap();
+    if !embedded_pre_pack_copy {
+        let peak = recorder_host::proc_mem::peak_memory();
+        obj.insert(
+            "peak_private_bytes".into(),
+            json!(peak.map(|p| p.peak_private_bytes)),
+        );
+        obj.insert(
+            "peak_working_set_bytes".into(),
+            json!(peak.map(|p| p.peak_working_set_bytes)),
+        );
+    }
     if let Some(elapsed) = finalize_elapsed {
         obj.insert("finalize_seconds".into(), json!(elapsed.as_secs_f64()));
     }
@@ -3516,7 +3980,12 @@ fn build_host_finalize_telemetry(
         obj.insert("standalone_manifest_is_authoritative".into(), json!(true));
         obj.insert(
             "post_pack_fields_in_standalone_manifest_only".into(),
-            json!(["finalize_seconds", "verify"]),
+            json!([
+                "finalize_seconds",
+                "peak_private_bytes",
+                "peak_working_set_bytes",
+                "verify"
+            ]),
         );
     }
     if fold_skipped {
@@ -3590,8 +4059,10 @@ fn session_manifest_bytes_with_pre_pack_host_finalize(
 }
 
 /// Append the G5 memory + streaming-finalize telemetry to
-/// `native_session_manifest.json`. Best-effort: a failure here is logged to
-/// stderr and never turns an otherwise-successful capture into a failure.
+/// native_session_manifest.json. Best-effort on the live capture path: a
+/// failure is logged and never turns an otherwise-successful capture into a
+/// failure. Deferred repack calls the strict updater directly because completing
+/// without the final fold telemetry would leave the run artifact inconsistent.
 fn write_host_finalize_telemetry(
     manifest_path: &Path,
     capture: &PipeCapture,
@@ -3600,6 +4071,26 @@ fn write_host_finalize_telemetry(
     fold_skipped: bool,
     verify: Option<&snapshot::StreamVerifyReport>,
 ) {
+    if let Err(e) = update_host_finalize_telemetry(
+        manifest_path,
+        capture,
+        finalize_elapsed,
+        fold_stats,
+        fold_skipped,
+        verify,
+    ) {
+        eprintln!("recorder warning: could not record host_finalize telemetry: {e}");
+    }
+}
+
+fn update_host_finalize_telemetry(
+    manifest_path: &Path,
+    capture: &PipeCapture,
+    finalize_elapsed: Duration,
+    fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
+    fold_skipped: bool,
+    verify: Option<&snapshot::StreamVerifyReport>,
+) -> Result<(), String> {
     let block = build_host_finalize_telemetry(
         capture,
         Some(finalize_elapsed),
@@ -3608,22 +4099,15 @@ fn write_host_finalize_telemetry(
         verify,
         false,
     );
-
-    let updated = (|| -> Result<(), String> {
-        let bytes = fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
-        let mut manifest: Value =
-            serde_json::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
-        manifest
-            .as_object_mut()
-            .ok_or_else(|| "manifest is not an object".to_string())?
-            .insert("host_finalize".to_string(), block);
-        let pretty = serde_json::to_vec_pretty(&manifest).map_err(|e| format!("serialize: {e}"))?;
-        fs::write(manifest_path, pretty).map_err(|e| format!("write manifest: {e}"))?;
-        Ok(())
-    })();
-    if let Err(e) = updated {
-        eprintln!("recorder warning: could not record host_finalize telemetry: {e}");
-    }
+    let bytes = fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
+    let mut manifest: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
+    manifest
+        .as_object_mut()
+        .ok_or_else(|| "manifest is not an object".to_string())?
+        .insert("host_finalize".to_string(), block);
+    let pretty = serde_json::to_vec_pretty(&manifest).map_err(|e| format!("serialize: {e}"))?;
+    fs::write(manifest_path, pretty).map_err(|e| format!("write manifest: {e}"))
 }
 
 fn verify_native_replay_container(
@@ -17155,6 +17639,8 @@ mod tests {
         );
         assert!(host_finalize.get("verify").is_none());
         assert!(host_finalize.get("finalize_seconds").is_none());
+        assert!(host_finalize.get("peak_private_bytes").is_none());
+        assert!(host_finalize.get("peak_working_set_bytes").is_none());
     }
 
     fn country_identity_payload_with_cosmetic(rows: &[(u32, &str, u8, Option<&str>)]) -> Vec<u8> {
@@ -27243,6 +27729,175 @@ mod tests {
             .unwrap()
             .contains("skip-host-fold"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_repack_args_uses_shared_default_workers_and_keeps_override() {
+        let default_cfg = parse_repack_args(&[
+            "--fold-and-repack-existing-run-dir".to_string(),
+            r"C:\fixture".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            default_cfg.workers,
+            recorder_host::stream_fold::default_fold_workers()
+        );
+
+        let override_cfg = parse_repack_args(&[
+            "--fold-and-repack-existing-run-dir".to_string(),
+            r"C:\fixture".to_string(),
+            "--workers".to_string(),
+            "7".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(override_cfg.workers, 7);
+    }
+
+    #[test]
+    fn deferred_repack_container_is_byte_equivalent_to_inline_fold() {
+        let root = std::env::temp_dir().join(format!(
+            "battle-plan_deferred_equivalence_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let inline_dir = root.join("inline");
+        let deferred_dir = root.join("deferred");
+        fs::create_dir_all(&inline_dir).unwrap();
+        fs::create_dir_all(&deferred_dir).unwrap();
+
+        let session_id = "deferred equivalence fixture/session";
+        let game_id = replay_game_id(session_id);
+        let mut raw = Vec::new();
+        let mut sequence = 1u64;
+        append_test_fuel_compact_frame(&mut raw, &mut sequence, 60_759_359, 47);
+        let capture = PipeCapture {
+            byte_count: raw.len() as u64,
+            sha256: to_hex(&Sha256::digest(&raw)),
+        };
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "session_id": session_id,
+            "replay_game_id": game_id,
+            "stream_format": "compact",
+            "replay_file": "native_session.battleplan",
+            "replay_packaging": {
+                "created_utc": "unix_seconds:123456789",
+                "compression": {
+                    "zstd_level": CompressionProfile::default().zstd_level,
+                    "zstd_window_log": CompressionProfile::default().zstd_window_log,
+                },
+                "static_artifacts": [],
+            },
+            "host_finalize": {
+                "streaming": true,
+                "stream_bytes": capture.byte_count,
+                "stream_sha256": capture.sha256,
+                "fold": {
+                    "skipped": true,
+                    "reason": "--skip-host-fold fixture",
+                },
+            },
+        });
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        for dir in [&inline_dir, &deferred_dir] {
+            fs::write(dir.join("collector_stream.bin"), &raw).unwrap();
+            fs::write(dir.join("native_session_manifest.json"), &manifest_bytes).unwrap();
+        }
+
+        let inline_raw = inline_dir.join("collector_stream.bin");
+        let inline_manifest = inline_dir.join("native_session_manifest.json");
+        let inline_replay = inline_dir.join("native_session.battleplan");
+        let inline_spill = create_unique_snapshot_spill_dir(&inline_dir).unwrap();
+        let (inline_snapshots, inline_fold_stats) =
+            recorder_host::stream_fold::fold_compact_stream_file_parallel(
+                &inline_raw,
+                &game_id,
+                &inline_spill,
+                1,
+            )
+            .unwrap();
+        let mut inline_cfg = test_config(vec![], None);
+        inline_cfg.out_dir = inline_dir.clone();
+        inline_cfg.session_id = session_id.to_string();
+        write_native_replay_container_streaming(
+            &inline_cfg,
+            &inline_raw,
+            &capture,
+            &inline_snapshots,
+            Some(&inline_fold_stats),
+            &manifest,
+            &inline_manifest,
+            &inline_replay,
+        )
+        .unwrap();
+        cleanup_snapshot_spill_dir(&inline_spill);
+        let inline_bytes = fs::read(&inline_replay).unwrap();
+
+        let deferred_raw = deferred_dir.join("collector_stream.bin");
+        let deferred_manifest = deferred_dir.join("native_session_manifest.json");
+        let deferred_replay = deferred_dir.join("native_session.battleplan");
+        let mut deferred_cfg = test_config(vec![], None);
+        deferred_cfg.out_dir = deferred_dir.clone();
+        deferred_cfg.session_id = session_id.to_string();
+        deferred_cfg.skip_host_fold = true;
+        write_native_replay_container_streaming(
+            &deferred_cfg,
+            &deferred_raw,
+            &capture,
+            &[],
+            None,
+            &manifest,
+            &deferred_manifest,
+            &deferred_replay,
+        )
+        .unwrap();
+
+        fold_and_repack_existing_run_dir(RepackConfig {
+            run_dir: deferred_dir.clone(),
+            workers: 1,
+            static_artifacts: Vec::new(),
+        })
+        .unwrap();
+
+        let deferred_bytes = fs::read(&deferred_replay).unwrap();
+        assert_eq!(
+            deferred_bytes, inline_bytes,
+            "deferred fold-and-repack must produce the exact inline-fold container bytes"
+        );
+
+        let container =
+            Container::open(&deferred_replay, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        assert_eq!(container.index().snapshots.len(), 1);
+        let embedded_manifest = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/recorder/native_session_manifest.json"
+            ))
+            .unwrap();
+        let embedded: Value = serde_json::from_slice(&embedded_manifest).unwrap();
+        assert_eq!(embedded["host_finalize"]["fold"]["hours_emitted"], json!(1));
+        assert!(embedded["host_finalize"]["fold"].get("skipped").is_none());
+
+        let standalone: Value =
+            serde_json::from_slice(&fs::read(&deferred_manifest).unwrap()).unwrap();
+        assert_eq!(standalone["host_finalize"]["fold"]["hours_emitted"], json!(1));
+        assert!(standalone["host_finalize"]["fold"].get("skipped").is_none());
+        let spill_dirs = fs::read_dir(&deferred_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.starts_with(".native_session_snapshots-"))
+            .collect::<Vec<_>>();
+        assert!(
+            spill_dirs.is_empty(),
+            "deferred repack must clean snapshot spill directories: {spill_dirs:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
