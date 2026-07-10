@@ -1045,11 +1045,15 @@ struct CompactSummary {
     lane_wall_per_lane_busy_us_total: BTreeMap<u16, u64>,
     lane_wall_domain_crit_us_total: BTreeMap<u16, u64>,
     // Applied prefetch-distance provenance from the stream (lw_prefetch_dist_*
-    // units, aggregated by MAX — constant within a session). None = stream
-    // predates the units. This is what the DLL actually used, unlike the
-    // requested values echoed from host config.
+    // units). None = stream predates the units. This is what the DLL actually
+    // used, unlike the requested values echoed from host config. The `mixed`
+    // flags trip when two frames carried DIFFERENT values — then the applied
+    // value is withheld (a mixed session has no single arm label and must not
+    // fabricate one by max/min).
     lane_wall_prefetch_dist_relation_applied: Option<u64>,
+    lane_wall_prefetch_dist_relation_mixed: bool,
     lane_wall_prefetch_dist_candidates_applied: Option<u64>,
+    lane_wall_prefetch_dist_candidates_mixed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -17458,16 +17462,22 @@ fn add_compact_lane_wall_unit(summary: &mut CompactSummary, name: &str, value: u
                 summary.lane_wall_other_wall_us_total.saturating_add(value);
         }
         "prefetch_dist_relation" => {
-            let entry = summary
-                .lane_wall_prefetch_dist_relation_applied
-                .get_or_insert(0);
-            *entry = (*entry).max(value);
+            match summary.lane_wall_prefetch_dist_relation_applied {
+                None => summary.lane_wall_prefetch_dist_relation_applied = Some(value),
+                Some(prev) if prev != value => {
+                    summary.lane_wall_prefetch_dist_relation_mixed = true;
+                }
+                Some(_) => {}
+            }
         }
         "prefetch_dist_candidates" => {
-            let entry = summary
-                .lane_wall_prefetch_dist_candidates_applied
-                .get_or_insert(0);
-            *entry = (*entry).max(value);
+            match summary.lane_wall_prefetch_dist_candidates_applied {
+                None => summary.lane_wall_prefetch_dist_candidates_applied = Some(value),
+                Some(prev) if prev != value => {
+                    summary.lane_wall_prefetch_dist_candidates_mixed = true;
+                }
+                Some(_) => {}
+            }
         }
         _ => {
             if let Some(id) = rest
@@ -17562,13 +17572,21 @@ fn lane_wall_summary_json(summary: &CompactSummary) -> Value {
         "per_domain_critical_path_us_total": Value::Object(per_domain_crit),
         "per_domain_critical_path_share": Value::Object(per_domain_share),
         "country_bundle_tag": 200,
-        // APPLIED d53 prefetch distances mined from the stream's lw units (max
-        // across frames; constant within a session). `null` = stream predates
-        // the units. Unlike the top-level prefetch_dist_* echo (host-requested),
-        // this proves which distance the DLL actually used — the live-A/B arm
-        // label of record.
-        "prefetch_dist_relation_applied": summary.lane_wall_prefetch_dist_relation_applied,
-        "prefetch_dist_candidates_applied": summary.lane_wall_prefetch_dist_candidates_applied,
+        // APPLIED d53 prefetch distances mined from the stream's lw units.
+        // `null` applied + `mixed:false` = stream predates the units; `null` +
+        // `mixed:true` = the session carried MORE THAN ONE distance and has no
+        // single arm label (never fabricated via max/min). Unlike the top-level
+        // prefetch_dist_* echo (host-requested), a non-null value here proves
+        // which distance the DLL actually used — the live-A/B arm label of
+        // record.
+        "prefetch_dist_relation_applied": (!summary.lane_wall_prefetch_dist_relation_mixed)
+            .then_some(summary.lane_wall_prefetch_dist_relation_applied)
+            .flatten(),
+        "prefetch_dist_relation_mixed": summary.lane_wall_prefetch_dist_relation_mixed,
+        "prefetch_dist_candidates_applied": (!summary.lane_wall_prefetch_dist_candidates_mixed)
+            .then_some(summary.lane_wall_prefetch_dist_candidates_applied)
+            .flatten(),
+        "prefetch_dist_candidates_mixed": summary.lane_wall_prefetch_dist_candidates_mixed,
     })
 }
 
@@ -31831,7 +31849,7 @@ mod tests {
                 ("lw_l0_busy_us", 380),
                 ("lw_d48_crit_us", 400),
                 ("lw_prefetch_dist_relation", 8),
-                ("lw_prefetch_dist_candidates", 32),
+                ("lw_prefetch_dist_candidates", 4),
             ]),
         );
         append_test_compact_record(
@@ -31863,13 +31881,18 @@ mod tests {
         assert_eq!(summary.lane_wall_crit_walls_us, vec![800, 400]);
         assert_eq!(summary.lane_wall_crit_busy_us_total, 1_180);
         assert_eq!(summary.lane_wall_main_wall_us_total, 50);
-        // Applied prefetch provenance: MAX-aggregated, exposed in the manifest
-        // as the A/B arm label of record (never summed across frames).
+        // Applied prefetch provenance: constant across frames -> the arm label;
+        // DIFFERING across frames -> mixed trips and no label may be fabricated
+        // (frame 1 candidates=32, frame 2 candidates=4).
         assert_eq!(summary.lane_wall_prefetch_dist_relation_applied, Some(8));
-        assert_eq!(
-            summary.lane_wall_prefetch_dist_candidates_applied,
-            Some(32)
-        );
+        assert!(!summary.lane_wall_prefetch_dist_relation_mixed);
+        assert!(summary.lane_wall_prefetch_dist_candidates_mixed);
+        let manifest = lane_wall_summary_json(&summary);
+        assert_eq!(manifest["prefetch_dist_relation_applied"], json!(8));
+        assert_eq!(manifest["prefetch_dist_relation_mixed"], json!(false));
+        // Mixed -> applied withheld (null), mixed flag raised.
+        assert_eq!(manifest["prefetch_dist_candidates_applied"], json!(null));
+        assert_eq!(manifest["prefetch_dist_candidates_mixed"], json!(true));
         assert_eq!(
             summary.lane_wall_per_lane_walls_us.get(&0),
             Some(&vec![800, 400])
