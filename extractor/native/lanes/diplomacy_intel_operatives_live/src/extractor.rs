@@ -1607,10 +1607,13 @@ static PREFETCH_DIST_CANDIDATES_OVERRIDE: std::sync::atomic::AtomicUsize =
 /// affects subsequent frames only. An installed override takes precedence over
 /// `BATTLE_PLAN_PREFETCH_DIST_RELATION`, which the game process env cannot deliver to
 /// an already-running game — the entire reason this channel exists. `0` disables
-/// prefetch, exactly like the env contract.
-pub fn set_prefetch_dist_relation_override(dist: Option<usize>) {
+/// prefetch, exactly like the env contract. The parameter is `u32` (the control
+/// channel's width) so the internal `usize::MAX` unset-sentinel is unreachable
+/// by type — every accepted value installs verbatim (Codex gate finding 4).
+pub fn set_prefetch_dist_relation_override(dist: Option<u32>) {
     PREFETCH_DIST_RELATION_OVERRIDE.store(
-        dist.unwrap_or(PREFETCH_OVERRIDE_UNSET),
+        dist.map(|dist| dist as usize)
+            .unwrap_or(PREFETCH_OVERRIDE_UNSET),
         std::sync::atomic::Ordering::Relaxed,
     );
 }
@@ -1618,11 +1621,27 @@ pub fn set_prefetch_dist_relation_override(dist: Option<usize>) {
 /// Installs or clears the per-session candidate-loop prefetch-distance override
 /// (`prefetch_dist_candidates` in the control file). Contract identical to
 /// [`set_prefetch_dist_relation_override`].
-pub fn set_prefetch_dist_candidates_override(dist: Option<usize>) {
+pub fn set_prefetch_dist_candidates_override(dist: Option<u32>) {
     PREFETCH_DIST_CANDIDATES_OVERRIDE.store(
-        dist.unwrap_or(PREFETCH_OVERRIDE_UNSET),
+        dist.map(|dist| dist as usize)
+            .unwrap_or(PREFETCH_OVERRIDE_UNSET),
         std::sync::atomic::Ordering::Relaxed,
     );
+}
+
+/// The distance the relation loop will ACTUALLY use this frame (override if
+/// installed, else env/default). Public so the collector can stamp applied-value
+/// provenance into the canonical compact stream — the requested value in the
+/// manifest alone cannot prove which distance the DLL used (Codex gate
+/// finding 2). Forces the env cache on first call, exactly like the loop itself.
+pub fn effective_prefetch_dist_relation() -> usize {
+    prefetch_dist_relation()
+}
+
+/// Applied-value provenance twin of [`effective_prefetch_dist_relation`] for
+/// the flat candidate loops.
+pub fn effective_prefetch_dist_candidates() -> usize {
+    prefetch_dist_candidates()
 }
 
 /// Runtime lookahead distance for the d53 relation pair loop. Precedence:
@@ -4848,9 +4867,13 @@ mod tests {
         assert_eq!(parse_prefetch_dist(Some(" 0 "), 32), 0);
     }
 
-    // The override slots are process-global, so all their transitions are locked
-    // in ONE sequential test (parallel test threads mutating them would race);
-    // the slots are restored to UNSET at the end so no other test observes them.
+    // The override slots are process-global. All transitions live in ONE test so
+    // no two tests mutate them concurrently; there is deliberately NO lock —
+    // other parallel tests may transiently OBSERVE an installed override, which
+    // is benign by construction (the distance is a prefetch HINT: it can change
+    // timing only, never rows/bytes/errors, so no assertion elsewhere can see
+    // it). The slots are restored to UNSET at the end. If a future test ever
+    // asserts on prefetch distances it must merge into this one.
     #[test]
     fn prefetch_dist_overrides_win_reset_and_restore() {
         // Relation: override installed -> getter returns it verbatim, including
