@@ -17415,7 +17415,14 @@ fn add_compact_domain_perf_diagnostic_unit(
     }
     if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
         let entry = domain.data_units_total.entry(name.to_string()).or_default();
-        *entry = entry.saturating_add(value);
+        // Bitmask units aggregate by OR, never sum: two frames failing slot 0
+        // must read as mask 1, not "2" (which would falsely name slot 1).
+        // Currently only d69's failed-slot mask; counters keep summing.
+        if name == "d69_failed_slot_mask" {
+            *entry |= value;
+        } else {
+            *entry = entry.saturating_add(value);
+        }
     }
     if domain_id == COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE {
         if name.starts_with("domain48_gate_") {
@@ -31794,6 +31801,45 @@ mod tests {
             payload.extend_from_slice(name.as_bytes());
         }
         payload
+    }
+
+    // Codex O1-gate finding: bitmask units must aggregate by OR, never sum —
+    // two frames failing slot 0 (mask=1 each) must read as mask 1, not "2"
+    // (which would falsely name slot 1). Reason COUNTERS keep summing.
+    #[test]
+    fn d69_failed_slot_mask_ors_across_frames_while_reasons_sum() {
+        let mut raw = Vec::new();
+        for (seq, hour) in [(1u64, 100i32), (3, 101)] {
+            append_test_compact_record_with_flags(
+                &mut raw,
+                seq,
+                hour,
+                69,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+                &test_perf_diagnostic_payload(&[
+                    ("d69_fail_vtable_mismatch", 1),
+                    ("d69_failed_slot_mask", 1),
+                ]),
+            );
+            append_test_compact_record(
+                &mut raw,
+                seq + 1,
+                hour,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(1_000, 0),
+            );
+        }
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        let domain = summary.per_domain.get(&69).expect("d69 per_domain entry");
+        // Counter: summed (2 frames x 1). Mask: OR'd (still slot 0 = 1).
+        assert_eq!(
+            domain.data_units_total.get("d69_fail_vtable_mismatch"),
+            Some(&2)
+        );
+        assert_eq!(domain.data_units_total.get("d69_failed_slot_mask"), Some(&1));
     }
 
     #[test]
