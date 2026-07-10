@@ -374,6 +374,41 @@ reproduced identically by sequential and 4-worker parallel folds. **There is no 
 re-capturing any deleted stream requires a live game session.** Read it in place; never copy or
 modify it.
 
+## ⚠ CORRECTION 2026-07-10 (b) — skip law re-measured; "we cause the bursts" REFUTED
+
+Full study: `lane_reports/burst-correlation.md`. Header-only scan of the deep-war stream, using
+`elapsed_wall_ms` (frame_end payload `[0:8]`; `frame_time_us` is `[8:16]`, `collector/src/lib.rs:41189`)
+so the game's pace is measured **independently** of our sweep cost.
+
+- **We do NOT cause the bursts.** `corr(prev frame ms, interval of next cycle) = +0.4364` — after a
+  *heavy* frame the game runs *slower*. The pattern is **common cause**: world workload drives both
+  our sweep cost and the game's per-hour cost. Skips cluster where the game is **fast**
+  (mean interval 101.1 ms on skipped cycles vs 211.0 ms on clean ones), not where we are slow.
+- **The old "min inter-hour interval 28.2 ms" was a circular estimator** (`min(frame_time/gap)`, a
+  lower bound). Measured from wall clock: **min 33.5 ms**, p1 44.3, p5 71.0, p50 176.0, mean 186.0.
+  Our sweep is **75.5%** of the mean cycle, so cutting the sweep shrinks the cycle ~1:1.
+- **The old "zero-skip needs ≤25 ms, unreachable" is WRONG.** Budget curve (game pace held fixed):
+  **D ≤ 28 ms → 0 skips**; D = 40 → 0.1%; D = 60 → 1.1%; D = 100 → 7.1%; D = 151 → 19.5% (model
+  predicts 344 vs **370 actual** at the observed D, 7% under). Target is a **~30–40 ms cycle**, a
+  **~3.8× cut** from 151 ms — and d53 measured ~3× above its pure memory-latency floor. Plausibly
+  reachable by cheaper acquisition alone, with **no change-driven read scheme**.
+- **Unresolved confound (do not drop):** the curve assumes the game's pace is exogenous. The
+  `+0.4364` correlation says it may not be, and observation cannot separate common-cause from
+  causation. **D≈28 ⇒ zero skips is an upper bound, not a prediction.** Settle it live: hold save +
+  speed fixed, vary sweep cost via domain subsets (~40/~80/~151 ms), and see whether the *interval*
+  distribution shifts. Unchanged ⇒ exogenous; shrinks with us ⇒ CPU-coupled fixed point.
+- **Acquire/process split — ceiling already bounded.** d53's encode+decode-gate is **7.9 ms** vs a
+  **49.3 ms** read: processing ≈14% of that domain's wall, so deferring *encode* buys little. The
+  split pays only if **materialisation** is deferrable, which needs a raw-byte copy at the hour
+  boundary. Instrument **three** phases before building it: (1) guarded reads touching game memory
+  (not deferrable), (2) materialise/decode (deferrable only behind a raw copy), (3) encode/emit
+  (deferrable, known-small).
+
+> **Method warning.** Two earlier passes of this study misread `elapsed_wall_ms` as `frame_time_us`
+> and produced confident nonsense (`corr = +0.9302`, `autocorr(ft,1) = 1.0000`). Validate any
+> reconstructed series against the manifest (frame mean 151.5 / p95 263.6 / max 477.2) **before**
+> interpreting it.
+
 ## ⚠ OUTSTANDING INDEPENDENT GATES (2026-07-10)
 
 Per `CODEX_LANE_BRIEF.md` §7, a lossless-critical diff needs the **orchestrator's** independent
