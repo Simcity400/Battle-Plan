@@ -119,6 +119,37 @@ Regression tests to require: `domain47_stale_character_fails_one_frame_then_rebu
 `domain47_uses_full_country_roots_when_politics_delta_is_empty`,
 `domain47_failure_substitution_preserves_read_time_status_and_error_kind`.
 
+## d43/d69 attribution (Codex 2026-07-10 late, resumed thread 019f4bd7…; citations orchestrator-verified)
+
+**d43 market_trade_live — NOT chronic (premise refuted).** SOURCE_UNAVAILABLE on exactly
+1/3,471 frames: the elapsed-0 cold frame (heap sweep deliberately waits 250 ms before its first
+pass; lib.rs:52529-52544), where purchase-contract discovery was genuinely unavailable while the
+MTRF resource-flow trailer already carried 55 rows. Because status is a domain-wide bit and the
+session OR paints everything, one cold frame flagged the whole run. LATENT BUG found: the reader
+conflates cold `None` with warm known-complete-empty `Some([])` — both hit the unconditional
+`contract_ptrs.is_empty()` SOURCE flag (lib.rs:28264-28270). Fixes (small): (1) only `None` sets
+SOURCE; (2) production preflight: warm the d43 needle before the first latch frame (timeout =
+fail closed, never clear the bit); (3) per-segment disposition so MTRF folds while contracts
+stay explicitly failed on a cold frame.
+
+**d69 tech_sharing_groups_live — chronic AND not tolerable; a REAL coverage hole TODAY.**
+PARTIAL on 3,471/3,471 frames (8 groups on 3,418, 7 on 53); the fold rejects every partial d69
+frame and no clean baseline ever folds ⇒ **tech-sharing contributes NOTHING to any replay right
+now** despite 27.7k groups captured. Cause unattributable from the stream: seven distinct
+failure reasons collapse into ONE boolean (`torn_or_skipped_nonnull_slot`, lib.rs:36493-36584)
+with zero reason telemetry. Strong inference (not proven): the hardcoded NINE-slot topology
+(build_profile.rs:403-419, provenance = a single nine-group fixture) has a stale tail — a
+retained capture shows exactly 8 groups/frame with status 0 (live_validation_20260709_220224
+stage0), consistent with a dynamic active extent. Fixes: (1) per-slot/per-reason counters FIRST
+(one live frame then attributes it); (2) RE the manager's authoritative active extent and
+iterate only that; (3) keep PARTIAL for failures inside the proven extent; (4) live shadow +
+same-tick save oracle through group create/destroy lifecycles. DO NOT add d69 to the
+tolerances — the emitted set may genuinely be short and the fold would full-replace with it.
+
+**Tolerance machinery behaves as designed** (neither domain listed; tolerances grant only
+PARTIAL and only when no other bit is set). Also refuted: these flags alone cause recovery
+replays — `skipped_game_hours_detected` independently fails the artifact gate.
+
 ## Forbidden (the silent-loss traps, verbatim from the adversarial analysis)
 
 - No expected-absence classification for d43/d47/d69 (they carry real data / a real bug).
