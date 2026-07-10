@@ -48,7 +48,7 @@
     # recorder_host as --prefetch-dist-relation / --prefetch-dist-candidates and
     # delivered to the injected DLL via the control file (the env-var channel
     # cannot reach an already-running game). -1 = launcher passes nothing (the
-    # lane keeps env/default: relation 16, candidates 32). 0 = prefetch OFF.
+    # lane keeps env/default: relation 8, candidates 32). 0 = prefetch OFF.
     [int]$PrefetchDistRelation = -1,
 
     [int]$PrefetchDistCandidates = -1,

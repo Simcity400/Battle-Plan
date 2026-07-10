@@ -1538,12 +1538,20 @@ fn resolve_country_roots<M: Domain53Memory>(
 /// T3 (perf_rearch_20260706): prefetch lookahead distance, in **iterations**,
 /// for the d53 relation pair loop (~64k pairs/frame). While processing target
 /// `i`, we prefetch the relation entry of target `i + PREFETCH_DIST_RELATION`.
-/// The value is the DEFAULT: a live distance sweep {0, 8, 16, 32, 64} — measured
-/// d53-alone and full-frame — is run from a SINGLE build via the runtime
-/// override [`prefetch_dist_relation`] (env `BATTLE_PLAN_PREFETCH_DIST_RELATION`); this
-/// constant is the fallback when the env var is absent/unparseable. Prefetch is
-/// a hint only; this value affects timing, never rows/bytes/errors.
-const PREFETCH_DIST_RELATION_DEFAULT: usize = 16;
+/// The value is the DEFAULT; runtime overrides: control-file
+/// `prefetch_dist_relation` (beats env) or env `BATTLE_PLAN_PREFETCH_DIST_RELATION`
+/// (see [`prefetch_dist_relation`]). Prefetch is a hint only; this value
+/// affects timing, never rows/bytes/errors.
+///
+/// RETUNED 16 -> 8 (2026-07-10) on TWO independent live drift-cancelling
+/// palindrome A/Bs `[16,8,0,0,8,16]` (runs/ab_prefetch_20260710 + _2, applied
+/// distance proven per-window from each stream's `lw_prefetch_dist_relation`):
+/// d53 `read_time_us` avg over 4 windows/arm — dist8 = 51,705 µs (best in BOTH
+/// palindromes, tightest spread) vs dist16 = 54,690 (worst combined, high
+/// variance) vs dist0 = 53,333. Matches the corrected synthetic model's
+/// optimum ("cliff by 16", lane report w11-prefetch.md §2-3). ~5.5% of the
+/// d53 read vs the old default.
+const PREFETCH_DIST_RELATION_DEFAULT: usize = 8;
 
 /// T3 (perf_rearch_20260706): prefetch lookahead distance, in **iterations**,
 /// for the flat address-slice candidate loops (`read_operatives`,
@@ -1648,7 +1656,7 @@ pub fn effective_prefetch_dist_candidates() -> usize {
 /// per-session control override (see [`set_prefetch_dist_relation_override`])
 /// beats `BATTLE_PLAN_PREFETCH_DIST_RELATION`, which is read ONCE on first use and
 /// cached in a `OnceLock` (the env is NOT read per-pair — that would perturb the
-/// measurement). Falls back to [`PREFETCH_DIST_RELATION_DEFAULT`] (16) when
+/// measurement). Falls back to [`PREFETCH_DIST_RELATION_DEFAULT`] (8) when
 /// neither is set (or the env var is garbage). A value of `0` DISABLES prefetch
 /// for the relation loop (the caller skips the whole lookahead block, issuing no
 /// hint). Hint-only; the un-overridden default is identical to the pre-override

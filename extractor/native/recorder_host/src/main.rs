@@ -721,7 +721,7 @@ struct Config {
     /// Per-session d53 prefetch-distance overrides (relation pair loop / flat
     /// candidate loops), written into the DLL control file as
     /// `prefetch_dist_relation` / `prefetch_dist_candidates`. `None` = field is
-    /// `null` = the lane keeps its env/default distances (relation 16,
+    /// `null` = the lane keeps its env/default distances (relation 8,
     /// candidates 32). Control-file delivery exists because the env-var channel
     /// cannot reach an already-running game — required for the live prefetch
     /// A/B. Perf-only hint; never changes rows/bytes/errors.

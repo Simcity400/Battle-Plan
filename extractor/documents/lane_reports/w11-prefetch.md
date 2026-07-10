@@ -202,6 +202,27 @@ removes code). Do NOT keep 16. A second palindrome on a fresh session would tigh
 then the honest claim is "16 is refuted, 8 and 0 tie." Candidate-loop distance (32) was NOT swept
 live and is untouched.
 
+### CONFIRMATORY PALINDROME (same night, `runs/ab_prefetch2_20260710`) — DECIDED, RETUNED 16→8
+
+Second independent drift-cancelled palindrome, ~40 min later on the further-advanced world
+(applied distance again proven per-window from each stream; no mixed flags):
+
+| applied dist | run 2 windows (µs) | run 2 mean | **combined 4-window mean** | spread across all 4 |
+|---:|---|---:|---:|---|
+| 16 | 50,543 / 53,190 | 51,867 | **54,690** | 50.5k–58.6k (high variance) |
+| 8 | 51,134 / 50,983 | **51,058** | **51,705** | 51.0k–52.7k (tightest) |
+| 0 | 53,089 / 54,062 | 53,576 | **53,333** | 52.9k–54.1k |
+
+Run 2 refines run 1: dist 16's penalty is REAL but state-dependent (high variance — its run-2
+windows were fine, its run-1 windows were the worst four numbers in the whole study), while
+**dist 8 wins BOTH palindromes outright with the tightest spread** (−5.5% vs 16, −3.1% vs 0
+combined). dist 0-vs-16 ordering flips between runs (those two are noise-separated only by
+variance). Pre-registered outcome (b) satisfied: **`PREFETCH_DIST_RELATION_DEFAULT` retuned
+16 → 8** (extractor.rs, same commit as this note; hint-only constant, cannot affect
+rows/bytes/errors; suites green). Prefetch is NOT deleted: 8 beat 0 in both palindromes, so the
+mechanism pays when tuned. Still unswept: candidate-loop distance (32), perf-gated arms
+(`rc_region_hits/misses` remain unmeasured live).
+
 ---
 
 ## 4. Gates
