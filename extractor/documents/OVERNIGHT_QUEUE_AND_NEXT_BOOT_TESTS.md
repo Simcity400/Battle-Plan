@@ -23,9 +23,9 @@ Ordered by value; sandbox for Mode C is broken so orchestrator implements, Codex
 
 | # | Item | Size | Notes |
 |---|---|---|---|
-| O1 | **d69 per-reason telemetry**: split `torn_or_skipped_nonnull_slot` (collector lib.rs:36493-36584) into per-slot/per-reason diagnostic counters | S | Diagnostic-only, no emit-semantics change; FIRST live frame after this attributes the d69 failure |
-| O2 | **d43 cold/empty fix**: `None` (cold sweep) vs `Some(empty)` (known-empty) distinction at lib.rs:28249-28270 — only `None` sets SOURCE_UNAVAILABLE; + preflight needle warm-up before first frame (timeout = fail closed) | S | Kills the 1-cold-frame session paint + the latent false-alarm bug |
-| O3 | **d47 repair** per CONFIRMED_COMPLETE_DESIGN.md: generation-aware prewarm cache + rejection-triggered invalidation + full country topology (not politics delta) + evidence preservation (read_time, status OR, error-kind hashes) | L | Full-replacement critical path — gate hard; sweep-generation cadence question answered by new telemetry on next live run |
+| O1 | ✅ MERGED (1c05f4477 + fix round): d69 per-reason telemetry; gate found MEDIUM mask-sum defect, fixed (OR-aggregation) | S | First live frame now attributes the d69 failure |
+| O2 | ✅ MERGED (11b0cc9c3 + fix round b0897b457, re-stamp gate SOUND/no findings): d43 cold-vs-known-empty; my first fix had 3 silent-loss findings (degraded/stale-epoch Some(empty) emitted clean) — fixed via market_trade_warm_complete_empty() + reap-restart snapshot reset (protects ALL sweep consumers) | S | LESSON: snapshot completeness = !degraded + current-epoch, always |
+| O3 | ✅ IMPLEMENTED (6d1ff969c, Codex gate IN FLIGHT): generation-aware root refresh + rejection-triggered invalidation (parse errors clear sweep_gen; gated on prewarm-didn't-run to bound thrash at every-other-frame worst case) + fail-closed refresh hold (transient failure NEVER downgrades adopted roots) + refresh/refresh_held_roots evidence units. Scope note: full country topology + read_time/status-OR evidence from the original design NOT in this commit — reassess after live validation | L | Live validation capture o123_validate_20260711 running |
 | O4 | **RTTI auto-re-derivation tool** (U1): scan hoi4.exe RTTI → regenerate all `*_VTABLE_RVA` in build_profile; validate by reproducing the CURRENT profile byte-for-byte from the current exe (self-proving offline) | M | Patch-day preparedness; F:\SteamLibrary…\the game\hoi4.exe |
 | O5 | **Modset-in-manifest** (M2): read enabled mods + DLCs (dlc_load.json, .mod descriptors, checksums) → control file + manifest | M | Unblocks modset-bound evidence; M1 catalog resolution follows |
 | O6 | **Byte levers** — implement per attribution-study ranking: likely container long-matching first (config-only), then domain-grouped ordering, then columnar+varint d53 record layout (largest, lossless, fold-identity gated) | M–XL | DO NOT start columnar before the study output confirms d53's compressed share |
@@ -33,6 +33,10 @@ Ordered by value; sandbox for Mode C is broken so orchestrator implements, Codex
 | O8 | SourceDisposition + prerequisite plan (design §2–5) | XL | After O1–O3 land |
 
 ## Next-boot live test list (each ≤15 min; run in this order)
+
+STATUS 2026-07-11 morning: game up; items 1–3 combined into ONE 600s capture
+(`o123_validate_20260711`, ShortSpeed5, fresh O1+O2+O3 build) — IN FLIGHT. The overnight
+d69/d43 capture never launched (no run dir; game had stopped advancing).
 
 1. **d69 attribution capture** (after O1 merges): one short window → per-reason counters name
    the failing slot → unlocks the d69 topology fix (restores a whole domain to replays).
