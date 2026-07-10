@@ -255,3 +255,269 @@ unchanged). Re-gate (fresh Codex Mode-A) required after the fix lane, then live 
 
 Meta: reviewer disagreement (Opus SOUND vs Codex REFUTED) is itself evidence for keeping
 adversarial gates model-strong; findings 1–4 are real and Opus missed or under-weighted them.
+
+## Fix lane 0aF (2026-07-10)
+
+Mission: fix required findings 1-5 from the final Codex re-stamp without changing the fold
+path or the default-OFF stream. Branch remained `lane/hour-latch-fix`; no push was performed.
+
+### Fixes and regression coverage
+
+1. **Frontier-hour labeling fixed.** When the latch is active,
+   `compact_sweep_game_hour` now takes the hour directly from
+   `CaptureDecision::Capture { hour, .. }`; that exact value is passed into every compact
+   record in the frame. The independently-read sweep clock is used only by the unchanged
+   legacy/default-OFF branch. The completeness gate additionally rejects any compact record whose
+   header label differs from the consumed frontier
+   (`collector/src/lib.rs:1306-1325,12920-12996`).
+   Regression: `hour_latch_frontier_labels_frame_when_sweep_clock_is_stale` emits hour 100,
+   leaves the sweep clock stale at 100, observes/consumes 101, and asserts encoded labels
+   `[100, 101]`, no stale duplicate, no failed attempt, and the accounting invariant
+   (`collector/src/lib.rs:55547-55621`).
+
+2. **Status-complete gating fixed.** A nonempty vector is no longer sufficient. The latch walks
+   the newly-built H4CR frame, reads every domain PERF status, applies
+   `compact_status_failure_flags_after_expected_partial_tolerance(domain_id, flags)`, checks the
+   frame-end flags, framing, one terminal frame-end, and the expected hour label, and fails closed
+   on any remaining member of `COMPACT_STATUS_FAILURE_MASK`
+   (`collector/src/lib.rs:12939-12998,1322-1339`). Regression:
+   `hour_latch_partial_frame_is_attempted_but_not_recorded_complete` proves a non-tolerated
+   PARTIAL produces `attempts=1, emitted_to_sink=0, capture_failed=1`; companion
+   `hour_latch_declared_partial_tolerance_remains_emit_eligible` proves declared domain-53
+   tolerance is not over-rejected (`collector/src/lib.rs:55624-55684`).
+
+3. **Terminal observation failure surfaced.** `last_observe_failed` is set by a failed poll and
+   cleared only by a later good `observe`. The final synchronous shutdown read therefore leaves
+   an exact terminal marker without inventing unobserved hours
+   (`collector/src/hour_latch.rs:140-151,269-287,446-451`). The host aggregates this one marker
+   by last value (all cumulative counters remain MAX) and emits
+   `accounting_claim=TRUNCATED-AT-LAST-GOOD-OBSERVE` while the arithmetic invariant can remain
+   true (`recorder_host/src/main.rs:16484-16524,16646-16655`). Regressions:
+   `failing_final_polls_mark_claim_truncated_without_breaking_invariant`,
+   `later_good_observe_clears_terminal_failure_marker`, and
+   `hour_latch_terminal_read_failure_downgrades_complete_claim`.
+
+4. **Spawn failure is fail-closed in telemetry.** Activation records whether the latch was
+   requested and whether a runtime actually became active. Any requested-but-inactive compact run
+   keeps the legacy fallback but emits a final `hl_latch_requested_but_inactive=1` probe; the
+   manifest reports `enabled=false`, `latch_requested_but_inactive=true`, and
+   `accounting_claim=INACTIVE` (`collector/src/lib.rs:1263-1280,1543-1565,13262-13267`;
+   `recorder_host/src/main.rs:16484-16524`). Regression:
+   `hour_latch_spawn_failure_sets_requested_but_inactive_signal` injects a deterministic thread
+   spawn error; `hour_latch_requested_but_inactive_is_fail_closed_in_manifest` proves the host
+   claim is not COMPLETE.
+
+5. **Sink claim narrowed rather than widening collector-wide error handling.** This lane chose the
+   smaller honest option: `confirmed` was renamed to `emitted_to_sink`, and it increments only
+   after a status-complete frame is handed to `write_sinks`
+   (`collector/src/hour_latch.rs:101-109,170-205,402-415`;
+   `collector/src/lib.rs:1328-1339`). The manifest exposes
+   `frames_emitted_to_sink`, `recorded_failed`, `sink_write_success_verified=false`, and the
+   explicit gap that `write_sinks/write_handle` do not report errors
+   (`recorder_host/src/main.rs:16466-16512`). This does not claim durable sink commit and does not
+   rewrite the pre-existing collector-wide writer.
+
+Default OFF remains structurally isolated: when `hour_latch_enabled=false`,
+`hour_latch_requested=false`, no runtime/thread starts, no latch read occurs, no latch probe is
+emitted, and `compact_sweep_game_hour(None, ...)` uses the legacy sweep-clock label. Fold files
+`world_fold.rs`, `stream_fold.rs`, and `compact_contract` have zero diff.
+
+### Gate results (run from `extractor/native`)
+
+**New regressions, deterministic run 1 and run 2:**
+
+```text
+cargo test -p collector hour_latch
+run 1: test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 324 filtered out; finished in 0.04s
+run 2: test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 324 filtered out; finished in 0.04s
+
+cargo test -p recorder_host hour_latch
+run 1: test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 184 filtered out; finished in 0.00s
+run 2: test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 184 filtered out; finished in 0.00s
+```
+
+**Required release suite:**
+
+```text
+cargo test --release --no-fail-fast
+exit_code=0
+test result: ok. 340 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.07s
+test extractor::tests::payload_phase_times_populated_and_bounded_by_outer_build ... ok
+test result: ok. 113 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 186 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.13s
+```
+
+Cargo emitted 89 `test result:` lines; mechanical aggregate: **1223 passed, 0 failed,
+8 ignored**. The known diplomacy timing flake passed on this run; there were no failures.
+
+**G1 fold identity (exact requested 600 MiB prefix):**
+
+```text
+exit_code=0 prefix_size=629145600 deleted=true
+"chain_hash": "bc517771692b2052122fd1f83e6fda1c29c84b49c536cf058d8935997c1c63f7",
+"bytes_folded": 622604576,
+"hours_emitted": 198,
+"records_total": 22059,
+```
+
+The source corpus was read in place. `extractor/native/runs/tmp_g1_prefix.bin` was deleted and
+verified absent. Post-cleanup free space: `143591657472` bytes.
+
+**Fold-path structural check:**
+
+```text
+git diff --exit-code -- extractor/native/recorder_host/src/world_fold.rs extractor/native/recorder_host/src/bin/stream_fold.rs extractor/native/compact_contract
+fold_diff_exit=0 output=""
+```
+
+Files changed by this fix lane: `collector/src/hour_latch.rs`, latch-owned sections of
+`collector/src/lib.rs`, `recorder_host/src/main.rs`, and this lane report. No live game gate
+was run. Per workflow, the implementer did not perform the independent adversarial re-gate; that
+remains the orchestrator's next step.
+
+### Commit status
+
+The required local commit was attempted after all gates, but the environment denied creation of
+the shared-worktree index lock:
+
+```text
+fatal: Unable to create 'C:/Users/Example/OneDrive/Documents/Paradox Interactive/Hearts of Iron IV/mod/battle-plan/.git/worktrees/hoi4_lane_hour_latch_fix/index.lock': Permission denied
+```
+
+No files were staged and no push was attempted. The verified four-file diff remains in the lane
+worktree for the orchestrator to commit once Git metadata is writable.
+
+## Gate 0a2 on the 0aF fixes — REFUTED (2026-07-10); one fix round owed, lane HELD UNMERGED
+
+Three findings, all accepted as real (verbatim verdict in the orchestrator session):
+1. SILENT-DATA-LOSS — `--hour-latch` with a non-compact (JSON) format is accepted by the CLI
+   but the collector defines "requested" as enabled&&Compact, so the latch is silently absent
+   with NO latch_requested_but_inactive marker. Fix: host rejects or warns on the combination,
+   or "requested" = enabled alone.
+2. CORRECTNESS — compact_frame_complete_for_hour_latch runs on EVERY legacy compact frame
+   before the runtime-exists check: latch-specific record parsing on the OFF path (labels and
+   records unchanged, but cadence work added). Fix: gate the helper on runtime presence.
+3. CORRECTNESS — the host's legacy-compat mapping feeds pre-fix hl_confirmed (which counted
+   non-tolerated PARTIAL frames) into emitted_to_sink, whose new contract implies
+   status-completeness. Fix: mark legacy-sourced values as legacy_semantics in the manifest.
+
+Next session: one Codex fix round (Mode C, this worktree ../hoi4_lane_hour_latch_fix, branch
+lane/hour-latch-fix @ 50c50f804), then a fresh Mode-A gate; merge only on SOUND. Then live
+gates (shadow-soak + paired A/B + 6-core) before any enable.
+
+## Fix round 2 (0aF2) (2026-07-10)
+
+Mission: implement exactly the three accepted Gate 0a2 findings on branch
+`lane/hour-latch-fix` at `6d109ff78`, without touching the fold path or the default-OFF
+stream. No commit or push was performed.
+
+### Fixes and regression coverage
+
+1. **Non-compact latch requests now fail loudly in the host.** After profile/explicit-format
+   resolution, `parse_args` rejects `--hour-latch` unless the effective stream format is
+   compact, so neither the implicit JSON default nor explicit `--stream-format json` can
+   silently discard the request (`recorder_host/src/main.rs:1816-1822`). Regression:
+   `parse_args_rejects_hour_latch_with_non_compact_stream` covers implicit JSON, explicit JSON,
+   and the accepted compact combination (`recorder_host/src/main.rs:27512-27545`).
+
+2. **Latch frame-completeness work is gated on runtime presence.** The
+   `compact_frame_complete_for_hour_latch` parser is now inside a lazy runtime-presence gate;
+   legacy/default-OFF compact frames are written through the unchanged path without running
+   latch record parsing (`collector/src/lib.rs:1323-1340,13006-13017`). Regression:
+   `hour_latch_off_path_does_not_run_frame_completeness_gate` supplies no runtime and proves the
+   active closure is never invoked (`collector/src/lib.rs:55706-55718`).
+
+3. **Legacy `hl_confirmed` is no longer promoted into the status-complete contract.** New
+   `hl_emitted_to_sink` remains the only source for `frames_emitted_to_sink`, `capture_failed`,
+   and `recorded_failed`. A pre-fix stream carrying only `hl_confirmed` now reports
+   `emission_semantics="legacy_semantics"`, `legacy_semantics=true`, and its count under
+   `legacy_confirmed`; the three status-complete-derived fields are null
+   (`recorder_host/src/main.rs:16477-16536`). Regression:
+   `hour_latch_legacy_confirmed_is_marked_legacy_not_status_complete` proves the split
+   (`recorder_host/src/main.rs:17639-17663`).
+
+Default OFF remains byte-identical and no longer performs latch frame parsing. Fold files
+`world_fold.rs`, `stream_fold.rs`, and `compact_contract` have zero textual diff.
+
+### Gate results (run from `extractor/native`)
+
+**Targeted regressions:**
+
+```text
+cargo test -p collector hour_latch
+exit_code=0
+test attach_log::tests::hour_latch_off_path_does_not_run_frame_completeness_gate ... ok
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 324 filtered out; finished in 0.06s
+
+cargo test -p recorder_host hour_latch
+exit_code=0
+test tests::hour_latch_legacy_confirmed_is_marked_legacy_not_status_complete ... ok
+test tests::parse_args_rejects_hour_latch_with_non_compact_stream ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 184 filtered out; finished in 0.02s
+```
+
+**Required release suite:**
+
+```text
+cargo test --release --no-fail-fast
+exit_code=0
+test_result_lines=89
+aggregate={"passed":1226,"failed":0,"ignored":8}
+test attach_log::tests::hour_latch_off_path_does_not_run_frame_completeness_gate ... ok
+test extractor::tests::payload_phase_times_populated_and_bounded_by_outer_build ... ok
+test tests::hour_latch_legacy_confirmed_is_marked_legacy_not_status_complete ... ok
+test tests::parse_args_rejects_hour_latch_with_non_compact_stream ... ok
+test result: ok. 341 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.07s
+test result: ok. 113 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 188 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.14s
+```
+
+Cargo emitted 89 `test result:` lines; mechanical aggregate: **1226 passed, 0 failed,
+8 ignored**. The known diplomacy timing test passed; there were no failures.
+
+**G1 fold identity (exact requested 600 MiB prefix):**
+
+```text
+exit_code=0 prefix_size=629145600 deleted=true
+"chain_hash": "bc517771692b2052122fd1f83e6fda1c29c84b49c536cf058d8935997c1c63f7",
+"bytes_folded": 622604576,
+"hours_emitted": 198,
+"records_total": 22059,
+"stream_bytes": 629145600,
+"truncated_tail_bytes": 6541024,
+```
+
+The source corpus was read in place from the main worktree. The lane prefix
+`extractor/native/runs/tmp_g1_prefix.bin` was deleted and verified absent. Post-cleanup free
+space: `136629805056` bytes.
+
+**Fold-path structural check:**
+
+```text
+git diff --exit-code -- extractor/native/recorder_host/src/world_fold.rs extractor/native/recorder_host/src/bin/stream_fold.rs extractor/native/compact_contract
+fold_diff_exit=0 output=""
+```
+
+Files changed by 0aF2: `collector/src/lib.rs`, `recorder_host/src/main.rs`, and this lane
+report. Per workflow, the implementer did not perform the independent adversarial re-gate; that
+remains the orchestrator's next step.
+
+## Gate 0a3 — REFUTED on one residual finding; orchestrator direct fix (2026-07-10)
+
+0a3 verified fixes 2+3 and the host CLI rejection, but found the collector still defined
+"requested" as enabled&&Compact — a directly-authored control file (alternate writers bypass
+the CLI) with hour_latch_enabled=true + non-compact format silently fell back with no marker.
+Direct fix (fix-round cap spent): requested = enabled ALONE; activation additionally requires
+Compact; latch_requested_but_inactive now fires for that combination. collector 341/0.
+REMAINING before merge: gate 0a4 on this final state (next session), then live gates.
+
+## Gate 0a4 — REFUTED on one defect introduced by the 0a3 direct fix; fixed (2026-07-10)
+
+0a4 confirmed the requested-alone semantics but found the inactive-marker PROBE RECORD (H4CR
+compact framing) was appended unconditionally — onto a JSON-format stream that is stream
+corruption, not a marker. Fix: the compact probe record is now compact-stream-exclusive
+(.filter on stream_format == Compact); on non-compact formats requested-but-inactive is
+carried by telemetry/manifest only. collector suite green post-fix. NEXT: gate 0a5 on this
+final state, then merge on SOUND, then live gates.

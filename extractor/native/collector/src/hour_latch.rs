@@ -43,21 +43,22 @@
 //!
 //! 1. **COVERAGE (zero silent gaps).** Every game-hour the sim passes through is
 //!    *observed and accounted* as exactly one of: (a) a capture ATTEMPT (a heavy
-//!    sweep was run for it), which the runtime then confirms complete or leaves as
-//!    a recorded failed attempt; or (b) a COALESCED hour with a specific reason
+//!    sweep was run for it), which the runtime then records as a status-complete
+//!    frame emitted to the sink path or leaves as a recorded failed attempt; or
+//!    (b) a COALESCED hour with a specific reason
 //!    (superseded by a later capture / ring overflow / end-of-session flush /
 //!    reload-epoch close / anomalous-jump cap). Formally
 //!    `observed == attempts + coalesced + in_flight` holds after every operation,
 //!    and `in_flight == 0` after [`HourLatch::flush`]. No hour is ever *silently*
 //!    unaccounted.
-//! 2. **BOUNDED, NON-REGRESSED SKEW.** A captured hour's read-skew is of the same
-//!    KIND as today's single-sweep skew (the sweep reads current state and the
-//!    emitted snapshot is labeled with the hour read at sweep start). The latch
-//!    removes sample-loop dead-time (sweeps run back-to-back), which usually
-//!    *tightens* the skew, but it also adds a small mutex/decision latency before
-//!    the sweep starts, so the skew is **different — usually better, occasionally
-//!    marginally worse — not provably monotonically better.** It is bounded by the
-//!    sweep duration plus that latency, the same order as today.
+//! 2. **BOUNDED, NON-REGRESSED SKEW.** The emitted snapshot is labeled with the
+//!    exact frontier hour consumed by `take_capture`; the sweep then reads the
+//!    current world. The latch removes sample-loop dead-time (sweeps run
+//!    back-to-back), which usually *tightens* skew, but it also adds a small
+//!    mutex/decision latency before the sweep starts, so the skew is **different
+//!    — usually better, occasionally marginally worse — not provably
+//!    monotonically better.** It is bounded by the sweep duration plus that
+//!    latency, the same order as today.
 //!
 //! **A COALESCED hour IS data loss of that hour's per-hour world state** — the
 //! latch does not pretend otherwise; it makes the loss explicit, reason-tagged,
@@ -87,9 +88,11 @@ pub enum CaptureDecision {
     Idle,
     /// A heavy sweep was authorized for `hour` (the current observed frontier).
     /// `coalesced` older observed hours were superseded by it. The runtime MUST
-    /// call [`HourLatch::confirm_capture`] iff the sweep produced a complete,
-    /// sink-committed frame; otherwise the attempt stands as a recorded failed
-    /// capture (`attempts - confirmed`).
+    /// call [`HourLatch::record_complete_frame_emitted_to_sink`] iff the sweep
+    /// produced a complete frame and handed it to the collector sink path;
+    /// otherwise the attempt stands as recorded-failed
+    /// (`attempts - emitted_to_sink`). The sink API does not report durable
+    /// write success, so this deliberately makes no sink-commit claim.
     Capture { hour: i32, coalesced: u32 },
 }
 
@@ -99,11 +102,13 @@ pub struct HourLatchTelemetry {
     /// Total game-hours the sim passed through that the latch observed.
     pub observed: u64,
     /// Capture ATTEMPTS: heavy sweeps authorized (one per fresh frontier hour).
-    /// NOT a completeness claim — see `confirmed`.
+    /// NOT a completeness claim — see `emitted_to_sink`.
     pub attempts: u64,
-    /// Attempts the runtime confirmed produced a complete, written frame.
-    /// `attempts - confirmed` = failed captures (a distinct, non-silent loss).
-    pub confirmed: u64,
+    /// Attempts that produced a status-complete frame and handed it to the
+    /// collector sink path. The collector-wide sink API swallows write errors,
+    /// so this is NOT a durable-write confirmation.
+    /// `attempts - emitted_to_sink` = recorded-failed captures.
+    pub emitted_to_sink: u64,
     /// Observed hours that did NOT get their own capture attempt, by reason.
     /// `coalesced == superseded + overflow + flush + backward + anomalous`.
     pub coalesced: u64,
@@ -136,6 +141,14 @@ pub struct HourLatchTelemetry {
     pub polls: u64,
     /// Latch-thread failed counter reads (set by the thread wrapper).
     pub read_failures: u64,
+    /// Whether the most recent observation attempt failed. A true terminal
+    /// value means the run can only claim accounting through the last good
+    /// observation; never fabricate hours that may have advanced afterwards.
+    pub last_observe_failed: bool,
+    /// The latch was requested but no runtime became active (for example, the
+    /// latch thread failed to spawn). The collector falls back to the legacy
+    /// loop, but the accounting claim must be INACTIVE rather than COMPLETE.
+    pub latch_requested_but_inactive: bool,
 }
 
 impl HourLatchTelemetry {
@@ -158,19 +171,42 @@ impl HourLatchTelemetry {
         .try_fold(0u64, |acc, v| acc.checked_add(v));
         rhs == Some(self.observed)
             && reasons == Some(self.coalesced)
-            && self.confirmed <= self.attempts
+            && self.emitted_to_sink <= self.attempts
     }
 
-    /// Capture attempts that did not produce a complete written frame — a
-    /// distinct, explicitly-counted loss class (NOT coalesced, NOT confirmed).
+    /// Capture attempts that did not produce a status-complete frame handed to
+    /// the sink path — a distinct, explicitly-counted loss class.
     pub fn capture_failed(&self) -> u64 {
-        self.attempts.saturating_sub(self.confirmed)
+        self.attempts.saturating_sub(self.emitted_to_sink)
+    }
+
+    /// Honest accounting claim carried into the manifest. The arithmetic
+    /// invariant remains meaningful for the observations that did succeed,
+    /// including a terminally truncated run.
+    pub fn accounting_claim(&self) -> &'static str {
+        if self.latch_requested_but_inactive {
+            "INACTIVE"
+        } else if self.last_observe_failed {
+            "TRUNCATED-AT-LAST-GOOD-OBSERVE"
+        } else {
+            "COMPLETE"
+        }
+    }
+
+    /// Telemetry used when latch activation was requested but failed. Zero
+    /// counters are not presented as a successful zero-hour accounting run.
+    pub fn requested_but_inactive(queue_cap: usize) -> Self {
+        Self {
+            queue_cap: queue_cap.clamp(1, 65_535) as u32,
+            latch_requested_but_inactive: true,
+            ..Self::default()
+        }
     }
 }
 
 /// Pure hour-boundary latch accounting core. Single-threaded; the thread wrapper
 /// guards it with a mutex and drives `observe` (latch thread) and `take_capture`
-/// / `confirm_capture` / `flush` (sweep thread).
+/// / `record_complete_frame_emitted_to_sink` / `flush` (sweep thread).
 #[derive(Debug)]
 pub struct HourLatch {
     /// Last hour-counter value folded into the accounting, or `None` before the
@@ -182,7 +218,7 @@ pub struct HourLatch {
     queue_cap: usize,
     observed: u64,
     attempts: u64,
-    confirmed: u64,
+    emitted_to_sink: u64,
     coalesced_superseded: u64,
     coalesced_overflow: u64,
     coalesced_flush: u64,
@@ -194,6 +230,7 @@ pub struct HourLatch {
     generation: u64,
     polls: u64,
     read_failures: u64,
+    last_observe_failed: bool,
 }
 
 impl HourLatch {
@@ -208,7 +245,7 @@ impl HourLatch {
             queue_cap,
             observed: 0,
             attempts: 0,
-            confirmed: 0,
+            emitted_to_sink: 0,
             coalesced_superseded: 0,
             coalesced_overflow: 0,
             coalesced_flush: 0,
@@ -220,6 +257,7 @@ impl HourLatch {
             generation: 0,
             polls: 0,
             read_failures: 0,
+            last_observe_failed: false,
         }
     }
 
@@ -232,6 +270,7 @@ impl HourLatch {
     /// Record that a counter read failed (unreadable / source unavailable).
     pub fn note_read_failure(&mut self) {
         self.read_failures = self.read_failures.saturating_add(1);
+        self.last_observe_failed = true;
     }
 
     /// The observed-frontier generation. Bumps on every advancing `observe`; used
@@ -245,6 +284,7 @@ impl HourLatch {
     /// ONLY from the latch thread with a torn-read-guarded (`read_i32_stable`)
     /// value, never from the sweep with an ordinary read.
     pub fn observe(&mut self, raw: i32) {
+        self.last_observe_failed = false;
         let Some(last) = self.last_raw else {
             // First observation establishes the baseline hour, which itself needs
             // a capture.
@@ -341,8 +381,8 @@ impl HourLatch {
     /// available (nothing pending) so the sweep does not burn a redundant pass.
     ///
     /// This only records a capture ATTEMPT; the runtime must call
-    /// [`HourLatch::confirm_capture`] iff the sweep produced a complete, written
-    /// frame.
+    /// [`HourLatch::record_complete_frame_emitted_to_sink`] iff the sweep
+    /// produced a complete frame and handed it to the sink path.
     pub fn take_capture(&mut self) -> CaptureDecision {
         let Some(&frontier) = self.pending.back() else {
             return CaptureDecision::Idle;
@@ -363,13 +403,14 @@ impl HourLatch {
         }
     }
 
-    /// Confirm that the most recent [`take_capture`] attempt produced a complete,
-    /// sink-committed frame. Only confirmed attempts count as real snapshots;
-    /// `attempts - confirmed` are recorded failed captures (a distinct loss).
-    pub fn confirm_capture(&mut self) {
-        // Never let confirmed exceed attempts (would break the invariant).
-        if self.confirmed < self.attempts {
-            self.confirmed = self.confirmed.saturating_add(1);
+    /// Record that the most recent [`take_capture`] attempt produced a
+    /// status-complete frame and was handed to the collector sink path. The sink
+    /// API does not return write success, so this is intentionally not named or
+    /// documented as durable confirmation.
+    pub fn record_complete_frame_emitted_to_sink(&mut self) {
+        // Never let emitted exceed attempts (would break the invariant).
+        if self.emitted_to_sink < self.attempts {
+            self.emitted_to_sink = self.emitted_to_sink.saturating_add(1);
         }
     }
 
@@ -391,7 +432,7 @@ impl HourLatch {
         HourLatchTelemetry {
             observed: self.observed,
             attempts: self.attempts,
-            confirmed: self.confirmed,
+            emitted_to_sink: self.emitted_to_sink,
             coalesced,
             coalesced_superseded: self.coalesced_superseded,
             coalesced_overflow: self.coalesced_overflow,
@@ -406,6 +447,8 @@ impl HourLatch {
             generation: self.generation,
             polls: self.polls,
             read_failures: self.read_failures,
+            last_observe_failed: self.last_observe_failed,
+            latch_requested_but_inactive: false,
         }
     }
 }
@@ -426,11 +469,11 @@ mod tests {
         assert!(t.invariant_holds(), "accounting invariant violated: {t:?}",);
     }
 
-    /// Drive a capture the way the runtime does: take + (optionally) confirm.
+    /// Drive a capture the way the runtime does: take + complete-frame emit.
     fn capture_ok(latch: &mut HourLatch) -> CaptureDecision {
         let d = latch.take_capture();
         if matches!(d, CaptureDecision::Capture { .. }) {
-            latch.confirm_capture();
+            latch.record_complete_frame_emitted_to_sink();
         }
         d
     }
@@ -450,7 +493,7 @@ mod tests {
         let t = latch.telemetry();
         assert_eq!(t.observed, 1);
         assert_eq!(t.attempts, 1);
-        assert_eq!(t.confirmed, 1);
+        assert_eq!(t.emitted_to_sink, 1);
         assert_eq!(t.coalesced, 0);
         assert_invariant(&latch);
     }
@@ -473,7 +516,7 @@ mod tests {
         let t = latch.telemetry();
         assert_eq!(t.observed, 1000);
         assert_eq!(t.attempts, 1000);
-        assert_eq!(t.confirmed, 1000);
+        assert_eq!(t.emitted_to_sink, 1000);
         assert_eq!(t.coalesced, 0);
         assert_eq!(t.in_flight, 0);
     }
@@ -525,15 +568,15 @@ mod tests {
 
     #[test]
     fn failed_capture_is_a_distinct_non_silent_loss() {
-        // take_capture without confirm = a failed (incomplete) sweep. It is an
-        // attempt, not a confirmed snapshot, and not coalesced.
+        // take_capture without a complete-frame emit = a failed sweep. It is an
+        // attempt, not an emitted snapshot, and not coalesced.
         let mut latch = HourLatch::new(64);
         latch.observe(1);
-        let d = latch.take_capture(); // sweep runs but produces nothing -> no confirm
+        let d = latch.take_capture(); // sweep runs but produces nothing -> no emit
         assert!(matches!(d, CaptureDecision::Capture { .. }));
         let t = latch.telemetry();
         assert_eq!(t.attempts, 1);
-        assert_eq!(t.confirmed, 0);
+        assert_eq!(t.emitted_to_sink, 0);
         assert_eq!(t.capture_failed(), 1);
         assert_eq!(t.coalesced, 0);
         assert_invariant(&latch);
@@ -609,7 +652,7 @@ mod tests {
             if wall >= sweep_busy_until {
                 match latch.take_capture() {
                     CaptureDecision::Capture { .. } => {
-                        latch.confirm_capture(); // sweep completed
+                        latch.record_complete_frame_emitted_to_sink(); // sweep completed
                         sweep_busy_until = wall + SWEEP_MS;
                     }
                     CaptureDecision::Idle => {
@@ -671,7 +714,7 @@ mod tests {
             latch.observe(hour);
             if wall >= sweep_free_at {
                 if let CaptureDecision::Capture { .. } = latch.take_capture() {
-                    latch.confirm_capture();
+                    latch.record_complete_frame_emitted_to_sink();
                     sweep_free_at = wall + 150;
                 }
             }
@@ -751,19 +794,20 @@ mod tests {
         for _ in 0..N {
             latch.observe(h);
             let _ = latch.take_capture();
-            latch.confirm_capture();
+            latch.record_complete_frame_emitted_to_sink();
             h = h.wrapping_add(1);
         }
         let elapsed = start.elapsed();
         let ns_per_cycle = elapsed.as_nanos() as f64 / N as f64;
-        // Each cycle is observe + take_capture + confirm. Even in unoptimized test
+        // Each cycle is observe + take_capture + record-emitted. Even in
+        // unoptimized test
         // builds this is well under 1us; assert a generous 2us ceiling.
         assert!(
             ns_per_cycle < 2_000.0,
             "state-machine cycle too slow: {ns_per_cycle:.1} ns/cycle ({elapsed:?} for {N})"
         );
         eprintln!(
-            "hour_latch cost: {ns_per_cycle:.1} ns per observe+take_capture+confirm cycle \
+            "hour_latch cost: {ns_per_cycle:.1} ns per observe+take_capture+record-emitted cycle \
              ({N} cycles in {elapsed:?}); at a 2 ms poll the thread runs ~500 observe/s"
         );
     }
@@ -777,5 +821,45 @@ mod tests {
         assert_eq!(latch.generation(), g1);
         latch.observe(11);
         assert!(latch.generation() > g1);
+    }
+
+    #[test]
+    fn failing_final_polls_mark_claim_truncated_without_breaking_invariant() {
+        let mut latch = HourLatch::new(64);
+        latch.observe(100);
+        let _ = capture_ok(&mut latch);
+        latch.note_poll();
+        latch.note_read_failure();
+        latch.note_poll();
+        latch.note_read_failure();
+        latch.flush();
+
+        let t = latch.telemetry();
+        assert_eq!(t.read_failures, 2);
+        assert!(t.last_observe_failed);
+        assert!(t.invariant_holds(), "terminal read failure: {t:?}");
+        assert_eq!(t.accounting_claim(), "TRUNCATED-AT-LAST-GOOD-OBSERVE");
+    }
+
+    #[test]
+    fn later_good_observe_clears_terminal_failure_marker() {
+        let mut latch = HourLatch::new(64);
+        latch.observe(100);
+        latch.note_read_failure();
+        assert!(latch.telemetry().last_observe_failed);
+        latch.observe(101);
+
+        let t = latch.telemetry();
+        assert!(!t.last_observe_failed);
+        assert_eq!(t.accounting_claim(), "COMPLETE");
+        assert!(t.invariant_holds());
+    }
+
+    #[test]
+    fn requested_but_inactive_never_claims_complete_accounting() {
+        let t = HourLatchTelemetry::requested_but_inactive(64);
+        assert!(t.latch_requested_but_inactive);
+        assert!(t.invariant_holds());
+        assert_eq!(t.accounting_claim(), "INACTIVE");
     }
 }

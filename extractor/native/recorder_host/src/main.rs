@@ -1006,9 +1006,10 @@ struct CompactSummary {
     read_ab_probe: BTreeMap<String, u64>,
     // lane/hour-latch: zero-skip hour-boundary latch accounting, carried by
     // `hl_*` diagnostic units on the reserved probe domain (250). Counters are
-    // cumulative/monotonic; aggregated by MAX so any surviving probe record
-    // yields the final totals. Surfaced as `compact_stream.hour_latch`. Kept OUT
-    // of per_domain / domains_seen so the coverage/perf-count gates are unaffected.
+    // cumulative/monotonic and aggregate by MAX; `last_observe_failed` is a
+    // terminal state marker and therefore aggregates by last value. Surfaced as
+    // `compact_stream.hour_latch`. Kept OUT of per_domain / domains_seen so the
+    // coverage/perf-count gates are unaffected.
     hour_latch: BTreeMap<String, u64>,
     // Lane-wall counter (deep-war lever #5): per-frame per-lane wall +
     // critical-path aggregates carried by `lw_*` diagnostic units on the same
@@ -1813,6 +1814,12 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             })
         })
         .unwrap_or(StreamFormat::Json);
+    if hour_latch_enabled && stream_format != StreamFormat::Compact {
+        return Err(
+            "--hour-latch requires --stream-format compact (or a compact --profile); refusing to silently run without the latch"
+                .to_string(),
+        );
+    }
     // `--production` (legacy) and either profile both expand the production
     // domain set. `production` here means "capture the production domain profile
     // + its required static-artifact accounting", which the debug profile also
@@ -16452,11 +16459,15 @@ fn compact_stream_manifest_json(
 /// that hour's per-hour world state). Returns Null when the latch was disabled
 /// (no `hl_*` units in the stream). The coverage invariant
 /// `observed == attempts + coalesced` (after the final flush) is reconciled and
-/// reported so a violation is loud, never silent. `captured` here means
-/// CONFIRMED complete-and-written frames; `capture_failed = attempts - confirmed`
-/// is a distinct, explicitly-counted loss class. Per-hour DATA completeness is
-/// enforced SEPARATELY by the per-domain coverage gate, which this lane does not
-/// touch; these counters are diagnostic.
+/// reported so a violation is loud, never silent. New `emitted_to_sink` probes
+/// mean a status-complete frame was handed to the collector sink path; pre-fix
+/// `confirmed` probes are surfaced separately as `legacy_semantics` because they
+/// also counted non-tolerated PARTIAL frames. The pre-existing sink API swallows
+/// write errors, so durable write success is explicitly unverified.
+/// `capture_failed = attempts - emitted_to_sink` is a distinct, explicitly-counted
+/// loss class only when the status-complete counter exists. Per-hour DATA
+/// completeness is enforced SEPARATELY by the per-domain coverage gate, which
+/// this lane does not touch.
 fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
     if summary.hour_latch.is_empty() {
         return Value::Null;
@@ -16464,7 +16475,19 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
     let get = |k: &str| summary.hour_latch.get(k).copied().unwrap_or(0);
     let observed = get("observed");
     let attempts = get("attempts");
-    let confirmed = get("confirmed");
+    // Accept pre-fix probe streams for diagnostics, but never reinterpret their
+    // `hl_confirmed` value as the post-fix status-complete emitted-to-sink claim:
+    // the legacy counter also included non-tolerated PARTIAL frames.
+    let emitted_to_sink = summary.hour_latch.get("emitted_to_sink").copied();
+    let legacy_confirmed = summary.hour_latch.get("confirmed").copied();
+    let legacy_semantics = emitted_to_sink.is_none() && legacy_confirmed.is_some();
+    let emission_semantics = if emitted_to_sink.is_some() {
+        "status_complete"
+    } else if legacy_semantics {
+        "legacy_semantics"
+    } else {
+        "unavailable"
+    };
     let coalesced = get("coalesced");
     // After the final flush in_flight==0, so observed == attempts + coalesced.
     // The last emitted probe may predate a hard kill's in-flight tail; report the
@@ -16475,14 +16498,45 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
         .saturating_add(get("coalesced_flush"))
         .saturating_add(get("coalesced_backward"))
         .saturating_add(get("coalesced_anomalous"));
-    let invariant_ok = observed == accounted && reason_sum == coalesced && confirmed <= attempts;
+    let emitted_count_valid = emitted_to_sink
+        .map(|emitted| emitted <= attempts)
+        .unwrap_or(true);
+    let legacy_count_valid = legacy_confirmed
+        .map(|confirmed| confirmed <= attempts)
+        .unwrap_or(true);
+    let invariant_ok = observed == accounted
+        && reason_sum == coalesced
+        && emitted_count_valid
+        && legacy_count_valid;
+    let latch_requested_but_inactive = get("latch_requested_but_inactive") != 0;
+    let last_observe_failed = get("last_observe_failed") != 0;
+    let accounting_claim = if latch_requested_but_inactive {
+        "INACTIVE"
+    } else if !invariant_ok {
+        "INVALID"
+    } else if last_observe_failed {
+        "TRUNCATED-AT-LAST-GOOD-OBSERVE"
+    } else {
+        "COMPLETE"
+    };
+    let capture_failed = emitted_to_sink.map(|emitted| attempts.saturating_sub(emitted));
     serde_json::json!({
-        "enabled": true,
-        "note": "zero-silent-gap accounting, not zero-data-loss; coalesced hours are explicit reason-tagged loss",
+        "requested": true,
+        "enabled": !latch_requested_but_inactive,
+        "latch_requested_but_inactive": latch_requested_but_inactive,
+        "accounting_claim": accounting_claim,
+        "last_observe_failed": last_observe_failed,
+        "note": "zero-silent-gap accounting through the last good observation, not zero-data-loss; coalesced hours are explicit reason-tagged loss",
         "hours_observed": observed,
         "capture_attempts": attempts,
-        "hours_captured": confirmed,
-        "capture_failed": attempts.saturating_sub(confirmed),
+        "emission_semantics": emission_semantics,
+        "legacy_semantics": legacy_semantics,
+        "legacy_confirmed": if legacy_semantics { legacy_confirmed } else { None },
+        "frames_emitted_to_sink": emitted_to_sink,
+        "capture_failed": capture_failed,
+        "recorded_failed": capture_failed,
+        "sink_write_success_verified": false,
+        "sink_write_gap": "write_sinks/write_handle do not report errors; emitted_to_sink means handed to the collector sink path, not durably written",
         "hours_coalesced": coalesced,
         "coalesced_superseded": get("coalesced_superseded"),
         "coalesced_overflow": get("coalesced_overflow"),
@@ -16497,7 +16551,7 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
         "latch_read_failures": get("read_failures"),
         // Coverage reconciliation — the load-bearing zero-silent-gap invariant.
         "hours_accounted": accounted,
-        "coverage_invariant_ok": invariant_ok,
+        "coverage_invariant_ok": invariant_ok && !latch_requested_but_inactive,
         "hours_unaccounted": observed.saturating_sub(accounted),
     })
 }
@@ -16618,12 +16672,17 @@ fn add_compact_domain_perf_diagnostic_unit(
         if add_compact_lane_wall_unit(summary, name, value) {
             return;
         }
-        // lane/hour-latch: `hl_*` units are cumulative/monotonic accounting
-        // counters -> aggregate by MAX (not sum), so the final surviving record
-        // yields the true totals regardless of how many frames emitted them.
+        // lane/hour-latch: cumulative counters aggregate by MAX (not sum).
+        // `last_observe_failed` is deliberately last-value: a later successful
+        // observe clears an earlier transient failure, while a failing final poll
+        // must survive as the terminal truncation marker.
         if let Some(rest) = name.strip_prefix("hl_") {
-            let entry = summary.hour_latch.entry(rest.to_string()).or_default();
-            *entry = (*entry).max(value);
+            if rest == "last_observe_failed" {
+                summary.hour_latch.insert(rest.to_string(), value);
+            } else {
+                let entry = summary.hour_latch.entry(rest.to_string()).or_default();
+                *entry = (*entry).max(value);
+            }
             return;
         }
         // Plan-v2 read A/B probe units go to a dedicated aggregate, never
@@ -17451,7 +17510,7 @@ mod tests {
     #[test]
     fn hour_latch_probe_units_aggregate_by_max_and_reconcile_coverage() {
         // lane/hour-latch: two cumulative probe records on domain 250 (as the
-        // collector emits per captured frame + a final flush record). The host
+        // collector emits periodically + a final flush record). The host
         // must MAX-aggregate the hl_* counters and reconcile observed == attempts
         // + coalesced with no silently-unaccounted hours.
         let mut raw = Vec::new();
@@ -17472,7 +17531,7 @@ mod tests {
                 &[
                     ("hl_observed", 100),
                     ("hl_attempts", 40),
-                    ("hl_confirmed", 38),
+                    ("hl_emitted_to_sink", 38),
                     ("hl_coalesced", 55),
                     ("hl_coalesced_superseded", 50),
                     ("hl_coalesced_overflow", 3),
@@ -17483,6 +17542,8 @@ mod tests {
                     ("hl_queue_cap", 64),
                     ("hl_polls", 90_000),
                     ("hl_read_failures", 2),
+                    ("hl_last_observe_failed", 1),
+                    ("hl_latch_requested_but_inactive", 0),
                 ],
             ),
         );
@@ -17504,7 +17565,7 @@ mod tests {
                 &[
                     ("hl_observed", 100),
                     ("hl_attempts", 40),
-                    ("hl_confirmed", 38),
+                    ("hl_emitted_to_sink", 38),
                     ("hl_coalesced", 60),
                     ("hl_coalesced_superseded", 50),
                     ("hl_coalesced_overflow", 3),
@@ -17515,6 +17576,8 @@ mod tests {
                     ("hl_queue_cap", 64),
                     ("hl_polls", 100_000),
                     ("hl_read_failures", 2),
+                    ("hl_last_observe_failed", 0),
+                    ("hl_latch_requested_but_inactive", 0),
                 ],
             ),
         );
@@ -17532,23 +17595,116 @@ mod tests {
         // Max-aggregation: polls 100_000 (not 90_000), coalesced 60 (not 55).
         assert_eq!(summary.hour_latch.get("observed").copied(), Some(100));
         assert_eq!(summary.hour_latch.get("attempts").copied(), Some(40));
-        assert_eq!(summary.hour_latch.get("confirmed").copied(), Some(38));
+        assert_eq!(
+            summary.hour_latch.get("emitted_to_sink").copied(),
+            Some(38)
+        );
         assert_eq!(summary.hour_latch.get("coalesced").copied(), Some(60));
         assert_eq!(summary.hour_latch.get("coalesced_flush").copied(), Some(5));
         assert_eq!(summary.hour_latch.get("polls").copied(), Some(100_000));
+        assert_eq!(
+            summary.hour_latch.get("last_observe_failed").copied(),
+            Some(0),
+            "terminal marker must use the final value, not MAX"
+        );
         // Probe domain must NOT be counted as a scheduled domain.
         assert!(!summary.domains_seen.contains(&RC_PROBE_DOMAIN_ID));
 
         let json = hour_latch_summary_json(&summary);
         assert_eq!(json["enabled"], serde_json::json!(true));
+        assert_eq!(json["accounting_claim"], serde_json::json!("COMPLETE"));
         assert_eq!(json["hours_observed"], serde_json::json!(100));
         assert_eq!(json["capture_attempts"], serde_json::json!(40));
-        assert_eq!(json["hours_captured"], serde_json::json!(38));
+        assert_eq!(
+            json["emission_semantics"],
+            serde_json::json!("status_complete")
+        );
+        assert_eq!(json["legacy_semantics"], serde_json::json!(false));
+        assert_eq!(json["legacy_confirmed"], Value::Null);
+        assert_eq!(json["frames_emitted_to_sink"], serde_json::json!(38));
+        assert!(json.get("hours_captured").is_none());
         assert_eq!(json["capture_failed"], serde_json::json!(2));
+        assert_eq!(json["recorded_failed"], serde_json::json!(2));
+        assert_eq!(
+            json["sink_write_success_verified"],
+            serde_json::json!(false)
+        );
         assert_eq!(json["hours_coalesced"], serde_json::json!(60));
         assert_eq!(json["hours_accounted"], serde_json::json!(100));
         assert_eq!(json["coverage_invariant_ok"], serde_json::json!(true));
         assert_eq!(json["hours_unaccounted"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn hour_latch_legacy_confirmed_is_marked_legacy_not_status_complete() {
+        let mut summary = CompactSummary::default();
+        for (name, value) in [
+            ("observed", 4),
+            ("attempts", 4),
+            ("confirmed", 3),
+            ("coalesced", 0),
+            ("last_observe_failed", 0),
+            ("latch_requested_but_inactive", 0),
+        ] {
+            summary.hour_latch.insert(name.to_string(), value);
+        }
+
+        let json = hour_latch_summary_json(&summary);
+        assert_eq!(json["accounting_claim"], serde_json::json!("COMPLETE"));
+        assert_eq!(
+            json["emission_semantics"],
+            serde_json::json!("legacy_semantics")
+        );
+        assert_eq!(json["legacy_semantics"], serde_json::json!(true));
+        assert_eq!(json["legacy_confirmed"], serde_json::json!(3));
+        assert_eq!(json["frames_emitted_to_sink"], Value::Null);
+        assert_eq!(json["capture_failed"], Value::Null);
+        assert_eq!(json["recorded_failed"], Value::Null);
+        assert_eq!(json["coverage_invariant_ok"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn hour_latch_terminal_read_failure_downgrades_complete_claim() {
+        let mut summary = CompactSummary::default();
+        for (name, value) in [
+            ("observed", 1),
+            ("attempts", 1),
+            ("emitted_to_sink", 1),
+            ("coalesced", 0),
+            ("last_observe_failed", 1),
+            ("read_failures", 3),
+            ("latch_requested_but_inactive", 0),
+        ] {
+            summary.hour_latch.insert(name.to_string(), value);
+        }
+
+        let json = hour_latch_summary_json(&summary);
+        assert_eq!(
+            json["accounting_claim"],
+            serde_json::json!("TRUNCATED-AT-LAST-GOOD-OBSERVE")
+        );
+        assert_eq!(json["last_observe_failed"], serde_json::json!(true));
+        assert_eq!(json["coverage_invariant_ok"], serde_json::json!(true));
+        assert_eq!(json["hours_unaccounted"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn hour_latch_requested_but_inactive_is_fail_closed_in_manifest() {
+        let mut summary = CompactSummary::default();
+        summary
+            .hour_latch
+            .insert("latch_requested_but_inactive".to_string(), 1);
+        summary.hour_latch.insert("queue_cap".to_string(), 64);
+
+        let json = hour_latch_summary_json(&summary);
+        assert_eq!(json["requested"], serde_json::json!(true));
+        assert_eq!(json["enabled"], serde_json::json!(false));
+        assert_eq!(
+            json["latch_requested_but_inactive"],
+            serde_json::json!(true)
+        );
+        assert_eq!(json["accounting_claim"], serde_json::json!("INACTIVE"));
+        assert_eq!(json["coverage_invariant_ok"], serde_json::json!(false));
     }
 
     #[test]
@@ -27350,6 +27506,42 @@ mod tests {
         ];
         args.extend(extra.iter().map(|value| value.to_string()));
         args
+    }
+
+    #[test]
+    fn parse_args_rejects_hour_latch_with_non_compact_stream() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_hour_latch_format_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let implicit_json =
+            parse_args(profile_test_args(&dir, &["--hour-latch"])).unwrap_err();
+        assert!(
+            implicit_json.contains("--hour-latch requires --stream-format compact"),
+            "unexpected error: {implicit_json}"
+        );
+
+        let explicit_json = parse_args(profile_test_args(
+            &dir,
+            &["--hour-latch", "--stream-format", "json"],
+        ))
+        .unwrap_err();
+        assert!(
+            explicit_json.contains("--hour-latch requires --stream-format compact"),
+            "unexpected error: {explicit_json}"
+        );
+
+        let compact = parse_args(profile_test_args(
+            &dir,
+            &["--hour-latch", "--stream-format", "compact"],
+        ))
+        .unwrap();
+        assert!(compact.hour_latch_enabled);
+        assert_eq!(compact.stream_format, StreamFormat::Compact);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
