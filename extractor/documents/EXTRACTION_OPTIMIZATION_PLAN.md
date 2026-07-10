@@ -823,6 +823,30 @@ spans/frame — the full added path: span recording + summary + probe-record enc
 was <100 us. Per worker it is 2 timestamps + 1 uncontended mutex push, outside every domain
 read loop.
 
+FIRST LIVE NUMBERS (2026-07-10 late session, deep-war advancing production runs — evidence
+of record for Job 2's fork; mined via `compact_stream.lane_wall`):
+
+| run | frames | crit lane avg / p95 | d53 crit share | d53 ms/frame | MAIN serial ms/frame | span ms/frame |
+|---|---:|---:|---:|---:|---:|---:|
+| latchsoak2 (600 s) | 3471 | 60.7 / 108.4 ms | 71.1% | 43.2 | 42.0 | 106.9 |
+| ShortSpeed5 (600 s) | 4370 | 46.5 / 73.5 ms | 75.7% | 35.2 | 41.9 | 91.4 |
+
+Readings:
+- **d53 owns ~3/4 of the bounding concurrent lane** (next domains: country-bundle ~5-7%,
+  d44 ~6%). Every concurrent-phase optimisation argument starts and ends at d53 — consistent
+  with the three-phase split and the prefetch program.
+- **NEW LEVER — the ~42 ms/frame SERIAL main-thread wall** (`main_wall_us_total/frames`,
+  stable across both runs): the post-join serial reads (d55/d54/d45/d47/d18/d63..d69 +
+  sharded domains) extend every frame serially and are nearly as large as the whole
+  concurrent phase. Nothing in the current program attacks it. Candidate: move post-join
+  serial reads onto gated lanes (they were serialized for a reason — re-derive that reason
+  before touching; if it is ordering, a dedicated ordered lane still overlaps them with d53's
+  tail). UNMEASURED beyond these two runs; needs its own lane + gate before any code change.
+- GOTCHA (cost the session an experiment rerun): on a PAUSED game only the 1 cold baseline
+  frame runs the fan-out ⇒ `lane_wall.frames == 1` and `lw_d*` looks "empty". The earlier
+  "empty lw_d walls" report was exactly this artifact. Always gate-bracket (hours advanced
+  > 0) before reading lane_wall.
+
 ## Phase 5 — Acceptance & soak
 
 Full-game-length soak (or the longest practical session): speed-5 zero-skip, deep-war,

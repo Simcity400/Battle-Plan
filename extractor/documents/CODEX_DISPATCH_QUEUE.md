@@ -1,38 +1,40 @@
-# CODEX DISPATCH QUEUE — ready to run the moment quota returns (2026-07-10)
+# CODEX DISPATCH QUEUE — status of record (updated 2026-07-10 late session)
 
-Orchestrator-owned. Codex hit its usage limit ("try again at 12:45 PM") before the two owed
-independent adversarial gates could run and before the next implementation lane could be
-dispatched. This file holds **fully-formed, paste-ready jobs** so zero re-derivation is needed
-at dispatch time. Method: `documents/LANE_WORKFLOW.md`. Context brief every lane must read:
+Orchestrator-owned. Method: `documents/LANE_WORKFLOW.md`. Context brief every lane must read:
 `extractor/documents/CODEX_LANE_BRIEF.md`. Protocol: `C:\Users\Example\.claude\CODEX_PROTOCOL.md`.
 
 | # | Job | Mode | Blocks | Status |
 |---|---|---|---|---|
-| 0a | Adversarial gate: `hour_latch` | A | ENABLING hour_latch | Opus-SOUND, then **Codex-REFUTED 2026-07-10** → adjudicated REAL; see 0aF |
-| 0aF | **hour_latch fix lane** (findings 1–5 in `lane_reports/hour-latch.md` §Codex re-stamp) | C (worktree) | ENABLING hour_latch | READY — fixes: frontier-hour labeling; confirm() gated on failure flags; terminal-read-failure marker; fail-open→telemetry; sink-write claim scoping. Fresh Mode-A gate after. |
-| 0b | Adversarial gate: `d53 delta_partial` | A | ENABLING delta_partial | Opus-SOUND, then **Codex-REFUTED 2026-07-10** → adjudicated contract-text (brief §3 carve-out added); feature unchanged, blocked on live A/B |
-| 1 | Three-phase timing instrumentation lane | — | — | IMPLEMENTED (orchestrator); Codex 1R REFUTED → **one fix round applied** (phase seed, exact oracles, shard disclosure) |
-| 1R2 | Re-review of the fixed Job-1 diff | A (read-only) | MERGING lane/three-phase-timing | READY once fix-round gates re-pass |
-| 2 | Acquire/process split (or its burial) | C | — | GATED on Job 1's live numbers |
+| 0a | Adversarial gate: `hour_latch` | A | — | **CLOSED**: 6 adversarial rounds, merged; live-validated twice (7290/7290 + 5004/5004 hours accounted, invariant held) |
+| 0aF | hour_latch fix lane | C | — | **CLOSED** (merged with 0a) |
+| 0b | Adversarial gate: `d53 delta_partial` | A | — | **CLOSED**: adjudicated contract-text (brief §3 carve-out); feature ships opt-in OFF. Its live A/B is **SUPERSEDED** — production zstd landed at 173x live makes the byte win redundant and the measured +46–68 ms CPU cost stands; do not enable, do not spend a live window on it |
+| 1 | Three-phase timing instrumentation | — | — | **CLOSED**: merged; live split ~60% guarded acquisition / ~40% materialise |
+| 1R2 | Re-review of Job-1 diff | A | — | **CLOSED** (ran, merged) |
+| 2 | Acquire/process split (or its burial) | C | — | OPEN — fork input partially in: lane-wall walls now live in every production manifest (see below); ~60/40 split says BOTH paths viable; next concrete lever = prefetch live A/B (plumbing landed 1b8ed7d66) |
+| 3 | Prefetch-dist control plumbing | — | — | IMPLEMENTED (orchestrator) 1b8ed7d66; suites green (collector 348/0, recorder_host 178+192/0, lane 114/0); Codex Mode-A gate DISPATCHED (thread in `~/.claude/codex_threads_hoi4.txt`) |
+| 4 | Confirmed-complete / bridge expected-absence design | A→C | truthful production gates | Codex design analysis DISPATCHED (same thread file); implement after verdict |
 
-History 2026-07-10: during the Codex quota outage the user temporarily authorized Opus
-subagents; gates 0a/0b ran that way (verdicts + findings appended to the respective
-lane_reports). The authorization was then REVOKED (Codex-only again), the in-flight Opus
-review of Job 1's diff was killed, and the user directed that the Codex re-stamps are
-required. The Job-1 implementation itself was done directly by the orchestrator, so 1R is a
-first review, not a re-stamp — implementer never clears own diff.
+2026-07-10 lane-wall finding (orchestrator): per-domain critical-path walls (`lw_d*`) are
+POPULATED in every advancing-game production manifest (`compact_stream.lane_wall`); the earlier
+"empty lw_d" observation was a paused-game cold-frame artifact (paused = 1 cold frame ⇒
+lane_wall.frames=1). Live numbers (latchsoak2, 3471 frames): critical concurrent lane avg
+60.7 ms/frame, d53 owns 71%; PLUS a separate ~42 ms/frame SERIAL main-thread wall
+(main_wall_us_total/frames) — that serial tail is a large un-mined lever, recorded for Job 2.
 
-Mode A invocation (verbatim; per global rules — never drop the model/effort pins):
+Mode A invocation (verbatim; per global rules — never drop the model/effort pins; RESUMABILITY
+LAW: NEVER `--ephemeral`, always capture + persist the thread id):
 
 ```bash
 cd "/c/Users/Example/OneDrive/Documents/Paradox Interactive/Hearts of Iron IV/mod/battle-plan"
-OUT=$(mktemp /tmp/cdx_XXXXXX.txt)
-printf '%s' "$PROMPT" | codex exec --ephemeral -s read-only -c approval_policy=never \
-  --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=xhigh -o "$OUT" - >/dev/null
-# verify exit 0 AND non-empty $OUT; retry once; read the reply from $OUT, never stdout
+OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl)
+printf '%s' "$PROMPT" | codex exec --json -s read-only -c approval_policy=never \
+  --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=xhigh -o "$OUT" - > "$AJ"
+TID=$(python -c "import json,sys;print(json.loads(open(sys.argv[1]).readline()).get('thread_id',''))" "$AJ")
+# persist $TID durably (e.g. ~/.claude/codex_threads_hoi4.txt); verify exit 0 AND non-empty
+# $OUT; retry once — EXCEPT usage-limit/out-of-credits (queue + resume later, never retry into)
 ```
 
-The `cd` matters: the read-only sandbox roots at the invocation cwd, and both gate jobs need
+The `cd` matters: the read-only sandbox roots at the invocation cwd, and gate jobs need
 file access to the repo.
 
 ---
@@ -334,14 +336,25 @@ agenda below). Then, per domain over warm frames:
 
 ---
 
-## Live-session agenda (unchanged, listed so the queue is one page — needs the game, not Codex)
+## Live-session agenda (status as of 2026-07-10 late session)
 
-1. Three-phase capture segment: perf gate ON, warm advancing game, ≥15 min — feeds Job 2's fork.
-2. Prefetch A/B `BATTLE_PLAN_PREFETCH_DIST_RELATION ∈ {0,4,8,16}` perf-gated (does 8 beat shipped 16?).
-3. d23 locality probe (`runs/d23_speed/d23_locality_probe.py`) on a PAUSED deep-war save.
-4. hour-latch: shadow-soak + paired A/B + 6-core portability run (post Job 0a SOUND).
-5. d53 delta_partial paired A/B confirming the +46–68 ms cost figure (post Job 0b SOUND).
-6. Pace-exogeneity experiment: fixed save+speed, sweep-cost varied via domain subsets
-   (~40/~80/~151 ms), watch whether the interval distribution shifts.
+1. Three-phase capture segment: DONE (debug capture, ~60% guarded / ~40% materialise).
+2. Prefetch A/B: plumbing landed (1b8ed7d66: `-PrefetchDistRelation` launcher param →
+   control file → lane; env vars can't reach a running game). Windows PENDING — run
+   palindrome [16,8,0,0,8,16] short production windows, compare
+   `lane_wall.per_domain_critical_path_us_total["53"]/frames` + FRAME_END times; G1-fold one
+   arm pair for byte identity.
+3. d23 locality probe: ATTEMPTED 2026-07-10 — gate-bracket caught the game advancing
+   mid-probe, result DISCARDED per protocol. Needs a truly PAUSED save. (The discarded
+   pass suggested no adjacent-object merging at gap≤0x100 and 7.7–9x copy amplification at
+   useful caps — if that holds on a valid pass, the coalesced reader is likely a NULL per
+   the read-count≠time law, but do not decide on a discarded run.)
+4. hour-latch paired A/B: first ABBA attempt 2026-07-10 invalidated (game was PAUSED for
+   w1/w2; w3 mixed; a staging bug also collided a rerun w1 with w4 — two concurrent
+   recorders, both windows discarded). Clean ABBA rerun in flight (`runs/ab_latch3_20260710`).
+   6-core portability run still owed.
+5. d53 delta_partial paired A/B: **CLOSED — SUPERSEDED** (see Job 0b row).
+6. Pace-exogeneity experiment: still owed (fixed save+speed, domain subsets ~40/~80/~151 ms).
 
-Gate-bracket every perf run (the game pause semantics: paused = 1 cold baseline frame).
+Gate-bracket every perf run (the game pause semantics: paused = 1 cold baseline frame; a
+mid-window unpause/pause makes the window MIXED — discard, both regimes contaminate).
