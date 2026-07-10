@@ -169,6 +169,39 @@ the retained corpus). Outcomes: (a) 0-vs-16 flat within ±13% ⇒ prefetch is a 
 block for simplicity; (b) 8 beats 16 beyond noise ⇒ retune to ~8; (c) 16 best ⇒ keep. Also fold
 the full output (G1) to confirm byte-identity across arms.
 
+### LIVE A/B RUN 2026-07-10 — the shipped default 16 is the WORST arm
+
+Ran the sweep as a 6-window drift-cancelling **palindrome** `[16,8,0,0,8,16]`, 240 s each, on the
+live advancing game (`runs/ab_prefetch_20260710`). This was only possible after the env-var
+channel was replaced by the control-file plumbing (env can't reach a running game): commit
+`1b8ed7d66` + fixes. Each window's APPLIED distance was verified from its OWN stream
+(`compact_stream.lane_wall.prefetch_dist_relation_applied` = 16/8/0/0/8/16, no `_mixed`), so the
+arm labels are proven, not assumed. Perf gate was OFF (production preset), so `rc_region_hits/misses`
+are still absent — the direct `per_domain.diplomacy_intel_operatives_live.read_time_us` (avg µs) is
+the metric:
+
+| applied dist | window A | window B | palindrome mean |
+|---:|---:|---:|---:|
+| 16 (shipped) | 58,565 | 56,462 | **57,513** |
+| 8 | 52,708 | 51,995 | **52,352** |
+| 0 (off) | 53,332 | 52,850 | **53,091** |
+
+**Reading:** dist 16 is worst in BOTH of its windows — every dist-16 window sits above every dist-8
+and dist-0 window. w1 (dist 16, the FIRST/smallest-world window) is nearly the slowest despite
+world-growth predicting it should be fastest, so the ~9% penalty is not late-window drift. dist 8
+and dist 0 are indistinguishable (~52–53k). This is a paired live A/B (better than the ±13%
+single-capture rule), and it lands as **outcome (b)+(a) combined: the shipped default 16 is
+mistuned PAST the optimum — actively worse than prefetch OFF — exactly as the corrected synthetic
+model (§2, cliff by 16) predicted; dist 8 matches OFF rather than beating it.**
+
+**Recommended action (NOT yet taken — a shipped hot-path default change on a ~9% effect near the
+single-window noise floor should clear one confirmatory palindrome or a user call):** change
+`PREFETCH_DIST_RELATION_DEFAULT` from 16 to **8** (safe: the data says 8 ≤ 16 always, and 8 is the
+synthetic optimum), OR to **0** to delete the relation-loop prefetch entirely (0 ties 8 for best and
+removes code). Do NOT keep 16. A second palindrome on a fresh session would tighten 8-vs-0; until
+then the honest claim is "16 is refuted, 8 and 0 tie." Candidate-loop distance (32) was NOT swept
+live and is untouched.
+
 ---
 
 ## 4. Gates
