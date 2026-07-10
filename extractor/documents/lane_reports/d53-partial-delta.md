@@ -225,3 +225,31 @@ memory-bound captures on strong rigs, or (b) a future design that computes the d
 off the frame thread (the collector already has background-thread infrastructure) — which
 would convert this into a pure win. The wave-wide hardening (F5 baseline generation/hash;
 advance-after-validate for ALL delta domains) is recommended as a separate lane.
+
+## Independent adversarial gate — RUN 2026-07-10, VERDICT: SOUND
+
+Run by an Opus reviewer under a temporary per-instance user authorization (Codex
+rate-limited; authorization revoked later the same day — the Codex Mode-A re-stamp in
+`CODEX_DISPATCH_QUEUE.md` remains REQUIRED before enabling). Reviewer independent of the
+implementer. Summary:
+
+- All three claims held. Default `delta` mode: the fold's baseline-advance guard change is
+  observably different only on a partial-FIRST-frame stream, and is inert for anything the
+  default collector can emit (partial frames return None-commit before the seed check; the
+  first clean frame re-establishes the baseline FULL). delta_partial: seed + upserts +
+  tombstone-all-absent reconstructs exactly the current read = exactly what FULL|PARTIAL
+  sparse-merge yields; both baselines advance on the same frame classes (lockstep); the
+  PARTIAL-in-FAILURE_MASK trap is correctly masked on both sides
+  (`COMPACT_EXPECTED_PARTIAL_TOLERANCES`, d53 tolerates only PARTIAL_DATA). Both prior bugs
+  structurally dead: `baseline_seeded` bool replaces the `last_emitted.is_empty()` sentinel;
+  `apply_emit_mode` takes `&tracker` immutably and returns the mutation, committed only after
+  the post-build gate.
+- MINOR/LATENT (record; do not trip later): (1) the fold re-seeds d53 hour overlays from the
+  mirror baseline on EVERY delta frame — if the collector ever emitted two d53 records within
+  one game-hour, delta_partial keeps only the last while full emission unions both.
+  Unreachable today (one d53 record per FRAME_END); breaks SILENTLY if sub-hour sampling is
+  ever added. (2) The 48-seed fuzzer interleaves only countries/opinions/state_events/
+  subjects; relation_flags/agencies/capacity_clusters/cryptology/wars rely on the
+  delta-lossless gate + dedicated tests, not randomized partial interleavings. (3) The
+  "tombstones never from a partial view" wording is a TRAP — the invariant is
+  fold-identity-with-full-emission and torn rows ARE correctly tombstoned; queue doc updated.

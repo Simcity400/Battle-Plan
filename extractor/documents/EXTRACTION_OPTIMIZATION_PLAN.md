@@ -418,15 +418,27 @@ landed on 2026-07-10 and **that gate has NOT been run**: Codex was rate-limited
 
 | Diff | Ships as | Orchestrator-verified | Independent gate |
 |---|---|---|---|
-| `hour_latch` | **default OFF** (`unwrap_or(false)`; no thread, no extra reads) | scope, fold-path zero edits, 1203/0 tests, G1 chain hash exact | **NOT RUN** |
-| `d53 delta_partial` | **opt-in** (default `delta` byte- and CPU-identical) | scope, 1214/0 tests, **G1 chain hash exact despite `world_fold.rs` edits** | **NOT RUN** |
+| `hour_latch` | **default OFF** (`unwrap_or(false)`; no thread, no extra reads) | scope, fold-path zero edits, 1203/0 tests, G1 chain hash exact | **SOUND** (Opus, 2026-07-10) |
+| `d53 delta_partial` | **opt-in** (default `delta` byte- and CPU-identical) | scope, 1214/0 tests, **G1 chain hash exact despite `world_fold.rs` edits** | **SOUND** (Opus, 2026-07-10) |
 
-Both are inert by default, which is why they were allowed to merge. **Neither may be ENABLED**
-until (a) the independent adversarial gate runs clean, and (b) their live gates pass (hour-latch:
+**UPDATE 2026-07-10 (afternoon): both gates ran via temporarily-authorized Opus reviewers and
+returned SOUND.** Codex was rate-limited through the window; the user authorized Opus
+subagents for that window (authorization since REVOKED — Codex-only again as of the same
+afternoon). The verdicts stand as recorded evidence: reviewers independent of the (Codex)
+implementers, verbatim findings appended to `lane_reports/hour-latch.md` and
+`lane_reports/d53-partial-delta.md`. Per the user's follow-up directive, the **Codex Mode-A
+re-stamp in `CODEX_DISPATCH_QUEUE.md` is REQUIRED, not optional** — enabling either feature
+blocks on (a) the Codex re-stamp running clean AND (b) the live gates (hour-latch:
 shadow-soak + paired A/B + 6-core run; d53: paired A/B confirming the +46–68 ms/frame cost).
 
-Paste-ready gate prompts + the next lane (three-phase timing instrumentation) are queued in
-`CODEX_DISPATCH_QUEUE.md` — dispatch the moment Codex quota returns; nothing needs re-derivation.
+Notable from the d53 gate (recorded so nobody trips them later): (1) a LATENT fragility — the
+fold re-seeds d53 hour overlays from the mirror baseline on every DELTA frame, so if the
+collector ever emitted two d53 records within one game-hour, delta_partial would keep only the
+last while full emission unions both; unreachable today (one d53 record per FRAME_END), breaks
+silently if sub-hour sampling is ever added. (2) The old "tombstones never from a partial
+view" phrasing is a TRAP — the true invariant is fold-identity-with-full-emission, and
+delta_partial correctly tombstones torn rows; "fixing" the literal wording would break
+byte-identity. Queue doc updated accordingly.
 
 Note the lanes' *own* Codex reviews did run and were valuable: hour-latch's returned REFUTED and
 exposed a real bug (a stale sweep read fabricated a false reload + duplicate capture); d53's

@@ -8,14 +8,22 @@ at dispatch time. Method: `documents/LANE_WORKFLOW.md`. Context brief every lane
 
 | # | Job | Mode | Blocks | Status |
 |---|---|---|---|---|
-| 0a | Independent adversarial gate: `hour_latch` | A (read-only) | ENABLING hour_latch | READY |
-| 0b | Independent adversarial gate: `d53 delta_partial` | A (read-only) | ENABLING delta_partial | READY |
-| 1 | Three-phase timing instrumentation lane | C (worktree) | acquire/process split decision | READY |
+| 0a | Adversarial gate: `hour_latch` | A (read-only) | ENABLING hour_latch | Opus-SOUND 2026-07-10; **Codex re-stamp REQUIRED** (user directive) |
+| 0b | Adversarial gate: `d53 delta_partial` | A (read-only) | ENABLING delta_partial | Opus-SOUND 2026-07-10; **Codex re-stamp REQUIRED** (user directive) |
+| 1 | Three-phase timing instrumentation lane | — | — | **IMPLEMENTED** by orchestrator (Codex outage), lane `lane/three-phase-timing` @ `d56e2bbe7`, all gates green, **HELD UNMERGED** pending Job 1R |
+| 1R | Adversarial review of the Job-1 diff | A (read-only) | MERGING lane/three-phase-timing | READY — see §Job 1R |
 | 2 | Acquire/process split (or its burial) | C | — | GATED on Job 1's live numbers |
 
-Dispatch order: 0a + 0b immediately (cheap, read-only, owed); Job 1 in parallel — it is
-independent of both. Job 2 is **not** dispatchable until Job 1's numbers exist from a live
-session; its decision tree is at the bottom so the fork is pre-agreed, not improvised.
+Dispatch order when Codex returns: 0a + 0b re-stamps and 1R immediately (all Mode A,
+read-only). Job 2 is **not** dispatchable until Job 1's numbers exist from a live session;
+its decision tree is at the bottom so the fork is pre-agreed, not improvised.
+
+History 2026-07-10: during the Codex quota outage the user temporarily authorized Opus
+subagents; gates 0a/0b ran that way (verdicts + findings appended to the respective
+lane_reports). The authorization was then REVOKED (Codex-only again), the in-flight Opus
+review of Job 1's diff was killed, and the user directed that the Codex re-stamps are
+required. The Job-1 implementation itself was done directly by the orchestrator, so 1R is a
+first review, not a re-stamp — implementer never clears own diff.
 
 Mode A invocation (verbatim; per global rules — never drop the model/effort pins):
 
@@ -120,8 +128,12 @@ CLAIMED GUARANTEES — attack them:
 2. delta_partial ON: lossless under partial/failed frames. Specifically: trackers NEVER
    advance on a frame whose status intersects COMPACT_STATUS_FAILURE_MASK; a reader that
    folds baseline + deltas + tombstones reconstructs exactly the full-emit stream for every
-   interleaving of {ok, partial, failed, empty} frames; tombstones are positive-absence-only
-   (high bit 1<<31 on identity key) and never fabricated from a partial view.
+   interleaving of {ok, partial, failed, empty} frames. ⚠ WORDING TRAP (caught by the Opus
+   gate 2026-07-10): the invariant is FOLD-IDENTITY-WITH-FULL-EMISSION, and delta_partial
+   *correctly* tombstones rows absent from a partial view — full emission drops torn rows for
+   that hour too. Do NOT "harden" the emit path to suppress tombstones on partial frames to
+   satisfy a "never from a partial view" reading; that would break byte-identity and silently
+   retain torn rows the full-emit reference discards.
 3. The two previously-found bugs are dead in the current state: (a) empty-first-frame
    baseline desync — last_emitted.is_empty() used as a seeded-sentinel; (b)
    mutate-before-validate in apply_emit_mode (state mutated before the mode/status check
@@ -250,6 +262,57 @@ implement the design below — or refute it with measurements if the fixture num
 overhead cannot be bounded; a numbers-backed refutation is a valid deliverable. Commit to the
 lane branch only. codex is on the Bash PATH. Your final message must list: files touched,
 gates run with verbatim results, and the lane-report path.
+```
+
+## Job 1R — Adversarial review of the Job-1 diff (Mode A) — BLOCKS the merge
+
+Job 1 was implemented directly by the orchestrator during the Codex outage; the lane sits at
+`lane/three-phase-timing` commit `d56e2bbe7` (worktree `..\hoi4_lane_three_phase_timing`),
+one commit ahead of master, all gates green (check 0-new-warnings; suite 1216 passed / 1
+known flake; G1 chain `bc517771…` exact; gate-OFF inertness test). It does NOT merge until
+this review runs clean. Run Mode A with cwd = that worktree (read-only sandbox roots there).
+
+`$PROMPT` body:
+
+```
+You are an ADVERSARIAL REVIEWER (gate, not implementer). Read-only; findings only. You have
+no project memory — read extractor/documents/CODEX_LANE_BRIEF.md and the implementer's
+self-report extractor/documents/lane_reports/three-phase-timing.md (skeptically). The diff
+under review: `git show d56e2bbe7` in the cwd.
+
+WHAT IT DOES: adds phase-1 "guarded acquisition" timing to the collector's read-counter
+machinery (extractor/native/collector/src/lib.rs). Sampled timing (every 64th logical read,
+free-running per-thread counter, NANOSECOND accumulation) over read_scalar/read_bytes/
+read_into — whose rc_bump(RC_READS/RC_BULK_BYTES) calls were refactored into a combined
+rc_read_probe()/rc_read_probe_end() pair — plus unsampled per-call timing over
+read_bytes_scan. New slots RC_GUARDED_SPL_NS/RC_GUARDED_SPL_N/RC_SCAN_GUARDED_NS (RC_N
+8→11), per-domain twins (RC_PD_N 4→7), names in RC_UNIT_NAMES_SEH/RPM + rc_domain_unit_names.
+Estimator: guarded_ns ≈ spl_ns × (reads/spl_n) + scan_guarded_ns.
+
+CLAIMED GUARANTEES — attack:
+1. COUNTER SEMANTICS UNCHANGED: RC_READS/RC_BULK_BYTES increments identical to the old
+   rc_bump pairs on every path (ordering vs len==0 early-returns included). Drift silently
+   corrupts every A/B against historical manifests.
+2. GATE OFF: byte-identical production behavior; per-read cost = one RC_ENABLED
+   relaxed-load early-return; no timing, no counts, no stream change.
+3. READ BEHAVIOR UNCHANGED: closure refactors preserve exact control flow and return
+   values, incl. read_into's buf-unspecified-on-false contract; read_bytes_scan's probe
+   covers ALL exits (a missed exit = silent undercount).
+4. NAME/INDEX ALIGNMENT: the 3 new names sit at indices 8/9/10 in BOTH frame name arrays;
+   rc_pd_index maps new RC_* to the right RC_PD_* slots. Off-by-one = every manifest unit
+   mislabeled, nothing crashes.
+5. SAMPLING SOUNDNESS: free-running spl_ctr (deliberately NOT drained by flush_indexed)
+   cannot double-count/lose samples across RcDomainScope nesting; can a scope change occur
+   between probe begin and end within one primitive call, and if so where does the time
+   attribute; u64 wrap harmless.
+6. TEST SOUNDNESS: the eventually() retry harness cannot mask a real determinism bug (a
+   broken stride/routing must fail all 5 attempts); RC_TEST_LOCK serialization correct.
+Also: any remaining production caller doing manual rc_bump(RC_READS,..) that now diverges;
+probe pair straddling an early return anywhere; RcLocal Drop-flush with a probe in flight.
+
+OUTPUT FORMAT: VERDICT: SOUND | REFUTED; numbered findings with file:line evidence and
+severity (SILENT-DATA-LOSS / CORRECTNESS / MEASUREMENT-LIE / MINOR); if SOUND, list the
+failed attacks. Self-refute once before reporting.
 ```
 
 ### What the numbers decide (Job 2's pre-agreed fork — do not improvise later)

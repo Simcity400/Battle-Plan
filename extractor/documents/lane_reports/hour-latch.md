@@ -189,3 +189,26 @@ final gate on the post-fix state (I did ONE fix round, per the escalation cap, t
    snapshot throughput beyond the sweep's speed (that's Phase 2/4).
 3. **6-core portability companion** (G3): the latch thread must not starve the game on a weaker host.
 4. **(If the detour A is ever pursued)** MP-checksum non-perturbation control gate before shipping.
+
+## Independent adversarial gate — RUN 2026-07-10, VERDICT: SOUND
+
+Run by an Opus reviewer under a temporary per-instance user authorization (Codex
+rate-limited; authorization revoked later the same day — the Codex Mode-A re-stamp in
+`CODEX_DISPATCH_QUEUE.md` remains REQUIRED before enabling). Reviewer was independent of the
+implementer. Summary of the verdict (full attack list ran: i32 edges, i64-delta wraparound,
+backward jumps, raw==last, first-observe seeding, shutdown/flush ordering, TOCTOU on last,
+counter overflow, OFF-path byte identity):
+
+- All three claimed guarantees held. OFF-path: every latch touchpoint gated on
+  `hour_latch_runtime.as_ref()`, no thread, no reads, no records. Invariant
+  `observed == attempts + coalesced + in_flight` traced through every mutator; multi-hour
+  jumps delta-folded (`last+1..=raw`) with the >768-hours/poll remainder booked as
+  `coalesced_anomalous` — accounted, never silent. Shutdown joins the thread BEFORE the final
+  observe+flush+telemetry under one lock — no post-flush in_flight, no cross-flush
+  double-count. The old stale-sweep false-reload/duplicate bug is structurally dead (the API
+  removed the sweep's counter argument; `observe` is the sole author of `last_raw`).
+- MINOR (2): (a) `decide()` books a capture attempt even when `clock_sample` is None (no
+  sweep runs) — stands as an accounted failed attempt, same emit outcome as legacy on an
+  unreadable clock, but arguably deserves a dedicated "no-clock" reason tag. (b) The emitted
+  snapshot's hour label (from `clock_sample`) can differ from the accounting frontier hour —
+  the disclosed BOUNDED-SKEW property, same class as the legacy single-sweep skew.
