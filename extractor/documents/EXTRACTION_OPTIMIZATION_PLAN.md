@@ -877,6 +877,18 @@ lossy relative to today's decoded state.
 
 ## Known nulls — do not revisit
 
+- **d23 map_detail COALESCED READER — NULL, buried 2026-07-11.** Valid PAUSED-game locality
+  probe (pause-watcher captured it at 01:23 after gate-bracket-discarding advancing attempts;
+  runs/pause_watcher_20260710.log): CBuilding objects NEVER merge at gap<=0x100 (0.0% call
+  reduction — same-size slab objects are interleaved with other allocations, never adjacent),
+  and every useful cap pays massive dead-copy amplification (gap 0x400: 96% fewer calls but
+  7.7x bytes; 0x4000: 99.5% fewer, ~9x). Pre-registered decision gate required BOTH large call
+  reduction AND low amplification — no cap satisfies it, and the read-count!=time law already
+  showed the deleted calls are cheap MRU hits. Pattern stable across a dozen snapshots as the
+  world grew 8.6k->9.7k buildings. The d23 time floor stays where phase4-mirror-mapdetail left
+  it (pointer-chase data shape, no dense mirror).
+
+
 - Reader-thread concurrency tuning (flat 54–62 ms across rc 0→24).
 - "Fewer guarded reads" without a mechanism (cheap MRU-hit reads cost ~nothing; here the
   3.17 M-read volume IS expensive at ~34–320 ns/read, which is why bulk-collapse works).
