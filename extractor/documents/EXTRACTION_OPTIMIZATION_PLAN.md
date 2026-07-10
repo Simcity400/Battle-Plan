@@ -416,20 +416,34 @@ adversarial gate on the final state — the implementer never clears its own wor
 landed on 2026-07-10 and **that gate has NOT been run**: Codex was rate-limited
 ("hit your usage limit") on every attempt. It is not run, so it is not claimed.
 
-| Diff | Ships as | Orchestrator-verified | Independent gate |
-|---|---|---|---|
-| `hour_latch` | **default OFF** (`unwrap_or(false)`; no thread, no extra reads) | scope, fold-path zero edits, 1203/0 tests, G1 chain hash exact | **SOUND** (Opus, 2026-07-10) |
-| `d53 delta_partial` | **opt-in** (default `delta` byte- and CPU-identical) | scope, 1214/0 tests, **G1 chain hash exact despite `world_fold.rs` edits** | **SOUND** (Opus, 2026-07-10) |
+| Diff | Ships as | Opus gate (authorized window) | Codex re-stamp | Adjudicated status |
+|---|---|---|---|---|
+| `hour_latch` | **default OFF** | SOUND | **REFUTED** | **REAL FIXES REQUIRED** — fix lane queued |
+| `d53 delta_partial` | **opt-in OFF** | SOUND | **REFUTED** | contract-text defect fixed in brief; **no fold-divergence demonstrated**; blocked on live A/B as before |
 
-**UPDATE 2026-07-10 (afternoon): both gates ran via temporarily-authorized Opus reviewers and
-returned SOUND.** Codex was rate-limited through the window; the user authorized Opus
-subagents for that window (authorization since REVOKED — Codex-only again as of the same
-afternoon). The verdicts stand as recorded evidence: reviewers independent of the (Codex)
-implementers, verbatim findings appended to `lane_reports/hour-latch.md` and
-`lane_reports/d53-partial-delta.md`. Per the user's follow-up directive, the **Codex Mode-A
-re-stamp in `CODEX_DISPATCH_QUEUE.md` is REQUIRED, not optional** — enabling either feature
-blocks on (a) the Codex re-stamp running clean AND (b) the live gates (hour-latch:
-shadow-soak + paired A/B + 6-core run; d53: paired A/B confirming the +46–68 ms/frame cost).
+**FINAL 2026-07-10 (evening): the Codex re-stamps ran and REFUTED both — overriding the
+earlier Opus SOUND verdicts in one case.** Full verdicts + orchestrator adjudication in
+`lane_reports/hour-latch.md` and `lane_reports/d53-partial-delta.md`. Summary:
+
+- **hour_latch**: 4 real defects Opus missed or under-weighted — (1) frame labeled from the
+  stale sweep clock while the attempt consumes the latch frontier ⇒ duplicate prior-hour
+  frame + silent gap at the frontier hour; (2) `confirm()` fires on failure/partial frames;
+  (3) an all-polls-fail tail leaves hours unaccounted while the invariant passes; (4)
+  thread-spawn failure fails OPEN to the legacy lossy loop. Plus the pre-existing
+  sink-write-error swallowing makes "confirmed" over-claim. **Fix lane queued
+  (`CODEX_DISPATCH_QUEUE.md` Job 0aF); re-gate + live gates after.** Unobservable
+  between-poll reload excursions are inherent to polling and become contract wording.
+- **d53 delta_partial**: the CRITICAL findings refute the BRIEF's absolute rules, not fold
+  output — the design deliberately relaxes them for tolerated-partial d53, where full
+  emission itself drops torn rows hour-by-hour. `CODEX_LANE_BRIEF.md` §3 now carries the
+  partial-tolerance carve-out (the ambiguity that let two reviewers read opposite contracts
+  WAS the defect). One true finding accepted: default mode is byte-identical to pre-lane
+  only where pre-lane was correct — it diverges exactly where pre-lane provably lost data
+  (post-build-rejection sequence); that is the documented intent. Standing falsifier: a
+  concrete fold-divergent interleaving overturns this adjudication.
+
+Enabling: hour_latch blocks on fix lane → fresh Codex gate → live gates. delta_partial
+blocks on the live paired A/B (unchanged).
 
 Notable from the d53 gate (recorded so nobody trips them later): (1) a LATENT fragility — the
 fold re-seeds d53 hour overlays from the mirror baseline on every DELTA frame, so if the

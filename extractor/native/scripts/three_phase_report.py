@@ -16,6 +16,12 @@ Phase 3 (encode/emit) is frame-level: rc_*_phase_encode_append_us.
 The sampled estimate's resolution is reported (spl_n per domain); domains with
 spl_n < ~30 have a noisy estimate — say so, don't over-read them.
 
+SHARDED domains (nested worker threads: the RcDomainScope tag does not
+propagate to spawned shards, so child guarded time lands global-only — a
+pre-existing attribution limit that equally affects rc_d{id}_reads) get NO
+materialise number: lane_wall - guarded would overstate materialise there.
+Frame-level totals are unaffected.
+
 Usage: python three_phase_report.py <native_session_manifest.json>
 """
 
@@ -99,12 +105,17 @@ def main():
         % (frame_guard_ms, g_spl_n / frames, g_reads / frames, g_spl_n / frames * 100 / 1e6)
     )
 
+    # Nested-shard domains: the domain tag does not propagate to spawned shard
+    # threads, so their guarded time is under-attributed per-domain (1R review
+    # finding 1). No materialise number is printed for them.
+    SHARDED = {200, 20, 23, 26, 44}
+
     ids = sorted(
         {int(m.group(1)) for k in units if (m := re.match(r"rc_d(\d+)_", k))}
     )
     print(
         "\n%6s %12s %10s %12s %12s %12s %8s"
-        % ("domain", "reads/frame", "spl_n", "guarded ms", "crit ms", "materialise*", "noisy?")
+        % ("domain", "reads/frame", "spl_n", "guarded ms", "crit ms", "materialise*", "note")
     )
     for d in ids:
         u = lambda s: units.get(f"rc_d{d}_{s}", 0)
@@ -118,23 +129,22 @@ def main():
         guarded_ms = guarded_ns / frames / 1e6
         crit_ms = crit_us / frames / 1e3
         # materialise vs CRIT wall only — full wall needs the debug sidecar.
-        mat = crit_ms - guarded_ms if crit_us else float("nan")
+        if d in SHARDED:
+            mat_s, note = "   sharded", "shard!"
+        else:
+            mat = crit_ms - guarded_ms if crit_us else float("nan")
+            mat_s = "%12.3f" % mat
+            note = "noisy" if spl_n / max(frames, 1) < 30 else ""
         print(
-            "%6d %12.0f %10.0f %12.3f %12.3f %12.3f %8s"
-            % (
-                d,
-                reads / frames,
-                spl_n / frames,
-                guarded_ms,
-                crit_ms,
-                mat,
-                "yes" if spl_n / max(frames, 1) < 30 else "",
-            )
+            "%6d %12.0f %10.0f %12.3f %12.3f %s %8s"
+            % (d, reads / frames, spl_n / frames, guarded_ms, crit_ms, mat_s, note)
         )
     print(
-        "\n* materialise column uses lw_d{id}_crit_us (critical-path attribution), not the\n"
-        "  full per-domain wall — use the debug sidecar for the definitive split. Negative\n"
-        "  values mean the domain was rarely on the critical path; ignore them there."
+        "\n* materialise uses lw_d{id}_crit_us (critical-path attribution), not the full\n"
+        "  per-domain wall — use the debug sidecar for the definitive split. Negative values\n"
+        "  mean the domain was rarely on the critical path; ignore them there. 'sharded' =\n"
+        "  nested worker threads whose guarded time is under-attributed per-domain (their\n"
+        "  guarded ms above is a floor, main-thread portion only); 'noisy' = spl_n/frame < 30."
     )
     return 0
 

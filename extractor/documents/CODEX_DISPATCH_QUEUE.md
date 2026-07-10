@@ -8,15 +8,12 @@ at dispatch time. Method: `documents/LANE_WORKFLOW.md`. Context brief every lane
 
 | # | Job | Mode | Blocks | Status |
 |---|---|---|---|---|
-| 0a | Adversarial gate: `hour_latch` | A (read-only) | ENABLING hour_latch | Opus-SOUND 2026-07-10; **Codex re-stamp REQUIRED** (user directive) |
-| 0b | Adversarial gate: `d53 delta_partial` | A (read-only) | ENABLING delta_partial | Opus-SOUND 2026-07-10; **Codex re-stamp REQUIRED** (user directive) |
-| 1 | Three-phase timing instrumentation lane | — | — | **IMPLEMENTED** by orchestrator (Codex outage), lane `lane/three-phase-timing` @ `d56e2bbe7`, all gates green, **HELD UNMERGED** pending Job 1R |
-| 1R | Adversarial review of the Job-1 diff | A (read-only) | MERGING lane/three-phase-timing | READY — see §Job 1R |
+| 0a | Adversarial gate: `hour_latch` | A | ENABLING hour_latch | Opus-SOUND, then **Codex-REFUTED 2026-07-10** → adjudicated REAL; see 0aF |
+| 0aF | **hour_latch fix lane** (findings 1–5 in `lane_reports/hour-latch.md` §Codex re-stamp) | C (worktree) | ENABLING hour_latch | READY — fixes: frontier-hour labeling; confirm() gated on failure flags; terminal-read-failure marker; fail-open→telemetry; sink-write claim scoping. Fresh Mode-A gate after. |
+| 0b | Adversarial gate: `d53 delta_partial` | A | ENABLING delta_partial | Opus-SOUND, then **Codex-REFUTED 2026-07-10** → adjudicated contract-text (brief §3 carve-out added); feature unchanged, blocked on live A/B |
+| 1 | Three-phase timing instrumentation lane | — | — | IMPLEMENTED (orchestrator); Codex 1R REFUTED → **one fix round applied** (phase seed, exact oracles, shard disclosure) |
+| 1R2 | Re-review of the fixed Job-1 diff | A (read-only) | MERGING lane/three-phase-timing | READY once fix-round gates re-pass |
 | 2 | Acquire/process split (or its burial) | C | — | GATED on Job 1's live numbers |
-
-Dispatch order when Codex returns: 0a + 0b re-stamps and 1R immediately (all Mode A,
-read-only). Job 2 is **not** dispatchable until Job 1's numbers exist from a live session;
-its decision tree is at the bottom so the fork is pre-agreed, not improvised.
 
 History 2026-07-10: during the Codex quota outage the user temporarily authorized Opus
 subagents; gates 0a/0b ran that way (verdicts + findings appended to the respective

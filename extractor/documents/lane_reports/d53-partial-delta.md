@@ -253,3 +253,39 @@ implementer. Summary:
   delta-lossless gate + dedicated tests, not randomized partial interleavings. (3) The
   "tombstones never from a partial view" wording is a TRAP — the invariant is
   fold-identity-with-full-emission and torn rows ARE correctly tombstoned; queue doc updated.
+
+## Codex re-stamp — RUN 2026-07-10 (post-quota), VERDICT: REFUTED — adjudicated: CONTRACT-TEXT DEFECT, NO FOLD-DIVERGENCE DEMONSTRATED
+
+The Codex Mode-A gate REFUTED with 2 CRITICAL + 2 HIGH + 2 MEDIUM-LATENT findings,
+contradicting the Opus SOUND verdict. Orchestrator adjudication:
+
+**Findings 1–3 (tombstones-from-partial-views, first-partial-frame seeding, stale-drop not
+flagged partial): refutations against the BRIEF'S ABSOLUTE RULES, not against fold output.**
+The lane's design deliberately relaxes "trackers never advance on partial" / "positive-absence
+-only tombstones" for d53's tolerated-partial mode, because FULL EMISSION ITSELF re-emits the
+(possibly torn) current view each hour — the hour's folded snapshot drops torn rows either
+way, and they reappear on the next clean read. The governing invariant is
+fold-identity-with-full-emission; the fold-identity tests, the 48-seed fuzzer, and the
+all-partial cold-start case pass, and the review presents no fold-divergent interleaving.
+CODEX_LANE_BRIEF.md §3 now carries an explicit partial-tolerance carve-out so the contract
+has one truth (two reviewers legitimately read the old text in opposite ways — that ambiguity
+was the actual defect). Finding 3's stale-drop nuance: the dropped row is absent from the
+SAME read that both modes consume, so both modes' hour view agrees; stale_dropped_total
+remains visible diagnostics.
+
+**Finding 4 (default-mode not byte-identical to PRE-LANE in the post-build-rejection
+sequence): TRUE, and ACCEPTED-INTENTIONAL.** The mutate-before-validate fix changes behavior
+exactly where the pre-lane code was provably lossy (tracker advanced on a frame later
+rejected ⇒ subsequent deltas diffed against a baseline the fold never saw). The prior
+"default byte- and CPU-identical" claim is RESTATED as: identical on every sequence where
+pre-lane was correct (G1 deep-war chain hash reproduces); divergent only where pre-lane lost
+data, in the direction of correctness. This restatement is the documented intent the G1 gate
+requires for a folded-output change.
+
+**Findings 5–6 (mode-switch mid-stream; two d53 records in one hour): latent, already
+recorded in this report; unreachable today** (control loads once per attach; one d53 record
+per FRAME_END). Both become live hazards only if those preconditions change — re-gate then.
+
+Status: delta_partial remains **opt-in OFF**, blocked on the live paired A/B as before. The
+adjudication above is open to challenge: a concrete fold-divergent interleaving overturns it
+— that is the standing falsifier.

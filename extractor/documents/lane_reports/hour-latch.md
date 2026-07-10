@@ -212,3 +212,46 @@ counter overflow, OFF-path byte identity):
   unreadable clock, but arguably deserves a dedicated "no-clock" reason tag. (b) The emitted
   snapshot's hour label (from `clock_sample`) can differ from the accounting frontier hour —
   the disclosed BOUNDED-SKEW property, same class as the legacy single-sweep skew.
+
+## Codex re-stamp — RUN 2026-07-10 (post-quota), VERDICT: REFUTED — adjudicated: REAL FIXES REQUIRED
+
+The Codex Mode-A gate (required by user directive) REFUTED, contradicting the earlier Opus
+SOUND verdict. Orchestrator adjudication of the 8 findings:
+
+**REQUIRED FIXES (block any enable; fix lane queued in CODEX_DISPATCH_QUEUE.md):**
+1. **Label/frontier mismatch (SILENT-DATA-LOSS, the big one).** The capture decision consumes
+   the latch frontier hour but the emitted frame is labeled from the separately-read sweep
+   clock. Stale clock ⇒ a duplicate frame labeled with the PREVIOUS hour and NO frame labeled
+   with the consumed frontier hour — accounting says attempt+confirmed, the folded output has
+   a silent gap. (Opus saw the same mechanism and under-weighted it as bounded skew; Codex's
+   duplicate scenario is concrete and correct.) Fix: label the frame with the frontier hour
+   from take_capture, or fail the attempt on label/frontier disagreement.
+2. **confirm() on failure/partial frames (CORRECTNESS).** produced=true on any nonempty record
+   vector; failure flags never inspected — a PARTIAL frame is booked confirmed-complete.
+   Fix: confirm only when status ∩ FAILURE_MASK (minus declared tolerances) is empty; else
+   book recorded-failed.
+3. **Terminal read-failure window (SILENT-DATA-LOSS).** If every poll from some point through
+   shutdown fails, hours advanced in that window are unaccounted while the invariant still
+   passes. Fix: a terminal marker (last_observe_failed + read_failures) that downgrades the
+   run's accounting claim from COMPLETE to TRUNCATED-AT.
+4. **Fail-open on thread-spawn failure (SILENT-DATA-LOSS).** start() returning None silently
+   falls back to the legacy lossy loop with hour_latch_enabled=true. Fix: telemetry marker +
+   manifest flag (latch_requested_but_inactive).
+5. **Sink-write failure ⇒ false confirm** — real, but the error-swallowing write path is
+   PRE-EXISTING and collector-wide, not latch-specific; scope in the fix lane: either plumb
+   write results into confirm() or rename the counter to emitted (claim only what is true).
+
+**ADJUDICATED NOT CODE DEFECTS:**
+6. Reload excursion fully between two polls (advance 101..150 then reload to 100) is
+   UNOBSERVABLE by any polling sampler — no fix exists short of hooking the engine (rejected:
+   MP-checksum risk). Contract wording fix: the guarantee covers OBSERVED advances; the
+   ≤25 ms poll clamp bounds the blind window.
+7. u64 saturation masking (MINOR): needs ~5.8e19 hours; unreachable.
+8. i32::MAX→MIN wrap misread as reload (MINOR): game-hour raw magnitudes never approach
+   i32::MAX in any real campaign.
+
+Status: **NOT CLEARED, now with required fixes** (it was never cleared — default OFF
+unchanged). Re-gate (fresh Codex Mode-A) required after the fix lane, then live gates.
+
+Meta: reviewer disagreement (Opus SOUND vs Codex REFUTED) is itself evidence for keeping
+adversarial gates model-strong; findings 1–4 are real and Opus missed or under-weighted them.
