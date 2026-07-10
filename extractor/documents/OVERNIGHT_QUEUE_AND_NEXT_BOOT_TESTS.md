@@ -55,3 +55,18 @@ Ordered by value; sandbox for Mode C is broken so orchestrator implements, Codex
 failure bits; one Codex fix round per review then orchestrator fixes; resumability law on
 every Codex call; `replay_interface/` untouched; `documents/CLAUDE.md` +
 `documents/archive/CODEX_PROTOCOL_legacy.md` carry another session's edits — never stage.
+
+## Byte attribution study RESULTS (2026-07-11 00:0x, w6_d16 window: 9.65GB decoded / 59MB stored = 163x)
+
+- **d53 = 86.6% of compressed bytes** (94.1% raw; per-domain zstd ratio 31.9x vs 4.5-9.6x for
+  d20/d44/d24). The columnar+varint d53 record layout is THE byte lever; nothing else is worth
+  more than ~5% combined.
+- **METHODOLOGY CORRECTION (own study, caught on read-back):** the whole-stream brackets used
+  zstd DEFAULT window; production streams use window_log 27 (128MiB) — stored 59MB vs my
+  level-19-default-window 278MB means **window/long-range matching dominates level and is
+  ALREADY SHIPPED**. Therefore: (a) container-level tuning is near-exhausted; (b) the
+  "domain-grouped beats interleaved by 21%" comparison is a default-window artifact — assume
+  it EVAPORATES at window 27 unless re-measured with production parameters.
+- **O6 next step (the only big one):** offline columnar/varint re-encode of d53 payloads,
+  measured against the 59MB baseline AT PRODUCTION SETTINGS (level 3, window_log 27),
+  fold-identity gated. Do not bother with domain grouping or container levels first.
