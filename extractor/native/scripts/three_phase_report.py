@@ -16,11 +16,19 @@ Phase 3 (encode/emit) is frame-level: rc_*_phase_encode_append_us.
 The sampled estimate's resolution is reported (spl_n per domain); domains with
 spl_n < ~30 have a noisy estimate — say so, don't over-read them.
 
-SHARDED domains (nested worker threads: the RcDomainScope tag does not
-propagate to spawned shards, so child guarded time lands global-only — a
-pre-existing attribution limit that equally affects rc_d{id}_reads) get NO
-materialise number: lane_wall - guarded would overstate materialise there.
-Frame-level totals are unaffected.
+Attribution semantics (1R2-corrected):
+- A domain appears in the table ONLY if its reader opens an RcDomainScope. A
+  MISSING row means unattributed (its guarded time is in the frame totals,
+  global-only) — NOT free. E.g. d22 map_control opens no scope.
+- SHARDED scoped domains (nested worker threads; tag does not propagate) get
+  no materialise number; their guarded ms is a main-thread floor.
+- Instrumentation tax: gate-ON probe machinery measures ~1.1 ns/read over the
+  pre-lane counter (rig-specific; re-measure with rc_probe_self_cost_measure).
+  It sits in lane_wall but NOT in guarded time, so derived materialise is
+  overstated by roughly reads x 1.1 ns — the summary prints this tax.
+- Frame-level totals cover frame-scoped workers + main thread; persistent
+  threads (heap-sweep loop) and detached validation readers flush late
+  (pre-existing counter behavior; those are off in default capture config).
 
 Usage: python three_phase_report.py <native_session_manifest.json>
 """
@@ -101,8 +109,13 @@ def main():
     frame_guard_ms = (g_spl_ns * (g_reads / g_spl_n) + g_scan_ns) / frames / 1e6
     print(
         "frame-level guarded estimate: %.2f ms/frame  (samples/frame %.0f, "
-        "reads/frame %.0f, sample cost ~%.2f ms/frame at ~100ns/QPC-pair)"
-        % (frame_guard_ms, g_spl_n / frames, g_reads / frames, g_spl_n / frames * 100 / 1e6)
+        "reads/frame %.0f)"
+        % (frame_guard_ms, g_spl_n / frames, g_reads / frames)
+    )
+    print(
+        "instrumentation tax (in lane_wall, NOT in guarded => inflates derived "
+        "materialise): ~%.2f ms/frame at 1.1 ns/read (rig-specific)"
+        % (g_reads / frames * 1.1 / 1e6)
     )
 
     # Nested-shard domains: the domain tag does not propagate to spawned shard
