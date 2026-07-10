@@ -86,6 +86,16 @@ struct DomainContract {
     /// wing-assignment scan blocked on at least one frame). Present but zero
     /// is fine; nonzero fails unless a tolerated profile is in effect.
     zero_units: &'static [&'static str],
+    /// Diagnostic "work performed" counters that make a zero-emission frame a
+    /// HARD failure — if ANY of these is > 0 while the domain emitted no rows
+    /// (`row_count_total == 0`), the reader did substantial work and then threw
+    /// every row away, which is silent data loss masquerading as a tolerated
+    /// PARTIAL. This fires EVEN under `allow_partial_or_source_failure` (a
+    /// partial-tolerant profile still may not tolerate 39.5M rows in / 0 out).
+    /// Motivating defect: d47 characters adapter processed millions of rows and
+    /// emitted zero for a whole session behind a rowless-PARTIAL frame
+    /// (2026-07-10; see extractor/documents/CONFIRMED_COMPLETE_DESIGN.md).
+    work_implies_rows_units: &'static [&'static str],
     shared_recorder_known: bool,
 }
 
@@ -96,6 +106,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["fuel_country_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -110,6 +121,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "construction_queue_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -118,6 +130,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["focus_country_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -126,6 +139,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["tech_country_rows", "active_research_slot_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -134,6 +148,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["politics_country_rows", "popularity_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -142,6 +157,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["politics_residual_country_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -150,6 +166,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["decision_country_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -158,6 +175,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["diplomacy_country_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -166,6 +184,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["division_rows", "division_root_rows", "division_owner_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -174,6 +193,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["land_combat_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -182,6 +202,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["map_control_state_rows", "map_control_province_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -190,6 +211,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["map_detail_state_rows", "map_detail_province_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -198,6 +220,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["weather_region_rows", "weather_observed_region_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -206,6 +229,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["division_equipment_rows", "division_equipment_root_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -214,6 +238,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["army_order_rows", "army_order_root_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -222,6 +247,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["oob_command_rows", "oob_command_root_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -230,6 +256,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["ship_rows", "ship_observed_ship_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -238,6 +265,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["air_wing_rows", "air_wing_observed_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -249,6 +277,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_region_activity_observed_bucket_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -257,6 +286,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["air_wing_loadout_rows", "air_wing_loadout_equipment_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -265,6 +295,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["air_variant_def_rows", "air_variant_def_module_token_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -276,6 +307,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_base_status_observed_air_base_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -287,6 +319,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_variant_stats_observed_variant_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -298,6 +331,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_variant_reserve_observed_stockpile_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -309,6 +343,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "stockpile_variant_def_module_token_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -320,6 +355,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_superiority_input_observed_wing_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -331,6 +367,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_variant_upgrade_observed_variant_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -342,6 +379,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "stockpile_variant_upgrade_entry_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -350,6 +388,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["project_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -358,6 +397,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["air_strength_delta_rows", "air_strength_observed_wing_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: false,
     },
     DomainContract {
@@ -366,6 +406,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &[],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -379,6 +420,30 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "supply_csupply_efficiency_rows",
         ],
         zero_units: &[],
+        work_implies_rows_units: &[],
+        shared_recorder_known: true,
+    },
+    // Domain 47 (`characters_leaders_cabinet_live`) folds as a FULL
+    // REPLACEMENT, so a rowless frame deletes the world's characters. On
+    // 2026-07-10 a single dead cached character root failed every frame for a
+    // whole session while the adapter kept processing ~11k characters/frame —
+    // 39.5M rows in, 0 out — behind a tolerated rowless PARTIAL. The
+    // work_implies_rows_units below make that un-representable: if the adapter
+    // reports ANY built rows but the domain emitted none, the gate fails even
+    // under a partial-tolerant profile. requires_data holds (it emits a record
+    // per hour); the invariant is about ROWS, not records.
+    DomainContract {
+        id: 47,
+        name: "characters_leaders_cabinet_live",
+        requires_data: true,
+        required_units: &[],
+        zero_units: &[],
+        work_implies_rows_units: &[
+            "domain47_adapter_character_rows",
+            "domain47_adapter_advisor_roster_rows",
+            "domain47_adapter_country_leader_role_rows",
+            "domain47_adapter_unit_leader_rows",
+        ],
         shared_recorder_known: true,
     },
     // Domain 46 (`air_variant_archetypes`) carries the wave-4 `ACE1`
@@ -402,6 +467,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "air_ace_roster_partial_frames",
             "air_ace_roster_assignment_blocked_frames",
         ],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -410,6 +476,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["naval_combat_lifecycle_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
     DomainContract {
@@ -418,6 +485,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         requires_data: true,
         required_units: &["naval_combat_member_rows"],
         zero_units: &[],
+        work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
 ];
@@ -841,6 +909,36 @@ fn validate_domain_manifest(
                 errors.push(format!(
                     "domain {} data_units_total counter {} is {value}, expected 0 (fail-closed sub-slice health flag fired)",
                     contract.name, key
+                ));
+            }
+        }
+    }
+    // Work-implies-rows: a domain that reports substantial adapter work but
+    // emits zero rows for the whole run threw every row away — silent data loss
+    // hiding behind a tolerated rowless PARTIAL. This is fatal even under
+    // `allow_partial_or_source_failure`: a partial-tolerant profile may accept
+    // some rowless frames, but not a session where megarows went in and nothing
+    // came out. (row_count_total is the emitted-row total; requires_data only
+    // checks records exist, not rows.)
+    if !contract.work_implies_rows_units.is_empty() {
+        let emitted_rows = domain
+            .get("row_count_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if emitted_rows == 0 {
+            let worked: Vec<String> = contract
+                .work_implies_rows_units
+                .iter()
+                .filter_map(|key| {
+                    let value = units.get(*key).and_then(Value::as_u64).unwrap_or(0);
+                    (value != 0).then(|| format!("{key}={value}"))
+                })
+                .collect();
+            if !worked.is_empty() {
+                errors.push(format!(
+                    "domain {} performed adapter work ({}) but emitted row_count_total=0 — every built row was discarded (silent data loss behind a rowless frame)",
+                    contract.name,
+                    worked.join(", ")
                 ));
             }
         }
@@ -1548,6 +1646,88 @@ mod tests {
         let mut errors = Vec::new();
         validate_domain_manifest(&domain, contract, 1, &GateOptions::default(), &mut errors);
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    fn d47_domain_manifest(row_count_total: u64, units: Value) -> Value {
+        json!({
+            "domain_id": 47,
+            "record_count": 1,
+            "data_record_count": 1,
+            "row_count_total": row_count_total,
+            // SOURCE|PARTIAL — the tolerated status the defect hid behind.
+            "status_flags_or": (1u64 << 8) | (1u64 << 9),
+            "read_time_us": {"count": 1},
+            "data_units_total": units,
+        })
+    }
+
+    #[test]
+    fn d47_adapter_work_with_zero_emission_is_fatal_even_when_partial_tolerated() {
+        let contract = contract_by_id(47).expect("domain 47 contract exists");
+        assert!(!contract.work_implies_rows_units.is_empty());
+        // Reproduce the live defect: millions of adapter rows, zero emitted.
+        let domain = d47_domain_manifest(
+            0,
+            json!({
+                "domain47_adapter_character_rows": 39_553_062u64,
+                "domain47_adapter_advisor_roster_rows": 29_790_670u64,
+                "domain47_frame_parse_errors": 1560,
+            }),
+        );
+        // Even a partial-TOLERANT profile must reject this.
+        let options = GateOptions {
+            allow_partial_or_source_failure: true,
+            ..GateOptions::default()
+        };
+        let mut errors = Vec::new();
+        validate_domain_manifest(&domain, contract, 1, &options, &mut errors);
+        assert!(
+            errors.iter().any(|e| e.contains("emitted row_count_total=0")
+                && e.contains("domain47_adapter_character_rows")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn d47_healthy_emission_passes() {
+        let contract = contract_by_id(47).expect("domain 47 contract exists");
+        // Rows emitted -> the work-implies-rows invariant is satisfied.
+        let domain = d47_domain_manifest(
+            2_360_421,
+            json!({
+                "domain47_adapter_character_rows": 39_553_062u64,
+            }),
+        );
+        let options = GateOptions {
+            // Even with partial tolerance OFF, only the status check would fire;
+            // isolate the work-implies-rows invariant by tolerating partial.
+            allow_partial_or_source_failure: true,
+            ..GateOptions::default()
+        };
+        let mut errors = Vec::new();
+        validate_domain_manifest(&domain, contract, 1, &options, &mut errors);
+        assert!(
+            !errors.iter().any(|e| e.contains("emitted row_count_total=0")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn d47_no_work_and_no_rows_does_not_trip_work_implies_rows() {
+        // A legitimately empty frame (no adapter work, no rows) must NOT trip
+        // the work-implies-rows invariant — only work-without-emission does.
+        let contract = contract_by_id(47).expect("domain 47 contract exists");
+        let domain = d47_domain_manifest(0, json!({}));
+        let options = GateOptions {
+            allow_partial_or_source_failure: true,
+            ..GateOptions::default()
+        };
+        let mut errors = Vec::new();
+        validate_domain_manifest(&domain, contract, 1, &options, &mut errors);
+        assert!(
+            !errors.iter().any(|e| e.contains("emitted row_count_total=0")),
+            "{errors:?}"
+        );
     }
 
     #[test]
