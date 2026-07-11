@@ -398,3 +398,21 @@ Lossless-critical attack surface for the new commits:
 - d69 vacant/tombstone: stable 0 / high-bit member words skipped as structural non-members
   (tag ceiling 2048 makes them impossible members) — can a live member word transiently
   present stably-high-bit across a double read? Positive out-of-range still fail-closed.
+
+## GATE STORM STATE 2026-07-11 EVENING (plan v2 §1; tree SHA for all four = 319dc641b)
+
+Codex usage limit hit at 15:01 ("try again at 7:06 PM") after two plan-review jobs. NEVER
+retry into it. All four prompts are FULLY SELF-CONTAINED (evidence inlined — the read-only
+sandbox shell is broken host-wide: CreateProcessWithLogonW 2; Codex must need zero tool
+calls). Durable prompt files: `C:\Users\Example\.claude\hoi4_gate_prompts\`.
+
+| Gate | How to dispatch | Status |
+|---|---|---|
+| G1 final net gate (6 commits incl. d47 dedup + d69 tombstone + O7) | `resume 019f4ebb-0fb6-7cc1-88e8-3755a1ae6b2f` + pipe g1_prompt.txt | QUEUED (credits) |
+| G2 modset (e9f21a1c8) | fresh thread + g2_prompt.txt | QUEUED (credits) |
+| G4 O8 design review | `resume 019f4f8d-2021-7ca3-9b8d-1ac319ff970a` + re-send hoi4_gate_evidence_g4_prompt.txt (first turn died on the limit BEFORE consuming the prompt) | QUEUED (credits) |
+| G5 audit reconciliation (95 branch commits vs this queue) | fresh thread + g5_prompt.txt | QUEUED (credits) |
+| G3 serial-wall (1cac48222) | NOT YET WRITTEN — waits on P1b equivalence evidence per plan v2; P1a decision = SHIP NEW (6-window table in plan §2) | HELD |
+
+PLAN SELF-REVIEW (done): tid 019f4f5c-c127-7a90-a995-1c4c97dcc571 — AMENDMENTS REQUIRED,
+12 findings, all folded into PRODUCTION_ENDGAME_PLAN.md v2 (59ae8ceb3 + 319dc641b).
