@@ -313,7 +313,11 @@ injected DLL session, module-dir DLL/host deployment, `collector_control.json`, 
 recorder pipe/host instance, capture run directories, release target dir, and the master
 merge queue for hot files (`collector/src/lib.rs` above all). Protocol:
 - ONE capture-session lock (lockfile in module_dir): capture drivers take it; any build or
-  deploy script REFUSES while it exists (fail closed). No cargo build while it's held.
+  deploy script REFUSES while it exists (fail closed). No cargo build while it's held —
+  and no HEAVY OFFLINE COMPUTE either (zstd sweeps, stream re-encodes, big folds): CPU
+  contention during some-but-not-all windows biases the arms (near-miss 2026-07-11: a B3
+  sweep launched mid-palindrome; killed before contamination — palindrome pairing would
+  have partially saved it, but the rule is absolute).
 - Control-file writes only by the lock holder; per-run control snapshot + DLL/host hash
   recorded in the run manifest (already partially true via manifest.dll).
 - Lanes build in their own worktree with isolated CARGO_TARGET_DIR; deployment to
