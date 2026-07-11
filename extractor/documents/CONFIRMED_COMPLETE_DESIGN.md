@@ -216,3 +216,86 @@ lossless-critical full-replacement fold change (clone-prior + keyed merge, new g
 fold-identity proof) to recover ~1 frame per session fails the measure-first bar.
 DEFER until live captures show a materially higher PARTIAL rate (the dead_roots and
 refresh_held_roots units make that visible from any manifest). Design retained above.
+
+---
+
+## G4 DESIGN AMENDMENTS (2026-07-11, adversarial review tid 019f4f8d — VERDICT REFUTED, 9 findings; these amendments are now part of the design of record and BIND C1)
+
+The O8 core (typed dispositions, never mask failure bits, forbidden list) survives; the
+review broke the surrounding machinery. Amended requirements:
+
+1. **Closed declaration-kind registry (deny-by-default).** `ExpectedAbsent` can only be
+   constructed by the registry. Every entry names: exact segment, authoritative evidence
+   field, evidence reader, immutability argument, invalidation event, proof/test id.
+   Negative pointer searches and bounded discovery NEVER declare (they prove only "this
+   scan didn't find it"). **Until at least one entry passes this bar, stage 3's tolerance
+   set is EMPTY** — O8 ships with accounting + registry machinery and zero tolerated pairs.
+   Every scheduled segment is explicitly `Allowed(kind)` or `Forbidden` against the
+   compact_contract roster; adding a segment fails tests until the registry changes.
+
+2. **Transactional epochs.** Declarations and frames carry: session nonce, process-start
+   identity, save-epoch generation, modset hash, exe hash, schema version. Capture stops
+   when reload MAY have begun (not when the new epoch is recognized); frames overlapping
+   identity/reload uncertainty are Failed; old epoch flushes and seals before new
+   declarations; recorder verifies per-hour disposition epoch tokens match. Sweep-thread
+   death/restart never yields ExpectedAbsent — dependent segments stay Failed until a new
+   complete sweep generation publishes.
+
+3. **Mismatch detector is mandatory.** A declaration either (a) revalidates its
+   authoritative immutable configuration token every frame, or (b) runs an independent
+   bounded-skew positive-presence sentinel while active. Sentinel failure = Failed (never
+   continued absence); a presence hit atomically revokes the declaration, captures via the
+   ordinary reader, and FAILS THE RUN. Detection skew is part of the production bound.
+
+4. **Raw aggregate status bits never grant tolerance.** Domain-wide OR'd bits stay an
+   OR-summary. Tolerance keys ONLY on per-attempt failure-evidence units:
+   (session/epoch, hour, domain, segment, subsource, cause code, attempt id, status bits,
+   declaration id, result, evidence digest). The only excusable cause is "scheduler did
+   not attempt this source because immutable prerequisite declaration D applies". All
+   unattributed SOURCE events remain fatal. (This makes per-subsource attribution wiring a
+   PREREQUISITE stage of C1, before any recorder-gate change.)
+
+5. **Captured = contract completion, not rows>0.** An incomplete full-replacement
+   observation is Failed even when its read rows ride the stream (diagnostic/upsert-only
+   under an independently reviewed fold contract; never advances a complete baseline).
+   MeasuredEmpty requires a serialized completeness witness (frame, source generation,
+   enumeration bounds, epoch). Fold acceptance is disposition-aware. The per-segment
+   partition invariant joins the hour-accounting invariant.
+
+6. **Enforcement shape:** ExpectedAbsent constructors private to the registry; contract
+   tests exercise d43/d47/d69 through every entry point; property tests over reload/
+   restart/epoch-uncertainty/sweep-death/late-availability/torn/combined-bits sequences;
+   mutation tests (drop attribution, change a cause code, add a segment) must fail the
+   gate; production cannot load user/manual absence lists.
+
+7. **Wire safety = major version bump.** Dispositions ride a new top-level stream major
+   version that old decoders reject before reading records; unknown discriminants reject;
+   declaration records precede references (or repeat per recoverable chunk); declaration
+   ids are session/epoch-scoped with content hashes; the packer rejects mixed majors; new
+   decoders read old streams in legacy mode but never synthesize dispositions
+   (LegacyUnverified never satisfies the production gate). Test battery: old-reader/
+   new-stream, new-reader/old-stream, truncated declaration table, unknown disposition,
+   restart concatenation, mixed-fold rejection.
+
+8. **C0 is discovery, not classification.** The census finds incidence; classification of
+   each nontrivial segment additionally requires: code-level source-to-bit dataflow audit,
+   snapshot-vs-delta + fold semantics, completeness evidence, prerequisite lifecycle
+   analysis, per-cause live telemetry, reload/restart transition probes, save/native
+   oracle where feasible, mod/DLC coverage per claimed scope. C0 exit = "every incidence
+   has an evidence dossier".
+
+9. **Provenance is a separate axis from completion.** Dispositions stay exactly
+   {Captured, MeasuredEmpty, ExpectedAbsent, Failed}; provenance = Native |
+   DerivedFrom(segment, proof_id). **d17: NATIVE CAPTURE IS THE DEFAULT** — the
+   DerivedFrom(d53) equivalence bar (total deterministic mapping incl. war lifecycle,
+   casualties semantics, tombstones, hour coherence, oracle comparisons across mods) is
+   unproven and possibly unreachable; if d53 fails an hour, a derived d17 fails that hour
+   too. Removing d17 from the roster instead requires a versioned product decision.
+
+C1 STAGE ORDER (amended): stage A per-subsource failure-evidence units (collector) →
+stage B declaration registry + epoch tokens (empty tolerance set) → stage C recorder
+accounting consuming evidence units (still zero tolerated pairs = behavior identical,
+evidence richer) → stage D first registry entry IF any segment ever passes the bar →
+stage E fold/decoder major-version passthrough. GATES GREEN is achieved by FIXING or
+correctly typing sources, not by tolerance: with the tolerance set empty, a clean vanilla
+run goes green only when the C0-listed unattributed failures are individually closed.
