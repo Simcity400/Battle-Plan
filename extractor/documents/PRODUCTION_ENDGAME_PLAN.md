@@ -216,7 +216,16 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
     shared hooked path is ever swapped. It is the FIX but is a crash RISK until one clean
     multi-window run confirms it — needs explicit user OK before running on a live game. Safe
     single-window driver = ~/.claude/hoi4_gate_prompts/run_one_window.sh (one injection, w1
-    always survives). Both syntax+spec-parse dry-tested. **M1 DISPOSITION: shipped-with-harness-caveat.**
+    always survives). Both syntax+spec-parse dry-tested.
+    **FIX VALIDATED 2026-07-12 (mw_d47frzmw_094056):** 3 windows tip->old->tip (DLL swap) into
+    ONE game PID 55808, post-w1/w2/w3 liveness ALL ALIVE, all 3 captured real data
+    (372/364/359 frames). The shared-path rename under a live WH_GETMESSAGE hook was the
+    killer; unique per-window dll dirs cure it. MULTI-WINDOW-PER-SESSION UNBLOCKED: P4 pace
+    palindrome, the clean same-session M1 A/B, serial-wall G3 evidence, and P5 strata are all
+    now runnable via multiwindow_isolated.sh. Full game relaunch+cycle authority granted by
+    the user 2026-07-12 (kill/relaunch/-start_save autosave/-start_speed 2 verified working;
+    game.log date-advance = the unpause check; save drift gotcha → freeze a fixed save file
+    for clean A/Bs, e.g. d47ab_frozen.hoi4). **M1 DISPOSITION: shipped-with-harness-caveat.**
     Best available evidence = tonight's two first-window captures (w1_new 000620 vs w1_old
     231437, CROSS-SESSION so load-confounded), canary-normalized by the M1-untouched d28
     (oob_command, which moved 27.37→22.87ms = 0.835× between sessions = pure load):
