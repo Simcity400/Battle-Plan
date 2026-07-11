@@ -74,3 +74,18 @@ every Codex call; `replay_interface/` untouched; `documents/CLAUDE.md` +
 - **O6 next step (the only big one):** offline columnar/varint re-encode of d53 payloads,
   measured against the 59MB baseline AT PRODUCTION SETTINGS (level 3, window_log 27),
   fold-identity gated. Do not bother with domain grouping or container levels first.
+
+## O6 CLOSED 2026-07-11: columnar d53 = MEASURED NULL (negative). Byte program COMPLETE.
+
+`scripts/d53_columnar_probe.py` on w6_d16 (9.65GB decoded, 1131 d53 DATA payloads = 9.09GB,
+schema-exact, 0 bails), IDENTICAL compressor both sides (zstd level 3, window_log 27, LDM):
+- baseline re-encode 53.68MB vs COLUMNAR re-encode 55.21MB = **-2.9% (columnar is WORSE)**.
+- Mechanism: window-27 long-range matching already models cross-frame row-major repetition
+  (near-identical hourly world = long identical byte runs); byte-plane transposition fragments
+  those matches per column. Varint/delta layouts fragment alignment strictly more => dominated
+  without needing a separate run. The transform was invertible by construction, so this is an
+  apples-to-apples lossless comparison.
+- Byte-lever end state: window-27 LDM SHIPPED (dominant), container levels near-exhausted,
+  domain-grouping = default-window artifact, d53 delta-emit CPU-negative + byte-redundant,
+  columnar NEGATIVE. **No remaining lossless layout lever worth building.** Future size wins
+  can only come from semantic scope decisions (out of bounds under zero-data-loss).
