@@ -56,9 +56,11 @@ pub struct FoldStreamStats {
     /// crash tail (tolerated on read) makes this false; no seal path may pack
     /// such a source as a clean compressed container.
     pub ends_at_frame_end: bool,
-    /// FNV-1a digest of the decoded stream bytes — parallel workers must
-    /// agree on CONTENT, not just shape (round-3 finding 3).
-    pub decoded_fnv: u64,
+    /// SHA-256 of the decoded stream bytes — parallel workers must agree on
+    /// CONTENT, not just shape (round-3 finding 3); sha256 (round 4) so even
+    /// deliberately-collided cheap-hash source versions cannot merge into a
+    /// mixed fold. Hex, empty when never computed.
+    pub decoded_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +130,29 @@ impl BoundaryTracker {
             }
         }
         self.prev_sequence = Some(header.sequence);
+        // Per-type payload bounds (round-4 finding 1: a TERMINAL record with a
+        // forged under-cap payload_len can swallow everything to EOF, leaving
+        // no later header to expose the sequence gap). DOMAIN_DATA is the only
+        // type that legitimately needs large payloads, and a terminal
+        // swallowing DATA always leaves its own hour OPEN at EOF (already a
+        // violation) — so tight bounds on every other type close the class:
+        // FRAME_END is EXACTLY 32 bytes (collector layout; corpus-verified on
+        // 126k records: min=max=32); PERF diagnostics observed <=2.5KB, bound
+        // 1 MiB; unknown/session types bound 16 MiB.
+        let payload_bound_violation = match header.record_type {
+            COMPACT_RECORD_TYPE_FRAME_END => header.payload_len != 32,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => false, // contract cap (256 MiB) applies
+            COMPACT_RECORD_TYPE_DOMAIN_PERF => header.payload_len > (1 << 20),
+            _ => header.payload_len > (16 << 20),
+        };
+        if payload_bound_violation {
+            self.violation = Some(format!(
+                "record type {} at byte {at_byte} carries an implausible payload \
+                 length {} (per-type bound violated)",
+                header.record_type, header.payload_len
+            ));
+            return;
+        }
         match header.record_type {
             COMPACT_RECORD_TYPE_DOMAIN_DATA => match self.open_hour {
                 Some(open) if open != header.game_hour_raw => {
@@ -177,19 +202,6 @@ impl BoundaryTracker {
         Ok(())
     }
 }
-
-/// FNV-1a over decoded stream bytes — a cheap content digest so parallel
-/// workers reading "same-shape" but different-payload source views fail the
-/// agreement check (round-3 finding 3) instead of merging mixed snapshots.
-fn fnv1a_update(hash: u64, bytes: &[u8]) -> u64 {
-    let mut h = hash;
-    for b in bytes {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01B3);
-    }
-    h
-}
-const FNV1A_SEED: u64 = 0xCBF2_9CE4_8422_2325;
 
 /// Framing-only logical-boundary check of an on-disk compact stream — the
 /// SEAL-TIME gate for containers packed WITHOUT a host fold (skip-fold /
@@ -342,7 +354,7 @@ pub fn fold_compact_stream_file_parallel(
                 // Content digest: same-shape-different-payload source views
                 // (e.g. file replaced between worker opens) must fail the
                 // merge, not silently mix snapshots from two stream versions.
-                && reference.decoded_fnv == worker_stats.decoded_fnv;
+                && reference.decoded_sha256 == worker_stats.decoded_sha256;
             if !agree {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -464,7 +476,7 @@ pub fn drive_fold_compressed<R: Read>(
     // interleaving, mismatched FRAME_END, and sequence discontinuities are
     // sticky violations; only a clean tracker at EOF is a closed boundary).
     let mut tracker = BoundaryTracker::default();
-    let mut decoded_fnv = FNV1A_SEED;
+    let mut decoded_hasher = Sha256::new();
 
     'read: loop {
         let n = reader.read(&mut chunk)?;
@@ -472,7 +484,7 @@ pub fn drive_fold_compressed<R: Read>(
             break;
         }
         decoded_read = decoded_read.saturating_add(n as u64);
-        decoded_fnv = fnv1a_update(decoded_fnv, &chunk[..n]);
+        decoded_hasher.update(&chunk[..n]);
         carry.extend_from_slice(&chunk[..n]);
 
         let mut off = 0usize;
@@ -567,7 +579,7 @@ pub fn drive_fold_compressed<R: Read>(
     stats.truncated_tail_bytes = stats.stream_bytes.saturating_sub(processed);
     stats.hours_emitted = fold.emitted_hours_count() as u64;
     stats.ends_at_frame_end = tracker.eof_check(carry.len()).is_ok();
-    stats.decoded_fnv = decoded_fnv;
+    stats.decoded_sha256 = to_hex(&decoded_hasher.finalize());
     if compressed {
         // A SEALED (checksummed zstd) container must end at a valid LOGICAL
         // boundary, not merely a valid storage boundary: no residual carry,
@@ -685,7 +697,7 @@ mod tests {
                 raw_for(h),
                 0,
                 COMPACT_RECORD_TYPE_FRAME_END,
-                &[],
+                &[0u8; 32], // production FRAME_END payload is exactly 32 bytes
             );
             seq += 1;
         }
@@ -808,7 +820,7 @@ mod tests {
             raw_for(HOUR_C),
             0,
             COMPACT_RECORD_TYPE_FRAME_END,
-            &[],
+            &[0u8; 32],
         );
         let mut fold = WorldFold::new("gid");
         let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
