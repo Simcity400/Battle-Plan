@@ -212,8 +212,17 @@ table. Each: record final .battleplan bytes, decode/fold equality, offline CPU +
 - B1 pack-time d53 explicit delta/tombstones (offline transform — the capture-time CPU
   verdict does NOT cover this).
 - B2 trained zstd dictionaries at actual container-entry granularity (global + per-domain).
-- B3 production-parameter zstd ultra/window/LDM sweep beyond window-27 (decode-side memory
-  cost documented — weaker-PC replay consumers bound the window).
+- B3 production-parameter zstd ultra/window/LDM sweep beyond window-27 — **PARTIAL RESULT
+  2026-07-11 (w6_d16 corpus, 9.65GB decoded, identical w27+LDM both sides): level 12 =
+  49.68MB (−15.8%), level 19 = 42.37MB (−28.2%) vs production level-3 59.02MB.** Far past
+  the 3% materiality bar — v1's "container levels exhausted" was WRONG (the old level
+  bracket ran at default window; at w27 the level matters a lot). Columnar re-confirmed
+  NULL at every level (−1.0%/+0.2%). SHIP CANDIDATE: deferred-repack level 3→19 (pack is
+  offline post-session; decode speed/memory level-independent at fixed window). OWED
+  before shipping: (a) pack-time cost measured on a weaker-PC-realistic budget (level 19
+  on multi-GB corpora is minutes — document, maybe make it a launcher knob), (b) the
+  level-22/w30 arm (killed mid-run to protect the user's live play session), (c) fold
+  identity on the repacked artifact, (d) Codex gate on the repack-level change.
 - B4 schema-level field elision where a decoder can reconstruct exactly (proof required).
 - B5 any varint/delta representation actually measured, not dismissed by inference.
 EXIT: "bytes CLOSED" = every row in this list has a measured number attached.
