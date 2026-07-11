@@ -93,25 +93,34 @@ Order chosen so each window answers one question; ~15 min each; gate-bracket eve
 (pause/unpause = discard). DLL-hold gotcha: -SkipBuild between same-binary windows, 35s+
 spacing (build-retry loop against the hold), NEVER cargo-build while a capture is in flight.
 
-- P1a **Serial-wall scheduler decision — BLOCKS P2–P5** (finding 2). Evidence so far
-  (swab_A1/A2/B1/B2/A3, 2026-07-11): NEW −29% at matched adjacent states; OLD worst-of-all
-  at deepest state (220ms avg) ⇒ B2's blow-up attributed to game load, not the change.
-  Remaining to close P1a:
-  1. B3 = NEW at deepest state (running; completes the counterbalanced pair vs A3).
-  2. Critical-path topology + p50/p95/p99/max + per-domain attribution reported per window,
-     stratified by game state — not averages alone.
-  3. Weaker-PC caveat recorded honestly: this rig is the only live rig; the 6-core
-     portability window stays QUEUED and is a release-note caveat until run. If evidence
-     ever shows NEW wins only with spare cores → revert, or redesign as a bounded
-     dependency DAG rather than +10 unconstrained workers.
-  4. Decision recorded in this doc: SHIP NEW / REVERT / REDESIGN. Then (and only then)
-     dispatch G3 with the complete evidence pack.
+- P1a **Serial-wall scheduler decision — CLOSED 2026-07-11: SHIP NEW** (pending P1b + G3).
+  Six counterbalanced 240s windows on the advancing live game (time order = load order):
+  | window | code | ft_avg | ft_p95 | ft_max | crit path (ms/frame) |
+  |---|---|---|---|---|---|
+  | A1 | OLD | 98.0 | 119.0 | 154 | d53 38.7 |
+  | A2 | OLD | 96.8 | 115.4 | 142 | d53 39.5 |
+  | B1 | NEW | 68.7 | 84.9 | 117 | d47 35.4 |
+  | B2 | NEW | 149.9 | 313.1 | 573 | d200 42.3 + d47 46.4 |
+  | A3 | OLD | 220.0 | 370.8 | 540 | d200 49.2 |
+  | B3 | NEW | 257.8 | 506.1 | 1210 | d200 75.1 + d47 63.3 |
+  Basis: NEW −29% at matched moderate load (B1 vs A1/A2, later = disadvantaged position;
+  first-ever sub-100 p95); main-wall 46.4→~0.2ms as designed; deep-war blow-up is GAME
+  LOAD (adjacent-window load growth B2→A3 = +47% with a code change that should have
+  HELPED OLD; B3's +17% over A3 is below that trend), and OLD fails the bar at depth at
+  least as badly. Caveats carried forward: (a) weaker-PC/6-core window still QUEUED —
+  release-note caveat until run; if NEW ever shows spare-core-only wins → redesign as a
+  bounded dependency DAG; (b) deep-war measured crit path = country_bundle (75ms/frame at
+  depth!) + d47 chain — this is the P5-miss optimization target, NOT d53; (c) d47 dead_roots
+  scale with war churn (2–11/window) — invalidation-rebuild cadence is the d47 depth cost.
 - P1b **Scheduling-equivalence evidence** (finding 1; feeds G3): paused-state OLD/NEW
-  window pair (paused = stable world) comparing per-domain data hashes, row counts,
-  status/failure bits, folded world hash; advancing-state bounded-skew statement for the
-  country_bundle→d47 chain (d47 observes country state from the SAME frame's join output —
-  document the actual data-flow and any cross-frame skew); interior-mutability audit of
-  the moved readers' shared caches. No "byte-neutral" claim anywhere until this passes.
+  window pair for non-sweep domains (paused = cold baseline frame; sweep consumers are
+  SOURCE_UNAVAILABLE by design, so d43/d47 equivalence rides the dataflow argument
+  instead) comparing per-domain data hashes, row counts, status/failure bits, folded
+  world hash; documented dataflow + bounded-skew statement for country_bundle→d47 (d47
+  consumes the SAME frame's join output; its heap reads move EARLIER in the frame, not
+  later; all live-memory readers carry intra-frame skew under both schedulers — the law
+  is accounting, not atomicity); interior-mutability audit of the moved readers' shared
+  caches. No "byte-neutral" claim anywhere until this passes.
 - P2 **Candidates palindrome, clean re-run** (driver ready: ab_candidates_driver.ps1) on
   the post-P1a binary: [32,16,0,0,16,32]. Decide `PREFETCH_DIST_CANDIDATES` default like
   relation-8. (~28 min)
