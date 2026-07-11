@@ -160,3 +160,48 @@ replays — `skipped_game_hours_detected` independently fails the artifact gate.
   reuse across process/save epochs; no delta-baseline advance or tombstones from expected
   absence; no expected-absence enablement after a mid-run failure; no user-provided
   production absence lists.
+
+## d47 status after O3 (2026-07-11) — refresh SHIPPED, rows still blocked; PARTIAL-upsert is the row restorer
+
+Shipped + gate-hardened (commits 6d1ff969c, 886e8b923, 8e10e70ff): generation-aware root
+refresh, rejection-triggered invalidation, fail-closed refresh holds with bounded-staleness
+escalation, sweep-coverage accounting (`SweepSnapshot.skipped_ranges` / `coverage_complete()`)
+gating d47 adoption AND d43 rebuilds/known-empty, enumeration-gap fixes in the sweep pass
+itself (adjacent-region first-page skip, chunk-failure page-skip, aligned short-read resume).
+Live validation (o123_validate, 944 frames): refresh works (163 rebuilds, ~22k stable roots,
+new characters picked up) — but `data_rows_total` is still 0.
+
+**Why rows stay blocked (measured + gate-adjudicated):**
+1. Whole-frame fail-closed under churn: ~1 failing root/frame (wartime character deaths)
+   × any-failure `has_rejections()` = every frame rowless PARTIAL. The dead-vs-torn CLEAN
+   emission attempt (df835b45e) was REFUTED as UNSOUND (gate verdict accepted, reverted
+   28f2043e1): a stable read failure does not prove the ROOT is dead — nested objects
+   (skill source, trait vector, referenced trait/character) can stably fail while the parent
+   lives, and a CLEAN full-replacement frame omitting a live root silently deletes it.
+   Positive absence = omission from a COMPLETE sweep + prewarm rebuild ONLY.
+2. ~3.6 frame parse errors/frame of UNKNOWN text (manifest counts messages, not strings).
+   NEXT DIAGNOSTIC: one short Debug-profile capture (sidecar on) to read the actual
+   messages — they may be an independent universal blocker (payload self-decode).
+3. Validator mismatch (gate HIGH, unfixed): prewarm validates SHALLOWER than the walk —
+   unit leaders: prewarm checks the vtable qword only, walk checks type id/ids/skill child/
+   trait vector/trait objects; country-leader roles: prewarm follows the character ptr but
+   never revalidates the CCountryLeader root vtable. A root that stably fails only the
+   deeper walk is re-adopted forever → permanent rejection loop. Fix belongs with the row
+   restorer (either deepen prewarm to walk-equivalent validation, or the upsert design
+   makes per-root failures non-frame-fatal).
+
+**Row restorer of record — d47 PARTIAL-upsert fold contract (d48 precedent: partial
+projection, upserts-only, never tombstone on partial):**
+- Adapter emits the rows it DID read on a frame with failures, PARTIAL flag kept (never
+  masked). Torn/stable failures keep their per-root attribution (dead_roots/rejected_roots).
+- world_fold treats a PARTIAL d47 frame as UPSERT-ONLY: present rows update; absent rows
+  are RETAINED (no deletion without proof). Deletions happen only on CLEAN frames (zero
+  failures — the complete-observation proof) or via positive absence from rebuild-diffing.
+- Verification gates: work-implies-rows extended per-frame-family; fold-identity gated
+  (old streams must fold byte-identically — PARTIAL d47 frames in old streams are rowless,
+  so upsert-of-nothing is a no-op = compatible by construction; prove it).
+- Replay contract impact: REPLAY_DATA_REQUIREMENTS.md must record the d47 partial-upsert
+  semantics change in the same commit that lands it.
+- Mass-failure defense in depth: a CLEAN frame whose row families shrink implausibly vs
+  the adopted root count should fail closed (bound TBD with live dead_roots/stale rates
+  from the new diagnostics).
