@@ -384,3 +384,17 @@ PID killed). Fleet cleaned. On credits returning, dispatch:
    dlc_enabled=20/24 matching dlc_load.json exactly.
 
 Thread log: ~/.claude/codex_threads.log.
+
+### AMENDMENT (same day, after live restoration): widen gate 1's commit set
+
+Gate 1 must now cover 8e10e70ff + 28f2043e1 + d5bb02247 **+ ebdc5bc4b + 1fbd9f3a4**.
+The last two are LIVE-VALIDATED (d47: 831,039 rows / 0 parse errors / dead_roots 1 on a
+509-hour window; d69: status_or 0, 6 groups/frame) but NOT yet adversarially reviewed.
+Lossless-critical attack surface for the new commits:
+- d47 char-dedup: is GLOBAL char_id the correct dedup key (matches the payload gate's
+  seen_characters.insert(char_id))? Can two LIVE distinct characters share a char_id
+  (would silently drop one)? Degrade-to-None rule on name/token disagreement; duplicate
+  objects disagreeing on COUNTRY (kept root arbitrary — flag if that can misattribute rows).
+- d69 vacant/tombstone: stable 0 / high-bit member words skipped as structural non-members
+  (tag ceiling 2048 makes them impossible members) — can a live member word transiently
+  present stably-high-bit across a double read? Positive out-of-range still fail-closed.
