@@ -53,9 +53,12 @@ TRUE BLOCKING LIST for F1 (no independent adversarial verdict anywhere):
 7. ~~hour-latch post-merge edits (ec9cf0b15 + revert 85eec418b)~~ **CLOSED 2026-07-11:
    `git diff ec9cf0b15^ 85eec418b` is EMPTY — the revert restored the exact pre-edit
    tree, so gate 0a's verdict on that tree still binds. No re-gate needed.**
-8. M1 building-levels Arc/RwLock (97a5d902c) + G1-fix commit (615d24125) + G2-fix commit
-   (b24ac1ce3): re-gate in flight covers the last two; M1 needs its OWN gate + the blocked
-   live A/B (game relaunch).
+8. M1 building-levels Arc/RwLock (97a5d902c): **code-soundness gate SOUND 2026-07-11
+   (tid 019f5078; 5 attack classes failed: parallel first-fill byte-equivalence, poisoning,
+   Arc mutation/lifetime, encoder/delta equality, fixture vacuity)**; live A/B still owed
+   (game). G1-fix 615d24125 + G2-fix b24ac1ce3: re-gate REFUTED x7 -> fix round e908a0f61
+   (d69 stale-skip retired to fail-closed; 5 modset FALSE-GREEN closed) — e908a0f61 itself
+   rides the F5 integrated gate (fix-of-fix, suites green, orchestrator-verified).
 9. B3 repack-level change (NOT YET IMPLEMENTED — when ReplayZstdLevel default changes,
    it needs fold-identity + gate per plan §2b).
 
