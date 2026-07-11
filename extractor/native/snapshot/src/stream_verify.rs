@@ -798,8 +798,9 @@ mod tests {
     use super::*;
     use crate::container::{Container, ExpectedIdentity};
     use crate::pack::{
-        pack_streaming_to_writer, pack_streaming_zstd_to_writer, BorrowedPackEntry,
-        FileBackedPackEntry, PackIdentity, StreamingFileEntry,
+        pack_streaming_to_writer, pack_streaming_zstd_to_writer,
+        pack_streaming_zstd_to_writer_with_profile, BorrowedPackEntry, CompressionProfile,
+        FileBackedPackEntry, PackIdentity, StreamingFileEntry, DEFAULT_ZSTD_COMPRESSION_LEVEL,
     };
     use std::fs;
     use std::io::{Read, Seek, SeekFrom};
@@ -1244,16 +1245,146 @@ mod tests {
         let report =
             verify_replay_container_streaming(&replay_path, "g", "collector_compact_stream")
                 .unwrap();
-        assert_eq!(report.stream_entry_sha256.as_deref(), Some(stream_sha.as_str()));
+        assert_eq!(
+            report.stream_entry_sha256.as_deref(),
+            Some(stream_sha.as_str())
+        );
         assert_eq!(report.stream_entry_bytes, raw.len() as u64);
-        let container = crate::Container::open(&replay_path, &crate::ExpectedIdentity::default())
-            .unwrap();
+        let container =
+            crate::Container::open(&replay_path, &crate::ExpectedIdentity::default()).unwrap();
         assert_eq!(
             container
                 .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
                 .unwrap(),
             raw
         );
+    }
+
+    /// B3 flip gate (2026-07-11): the shipped production default (level 19 at
+    /// window-27 + LDM) MUST be losslessly reversible, and the container it
+    /// produces MUST decode under the production window cap (the weaker-PC
+    /// decode bound). This is the zero-data-loss proof for the level flip:
+    /// pack a realistic mixed payload (long repetitive runs to exercise LDM at
+    /// window 27, interleaved with incompressible random blocks) through the
+    /// exact production packing entry point at an EXPLICIT {19, 27} profile,
+    /// then read every byte back and assert identity.
+    #[test]
+    fn level19_window27_roundtrip_is_byte_lossless() {
+        // The shipped default is what production runs use when no --replay-zstd-level
+        // is passed; pin it so a future silent change trips this test.
+        assert_eq!(
+            DEFAULT_ZSTD_COMPRESSION_LEVEL, 19,
+            "production default zstd level must be the B3-shipped level 19"
+        );
+        let dir = TmpDir::new("level19_w27_roundtrip");
+        let raw_path = dir.join("raw.bin");
+        let encoded_path = dir.join("collector_stream.bin");
+        let replay_path = dir.join("level19.battleplan");
+
+        // ~1.75 MiB: repetitive runs (LDM-matchable across a wide window) spliced
+        // with random blocks that cannot be compressed, so a lossy round-trip
+        // would diverge somewhere.
+        let mut raw = Vec::with_capacity(1_835_008);
+        let mut state: u32 = 0x1234_5678;
+        for block in 0..112u32 {
+            // 8 KiB repetitive
+            raw.extend(std::iter::repeat((block & 0xff) as u8).take(8 * 1024));
+            // 8 KiB pseudo-random (xorshift; no Math.random needed, deterministic)
+            for _ in 0..(8 * 1024) {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                raw.push((state & 0xff) as u8);
+            }
+        }
+        fs::write(&raw_path, &raw).unwrap();
+        compact_stream::encode_file(
+            &raw_path,
+            &encoded_path,
+            compact_stream::StreamCompression::Zstd,
+        )
+        .unwrap();
+
+        let stream_sha = to_hex(&Sha256::digest(&raw));
+        let index = br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#;
+        let timeline = br#"{}"#;
+        let borrowed = vec![
+            BorrowedPackEntry {
+                path: "payload/g/index.json".into(),
+                bytes: index,
+                role: "index",
+                hour_index: None,
+            },
+            BorrowedPackEntry {
+                path: "payload/g/timeline.json".into(),
+                bytes: timeline,
+                role: "timeline",
+                hour_index: None,
+            },
+        ];
+        let streaming = vec![StreamingFileEntry {
+            path: "payload/g/collector_raw/collector_stream.bin".into(),
+            file_path: &encoded_path,
+            source_compression: compact_stream::StreamCompression::Zstd,
+            decoded_len: Some(raw.len() as u64),
+            role: "collector_compact_stream",
+            hour_index: None,
+            sha256: Some(stream_sha.clone()),
+        }];
+
+        // Explicit production profile: level 19, window 27. validate() rejects an
+        // out-of-bound window, so this also guards the window cap.
+        let profile = CompressionProfile {
+            zstd_level: 19,
+            zstd_window_log: crate::zip::ZSTD_WINDOW_LOG,
+        };
+        assert_eq!(profile.zstd_window_log, 27);
+        {
+            let mut out = fs::File::create(&replay_path).unwrap();
+            pack_streaming_zstd_to_writer_with_profile(
+                "g",
+                &borrowed,
+                &[],
+                &streaming,
+                &PackIdentity::default(),
+                profile,
+                &mut out,
+            )
+            .unwrap();
+        }
+
+        // (1) streaming verify decodes under the production window cap and the
+        // capture-time sha256 matches the decoded stream.
+        let report =
+            verify_replay_container_streaming(&replay_path, "g", "collector_compact_stream")
+                .expect("level-19/window-27 container verifies under the production window cap");
+        assert_eq!(
+            report.stream_entry_sha256.as_deref(),
+            Some(stream_sha.as_str())
+        );
+        assert_eq!(report.stream_entry_bytes, raw.len() as u64);
+
+        // (2) the entry really is zstd (a silent STORE would hide a level bug).
+        let mut file = fs::File::open(&replay_path).unwrap();
+        let file_len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, file_len).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .find(|e| e.name == "payload/g/collector_raw/collector_stream.bin")
+                .unwrap()
+                .method,
+            ZIP_METHOD_ZSTD
+        );
+
+        // (3) full byte-identity through the production reader = zero data loss.
+        let container =
+            crate::Container::open(&replay_path, &crate::ExpectedIdentity::default()).unwrap();
+        let got = container
+            .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
+            .unwrap();
+        assert_eq!(got.len(), raw.len());
+        assert!(got == raw, "level-19 round-trip must be byte-identical");
     }
 
     #[test]
