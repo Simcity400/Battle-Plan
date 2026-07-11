@@ -732,6 +732,11 @@ struct Config {
     /// Passed through the JSON control block to the injected DLL as
     /// `reader_concurrency`, the same channel as `extraction_perf_gate`.
     reader_concurrency: u32,
+    /// M2 modset binding: explicit Paradox user dir (the one carrying
+    /// `dlc_load.json`). `None` = probe the standard and OneDrive-redirected
+    /// Documents locations; ambiguity fails the modset resolution closed (the
+    /// manifest records the probe evidence either way, never a guess).
+    pdx_user_dir: Option<PathBuf>,
     /// File-boundary storage encoding for collector_stream.bin. The decoded bytes
     /// remain the exact collector-emitted H4CR stream.
     stream_compression: compact_stream::StreamCompression,
@@ -1122,6 +1127,23 @@ fn run() -> Result<(), String> {
     let normal_replay_path = replay_path_for_gate(&cfg.out_dir, true);
     let replay_game_id = replay_game_id(&cfg.session_id);
     let production_profile_summary = build_production_profile_summary(&cfg);
+    // M2 modset binding: resolved BEFORE the capture so the evidence reflects
+    // the game process as it was recorded (the exe could be replaced on disk
+    // mid-run by an update). Best-effort by construction — failures are
+    // recorded in the report and never abort a capture.
+    let modset_report = recorder_host::modset::resolve_modset(cfg.pid, cfg.pdx_user_dir.as_deref());
+    eprintln!(
+        "modset: resolved={} mods={} dlc_enabled={}/{}{}",
+        modset_report.resolved,
+        modset_report.enabled_mods.len(),
+        modset_report.enabled_dlcs.len(),
+        modset_report.installed_dlcs.len(),
+        if modset_report.errors.is_empty() {
+            String::new()
+        } else {
+            format!(" errors={:?}", modset_report.errors)
+        }
+    );
     let pipe_token = pipe_token();
     write_control_file(&cfg, &pipe_token)?;
 
@@ -1377,6 +1399,10 @@ fn run() -> Result<(), String> {
                 "decoded_sha256": capture.sha256,
             }),
         );
+        // M2: the recording's modset + game-build binding. `resolved:false`
+        // means UNKNOWN modset (errors carried alongside) — downstream joins
+        // must not assume vanilla.
+        obj.insert("modset".to_string(), modset_report.as_json());
     }
     let pretty = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| format!("serialize manifest failed: {e}"))?;
@@ -1809,6 +1835,7 @@ fn repack_writer_config(
         // Repack never writes a new raw stream; the transparent reader decodes
         // whichever storage form exists, so capture-time compression is moot.
         stream_compression: compact_stream::StreamCompression::None,
+        pdx_user_dir: None,
         out_dir: repack.run_dir.clone(),
         duration_ms: 0,
         sample_ms: 0,
@@ -2083,6 +2110,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut replay_zstd_level: Option<i32> = None;
     let mut replay_zstd_window_log: Option<u32> = None;
     let mut stream_compression: Option<compact_stream::StreamCompression> = None;
+    let mut pdx_user_dir: Option<PathBuf> = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -2113,6 +2141,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--min-game-hours" => {
                 i += 1;
                 min_game_hours = Some(parse_i32(args.get(i), "--min-game-hours")?);
+            }
+            "--pdx-user-dir" => {
+                i += 1;
+                pdx_user_dir = Some(PathBuf::from(required(args.get(i), "--pdx-user-dir")?));
             }
             "--profile" => {
                 i += 1;
@@ -2448,6 +2480,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         prefetch_dist_relation,
         prefetch_dist_candidates,
         reader_concurrency,
+        pdx_user_dir,
         stream_compression,
         compression_profile,
         static_artifacts: {
@@ -27720,6 +27753,7 @@ mod tests {
         prefetch_dist_relation: None,
         prefetch_dist_candidates: None,
             reader_concurrency: 0,
+            pdx_user_dir: None,
             stream_compression: compact_stream::StreamCompression::None,
             compression_profile: CompressionProfile::default(),
             static_artifacts: Vec::new(),
@@ -28968,6 +29002,7 @@ mod tests {
             stream_format: StreamFormat::Compact,
             profile: None,
             sidecar_log: false,
+            pdx_user_dir: None,
             extraction_perf_gate: true,
             d53_emit_mode: D53EmitMode::Delta,
             d51_emit_mode: D51EmitMode::Delta,
