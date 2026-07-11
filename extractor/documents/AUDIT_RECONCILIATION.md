@@ -42,12 +42,18 @@ TRUE BLOCKING LIST for F1 (no independent adversarial verdict anywhere):
    default change never had an adversarial look; fold-inert, low risk — batch into the
    integrated F5 RC gate).
 4. 55287bd6a d47 work-implies-rows backstop (offline gate tool only — batch into F5).
-5. Stream-size/fast-turnaround/composition chain (c81868d5f, 943866216, eaae87663,
-   3cc572c79, f46b9139c, 9914cf27e, 93915635d, b45297af1, bb5a0a24f, cf6ba7177,
-   e7a6d4bc9): session records say 4 adversarial rounds ran + G1 fold identity + live
-   validation, but the queue carries no rows/tids — RECOVER the verdicts into this doc or
-   re-gate the NET state of the stream container in one job (recommended: one net re-gate,
-   the code is long-stable and live-proven).
+5. ~~Stream-container chain~~ **CLOSED 2026-07-11 via a fresh 4-round adversarial net
+   gate on the CURRENT state (tid 019f5079, threads log):** round 1 REFUTED 3 (mid-record
+   EOF returned Ok; repack laundered crash tails; unbounded payload_len) -> 70eeeefca;
+   round 2 REFUTED 4 (syntactic closure; skip-fold seal unguarded; agreement gaps) ->
+   9810a7e9b; round 3 REFUTED 2+1 (single-slot open-hour tracking; under-cap swallow;
+   same-shape source views) -> 4b7f15c11 (unified BoundaryTracker, +1 sequence law
+   corpus-validated on 126,672 records/zero gaps); round 4 REFUTED 1+1 (terminal
+   swallowing; FNV adversarial caveat) -> per-type payload bounds + SHA-256 agreement.
+   12 findings total, each fixed same-day with pinning tests or adjudicated with cited
+   evidence (spill cleanup = main.rs:2070 region, orchestrator-verified). The historic
+   per-commit verdicts remain unrecovered but are SUPERSEDED by this net verdict on the
+   current tree; F5 owns the final integrated word.
 6. Fold-performance lane (779d65a17, ca7650189, e61ebf094): live+G1 evidence only —
    batch into F5 or a single net gate with (5).
 7. ~~hour-latch post-merge edits (ec9cf0b15 + revert 85eec418b)~~ **CLOSED 2026-07-11:
