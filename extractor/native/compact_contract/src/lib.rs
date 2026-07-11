@@ -142,6 +142,17 @@ pub const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
 pub const COMPACT_STATUS_TRANSITION_BASELINE_RESET: u32 = 1 << 11;
 pub const COMPACT_STATUS_CONTROL_INVALID: u32 = 1 << 12;
+/// d17 diplomacy: the war-relations SEGMENT (per-country `at_war` +
+/// casualties) was NOT captured this frame because no well-formed
+/// `war_relation_bridge` was supplied (production presets pass none). Without
+/// this bit the absence was SILENT — per-row `at_war: None` is ambiguous with
+/// "not at war", and only the positive `WAR_BRIDGE_APPLIED` bit existed
+/// (absence detectable only by a missing bit, i.e. not first-class). This is
+/// explicit segment ACCOUNTING (zero-silent-gap law), NOT a failure bit: the
+/// rest of the diplomacy frame is complete, d53 carries wars natively in
+/// production, and the SourceDisposition design (O8) will type this segment
+/// properly. Never used to mask or excuse anything.
+pub const COMPACT_STATUS_WAR_SEGMENT_ABSENT: u32 = 1 << 13;
 
 // Domain 51 `scripted_state_flags_variables_live` carries lane-local badges in
 // the shared status field for legacy wire compatibility. These bits intentionally
@@ -1747,6 +1758,7 @@ mod tests {
             COMPACT_STATUS_EXTRACTION_PERF_GATE,
             COMPACT_STATUS_DELTA_DATA,
             COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+            COMPACT_STATUS_WAR_SEGMENT_ABSENT,
         ] {
             assert!(
                 !compact_status_is_failure(flag),
