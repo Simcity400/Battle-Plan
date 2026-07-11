@@ -460,3 +460,26 @@ were on the user's continuously-running game). DIAGNOSIS NEEDED: does the d47 pr
 within a capture window on a freshly-loaded save, or does fresh-load leave input.countries empty
 indefinitely? If the latter, production captures that START on a loaded save have a total d47
 coverage hole = real bug. NOT a revert. Confirm on the next fresh-load window (is d47 still 0?).
+
+## D47 ZERO-ROWS — ATTRIBUTION CORRECTED: CONFOUNDED A/B + a VERIFIED latent bug (2026-07-12)
+CORRECTION to the entry above: my old-vs-tip A/B was CONFOUNDED. Both windows loaded
+"autosave", but the tip window ADVANCED the game ~5 game-months and re-autosaved before the
+old-DLL window loaded it — so the two runs used DIFFERENT save states. "old works (1.08M rows,
+0 skips) / tip zero (0 rows, 2137 prewarm + 3146 sweep skips)" therefore mixes BUILD and
+SAVE-STATE and is NOT a clean build verdict. Also: domain47_sweep_skipped_ranges 0->3146 is
+NOT explained by either collector commit's diff (the sweep at lib.rs ~53357-53440 is untouched
+by 615d24125/e908a0f61), which points to fresh-load heap instability as a real co-factor.
+WHAT IS VERIFIED (code, not run): 615d24125 added country-conflict + unit-leader-conflict as
+skipped_root_rows triggers (lib.rs 18311/18341/18367). The prewarm gate at 18549
+`if skipped_root_rows != 0 || stable_root_count()==0` was designed for TRANSIENT torn reads:
+on a fresh load (had_stable_roots=false) ANY skipped_root_rows>0 sets cache.roots = EMPTY and
+schedules a negative-prewarm backoff. A country-conflict is PERSISTENT (same save, same
+ambiguous char every scan), so a single stable ambiguous character makes d47 NEVER warm on a
+fresh load -> total character+country coverage zero (country_roots_seen=0 because the collector
+emits an empty frame, which is why my earlier "dedup exonerated, upstream" call was ALSO wrong).
+This is a real latent design bug: a per-root ambiguity should DROP that root (like
+excluded_scan_hits) and still emit the other ~4000 characters, NOT gate the whole frame.
+OPEN: (a) clean A/B on ONE FROZEN save file (copy autosave to a fixed name; load the SAME file
+with tip then old) to separate build from save-state; (b) explain sweep_skipped_ranges 0->3146;
+(c) fix design (drop-conflicting-root-only) + gate. DO NOT hand-fix until the mechanism is
+adversarially confirmed and the clean A/B run — user directive: verify real before fixing.
