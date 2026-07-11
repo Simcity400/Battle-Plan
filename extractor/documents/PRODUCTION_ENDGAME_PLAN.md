@@ -158,8 +158,17 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
   the sampling error bar ~±10%.) Read-bound lanes (d53/d29) get acquisition levers only;
   the ~80ms/frame of materialise across d23/d44/d28 is CPU-side and byte-neutral to fix.
   - M1 **building-levels cache Mutex+clone → RwLock+Arc** — SHIPPED 97a5d902c (suite
-    353/0), ABBA A/B RUNNING; gate queued. Attacks d23 (97% materialise; multi-threaded
-    province sampling serialized on one Mutex + ~26k Vec clones/frame with d44).
+    353/0); gate queued. Attacks d23 (97% materialise; multi-threaded province sampling
+    serialized on one Mutex + ~26k Vec clones/frame with d44). **LIVE VERDICT BLOCKED ON
+    GAME RELAUNCH (2026-07-11 ~17:10):** ABBA round CONFOUNDED by a war flare-up (canary
+    d28, untouched by M1, rose +18.5%; building domains d23/d44/d48 inflate together with
+    construction/damage churn; A1 vs A2 disagreed 24% on d23). Interleaved rerun with
+    prebuilt DLL swaps (rename-aside law: in-place cp over a mapped DLL fails indefinitely;
+    rename-aside + copy works) got 1 OLD window, then the GAME EXITED mid-w2 (NEW) — zero
+    valid NEW windows. Note: NEW previously survived 2 full ABBA windows, so a crash link
+    is unlikely but unexcluded. NEXT GAME BOOT: rerun m1_interleaved_ab2.sh
+    (~/.claude/hoi4_gate_prompts/, stashed DLLs verified old=b0a9cd6a new=66987ec6),
+    6-8 windows, judge on adjacent pairs with d28 as load canary.
   - M2 candidate: d48 clones its whole `last_buildings` BTreeMap per frame (lib.rs
     ~23495) — measure share first.
   - M3 candidates: d44/d28 residual materialise after M1 (row building, delta-tracker
