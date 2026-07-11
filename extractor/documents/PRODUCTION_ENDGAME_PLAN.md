@@ -179,6 +179,20 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
     is unlikely but unexcluded. NEXT GAME BOOT: rerun m1_interleaved_ab2.sh
     (~/.claude/hoi4_gate_prompts/, stashed DLLs verified old=b0a9cd6a new=66987ec6),
     6-8 windows, judge on adjacent pairs with d28 as load canary.
+    **RERUN 2026-07-11 23:14 — SAME OUTCOME (2nd time):** w1_old captured 409 frames
+    (map_detail read_time avg 17.4ms), then the game EXITED before w2_new injected
+    (w2 = ConnectNamedPipe timeout 244s; w3–w8 all fired against a dead PID, no manifests).
+    So the game has now died right after w1_old on BOTH interleaved rounds (170151: w1_old
+    372 frames then dead; 231437: w1_old 409 frames then dead). The crash lands in the
+    ~40s post-w1 gap (w1 completes a full 240s + writes its manifest, so the game is alive
+    THROUGH the old-DLL window). Candidates for the repeat: (a) game-side instability at this
+    save's war depth independent of us; (b) something in the first post-window rename-aside
+    swap; (c) user closed it. NOT yet attributable to NEW (w2 never landed a frame). The
+    single valid window ran the pre-retirement OLD DLL, so its d69 (stale_slots=2449,
+    flags=0) just re-confirms the silent-drop that e908a0f61 closed — not tip behavior.
+    NEXT BOOT: run a LEADING-NEW order (new,old,new,old…) so the first — most reliable —
+    window exercises NEW, and add a 5s post-w1 game-liveness probe to the driver to
+    disambiguate (b) from (a)/(c) before blaming the swap.
   - M2 candidate: d48 clones its whole `last_buildings` BTreeMap per frame (lib.rs
     ~23495) — measure share first.
   - M3 candidates: d44/d28 residual materialise after M1 (row building, delta-tracker
@@ -227,8 +241,21 @@ table. Each: record final .battleplan bytes, decode/fold equality, offline CPU +
   pack 57 MB/s single-core-idle ≈ 12 min per 40GB session — SHIP CANDIDATE:
   ReplayZstdLevel default 3→19)** / 22@w30 = 40.32 (−31.7%) **DECLINED** (only −4.8% more
   than 19 while window-30 needs ~1GB decode memory — violates the weaker-PC replay bound;
-  window stays 27). Implementation owed: default flip + fold-identity on a 19-packed
-  artifact + gate (batch with the container-fix re-gate). Superseded partial note below:
+  window stays 27). **SHIPPED a09c772db (2026-07-11): DEFAULT_ZSTD_COMPRESSION_LEVEL 13→19**
+  (production default; explicit -ReplayZstdLevel 3 A/B path unchanged; window 27 untouched).
+  Lossless proof = new test level19_window27_roundtrip_is_byte_lossless (packs an
+  LDM-exercising mixed payload via the production entry point at explicit {19,27}: streaming
+  verify under the production window cap + sha256, entry method asserted ZSTD not STORE,
+  byte-identity through the production Container reader). Suites snapshot 21/0,
+  recorder_host 190/0+193/0. Codex Mode-A adversarial gate tid 019f516d: SHIP, zero defects;
+  its residual = the launcher turnaround projection does not model container pack time in the
+  skip-host-fold path (verified PRE-EXISTING and level-independent: projectedFoldSeconds=0
+  whenever -RunHostFold is absent, launcher line ~229) — close with a real full-length
+  finalization measurement at P5, then decide if pack-rate belongs in the projection.
+  NOTE the old "level 3 = shipped" in the table above described the A/B launcher default,
+  which persists by explicit flag; the CODE default 13 (used by production FullGame runs) is
+  what moved to 19, i.e. production sessions gain −14.7% vs their previous actual size.
+  Superseded partial note below:
 - B3 (history) production-parameter zstd ultra/window/LDM sweep — **PARTIAL RESULT
   2026-07-11 (w6_d16 corpus, 9.65GB decoded, identical w27+LDM both sides): level 12 =
   49.68MB (−15.8%), level 19 = 42.37MB (−28.2%) vs production level-3 59.02MB.** Far past
