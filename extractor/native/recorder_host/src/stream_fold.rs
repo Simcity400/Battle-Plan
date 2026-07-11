@@ -84,6 +84,83 @@ pub fn fold_compact_stream_file(
     Ok((files, stats))
 }
 
+/// Framing-only logical-boundary check of an on-disk compact stream — the
+/// SEAL-TIME gate for containers packed WITHOUT a host fold (skip-fold /
+/// fast-turnaround), so the production writer can never publish a container
+/// that is guaranteed unreadable under the sealed-source strictness
+/// (container re-gate round 2, finding 3). Runs the same hour-aware state
+/// machine as `drive_fold_compressed` but folds nothing: hard-errors on any
+/// framing error, residual tail bytes, an hour left open at EOF, or a stream
+/// that closes no hour.
+pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
+    let mut reader = compact_stream::open(stream_path)?;
+    let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
+    let mut chunk = vec![0u8; CHUNK];
+    let mut processed: u64 = 0;
+    let mut open_data_hour: Option<i32> = None;
+    let mut frame_end_seen = false;
+    loop {
+        let n = reader.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        carry.extend_from_slice(&chunk[..n]);
+        let mut off = 0usize;
+        loop {
+            let remaining = carry.len() - off;
+            if remaining < COMPACT_RECORD_HEADER_LEN {
+                break;
+            }
+            let header = parse_compact_record_header(&carry[off..]).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("seal-time boundary check: {e} at byte {}", processed + off as u64),
+                )
+            })?;
+            let record_len = header.record_len();
+            if record_len > remaining {
+                break;
+            }
+            match header.record_type {
+                COMPACT_RECORD_TYPE_DOMAIN_DATA => open_data_hour = Some(header.game_hour_raw),
+                COMPACT_RECORD_TYPE_FRAME_END => {
+                    frame_end_seen = true;
+                    if open_data_hour == Some(header.game_hour_raw) {
+                        open_data_hour = None;
+                    }
+                }
+                _ => {}
+            }
+            off += record_len;
+        }
+        processed += off as u64;
+        carry.drain(0..off);
+    }
+    if !carry.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "seal-time boundary check: stream ends mid-record ({} residual bytes \
+                 after byte {processed})",
+                carry.len()
+            ),
+        ));
+    }
+    if let Some(open) = open_data_hour {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("seal-time boundary check: game hour {open} left open at EOF"),
+        ));
+    }
+    if !frame_end_seen {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "seal-time boundary check: stream closes no game hour".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Default worker count for the parallel post-capture fold. The fold is OFFLINE
 /// batch work (post-capture finalization / re-fold tooling), where the
 /// weaker-PC law's "don't lean on cores" constraint does not apply — that law
@@ -176,7 +253,12 @@ pub fn fold_compact_stream_file_parallel(
                 && reference.bytes_folded == worker_stats.bytes_folded
                 && reference.records_total == worker_stats.records_total
                 && reference.hours_emitted == worker_stats.hours_emitted
-                && reference.stop_reason == worker_stats.stop_reason;
+                && reference.stop_reason == worker_stats.stop_reason
+                // Boundary facts join the agreement predicate (re-gate round 2
+                // finding 4): a worker seeing a different file view must fail
+                // the merge, not silently supply the stored stats.
+                && reference.truncated_tail_bytes == worker_stats.truncated_tail_bytes
+                && reference.ends_at_frame_end == worker_stats.ends_at_frame_end;
             if !agree {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -294,7 +376,15 @@ pub fn drive_fold_compressed<R: Read>(
     let mut chunk = vec![0u8; CHUNK];
     let mut processed: u64 = 0;
     let mut decoded_read: u64 = 0;
-    let mut last_record_type: Option<u16> = None;
+    // Hour-aware closure state machine (container re-gate round 2, finding 1:
+    // a trailing FRAME_END is SYNTACTIC — `DATA(N+1), FRAME_END(N), EOF` would
+    // pass a last-record-type check while hour N+1 was never closed, and an
+    // under-cap forged payload_len that swallows records up to a genuine
+    // final FRAME_END would too). DOMAIN_DATA opens its hour; only a
+    // FRAME_END whose game_hour_raw MATCHES the open hour closes it; PERF /
+    // probe records carry no folded state and neither open nor close.
+    let mut open_data_hour: Option<i32> = None;
+    let mut frame_end_seen = false;
 
     'read: loop {
         let n = reader.read(&mut chunk)?;
@@ -343,12 +433,23 @@ pub fn drive_fold_compressed<R: Read>(
 
             stats.records_total += 1;
             match header.record_type {
-                COMPACT_RECORD_TYPE_DOMAIN_DATA => stats.data_records += 1,
-                COMPACT_RECORD_TYPE_FRAME_END => stats.frame_end_records += 1,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+                    stats.data_records += 1;
+                    open_data_hour = Some(header.game_hour_raw);
+                }
+                COMPACT_RECORD_TYPE_FRAME_END => {
+                    stats.frame_end_records += 1;
+                    frame_end_seen = true;
+                    // Only a MATCHING frame-end closes the open hour; a
+                    // mismatched one leaves it open so the corruption
+                    // surfaces at EOF (or at the sealed-source EOF check).
+                    if open_data_hour == Some(header.game_hour_raw) {
+                        open_data_hour = None;
+                    }
+                }
                 COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
                 _ => stats.other_records += 1,
             }
-            last_record_type = Some(header.record_type);
 
             fold.ingest_record(
                 header.game_hour_raw,
@@ -395,8 +496,7 @@ pub fn drive_fold_compressed<R: Read>(
     stats.bytes_folded = processed;
     stats.truncated_tail_bytes = stats.stream_bytes.saturating_sub(processed);
     stats.hours_emitted = fold.emitted_hours_count() as u64;
-    stats.ends_at_frame_end =
-        carry.is_empty() && last_record_type == Some(COMPACT_RECORD_TYPE_FRAME_END);
+    stats.ends_at_frame_end = carry.is_empty() && open_data_hour.is_none() && frame_end_seen;
     if compressed {
         // Stream-container net gate 2026-07-11, findings 1+2: a SEALED
         // (checksummed zstd) container must end at a valid LOGICAL boundary,
@@ -418,24 +518,21 @@ pub fn drive_fold_compressed<R: Read>(
                 ),
             ));
         }
-        match last_record_type {
-            Some(COMPACT_RECORD_TYPE_FRAME_END) => {}
-            Some(other) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "compressed stream ends inside an open game hour (last \
-                         record type {other}, not FRAME_END): a sealed container \
-                         must close every hour it carries"
-                    ),
-                ));
-            }
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "compressed stream contains no records".to_string(),
-                ));
-            }
+        if let Some(open) = open_data_hour {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "compressed stream ends with game hour {open} still open (its \
+                     DOMAIN_DATA was never closed by a matching FRAME_END): a \
+                     sealed container must close every hour it carries"
+                ),
+            ));
+        }
+        if !frame_end_seen {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "compressed stream closes no game hour (no FRAME_END records)".to_string(),
+            ));
         }
     }
     Ok(stats)
@@ -641,6 +738,51 @@ mod tests {
         )
         .unwrap();
         assert!(clean.ends_at_frame_end);
+    }
+
+    /// Re-gate round 2, finding 1: closure is HOUR-AWARE — `DATA(N+1),
+    /// FRAME_END(N), EOF` has a trailing FRAME_END but hour N+1 was never
+    /// closed; it must hard-error on sealed sources and report an unclosed
+    /// boundary on raw ones.
+    #[test]
+    fn trailing_frame_end_for_the_wrong_hour_does_not_close_the_stream() {
+        let mut stream = three_hour_stream();
+        push_record(
+            &mut stream,
+            98,
+            raw_for(HOUR_C + 1),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        // FRAME_END for the WRONG (already closed) hour.
+        push_record(
+            &mut stream,
+            99,
+            raw_for(HOUR_C),
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[],
+        );
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
+            .unwrap_err();
+        assert!(err.to_string().contains("still open"), "{err}");
+
+        let mut fold = WorldFold::new("gid");
+        let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
+            .unwrap();
+        assert!(!stats.ends_at_frame_end);
+
+        // The seal-time walker enforces the same law for skip-fold packs.
+        let dir = TmpDir::new("boundary");
+        let p = dir.0.join("torn.bin");
+        std::fs::write(&p, &stream).unwrap();
+        let err = verify_stream_logical_boundary(&p).unwrap_err();
+        assert!(err.to_string().contains("left open"), "{err}");
+        let clean = dir.0.join("clean.bin");
+        std::fs::write(&clean, three_hour_stream()).unwrap();
+        verify_stream_logical_boundary(&clean).unwrap();
     }
 
     /// Net-gate finding 3: a forged/corrupt payload_len beyond the record

@@ -1477,6 +1477,22 @@ fn run() -> Result<(), String> {
             // (replay_decoder D1 folds per-hour on demand); pack the container
             // with an empty snapshots array and mark the skip EXPLICITLY in the
             // container index and the session manifest (host_fold_skipped).
+            //
+            // SEAL-TIME BOUNDARY GATE (container re-gate round 2, finding 3):
+            // without a host fold nothing else would notice a torn/open-hour
+            // tail before sealing, and the sealed-source read strictness would
+            // then make the published container unreadable. A crash tail must
+            // stay a raw recovery artifact.
+            if let Err(e) =
+                recorder_host::stream_fold::verify_stream_logical_boundary(&raw_path)
+            {
+                let error = format!(
+                    "refusing to seal (skip-fold): {e}; the raw stream stays the \
+                     recovery artifact"
+                );
+                mark_manifest_replay_not_produced(&manifest_path, &mut manifest, &error);
+                return Err(error);
+            }
             match write_native_replay_container_streaming(
                 &cfg,
                 &raw_path,
@@ -1518,6 +1534,20 @@ fn run() -> Result<(), String> {
                         recorder_host::stream_fold::default_fold_workers(),
                     )
                     .map_err(|e| format!("streaming fold failed: {e}"))?;
+                // Same seal-time boundary law as the repack path: never seal
+                // a source that does not end at a closed game hour.
+                if fold_stats.truncated_tail_bytes > 0
+                    || fold_stats.stop_reason.is_some()
+                    || !fold_stats.ends_at_frame_end
+                {
+                    return Err(format!(
+                        "refusing to seal: source does not end at a closed game hour \
+                         (truncated_tail_bytes={}, stop_reason={:?}, ends_at_frame_end={})",
+                        fold_stats.truncated_tail_bytes,
+                        fold_stats.stop_reason,
+                        fold_stats.ends_at_frame_end,
+                    ));
+                }
                 let verify = write_native_replay_container_streaming(
                     &cfg,
                     &raw_path,
