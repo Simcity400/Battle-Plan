@@ -119,11 +119,43 @@ pub struct AdapterBuildStats {
     pub portrait_rows: u32,
     pub rejected_roots: u32,
     pub missing_trait_tokens: u32,
+    /// Roots whose frame-walk read failed STABLY (an immediate re-read failed
+    /// bit-identically — the same dead-vs-torn double-read discipline the
+    /// prewarm scan uses). A stably-dead root is a character/advisor that no
+    /// longer exists; its ABSENCE from this full-replacement frame is correct
+    /// world state, so dead roots do NOT reject the frame (2026-07-11: at
+    /// wartime churn ~1 death per few frames, the previous any-failure
+    /// rejection kept d47 rowless for entire sessions — 944 live frames, 0
+    /// rows). The collector's rejection-triggered invalidation also fires on
+    /// dead roots, so the root cache converges (the dead root fails prewarm
+    /// re-validation and is dropped). A PERSISTENTLY nonzero value while
+    /// prewarm keeps re-adopting the same root is a validator-mismatch alarm —
+    /// visible in the `domain47_adapter_dead_roots` diagnostic unit, never
+    /// silent. Torn (unstable) failures still reject fail-closed.
+    pub dead_roots: u32,
 }
 
 impl AdapterBuildStats {
     pub fn has_rejections(&self) -> bool {
         self.rejected_roots != 0 || self.missing_trait_tokens != 0
+    }
+}
+
+/// Classification of a root whose frame-walk read failed.
+enum RootFailure {
+    /// The re-read failed bit-identically: the object is stably gone.
+    Dead,
+    /// The re-read disagreed (different error, or success): mid-read mutation.
+    Torn,
+}
+
+/// Dead-vs-torn: re-run the SAME read after a failure and compare. Matches the
+/// prewarm scan's `(Err(a), Err(b)) if a == b => stable exclusion` discipline,
+/// so both layers agree on what "dead" means.
+fn classify_root_failure<T, E: PartialEq>(first: &E, second: &Result<T, E>) -> RootFailure {
+    match second {
+        Err(e) if e == first => RootFailure::Dead,
+        _ => RootFailure::Torn,
     }
 }
 
@@ -163,7 +195,15 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                     token: root.token.clone(),
                 });
             }
-            Err(_) => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
+            Err(first) => match classify_root_failure(
+                &first,
+                &read_character_raw_fields(mem, roots, root.character_addr),
+            ) {
+                RootFailure::Dead => stats.dead_roots = stats.dead_roots.saturating_add(1),
+                RootFailure::Torn => {
+                    stats.rejected_roots = stats.rejected_roots.saturating_add(1)
+                }
+            },
         }
     }
     stats.character_rows = frame.characters.len().min(u32::MAX as usize) as u32;
@@ -179,7 +219,15 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                     .missing_trait_tokens
                     .saturating_add(missing_trait_tokens);
             }
-            Err(_) => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
+            Err(first) => match classify_root_failure(
+                &first,
+                &read_unit_leader(mem, roots, root, &trait_tokens),
+            ) {
+                RootFailure::Dead => stats.dead_roots = stats.dead_roots.saturating_add(1),
+                RootFailure::Torn => {
+                    stats.rejected_roots = stats.rejected_roots.saturating_add(1)
+                }
+            },
         }
     }
     stats.unit_leader_rows = frame.unit_leaders.len().min(u32::MAX as usize) as u32;
@@ -193,7 +241,14 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                 known_characters.insert((row.country_tag_db_id, row.char_id));
                 frame.country_leader_roles.push(row);
             }
-            Err(_) => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
+            Err(first) => {
+                match classify_root_failure(&first, &read_country_leader_role(mem, roots, root)) {
+                    RootFailure::Dead => stats.dead_roots = stats.dead_roots.saturating_add(1),
+                    RootFailure::Torn => {
+                        stats.rejected_roots = stats.rejected_roots.saturating_add(1)
+                    }
+                }
+            }
         }
     }
     stats.country_leader_role_rows = frame.country_leader_roles.len().min(u32::MAX as usize) as u32;
@@ -249,7 +304,15 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                     idea_token: root.idea_token.clone(),
                 });
             }
-            Err(_) => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
+            Err(first) => match classify_root_failure(
+                &first,
+                &read_advisor_raw_fields(mem, roots, root.advisor_addr),
+            ) {
+                RootFailure::Dead => stats.dead_roots = stats.dead_roots.saturating_add(1),
+                RootFailure::Torn => {
+                    stats.rejected_roots = stats.rejected_roots.saturating_add(1)
+                }
+            },
         }
     }
     stats.advisor_roster_rows = frame.advisor_roster.len().min(u32::MAX as usize) as u32;
@@ -791,6 +854,95 @@ mod tests {
         );
         assert_eq!(summary.character_portrait_rows, 1);
         assert_eq!(summary.appointed_advisor_rows, 0);
+    }
+
+    /// Memory that misses ONE address exactly once, then serves the backing
+    /// bytes: models a mid-read mutation the dead-vs-torn double read must
+    /// classify as TORN (the two reads disagree).
+    struct HealingMemory {
+        inner: FakeMemory,
+        target: u64,
+        miss_pending: std::cell::Cell<bool>,
+    }
+
+    impl LaneMemory for HealingMemory {
+        fn read_u8(&self, addr: u64) -> Option<u8> {
+            if addr == self.target && self.miss_pending.replace(false) {
+                return None;
+            }
+            self.inner.read_u8(addr)
+        }
+    }
+
+    #[test]
+    fn stably_dead_root_is_omitted_without_failing_the_frame() {
+        // One valid character plus one root with NO memory behind it: both
+        // walk reads fail bit-identically (stable death). The dead root's
+        // absence is correct full-replacement state — the frame emits CLEAN
+        // (2026-07-11: the previous any-failure rejection kept d47 rowless
+        // for whole sessions at wartime churn).
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        write_character(&mut mem, character, 100, 2);
+
+        let input = AdapterInput {
+            elapsed_wall_ms: 5,
+            characters: vec![
+                CharacterRoot {
+                    character_addr: character,
+                    name: None,
+                    token: None,
+                },
+                CharacterRoot {
+                    character_addr: 0xDEAD_0000,
+                    name: None,
+                    token: None,
+                },
+            ],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.character_rows, 1);
+        assert_eq!(result.stats.dead_roots, 1);
+        assert_eq!(result.stats.rejected_roots, 0);
+        assert!(!result.stats.has_rejections());
+        assert_eq!(
+            result.frame.status_flags & compact::STATUS_PARTIAL_DATA,
+            0,
+            "a stably-dead root must not fail the frame"
+        );
+    }
+
+    #[test]
+    fn torn_root_read_still_rejects_the_frame_fail_closed() {
+        // The root's first read fails, the re-read succeeds (memory "healed"
+        // mid-frame): the two observations disagree -> TORN -> fail-closed
+        // frame rejection, exactly as before the dead-vs-torn split.
+        let mut inner = FakeMemory::default();
+        let character = 0x1000;
+        write_character(&mut inner, character, 100, 2);
+        let mem = HealingMemory {
+            inner,
+            target: character,
+            miss_pending: std::cell::Cell::new(true),
+        };
+
+        let input = AdapterInput {
+            elapsed_wall_ms: 5,
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                name: None,
+                token: None,
+            }],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.dead_roots, 0);
+        assert_eq!(result.stats.rejected_roots, 1);
+        assert!(result.stats.has_rejections());
+        assert_ne!(result.frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
     }
 
     #[test]
