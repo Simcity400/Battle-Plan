@@ -206,10 +206,16 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
         }
         Err(e) => fail!("exe path query failed: {e}"),
     }
-    match query_process_start_unix(pid) {
-        Ok(start) => report.process_start_unix = Some(start),
-        Err(e) => fail!("process start time query failed: {e}"),
-    }
+    let process_start: Option<SystemTime> = match query_process_start(pid) {
+        Ok(start) => {
+            report.process_start_unix = Some(system_time_unix(start));
+            Some(start)
+        }
+        Err(e) => {
+            fail!("process start time query failed: {e}");
+            None
+        }
+    };
 
     // --- Paradox user dir + dlc_load.json ---
     match locate_user_dir(user_dir_override) {
@@ -223,22 +229,40 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
     let mut disabled_dlcs: Vec<String> = Vec::new();
     if let Some(user_dir) = report.user_dir.clone() {
         let dlc_load_path = user_dir.join("dlc_load.json");
-        report.dlc_load_mtime_unix = file_mtime_unix(&dlc_load_path);
-        // Config newer than the process start: the launcher state on disk is
-        // not provably the state the running game was launched with.
-        if let (Some(mtime), Some(start)) =
-            (report.dlc_load_mtime_unix, report.process_start_unix)
-        {
-            if mtime > start {
-                fail!(
-                    "dlc_load.json modified AFTER the game process started \
-                     (mtime {mtime} > start {start}); launcher state unprovable"
-                );
-            }
+        // Stability bracket (re-gate finding 4): capture mtime, read, re-check.
+        let mtime_before = fs::metadata(&dlc_load_path).and_then(|m| m.modified()).ok();
+        report.dlc_load_mtime_unix = mtime_before.map(system_time_unix);
+        // Launcher-state provenance (re-gate finding 3+4): FULL-PRECISION
+        // compare; an absent mtime or a config at/after process start both
+        // fail closed (can't prove the running game used this config).
+        match (mtime_before, process_start) {
+            (Some(mtime), Some(start)) if mtime >= start => fail!(
+                "dlc_load.json mtime is at/after the game process start; \
+                 launcher state not provably the launched state"
+            ),
+            (None, _) => fail!(
+                "dlc_load.json mtime unavailable; launcher-state provenance unprovable"
+            ),
+            _ => {}
         }
         match fs::read_to_string(&dlc_load_path) {
             Ok(text) => match serde_json::from_str::<Value>(&text) {
                 Ok(doc) => {
+                    // Re-check mtime AFTER the read: a launcher rewrite between
+                    // the metadata read and the content read would otherwise
+                    // pair new content with the old, accepted timestamp.
+                    let mtime_after =
+                        fs::metadata(&dlc_load_path).and_then(|m| m.modified()).ok();
+                    if mtime_after != mtime_before {
+                        fail!("dlc_load.json changed while being read (mtime moved)");
+                    }
+                    // Duplicate top-level keys (re-gate finding 2): serde_json
+                    // silently keeps the last, so a lenient document can hide
+                    // an ambiguous enabled_mods/disabled_dlcs behind an empty
+                    // override. Reject any duplicated object key at depth 1.
+                    if let Err(dup) = reject_duplicate_top_level_keys(&text) {
+                        fail!("dlc_load.json has duplicate top-level key: {dup}");
+                    }
                     // G2 finding 2: absent or mistyped fields are NOT empty
                     // lists — they are unproven state and fail closed.
                     match required_string_array(&doc, "enabled_mods") {
@@ -346,8 +370,11 @@ fn query_process_image_path(pid: u32) -> Result<PathBuf, String> {
     }
 }
 
-/// Process creation time as unix seconds (FILETIME epoch conversion).
-fn query_process_start_unix(pid: u32) -> Result<i64, String> {
+/// Process creation time as a full-precision `SystemTime` (FILETIME 100ns
+/// ticks -> unix epoch). Full precision matters: the launcher-state ordering
+/// check must not floor two sub-second-apart events into one equal second
+/// (re-gate finding 3).
+fn query_process_start(pid: u32) -> Result<SystemTime, String> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {
@@ -364,16 +391,98 @@ fn query_process_start_unix(pid: u32) -> Result<i64, String> {
         if creation < UNIX_EPOCH_TICKS {
             return Err("process creation time precedes the unix epoch".to_string());
         }
-        Ok(((creation - UNIX_EPOCH_TICKS) / 10_000_000) as i64)
+        let nanos = (creation - UNIX_EPOCH_TICKS).saturating_mul(100);
+        Ok(SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(nanos))
+    }
+}
+
+/// Whole-second unix stamp of a `SystemTime`, for human-readable manifest
+/// fields ONLY — never for the ordering comparison (that uses full precision).
+fn system_time_unix(t: SystemTime) -> i64 {
+    match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(e) => -(e.duration().as_secs() as i64),
     }
 }
 
 fn file_mtime_unix(path: &Path) -> Option<i64> {
-    let mtime = fs::metadata(path).ok()?.modified().ok()?;
-    match mtime.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(d) => Some(d.as_secs() as i64),
-        Err(_) => Some(-(SystemTime::UNIX_EPOCH.duration_since(mtime).ok()?.as_secs() as i64)),
+    Some(system_time_unix(fs::metadata(path).ok()?.modified().ok()?))
+}
+
+/// Reject a JSON document that repeats any object key at the TOP level.
+/// `serde_json` silently keeps the last value for a duplicate key, so a
+/// lenient `{"enabled_mods":[...],"enabled_mods":[]}` could resolve as an
+/// empty (vanilla-looking) modset. A minimal depth-aware, string-aware scan
+/// collects depth-1 keys and fails on the first repeat. Input is already
+/// proven valid JSON by the caller's parse.
+fn reject_duplicate_top_level_keys(text: &str) -> Result<(), String> {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut expecting_key = false;
+    let mut seen: Vec<String> = Vec::new();
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            // Non-key strings (values, nested keys) are skipped whole here;
+            // top-level keys are captured at the opening-quote branch below.
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' => {
+                // String opening. If at depth 1 and a key is expected, read it
+                // whole here (escape-aware) so we can record it.
+                if depth == 1 && expecting_key {
+                    let start = i + 1;
+                    let mut j = start;
+                    let mut esc = false;
+                    while j < bytes.len() {
+                        match bytes[j] {
+                            b'\\' if !esc => esc = true,
+                            b'"' if !esc => break,
+                            _ => esc = false,
+                        }
+                        j += 1;
+                    }
+                    if j >= bytes.len() {
+                        return Ok(()); // malformed; caller's parse already vouched, be lenient
+                    }
+                    let key = text[start..j].to_string();
+                    if seen.iter().any(|k| k == &key) {
+                        return Err(format!("{key:?}"));
+                    }
+                    seen.push(key);
+                    expecting_key = false;
+                    i = j + 1;
+                    continue;
+                }
+                in_string = true;
+            }
+            b'{' => {
+                depth += 1;
+                if depth == 1 {
+                    expecting_key = true;
+                }
+            }
+            b'}' => depth -= 1,
+            b'[' => depth += 1,
+            b']' => depth -= 1,
+            b',' if depth == 1 => expecting_key = true,
+            _ => {}
+        }
+        i += 1;
     }
+    Ok(())
 }
 
 /// Streaming sha256 with a size+mtime stability bracket (G2 finding 4): the
@@ -506,7 +615,14 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
             "name" => resolved.name = Some(value),
             "version" => resolved.version = Some(value),
             "remote_file_id" => resolved.remote_file_id = Some(value),
-            "path" | "archive" => resolved.content_path = Some(value),
+            // Re-gate finding 5: an EMPTY path=/archive= names no content
+            // location (joining "" with user_dir would fingerprint the whole
+            // user dir). Leave content_path None so the caller fails closed.
+            "path" | "archive" => {
+                if !value.is_empty() {
+                    resolved.content_path = Some(value);
+                }
+            }
             _ => {}
         }
     }
@@ -555,8 +671,13 @@ fn fingerprint_content(root: &Path) -> Option<(u64, u64, i64)> {
                     return None;
                 }
                 bytes = bytes.saturating_add(meta.len());
-                if let Some(mtime) = file_mtime_unix(&path) {
-                    max_mtime = max_mtime.max(mtime);
+                // Re-gate finding 6: a per-file mtime that cannot be read
+                // FAILS the fingerprint closed rather than silently omitting
+                // that file's timestamp (which could leave max_mtime at its
+                // sentinel and hide a content change).
+                match meta.modified().ok().map(system_time_unix) {
+                    Some(mtime) => max_mtime = max_mtime.max(mtime),
+                    None => return None,
                 }
             }
         }
@@ -784,6 +905,41 @@ mod tests {
         let doc = resolved.as_json();
         assert!(doc.get("partial_evidence").is_none());
         assert!(doc["dlc"]["enabled"].is_array());
+    }
+
+    #[test]
+    fn duplicate_top_level_keys_are_rejected() {
+        // serde_json accepts this (keeps the last), so the structural scan is
+        // the only line of defense against the silent-vanilla override.
+        let dup = r#"{"enabled_mods":["mod/a.mod"],"enabled_mods":[],"disabled_dlcs":[]}"#;
+        assert!(serde_json::from_str::<Value>(dup).is_ok());
+        let err = reject_duplicate_top_level_keys(dup).unwrap_err();
+        assert!(err.contains("enabled_mods"));
+
+        // A NESTED repeat of the same name is fine (different object).
+        let nested =
+            r#"{"enabled_mods":["mod/a.mod"],"meta":{"enabled_mods":1},"disabled_dlcs":[]}"#;
+        assert!(reject_duplicate_top_level_keys(nested).is_ok());
+
+        // The name appearing inside a string VALUE is not a key.
+        let in_value = r#"{"note":"enabled_mods twice","enabled_mods":["x"]}"#;
+        assert!(reject_duplicate_top_level_keys(in_value).is_ok());
+
+        // Escaped quote inside a value does not desync the scanner.
+        let escaped = r#"{"a":"he said \"enabled_mods\"","enabled_mods":[]}"#;
+        assert!(reject_duplicate_top_level_keys(escaped).is_ok());
+    }
+
+    #[test]
+    fn empty_content_path_leaves_binding_incomplete() {
+        let dir = temp_dir("emptypath");
+        fs::create_dir_all(dir.join("mod")).unwrap();
+        fs::write(dir.join("mod").join("e.mod"), "name=\"E\"\npath=\"\"\n").unwrap();
+        let resolved = resolve_mod_descriptor(&dir, "mod/e.mod");
+        // An empty path= names no content location -> None -> caller fails closed.
+        assert!(resolved.content_path.is_none());
+        assert!(resolved.content_fingerprint.is_none());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
