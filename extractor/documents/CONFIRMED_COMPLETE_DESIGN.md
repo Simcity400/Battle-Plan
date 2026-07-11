@@ -205,3 +205,14 @@ projection, upserts-only, never tombstone on partial):**
 - Mass-failure defense in depth: a CLEAN frame whose row families shrink implausibly vs
   the adopted root count should fail closed (bound TBD with live dead_roots/stale rates
   from the new diagnostics).
+
+### PARTIAL-upsert re-priced 2026-07-11 (post char-dedup): DEFERRED
+
+The contract above was priced when EVERY d47 frame was discarded (~1 failing root/frame
+read as churn). The duplicate-character dedup (1fbd9f3a4) revealed most 'churn' was
+duplicate-object noise: the decisive2 capture measured **dead_roots = 1 across 509 hours**
+— i.e. ~one rowless PARTIAL frame per session, prior state retained across it. Building a
+lossless-critical full-replacement fold change (clone-prior + keyed merge, new gates,
+fold-identity proof) to recover ~1 frame per session fails the measure-first bar.
+DEFER until live captures show a materially higher PARTIAL rate (the dead_roots and
+refresh_held_roots units make that visible from any manifest). Design retained above.
