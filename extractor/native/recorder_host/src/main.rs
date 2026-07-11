@@ -18030,6 +18030,7 @@ mod tests {
             hours_emitted: 2,
             stop_reason: None,
             ends_at_frame_end: true,
+            decoded_fnv: 0,
         };
 
         let bytes = session_manifest_bytes_with_pre_pack_host_finalize(
@@ -27997,6 +27998,7 @@ mod tests {
             hours_emitted: snapshots.len() as u64,
             stop_reason: None,
             ends_at_frame_end: true,
+            decoded_fnv: 0,
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",

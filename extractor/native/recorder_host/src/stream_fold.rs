@@ -50,11 +50,15 @@ pub struct FoldStreamStats {
     pub hours_emitted: u64,
     /// Set when framing stopped early on a malformed record (bad magic/version).
     pub stop_reason: Option<String>,
-    /// True when the final well-framed record is FRAME_END — i.e. the stream
-    /// ends at a CLOSED game hour. A raw crash tail (tolerated on read) makes
-    /// this false; the deferred repack MUST NOT seal such a source as a clean
-    /// compressed container (net gate 2026-07-11 finding 2).
+    /// True when the stream ends at a CLEAN CLOSED boundary per the shared
+    /// BoundaryTracker (no residual bytes, no open hour, no hour-interleave /
+    /// mismatched-FRAME_END / sequence-gap violation, >=1 closed hour). A raw
+    /// crash tail (tolerated on read) makes this false; no seal path may pack
+    /// such a source as a clean compressed container.
     pub ends_at_frame_end: bool,
+    /// FNV-1a digest of the decoded stream bytes — parallel workers must
+    /// agree on CONTENT, not just shape (round-3 finding 3).
+    pub decoded_fnv: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +88,109 @@ pub fn fold_compact_stream_file(
     Ok((files, stats))
 }
 
+/// ONE shared logical-boundary state machine (container gate round 3: two
+/// copies of this invariant are a permanent drift hazard — the fold driver
+/// and the seal-time walker now both drive THIS). Legal production streams
+/// are strictly hour-sequential: every record of hour h, then FRAME_END(h).
+/// Anything else is corruption and must never be silently normalized:
+/// - DOMAIN_DATA opens its hour; a DATA for a DIFFERENT hour while one is
+///   open is a VIOLATION (round-3 finding 1: a single-slot tracker that just
+///   overwrites forgets the earlier open hour).
+/// - Only a FRAME_END whose hour MATCHES the open hour closes it; a
+///   mismatched FRAME_END is a VIOLATION.
+/// - Record sequence must be CONSECUTIVE (+1) — an inflated-but-under-cap
+///   payload_len that swallows whole records leaves a sequence gap (round-3
+///   finding 2); framing alone cannot see the swallowed bytes, the counter
+///   can.
+/// - PERF/OTHER records neither open nor close hours (but do consume
+///   sequence numbers).
+#[derive(Default)]
+struct BoundaryTracker {
+    open_hour: Option<i32>,
+    frame_end_seen: bool,
+    prev_sequence: Option<u64>,
+    violation: Option<String>,
+}
+
+impl BoundaryTracker {
+    fn observe(&mut self, header: &compact_contract::CompactRecordHeader, at_byte: u64) {
+        if self.violation.is_some() {
+            return; // first violation is the diagnostic; state is already dirty
+        }
+        if let Some(prev) = self.prev_sequence {
+            if header.sequence != prev.wrapping_add(1) {
+                self.violation = Some(format!(
+                    "sequence discontinuity at byte {at_byte}: {prev} -> {} \
+                     (a record was swallowed or reordered)",
+                    header.sequence
+                ));
+                return;
+            }
+        }
+        self.prev_sequence = Some(header.sequence);
+        match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => match self.open_hour {
+                Some(open) if open != header.game_hour_raw => {
+                    self.violation = Some(format!(
+                        "hour interleaving at byte {at_byte}: DOMAIN_DATA for hour {} \
+                         while hour {open} is still open",
+                        header.game_hour_raw
+                    ));
+                }
+                _ => self.open_hour = Some(header.game_hour_raw),
+            },
+            COMPACT_RECORD_TYPE_FRAME_END => {
+                self.frame_end_seen = true;
+                match self.open_hour {
+                    Some(open) if open == header.game_hour_raw => self.open_hour = None,
+                    Some(open) => {
+                        self.violation = Some(format!(
+                            "mismatched FRAME_END at byte {at_byte}: closes hour {} \
+                             while hour {open} is open",
+                            header.game_hour_raw
+                        ));
+                    }
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Ok(()) when the stream ended at a CLEAN closed boundary; Err(reason).
+    fn eof_check(&self, residual_carry: usize) -> Result<(), String> {
+        if let Some(v) = &self.violation {
+            return Err(v.clone());
+        }
+        if residual_carry != 0 {
+            return Err(format!(
+                "stream ends mid-record ({residual_carry} residual bytes; partial \
+                 header or incomplete payload)"
+            ));
+        }
+        if let Some(open) = self.open_hour {
+            return Err(format!("game hour {open} left open at EOF"));
+        }
+        if !self.frame_end_seen {
+            return Err("stream closes no game hour (no FRAME_END records)".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// FNV-1a over decoded stream bytes — a cheap content digest so parallel
+/// workers reading "same-shape" but different-payload source views fail the
+/// agreement check (round-3 finding 3) instead of merging mixed snapshots.
+fn fnv1a_update(hash: u64, bytes: &[u8]) -> u64 {
+    let mut h = hash;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h
+}
+const FNV1A_SEED: u64 = 0xCBF2_9CE4_8422_2325;
+
 /// Framing-only logical-boundary check of an on-disk compact stream — the
 /// SEAL-TIME gate for containers packed WITHOUT a host fold (skip-fold /
 /// fast-turnaround), so the production writer can never publish a container
@@ -97,8 +204,7 @@ pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
     let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
     let mut chunk = vec![0u8; CHUNK];
     let mut processed: u64 = 0;
-    let mut open_data_hour: Option<i32> = None;
-    let mut frame_end_seen = false;
+    let mut tracker = BoundaryTracker::default();
     loop {
         let n = reader.read(&mut chunk)?;
         if n == 0 {
@@ -121,44 +227,18 @@ pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
             if record_len > remaining {
                 break;
             }
-            match header.record_type {
-                COMPACT_RECORD_TYPE_DOMAIN_DATA => open_data_hour = Some(header.game_hour_raw),
-                COMPACT_RECORD_TYPE_FRAME_END => {
-                    frame_end_seen = true;
-                    if open_data_hour == Some(header.game_hour_raw) {
-                        open_data_hour = None;
-                    }
-                }
-                _ => {}
-            }
+            tracker.observe(&header, processed + off as u64);
             off += record_len;
         }
         processed += off as u64;
         carry.drain(0..off);
     }
-    if !carry.is_empty() {
-        return Err(io::Error::new(
+    tracker.eof_check(carry.len()).map_err(|reason| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "seal-time boundary check: stream ends mid-record ({} residual bytes \
-                 after byte {processed})",
-                carry.len()
-            ),
-        ));
-    }
-    if let Some(open) = open_data_hour {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("seal-time boundary check: game hour {open} left open at EOF"),
-        ));
-    }
-    if !frame_end_seen {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "seal-time boundary check: stream closes no game hour".to_string(),
-        ));
-    }
-    Ok(())
+            format!("seal-time boundary check: {reason}"),
+        )
+    })
 }
 
 /// Default worker count for the parallel post-capture fold. The fold is OFFLINE
@@ -258,7 +338,11 @@ pub fn fold_compact_stream_file_parallel(
                 // finding 4): a worker seeing a different file view must fail
                 // the merge, not silently supply the stored stats.
                 && reference.truncated_tail_bytes == worker_stats.truncated_tail_bytes
-                && reference.ends_at_frame_end == worker_stats.ends_at_frame_end;
+                && reference.ends_at_frame_end == worker_stats.ends_at_frame_end
+                // Content digest: same-shape-different-payload source views
+                // (e.g. file replaced between worker opens) must fail the
+                // merge, not silently mix snapshots from two stream versions.
+                && reference.decoded_fnv == worker_stats.decoded_fnv;
             if !agree {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -376,15 +460,11 @@ pub fn drive_fold_compressed<R: Read>(
     let mut chunk = vec![0u8; CHUNK];
     let mut processed: u64 = 0;
     let mut decoded_read: u64 = 0;
-    // Hour-aware closure state machine (container re-gate round 2, finding 1:
-    // a trailing FRAME_END is SYNTACTIC — `DATA(N+1), FRAME_END(N), EOF` would
-    // pass a last-record-type check while hour N+1 was never closed, and an
-    // under-cap forged payload_len that swallows records up to a genuine
-    // final FRAME_END would too). DOMAIN_DATA opens its hour; only a
-    // FRAME_END whose game_hour_raw MATCHES the open hour closes it; PERF /
-    // probe records carry no folded state and neither open nor close.
-    let mut open_data_hour: Option<i32> = None;
-    let mut frame_end_seen = false;
+    // Shared hour-aware closure state machine (see BoundaryTracker: hour
+    // interleaving, mismatched FRAME_END, and sequence discontinuities are
+    // sticky violations; only a clean tracker at EOF is a closed boundary).
+    let mut tracker = BoundaryTracker::default();
+    let mut decoded_fnv = FNV1A_SEED;
 
     'read: loop {
         let n = reader.read(&mut chunk)?;
@@ -392,6 +472,7 @@ pub fn drive_fold_compressed<R: Read>(
             break;
         }
         decoded_read = decoded_read.saturating_add(n as u64);
+        decoded_fnv = fnv1a_update(decoded_fnv, &chunk[..n]);
         carry.extend_from_slice(&chunk[..n]);
 
         let mut off = 0usize;
@@ -433,23 +514,12 @@ pub fn drive_fold_compressed<R: Read>(
 
             stats.records_total += 1;
             match header.record_type {
-                COMPACT_RECORD_TYPE_DOMAIN_DATA => {
-                    stats.data_records += 1;
-                    open_data_hour = Some(header.game_hour_raw);
-                }
-                COMPACT_RECORD_TYPE_FRAME_END => {
-                    stats.frame_end_records += 1;
-                    frame_end_seen = true;
-                    // Only a MATCHING frame-end closes the open hour; a
-                    // mismatched one leaves it open so the corruption
-                    // surfaces at EOF (or at the sealed-source EOF check).
-                    if open_data_hour == Some(header.game_hour_raw) {
-                        open_data_hour = None;
-                    }
-                }
+                COMPACT_RECORD_TYPE_DOMAIN_DATA => stats.data_records += 1,
+                COMPACT_RECORD_TYPE_FRAME_END => stats.frame_end_records += 1,
                 COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
                 _ => stats.other_records += 1,
             }
+            tracker.observe(&header, processed + off as u64);
 
             fold.ingest_record(
                 header.game_hour_raw,
@@ -496,42 +566,18 @@ pub fn drive_fold_compressed<R: Read>(
     stats.bytes_folded = processed;
     stats.truncated_tail_bytes = stats.stream_bytes.saturating_sub(processed);
     stats.hours_emitted = fold.emitted_hours_count() as u64;
-    stats.ends_at_frame_end = carry.is_empty() && open_data_hour.is_none() && frame_end_seen;
+    stats.ends_at_frame_end = tracker.eof_check(carry.len()).is_ok();
+    stats.decoded_fnv = decoded_fnv;
     if compressed {
-        // Stream-container net gate 2026-07-11, findings 1+2: a SEALED
-        // (checksummed zstd) container must end at a valid LOGICAL boundary,
-        // not merely a valid storage boundary. Physical EOF with residual
-        // carry (a partial header, or a header whose payload never arrived)
-        // is decoded-content truncation — the storage checksum only proves
-        // the truncated bytes were stored faithfully. Likewise a stream whose
-        // last record is not FRAME_END ends inside an OPEN game hour (a
-        // crash tail that deferred repack must never have sealed as clean).
-        // RAW sources keep the tolerant torn-tail behavior byte-identically.
-        if !carry.is_empty() {
+        // A SEALED (checksummed zstd) container must end at a valid LOGICAL
+        // boundary, not merely a valid storage boundary: no residual carry,
+        // no open hour, no boundary violation (hour interleave / mismatched
+        // FRAME_END / sequence gap), at least one closed hour. RAW sources
+        // keep the tolerant torn-tail behavior byte-identically.
+        if let Err(reason) = tracker.eof_check(carry.len()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "compressed stream ends mid-record: {} residual byte(s) after \
-                     byte {processed} (partial header or incomplete payload); the \
-                     decoded H4CR stream is truncated",
-                    carry.len()
-                ),
-            ));
-        }
-        if let Some(open) = open_data_hour {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "compressed stream ends with game hour {open} still open (its \
-                     DOMAIN_DATA was never closed by a matching FRAME_END): a \
-                     sealed container must close every hour it carries"
-                ),
-            ));
-        }
-        if !frame_end_seen {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "compressed stream closes no game hour (no FRAME_END records)".to_string(),
+                format!("compressed stream fails the closed-boundary law: {reason}"),
             ));
         }
     }
@@ -712,7 +758,7 @@ mod tests {
         let mut stream = three_hour_stream();
         push_record(
             &mut stream,
-            99,
+            7,
             raw_for(HOUR_C + 1),
             18,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -721,7 +767,7 @@ mod tests {
         let mut fold = WorldFold::new("gid");
         let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
             .unwrap_err();
-        assert!(err.to_string().contains("open game hour"), "{err}");
+        assert!(err.to_string().contains("left open"), "{err}");
 
         // RAW: tolerated; the boundary fact is exposed for the repack guard.
         let mut fold = WorldFold::new("gid");
@@ -749,7 +795,7 @@ mod tests {
         let mut stream = three_hour_stream();
         push_record(
             &mut stream,
-            98,
+            7,
             raw_for(HOUR_C + 1),
             18,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -758,7 +804,7 @@ mod tests {
         // FRAME_END for the WRONG (already closed) hour.
         push_record(
             &mut stream,
-            99,
+            8,
             raw_for(HOUR_C),
             0,
             COMPACT_RECORD_TYPE_FRAME_END,
@@ -767,7 +813,7 @@ mod tests {
         let mut fold = WorldFold::new("gid");
         let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
             .unwrap_err();
-        assert!(err.to_string().contains("still open"), "{err}");
+        assert!(err.to_string().contains("mismatched FRAME_END"), "{err}");
 
         let mut fold = WorldFold::new("gid");
         let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
@@ -779,7 +825,7 @@ mod tests {
         let p = dir.0.join("torn.bin");
         std::fs::write(&p, &stream).unwrap();
         let err = verify_stream_logical_boundary(&p).unwrap_err();
-        assert!(err.to_string().contains("left open"), "{err}");
+        assert!(err.to_string().contains("mismatched FRAME_END"), "{err}");
         let clean = dir.0.join("clean.bin");
         std::fs::write(&clean, three_hour_stream()).unwrap();
         verify_stream_logical_boundary(&clean).unwrap();
@@ -794,7 +840,7 @@ mod tests {
         stream.extend_from_slice(COMPACT_RECORD_MAGIC);
         stream.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
         stream.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
-        stream.extend_from_slice(&8u64.to_le_bytes());
+        stream.extend_from_slice(&7u64.to_le_bytes());
         stream.extend_from_slice(&raw_for(HOUR_C).to_le_bytes());
         stream.extend_from_slice(&18u16.to_le_bytes());
         stream.extend_from_slice(&COMPACT_RECORD_TYPE_DOMAIN_DATA.to_le_bytes());
