@@ -144,6 +144,29 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
   noise (same-arm windows differ more). `PREFETCH_DIST_CANDIDATES` stays default-off;
   entry goes in the known-NULLs table. (Relation-8 default from the earlier palindromes
   is unaffected.)
+- P6 **M-series: materialise levers (three-phase-probe-directed; NEW 2026-07-11)**. The
+  Debug three-phase window (threephase_deepwar_p1, 372 frames, speed 2) split the top lanes
+  into guarded-read vs materialise (pure local CPU — the weaker-PC law's favorite target):
+  | domain | lane ms | guarded | materialise |
+  |---|---|---|---|
+  | d53 diplomacy | 49.6 | 39.6 (80%) | 10.1 |
+  | d29 ships | 40.8 | 35.3 (86%) | 5.6 |
+  | d44 supply | 40.2 | 14.6 (36%) | **25.6** |
+  | d28 oob_command | 39.3 | 15.6 (40%) | **23.7** |
+  | d23 map_detail | 32.7 | 1.1 (3%) | **31.6** |
+  (d47's attribution in this window is polluted by prewarm scope — re-measure; d52 shows
+  the sampling error bar ~±10%.) Read-bound lanes (d53/d29) get acquisition levers only;
+  the ~80ms/frame of materialise across d23/d44/d28 is CPU-side and byte-neutral to fix.
+  - M1 **building-levels cache Mutex+clone → RwLock+Arc** — SHIPPED 97a5d902c (suite
+    353/0), ABBA A/B RUNNING; gate queued. Attacks d23 (97% materialise; multi-threaded
+    province sampling serialized on one Mutex + ~26k Vec clones/frame with d44).
+  - M2 candidate: d48 clones its whole `last_buildings` BTreeMap per frame (lib.rs
+    ~23495) — measure share first.
+  - M3 candidates: d44/d28 residual materialise after M1 (row building, delta-tracker
+    lookups) — re-run the three-phase window post-M1 to re-rank before building anything.
+  - Also seen in the same window: d53 relations phase = 56.1 of 62.9ms at deep war (89%)
+    — the read-bound monster; W1.1 outcome-split timing is its probe (read-count≠time
+    law applies: only a live paired A/B ships it).
 - P3 **Hour-latch decision run**: one 600s window `--hour-latch` on the P1a binary — latch
   invariant + frame-cost check (ABBA already green; this is the post-serial-wall re-check).
   Then USER CALL on default-ON. 6-core portability run stays queued for the other rig.
