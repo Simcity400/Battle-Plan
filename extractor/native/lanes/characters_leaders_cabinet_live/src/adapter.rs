@@ -120,24 +120,26 @@ pub struct AdapterBuildStats {
     pub rejected_roots: u32,
     pub missing_trait_tokens: u32,
     /// Roots whose frame-walk read failed STABLY (an immediate re-read failed
-    /// bit-identically — the same dead-vs-torn double-read discipline the
-    /// prewarm scan uses). A stably-dead root is a character/advisor that no
-    /// longer exists; its ABSENCE from this full-replacement frame is correct
-    /// world state, so dead roots do NOT reject the frame (2026-07-11: at
-    /// wartime churn ~1 death per few frames, the previous any-failure
-    /// rejection kept d47 rowless for entire sessions — 944 live frames, 0
-    /// rows). The collector's rejection-triggered invalidation also fires on
-    /// dead roots, so the root cache converges (the dead root fails prewarm
-    /// re-validation and is dropped). A PERSISTENTLY nonzero value while
-    /// prewarm keeps re-adopting the same root is a validator-mismatch alarm —
-    /// visible in the `domain47_adapter_dead_roots` diagnostic unit, never
-    /// silent. Torn (unstable) failures still reject fail-closed.
+    /// bit-identically), as opposed to TORN (`rejected_roots`, the re-read
+    /// disagreed). DIAGNOSTIC ATTRIBUTION ONLY — stable failures still reject
+    /// the frame fail-closed, exactly like torn ones (see `has_rejections`).
+    /// The 2026-07-11 adversarial gate REFUTED the earlier claim that a
+    /// stable failure proves the ROOT is dead: a NESTED read failure (skill
+    /// source, trait vector, referenced trait/character) can be stable while
+    /// the parent root lives, and omitting a live root from a CLEAN
+    /// full-replacement frame silently DELETES it downstream. Positive
+    /// absence is only established when a COMPLETE sweep + prewarm rebuild no
+    /// longer yields the root — never by a walk read failure. The collector's
+    /// rejection-triggered invalidation fires on this counter so the root
+    /// cache converges for the genuinely-dead case; row restoration under
+    /// per-frame churn is the PARTIAL-upsert fold design (queued), not
+    /// clean-emission-with-omissions.
     pub dead_roots: u32,
 }
 
 impl AdapterBuildStats {
     pub fn has_rejections(&self) -> bool {
-        self.rejected_roots != 0 || self.missing_trait_tokens != 0
+        self.rejected_roots != 0 || self.missing_trait_tokens != 0 || self.dead_roots != 0
     }
 }
 
@@ -875,12 +877,14 @@ mod tests {
     }
 
     #[test]
-    fn stably_dead_root_is_omitted_without_failing_the_frame() {
+    fn stably_failing_root_still_rejects_the_frame_but_is_attributed_dead() {
         // One valid character plus one root with NO memory behind it: both
-        // walk reads fail bit-identically (stable death). The dead root's
-        // absence is correct full-replacement state — the frame emits CLEAN
-        // (2026-07-11: the previous any-failure rejection kept d47 rowless
-        // for whole sessions at wartime churn).
+        // walk reads fail bit-identically. That is ATTRIBUTED as a stable
+        // (dead-looking) failure — but the frame still fails closed: the
+        // 2026-07-11 adversarial gate proved a stable failure does NOT prove
+        // the root is dead (a nested object can stably fail while the parent
+        // lives), and omitting a live root from a CLEAN full-replacement
+        // frame would silently delete it downstream.
         let mut mem = FakeMemory::default();
         let character = 0x1000;
         write_character(&mut mem, character, 100, 2);
@@ -906,12 +910,11 @@ mod tests {
         assert_eq!(result.stats.character_rows, 1);
         assert_eq!(result.stats.dead_roots, 1);
         assert_eq!(result.stats.rejected_roots, 0);
-        assert!(!result.stats.has_rejections());
-        assert_eq!(
-            result.frame.status_flags & compact::STATUS_PARTIAL_DATA,
-            0,
-            "a stably-dead root must not fail the frame"
+        assert!(
+            result.stats.has_rejections(),
+            "stable failures must still fail the frame closed"
         );
+        assert_ne!(result.frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
     }
 
     #[test]
