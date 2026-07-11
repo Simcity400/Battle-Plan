@@ -17450,9 +17450,13 @@ fn add_compact_domain_perf_diagnostic_unit(
         let entry = domain.data_units_total.entry(name.to_string()).or_default();
         // Bitmask units aggregate by OR, never sum: two frames failing slot 0
         // must read as mask 1, not "2" (which would falsely name slot 1).
-        // d69's failed- and stale-slot masks; counters keep summing.
+        // d69's failed- and stale-slot masks; counters keep summing. Units
+        // named `*_sample` are per-frame VALUE samples (hashes, raw words,
+        // indices) — summing destroys them; keep the LAST observed value.
         if name == "d69_failed_slot_mask" || name == "d69_stale_slot_mask" {
             *entry |= value;
+        } else if name.ends_with("_sample") {
+            *entry = value;
         } else {
             *entry = entry.saturating_add(value);
         }
