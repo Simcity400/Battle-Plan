@@ -416,3 +416,21 @@ calls). Durable prompt files: `C:\Users\Example\.claude\hoi4_gate_prompts\`.
 
 PLAN SELF-REVIEW (done): tid 019f4f5c-c127-7a90-a995-1c4c97dcc571 — AMENDMENTS REQUIRED,
 12 findings, all folded into PRODUCTION_ENDGAME_PLAN.md v2 (59ae8ceb3 + 319dc641b).
+
+## D69 ACTIVE-COUNT RE — BLOCKED ON LIVE ORACLE (opened 2026-07-11, re-gate 019f5066)
+
+d69 slot-level stale classification was retired as unsound (e908a0f61): without the
+tech-sharing manager's ACTIVE-GROUP-COUNT field, a non-null slot with a stable non-group
+vtable cannot be distinguished (mid-construction live group vs freed-and-reused slot), so
+it fails closed → PARTIAL. To restore POPULATED-and-sound d69:
+- RE the CTechSharingManager active-group count/size (the fixed 9-slot array model is
+  single-fixture and now doubly-refuted). Candidate: a count/size field near
+  DOMAIN69_CGAMESTATE_TECH_SHARING_MANAGER_OFF (0x3A0) or the slots are actually a
+  pdx::vector with begin/end/count. Needs a live paused deep-war save + the D04 melt oracle
+  (9/9 groups) to validate the count offset, then iterate only [0..count) slots.
+- Evidence already collecting: d69_stale_vtable_rva_sample names the reusing engine type
+  per stale slot (match offline vs rtti_vtable_map.json) — if the "stale" slots all point
+  at ONE known type, that itself hints at the manager's internal free-list structure.
+- Alternative (if count RE fails): a d69 PARTIAL-upsert fold contract (merge observed groups,
+  never full-replace) — lossless-critical fold change, own design + gate, also needs live.
+BLOCKED: user is playing (game off-limits); no captures until released.

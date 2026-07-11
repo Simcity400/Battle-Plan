@@ -30,8 +30,18 @@ DONE + LIVE-VERIFIED (Codex re-stamp still owed where noted):
   levers enumerated in Wave B — "probably dominated by LDM" is a model, not a measured NULL.
 - **d47 RESTORED** (831,039 rows/509h vs all-time 0; parse errors 0; dead_roots 1) via
   root-refresh machinery + duplicate-char dedup. GATE OWED.
-- **d69 RESTORED** (status 0, full fold coverage, first ever) via stale-slot + vacant/
-  tombstone member classification. GATE OWED.
+- **d69 PARTIALLY restored → SOUNDNESS-REVERTED 2026-07-11** (re-gate 019f5066 finding 1).
+  The vacant/tombstone MEMBER-word classification stands (adjudicated sound twice). But the
+  SLOT-level stale-skip (non-null slot with a stable non-group vtable = "beyond active
+  extent") was UNSOUND: a mid-construction live group briefly holds a base-class vptr that
+  reads as a stable in-module mismatch, so skipping it could silently drop a live group
+  under full-replacement fold. Now FAILS CLOSED → d69 is accounted-PARTIAL on saves whose
+  unused slots hold dangling non-null pointers (the observed 3-group save), contributing
+  nothing to the fold there — a lawful accounted gap, not a silent wrong snapshot.
+  **Populated-AND-sound d69 needs the manager's active-group COUNT offset (fixed-9-slot
+  model is single-fixture + now doubly-refuted); that RE is BLOCKED on a live oracle and is
+  the TOP d69 priority when the game is available.** `d69_stale_vtable_rva_sample` telemeters
+  the reusing type for that RE. GATE for the fix round: e908a0f61 (self-verified; F5 covers).
 - **d43** cold/empty semantics hardened (2 gate rounds, SOUND); sweep-completeness law
   (`coverage_complete()`) protects all adopting consumers; sweep enumeration holes fixed.
 - **Modset binding (O5/M2)** live-validated (`resolved=true`, 20/24 DLCs). GATE OWED.
