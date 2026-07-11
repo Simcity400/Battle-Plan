@@ -43,8 +43,9 @@ TRUE BLOCKING LIST for F1 (no independent adversarial verdict anywhere):
    the code is long-stable and live-proven).
 6. Fold-performance lane (779d65a17, ca7650189, e61ebf094): live+G1 evidence only —
    batch into F5 or a single net gate with (5).
-7. hour-latch post-merge edits (ec9cf0b15 + revert 85eec418b): net effect = revert;
-   verify net-zero diff vs b79a5f201 baseline mechanically (cheap git check), then close.
+7. ~~hour-latch post-merge edits (ec9cf0b15 + revert 85eec418b)~~ **CLOSED 2026-07-11:
+   `git diff ec9cf0b15^ 85eec418b` is EMPTY — the revert restored the exact pre-edit
+   tree, so gate 0a's verdict on that tree still binds. No re-gate needed.**
 8. M1 building-levels Arc/RwLock (97a5d902c) + G1-fix commit (615d24125) + G2-fix commit
    (b24ac1ce3): re-gate in flight covers the last two; M1 needs its OWN gate + the blocked
    live A/B (game relaunch).
