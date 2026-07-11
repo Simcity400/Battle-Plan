@@ -363,3 +363,24 @@ agenda below). Then, per domain over warm frames:
 
 Gate-bracket every perf run (the game pause semantics: paused = 1 cold baseline frame; a
 mid-window unpause/pause makes the window MIXED — discard, both regimes contaminate).
+
+## QUEUED 2026-07-11 midday — Codex OUT OF CREDITS (user must add; never retry into it)
+
+Diagnosis note: before the clean "out of credits" error surfaced, launches died as
+"models manager timeout" and left a ~80-process zombie cascade (+1 wedged 17h daemon,
+PID killed). Fleet cleaned. On credits returning, dispatch:
+
+1. **o3-final-net-gate-v2** — resume tid `019f4ebb-0fb6-7cc1-88e8-3755a1ae6b2f` (thread has
+   the full prompt as its first message; if resume misbehaves, the prompt is reproducible:
+   net-state adversarial gate on commits 8e10e70ff + 28f2043e1 + d5bb02247 — fix-round-2
+   closure verification, d69 stale-slot adjudication, revert completeness, sweep-loop
+   termination, d43 hold-streak steady state, `_sample` unit-class safety, d53/d60
+   non-regression, and whether keeping slot-3 PARTIAL fail-closed is correct).
+2. **O5 modset-binding gate** (commit e9f21a1c8, never dispatched): recorder_host::modset —
+   attack fail-closed resolution (ambiguous/missing user dir, unreadable descriptors, exe
+   hash mid-update race, census key format vs dlc_load.json), manifest field semantics
+   (resolved:false = UNKNOWN not vanilla), CLI arg wiring, FFI safety of
+   QueryFullProcessImageNameW usage. Live evidence: first run resolved=true mods=0
+   dlc_enabled=20/24 matching dlc_load.json exactly.
+
+Thread log: ~/.claude/codex_threads.log.
