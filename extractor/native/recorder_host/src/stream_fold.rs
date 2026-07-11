@@ -50,6 +50,11 @@ pub struct FoldStreamStats {
     pub hours_emitted: u64,
     /// Set when framing stopped early on a malformed record (bad magic/version).
     pub stop_reason: Option<String>,
+    /// True when the final well-framed record is FRAME_END — i.e. the stream
+    /// ends at a CLOSED game hour. A raw crash tail (tolerated on read) makes
+    /// this false; the deferred repack MUST NOT seal such a source as a clean
+    /// compressed container (net gate 2026-07-11 finding 2).
+    pub ends_at_frame_end: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +294,7 @@ pub fn drive_fold_compressed<R: Read>(
     let mut chunk = vec![0u8; CHUNK];
     let mut processed: u64 = 0;
     let mut decoded_read: u64 = 0;
+    let mut last_record_type: Option<u16> = None;
 
     'read: loop {
         let n = reader.read(&mut chunk)?;
@@ -321,6 +327,9 @@ pub fn drive_fold_compressed<R: Read>(
                         RecordFramingError::UnsupportedHeaderLen(l) => {
                             format!("unsupported header length {l} at byte {at}")
                         }
+                        RecordFramingError::PayloadTooLarge(l) => {
+                            format!("payload length {l} exceeds the record bound at byte {at}")
+                        }
                     });
                     hard_stop = true;
                     break;
@@ -339,6 +348,7 @@ pub fn drive_fold_compressed<R: Read>(
                 COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
                 _ => stats.other_records += 1,
             }
+            last_record_type = Some(header.record_type);
 
             fold.ingest_record(
                 header.game_hour_raw,
@@ -385,6 +395,49 @@ pub fn drive_fold_compressed<R: Read>(
     stats.bytes_folded = processed;
     stats.truncated_tail_bytes = stats.stream_bytes.saturating_sub(processed);
     stats.hours_emitted = fold.emitted_hours_count() as u64;
+    stats.ends_at_frame_end =
+        carry.is_empty() && last_record_type == Some(COMPACT_RECORD_TYPE_FRAME_END);
+    if compressed {
+        // Stream-container net gate 2026-07-11, findings 1+2: a SEALED
+        // (checksummed zstd) container must end at a valid LOGICAL boundary,
+        // not merely a valid storage boundary. Physical EOF with residual
+        // carry (a partial header, or a header whose payload never arrived)
+        // is decoded-content truncation — the storage checksum only proves
+        // the truncated bytes were stored faithfully. Likewise a stream whose
+        // last record is not FRAME_END ends inside an OPEN game hour (a
+        // crash tail that deferred repack must never have sealed as clean).
+        // RAW sources keep the tolerant torn-tail behavior byte-identically.
+        if !carry.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "compressed stream ends mid-record: {} residual byte(s) after \
+                     byte {processed} (partial header or incomplete payload); the \
+                     decoded H4CR stream is truncated",
+                    carry.len()
+                ),
+            ));
+        }
+        match last_record_type {
+            Some(COMPACT_RECORD_TYPE_FRAME_END) => {}
+            Some(other) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "compressed stream ends inside an open game hour (last \
+                         record type {other}, not FRAME_END): a sealed container \
+                         must close every hour it carries"
+                    ),
+                ));
+            }
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "compressed stream contains no records".to_string(),
+                ));
+            }
+        }
+    }
     Ok(stats)
 }
 
@@ -528,6 +581,101 @@ mod tests {
                 hour
             );
         }
+    }
+
+    /// Net-gate finding 1: a sealed (compressed) stream whose decoded bytes
+    /// end mid-record must HARD-ERROR, never return Ok-with-stats. Raw stays
+    /// tolerant (separately asserted by the incomplete-tail test).
+    #[test]
+    fn compressed_stream_ending_mid_record_hard_errors() {
+        let mut stream = three_hour_stream();
+        // Append 16 bytes of a would-be next header (valid magic, then cut).
+        stream.extend_from_slice(COMPACT_RECORD_MAGIC);
+        stream.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+        stream.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        stream.extend_from_slice(&7u64.to_le_bytes());
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
+            .unwrap_err();
+        assert!(err.to_string().contains("ends mid-record"), "{err}");
+
+        // Same bytes, RAW source: tolerated with the residue accounted.
+        let mut fold = WorldFold::new("gid");
+        let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
+            .unwrap();
+        assert_eq!(stats.truncated_tail_bytes, 16);
+        assert!(!stats.ends_at_frame_end);
+    }
+
+    /// Net-gate finding 2: a sealed stream whose last record is NOT FRAME_END
+    /// ends inside an open game hour (a crash tail) and must HARD-ERROR; the
+    /// deferred repack independently refuses to seal such a source.
+    #[test]
+    fn compressed_stream_ending_in_open_hour_hard_errors() {
+        let mut stream = three_hour_stream();
+        push_record(
+            &mut stream,
+            99,
+            raw_for(HOUR_C + 1),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
+            .unwrap_err();
+        assert!(err.to_string().contains("open game hour"), "{err}");
+
+        // RAW: tolerated; the boundary fact is exposed for the repack guard.
+        let mut fold = WorldFold::new("gid");
+        let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
+            .unwrap();
+        assert!(!stats.ends_at_frame_end);
+        // A clean stream reports the closed boundary.
+        let mut fold = WorldFold::new("gid");
+        let clean = drive_fold_compressed(
+            std::io::Cursor::new(three_hour_stream()),
+            0,
+            &mut fold,
+            false,
+        )
+        .unwrap();
+        assert!(clean.ends_at_frame_end);
+    }
+
+    /// Net-gate finding 3: a forged/corrupt payload_len beyond the record
+    /// bound is a framing error — hard on compressed, loud stop_reason on raw
+    /// — instead of a multi-hundred-MB carry that can swallow later records.
+    #[test]
+    fn oversized_payload_len_is_a_framing_stop() {
+        let mut stream = three_hour_stream();
+        stream.extend_from_slice(COMPACT_RECORD_MAGIC);
+        stream.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+        stream.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        stream.extend_from_slice(&8u64.to_le_bytes());
+        stream.extend_from_slice(&raw_for(HOUR_C).to_le_bytes());
+        stream.extend_from_slice(&18u16.to_le_bytes());
+        stream.extend_from_slice(&COMPACT_RECORD_TYPE_DOMAIN_DATA.to_le_bytes());
+        stream.extend_from_slice(&0x2000_0000u32.to_le_bytes()); // 512 MiB > bound
+        stream.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
+            .unwrap_err();
+        assert!(err.to_string().contains("framing stopped"), "{err}");
+
+        let mut fold = WorldFold::new("gid");
+        let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
+            .unwrap();
+        assert!(
+            stats
+                .stop_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("exceeds the record bound")),
+            "{:?}",
+            stats.stop_reason
+        );
+        assert_eq!(stats.hours_emitted, 3, "records before the stop still fold");
     }
 
     /// Hour-boundary release: a file-backed fold NEVER retains a closed hour's

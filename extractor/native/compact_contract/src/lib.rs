@@ -75,7 +75,19 @@ pub enum RecordFramingError {
     UnsupportedVersion(u16),
     /// Header `header_len` field != [`COMPACT_RECORD_HEADER_LEN`].
     UnsupportedHeaderLen(usize),
+    /// Header `payload_len` exceeds [`COMPACT_MAX_PAYLOAD_LEN`]. A forged or
+    /// corrupted length would otherwise make framing consumers buffer up to
+    /// 4 GiB of "payload" and could swallow every subsequent record —
+    /// including FRAME_END — inside one bogus record (stream-container net
+    /// gate 2026-07-11, finding 3).
+    PayloadTooLarge(u32),
 }
+
+/// Hard upper bound on a single record's payload. The largest real payloads
+/// observed in production (deep-war d53 relation snapshots) are tens of MB;
+/// 256 MiB is more than an order of magnitude above any legitimate record and
+/// far below the carry-exhaustion / record-swallowing threshold.
+pub const COMPACT_MAX_PAYLOAD_LEN: u32 = 1 << 28;
 
 impl core::fmt::Display for RecordFramingError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -86,6 +98,12 @@ impl core::fmt::Display for RecordFramingError {
             }
             RecordFramingError::UnsupportedHeaderLen(l) => {
                 write!(f, "unsupported header length {l}")
+            }
+            RecordFramingError::PayloadTooLarge(l) => {
+                write!(
+                    f,
+                    "payload length {l} exceeds the {COMPACT_MAX_PAYLOAD_LEN}-byte record bound"
+                )
             }
         }
     }
@@ -115,6 +133,10 @@ pub fn parse_compact_record_header(buf: &[u8]) -> Result<CompactRecordHeader, Re
     if header_len != COMPACT_RECORD_HEADER_LEN {
         return Err(RecordFramingError::UnsupportedHeaderLen(header_len));
     }
+    let payload_len = u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]);
+    if payload_len > COMPACT_MAX_PAYLOAD_LEN {
+        return Err(RecordFramingError::PayloadTooLarge(payload_len));
+    }
     Ok(CompactRecordHeader {
         sequence: u64::from_le_bytes([
             buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
@@ -122,7 +144,7 @@ pub fn parse_compact_record_header(buf: &[u8]) -> Result<CompactRecordHeader, Re
         game_hour_raw: i32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]),
         domain_id: u16::from_le_bytes([buf[20], buf[21]]),
         record_type: u16::from_le_bytes([buf[22], buf[23]]),
-        payload_len: u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]) as usize,
+        payload_len: payload_len as usize,
         record_flags: u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]),
     })
 }

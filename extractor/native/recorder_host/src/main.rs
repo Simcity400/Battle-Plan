@@ -2035,6 +2035,26 @@ fn fold_and_repack_existing_run_dir(repack: RepackConfig) -> Result<(), String> 
                 repack.workers,
             )
             .map_err(|e| format!("streaming deferred fold failed: {e}"))?;
+        // Stream-container net gate 2026-07-11 finding 2: NEVER seal a source
+        // that does not end at a closed game hour. A raw crash tail is
+        // tolerated on READ (recovery), but compressing + checksumming it
+        // would launder the crash into a fully-valid container whose loss is
+        // invisible. Fail loud here; the crashed run keeps its raw stream +
+        // recovery path.
+        if fold_stats.truncated_tail_bytes > 0
+            || fold_stats.stop_reason.is_some()
+            || !fold_stats.ends_at_frame_end
+        {
+            return Err(format!(
+                "refusing to seal: source does not end at a closed game hour \
+                 (truncated_tail_bytes={}, stop_reason={:?}, ends_at_frame_end={}). \
+                 A crash/torn tail must stay a raw recovery artifact, never a \
+                 clean sealed container",
+                fold_stats.truncated_tail_bytes,
+                fold_stats.stop_reason,
+                fold_stats.ends_at_frame_end,
+            ));
+        }
         let verify = write_native_replay_container_streaming(
             &cfg,
             &raw_path,
@@ -17979,6 +17999,7 @@ mod tests {
             other_records: 0,
             hours_emitted: 2,
             stop_reason: None,
+            ends_at_frame_end: true,
         };
 
         let bytes = session_manifest_bytes_with_pre_pack_host_finalize(
@@ -27945,6 +27966,7 @@ mod tests {
             other_records: 0,
             hours_emitted: snapshots.len() as u64,
             stop_reason: None,
+            ends_at_frame_end: true,
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",

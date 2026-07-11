@@ -728,6 +728,9 @@ fn framing_stop_message(e: RecordFramingError, at: u64) -> String {
         RecordFramingError::UnsupportedHeaderLen(l) => {
             format!("unsupported header length {l} at byte {at}")
         }
+        RecordFramingError::PayloadTooLarge(l) => {
+            format!("payload length {l} exceeds the record bound at byte {at}")
+        }
     }
 }
 
