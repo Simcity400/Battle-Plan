@@ -94,6 +94,16 @@ Order chosen so each window answers one question; ~15 min each; gate-bracket eve
 spacing (build-retry loop against the hold), NEVER cargo-build while a capture is in flight.
 
 - P1a **Serial-wall scheduler decision — CLOSED 2026-07-11: SHIP NEW** (pending P1b + G3).
+  ⚠ **SPEED PROVENANCE (user disclosure 2026-07-11): all recent live sessions ran at game
+  speed 2, not speed 5** (user avoided restarts). Consequences: every OLD-vs-NEW comparison
+  below is internally valid (both arms same speed, same session) so the SHIP NEW decision
+  STANDS on relative evidence; but ALL absolute frame times in this table are SPEED-2
+  numbers — the "p95 84.9 first sub-100" is NOT a speed-5 milestone and is hereby
+  downgraded to a speed-2 observation. Speed 5 raises the game's own tick-thread CPU load
+  (more contention — exactly the axis the NEW scheduler is sensitive to), so P5 acceptance
+  MUST re-measure everything at true speed 5, and the G3 evidence pack must carry this
+  caveat. The same annotation applies to the P2 candidates palindrome (relative verdict
+  usable; effect size to be re-checked at speed 5 if it decides a default).
   Six counterbalanced 240s windows on the advancing live game (time order = load order):
   | window | code | ft_avg | ft_p95 | ft_max | crit path (ms/frame) |
   |---|---|---|---|---|---|
