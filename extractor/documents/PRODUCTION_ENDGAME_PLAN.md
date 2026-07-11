@@ -206,6 +206,20 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
 - P4 **Pace-exogeneity experiment** (decides whether frame-time cuts speed the GAME up):
   fixed save+speed windows with domain subsets ~40/~80/~151ms; compare hour-interval
   distributions. Uses the subset presets; driver to write. (~45 min, can run overnight)
+  **DRIVER READY 2026-07-11 (~/.claude/hoi4_gate_prompts/p4_pace_windows.sh + p4_analyze.py):**
+  no code change was needed — the subset mechanism already exists end-to-end
+  (`--scheduled-domain <name>` CLI, repeatable → control-file `scheduled_domains` (";"-joined)
+  → collector `scheduled_domain_enabled` at lib.rs ~3480: EMPTY = all domains, non-empty =
+  listed only, invalid = NONE i.e. fail-closed; host computes expected_domain_ids from the
+  same list so a subset window gates against its own subset). Tiers from MEASURED w1-231437
+  per-domain read_time_us: FULL = all 55 (297 lane-ms/frame), MID = minus top-5 heavies
+  d53/d29/d28/d44/d23 (~166), LIGHT = 6-domain cheap tail (~6). Palindrome
+  [full,mid,light,light,mid,full] × 240s at 1ms sampling — hour-boundary resolution is
+  cadence-bound (frame loop reads the hour counter regardless of domains), so LIGHT keeps
+  full resolution at ~50x less lane cost. Decision metric: game-hours/wall-second per tier.
+  DEVIATION from the fixed-save design: runs on the advancing live game with palindrome
+  ordering as the load control (a save reload needs the user); escalate to fixed-save arms
+  only if the palindrome verdict is ambiguous.
 - P5 **Speed-5 re-acceptance** (the benchmark of record, after P1a–P3 land). Full
   production preset, 600s runs at THREE strata: early-game, ordinary-war, deepest-war.
   **Numerical acceptance set (finding 4 — p95<100 alone is NOT the bar):**
