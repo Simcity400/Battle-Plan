@@ -137,9 +137,13 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
   later; all live-memory readers carry intra-frame skew under both schedulers — the law
   is accounting, not atomicity); interior-mutability audit of the moved readers' shared
   caches. No "byte-neutral" claim anywhere until this passes.
-- P2 **Candidates palindrome, clean re-run** (driver ready: ab_candidates_driver.ps1) on
-  the post-P1a binary: [32,16,0,0,16,32]. Decide `PREFETCH_DIST_CANDIDATES` default like
-  relation-8. (~28 min)
+- P2 **Candidates palindrome — CLOSED 2026-07-11: MEASURED NULL** (clean 6-window
+  palindrome [32,16,0,0,16,32] at speed 2, p2cand_*_152732, applied distance verified
+  per-window, mixed=false all six). Paired means: d53 read_time 41.9/41.5/42.7 ms and
+  relations phase 36.1/35.4/35.9 ms for dist 0/16/32 — ~3% spread, inside single-window
+  noise (same-arm windows differ more). `PREFETCH_DIST_CANDIDATES` stays default-off;
+  entry goes in the known-NULLs table. (Relation-8 default from the earlier palindromes
+  is unaffected.)
 - P3 **Hour-latch decision run**: one 600s window `--hour-latch` on the P1a binary — latch
   invariant + frame-cost check (ABBA already green; this is the post-serial-wall re-check).
   Then USER CALL on default-ON. 6-core portability run stays queued for the other rig.
