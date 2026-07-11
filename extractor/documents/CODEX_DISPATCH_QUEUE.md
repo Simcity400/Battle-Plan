@@ -511,3 +511,28 @@ countries -> both char roots kept, no leader row for the ambiguous assoc, domain
 BLOCKER 2 still needs its own investigation (why a freshly-loaded save has 3146 unreadable sweep
 ranges when a warm game has 0 — real fresh-load d47 sweep fragility affecting production captures
 that start on a loaded save).
+
+## D47 — RESOLVED: BUILD EXONERATED (clean frozen-save A/B, 2026-07-12)
+Clean same-build test on a FROZEN, stable save (d47ab_frozen.hoi4 @ 1940.12): TIP build
+emitted 1,344,265 d47 rows, country_roots_seen=1052, char_rows=7.96M, prewarm_skipped_root_rows=0,
+sweep_skipped_ranges=0, sweep_degraded=0, stable_root_count=16.3M. d47 WORKS PERFECTLY on tip.
+=> The earlier tipval_085800 d47=0 was NOT a build regression. It was BLOCKER 2 (fresh-load
+sweep-coverage): that specific just-loaded early save had transient unreadable heap ranges
+(sweep_skipped_ranges=3146) -> coverage_complete()==false (lib.rs 52981: !degraded && skipped==0)
+-> the prewarm at 18265-18271 CORRECTLY HELD (fail-closed rootless, refusing to adopt a lossy
+character world) rather than emit a silently-reduced snapshot. Arguably CORRECT behavior. The
+confounded first A/B (old on a later/warmer autosave) made it LOOK like a build regression; the
+frozen A/B overturns that. Blocker 1 (dedup defect) DID NOT fire here (skipped_root_rows=0 — this
+save has no persistent country-conflict).
+NET: no build regression; no revert. Two follow-ups, both NON-URGENT:
+- LATENT BUG (blocker 1, verified by Codex tid 019f5387, fix designed + 4 tests specified in the
+  entry above): a persistent country-conflicting char_id would zero d47 on a save that HAS one,
+  because 615d24125 routes that ambiguity into the transient whole-prewarm gate (18549). Worth
+  fixing opportunistically (decouple to ambiguous_root_rows + quarantine the identity), NOT a
+  regression, NOT this session. Worktree lane/d47-ambiguity-decouple created + code understood;
+  implementation deferred.
+- CAPTURE-OPS (blocker 2): captures that START on a freshly-loaded save may see a d47 warmup gap
+  until the heap stabilizes (sweep coverage completes). tipval_085800 never stabilized over 600s
+  which is unusual; the frozen save was clean from frame 1. Save/timing-specific, not reliably
+  reproducible. Recommendation: warm the game briefly before a production capture, or accept the
+  fail-closed d47 hold (zero-silent-GAP: it's accounted PARTIAL, not silent loss).
