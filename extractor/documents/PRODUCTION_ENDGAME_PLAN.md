@@ -193,6 +193,35 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
     NEXT BOOT: run a LEADING-NEW order (new,old,new,old…) so the first — most reliable —
     window exercises NEW, and add a 5s post-w1 game-liveness probe to the driver to
     disambiguate (b) from (a)/(c) before blaming the swap.
+    **RERUN 3 2026-07-12 00:06 — ROOT CAUSE ISOLATED (leading-NEW + liveness probes):**
+    w1_NEW captured 423 frames CLEAN, post-w1 liveness = ALIVE; w2_OLD then hit
+    ConnectNamedPipe timeout 244s and post-w2 liveness = GONE. So across THREE rounds the
+    game dies in the gap before the SECOND window's injection EVERY time, and w1 survived as
+    OLD (rounds 1-2) and as NEW (round 3) — **the DLL arm is EXONERATED; the trigger is the
+    2nd injection/DLL-swap cycle within one game process, not NEW's code.** Prime suspect:
+    the rename-aside swap reuses ONE shared DLL path (collector.dll) — w1 registers a
+    WH_GETMESSAGE hook against that path; renaming a DIFFERENT dll onto the same path while
+    the game still holds/resolves w1's hook is the classic crash (game loads a module that
+    doesn't match the hook registration). HARNESS FIX (offline, staged): give each window a
+    UNIQUE dll path (collector_w<N>.dll) so no live-hooked path is ever swapped under the
+    game; also let w1's hook fully tear down before re-inject. This blocks ANY multi-window-
+    per-session live experiment (P4 palindrome = 6 injections, P5) — not just M1 — so the
+    fix is on the wave critical path. Single-window-per-launch experiments (tip-val, P3) are
+    SAFE (first injection always survives). **M1 DISPOSITION: shipped-with-harness-caveat.**
+    Best available evidence = tonight's two first-window captures (w1_new 000620 vs w1_old
+    231437, CROSS-SESSION so load-confounded), canary-normalized by the M1-untouched d28
+    (oob_command, which moved 27.37→22.87ms = 0.835× between sessions = pure load):
+    | domain | old ms | new ms | new/old | ÷canary | read |
+    |---|---|---|---|---|---|
+    | d28 canary | 27.37 | 22.87 | 0.835 | — | load normalizer |
+    | d23 map_detail (M1 PRIMARY) | 17.38 | 14.46 | 0.832 | **0.996** | NULL vs load |
+    | d44 supply | 23.20 | 17.18 | 0.741 | 0.887 | −11% beyond load |
+    | d48 construction | 11.37 | 9.14 | 0.804 | 0.962 | −4% beyond load |
+    M1's headline claim (attack d23's 97%-materialise province sampling) is NOT supported —
+    d23 tracks the canary exactly. Two secondary building domains show modest normalized
+    wins. Single cross-session pair = directional only (±~10% canary noise). M1 the CHANGE is
+    sound (gate SOUND, suite 353/0, non-regressing) so it STAYS shipped, but its perf value is
+    smaller than pitched and the clean same-session verdict remains BLOCKED on the harness fix.
   - M2 candidate: d48 clones its whole `last_buildings` BTreeMap per frame (lib.rs
     ~23495) — measure share first.
   - M3 candidates: d44/d28 residual materialise after M1 (row building, delta-tracker
