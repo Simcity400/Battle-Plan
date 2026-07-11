@@ -483,3 +483,31 @@ OPEN: (a) clean A/B on ONE FROZEN save file (copy autosave to a fixed name; load
 with tip then old) to separate build from save-state; (b) explain sweep_skipped_ranges 0->3146;
 (c) fix design (drop-conflicting-root-only) + gate. DO NOT hand-fix until the mechanism is
 adversarially confirmed and the clean A/B run — user directive: verify real before fixing.
+
+## D47 ROOT-CAUSE CONFIRMED (Codex Mode-A tid 019f5387, 2026-07-12) — TWO INDEPENDENT BLOCKERS
+Codex confirmed the dedup mechanism AND separated it from the sweep:
+BLOCKER 1 (dedup defect, 615d24125): country-conflict char_id (18341) + unit-leader conflict
+(18367) increment skipped_root_rows, which the WHOLE-PREWARM gate at 18549 treats identically
+to transient torn double-reads. On fresh load (had_stable_roots=false) any skipped_root_rows>0
+sets cache.roots=default() (empty), clears sweep_gen, schedules negative-cache rescan; a
+PERSISTENT conflict repeats every scan so had_stable_roots never turns true -> d47 stays 0
+(country_roots_seen=0, rowless PARTIAL). DESIGN DEFECT: persistent localized ambiguity is
+wrongly coupled to the transient whole-frame gate.
+BLOCKER 2 (sweep, INDEPENDENT): sweep_skipped_ranges is incremented ONLY in the heap sweep
+(VirtualQuery fail 53368, read_bytes_scan page-unreadable 53394, no-aligned-progress 53425) —
+615d24125 did NOT touch these. 3146 skips = a SEPARATE fresh-load/save-state heap-coverage
+failure. So the confounded live d47=0 CANNOT be attributed exclusively to 615d24125; either
+blocker alone can zero d47. (Frozen-save A/B in flight to see which fires on the 1940.12 save.)
+FIX DESIGN (verified, not yet implemented): reserve skipped_root_rows for torn/unreliable reads
+ONLY; route country-identity conflicts to a NEW ambiguous_root_rows counter (or excluded_scan_hits);
+QUARANTINE all roots for a conflicting char_id (no arbitrary winner) and drop only the conflicting
+unit_leader mapping — keep the other ~4000 characters; adopt `next` when it has stable roots +
+only localized ambiguities. ACCEPTANCE TESTS (Codex-specified, 4): (1) ~4000 valid + 1 conflicting
+char_id -> adopts roots, stable_root_count>0, skipped_root_rows==0, ambiguity counter>0, NOT
+rowless, ambiguous identity emits under NEITHER country; (2) 2 chars sharing a leader ptr across
+countries -> both char roots kept, no leader row for the ambiguous assoc, domain nonempty;
+(3) genuinely torn double-read -> skipped_root_rows>0, empty cache, SOURCE|PARTIAL rowless;
+(4) zero validated roots -> 18549 stable_root_count==0 branch still fails closed.
+BLOCKER 2 still needs its own investigation (why a freshly-loaded save has 3146 unreadable sweep
+ranges when a warm game has 0 — real fresh-load d47 sweep fragility affecting production captures
+that start on a loaded save).
