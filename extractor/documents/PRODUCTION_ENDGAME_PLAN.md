@@ -207,7 +207,16 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
     game; also let w1's hook fully tear down before re-inject. This blocks ANY multi-window-
     per-session live experiment (P4 palindrome = 6 injections, P5) — not just M1 — so the
     fix is on the wave critical path. Single-window-per-launch experiments (tip-val, P3) are
-    SAFE (first injection always survives). **M1 DISPOSITION: shipped-with-harness-caveat.**
+    SAFE (first injection always survives).
+    **HARNESS FIX IMPLEMENTED (offline, UNVALIDATED) 2026-07-12:**
+    ~/.claude/hoi4_gate_prompts/multiwindow_isolated.sh gives every window its OWN dll in its
+    OWN dir — verified the injected dll only touches its module dir for collector_control.json
+    (read) + collector_attach.jsonl/sidecar (write), all per-instance, and the strategicregions
+    read keys off the GAME exe not the dll, so per-dir isolation needs ZERO Rust change. No
+    shared hooked path is ever swapped. It is the FIX but is a crash RISK until one clean
+    multi-window run confirms it — needs explicit user OK before running on a live game. Safe
+    single-window driver = ~/.claude/hoi4_gate_prompts/run_one_window.sh (one injection, w1
+    always survives). Both syntax+spec-parse dry-tested. **M1 DISPOSITION: shipped-with-harness-caveat.**
     Best available evidence = tonight's two first-window captures (w1_new 000620 vs w1_old
     231437, CROSS-SESSION so load-confounded), canary-normalized by the M1-untouched d28
     (oob_command, which moved 27.37→22.87ms = 0.835× between sessions = pure load):
