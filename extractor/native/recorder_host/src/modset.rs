@@ -11,26 +11,36 @@
 //! plus the reasons, and downstream consumers must treat an unresolved modset
 //! as "unknown", not "vanilla".
 //!
-//! Sources of truth read here:
-//! - hoi4.exe image path via the attached PID (`QueryFullProcessImageNameW`) —
-//!   never a hardcoded install path; the exe sha256 is the build binding.
-//! - `<pdx_user_dir>/dlc_load.json` — the launcher-written enabled-mods +
-//!   disabled-DLCs document (observed schema:
-//!   `{"enabled_mods":[".mod paths"],"disabled_dlcs":["dlc/.../dlcNNN.dlc"]}`).
-//! - each enabled mod's `.mod` descriptor (name/version/remote_file_id/path),
-//!   content-hashed so two captures can prove they ran the same mod text.
-//! - `<game_root>/dlc/*/​*.dlc` descriptors for the installed-DLC census;
-//!   enabled = installed minus `disabled_dlcs`.
-//!
-//! The Paradox user dir is probed (`Documents` and OneDrive-redirected
-//! `OneDrive/Documents` under `%USERPROFILE%`) unless `--pdx-user-dir` pins it.
-//! If MORE THAN ONE probe candidate carries a `dlc_load.json` the resolution is
-//! AMBIGUOUS and fails closed (both candidates recorded) — pass the flag.
+//! G2 gate amendments (2026-07-11, REFUTED -> fix round):
+//! - `dlc_load.json` fields must be PRESENT and WELL-TYPED: a missing or
+//!   mistyped `enabled_mods`/`disabled_dlcs` fails closed (a `{}` document
+//!   previously resolved as confident vanilla — the exact silent-vanilla trap).
+//! - Every `disabled_dlcs` entry must match an INSTALLED census key exactly;
+//!   an unmatched key is ambiguity (case/format drift could silently enable a
+//!   disabled DLC) and fails closed.
+//! - A mod descriptor must carry `path=`/`archive=` (and parse at least one
+//!   recognized field) or the binding is incomplete -> fail closed.
+//! - Mod CONTENT gets a fingerprint (file count + total bytes + max mtime,
+//!   bounded walk) — a Workshop update that leaves the descriptor untouched
+//!   changes the fingerprint. This is a fingerprint, not a proof; the
+//!   descriptor sha stays the text binding.
+//! - The exe hash records size+mtime BEFORE and re-checks AFTER hashing; a
+//!   mid-hash mutation fails closed. (The pathname-vs-mapped-image race
+//!   cannot be fully closed from user mode; the stability check plus recording
+//!   the path narrows it and is recorded as a residual.)
+//! - `dlc_load.json` mtime and the process start time are both recorded; a
+//!   config file NEWER than the process start means the launcher state may not
+//!   be the state the game was started with -> fail closed (evidence kept).
+//! - `user_dir_source` records probed-vs-override provenance.
+//! - When `resolved` is false the JSON nests all evidence under
+//!   `partial_evidence` so a naive consumer reading `enabled_mods` at the top
+//!   level finds NOTHING rather than a vanilla-looking answer.
 
 use std::ffi::c_void;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde_json::{json, Value};
 use snapshot::sha256::{to_hex, Sha256};
@@ -38,6 +48,8 @@ use snapshot::sha256::{to_hex, Sha256};
 type Handle = *mut c_void;
 
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+/// Bounded mod-content walk: enough for any real mod, refuses runaway trees.
+const MOD_CONTENT_MAX_FILES: usize = 200_000;
 
 extern "system" {
     fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
@@ -47,6 +59,13 @@ extern "system" {
         flags: u32,
         exe_name: *mut u16,
         size: *mut u32,
+    ) -> i32;
+    fn GetProcessTimes(
+        process: Handle,
+        creation: *mut u64,
+        exit: *mut u64,
+        kernel: *mut u64,
+        user: *mut u64,
     ) -> i32;
 }
 
@@ -64,6 +83,11 @@ pub struct ResolvedMod {
     pub remote_file_id: Option<String>,
     /// The mod content location the descriptor points at (`path=`/`archive=`).
     pub content_path: Option<String>,
+    /// Content fingerprint of the location `content_path` names:
+    /// (file_count, total_bytes, max_mtime_unix). For an `archive=` mod the
+    /// fingerprint covers the single archive file. None when the content
+    /// location could not be walked (which also fails resolution closed).
+    pub content_fingerprint: Option<(u64, u64, i64)>,
 }
 
 /// The full modset + build binding, plus every resolution failure met on the
@@ -76,6 +100,13 @@ pub struct ModsetReport {
     pub exe_size_bytes: Option<u64>,
     pub exe_sha256: Option<String>,
     pub user_dir: Option<PathBuf>,
+    /// "override" (--pdx-user-dir) or "probed" — a wrong override is the
+    /// recorded suspect when a binding later proves wrong.
+    pub user_dir_source: Option<&'static str>,
+    /// dlc_load.json mtime (unix seconds) and the game process creation time
+    /// (unix seconds), both recorded so config-newer-than-process is provable.
+    pub dlc_load_mtime_unix: Option<i64>,
+    pub process_start_unix: Option<i64>,
     pub enabled_mods: Vec<ResolvedMod>,
     pub installed_dlcs: Vec<String>,
     pub disabled_dlcs: Vec<String>,
@@ -84,15 +115,16 @@ pub struct ModsetReport {
 
 impl ModsetReport {
     pub fn as_json(&self) -> Value {
-        json!({
-            "resolved": self.resolved,
-            "errors": self.errors,
+        let evidence = json!({
             "game": {
                 "exe_path": self.exe_path.as_ref().map(|p| p.display().to_string()),
                 "exe_size_bytes": self.exe_size_bytes,
                 "exe_sha256": self.exe_sha256,
             },
             "pdx_user_dir": self.user_dir.as_ref().map(|p| p.display().to_string()),
+            "user_dir_source": self.user_dir_source,
+            "dlc_load_mtime_unix": self.dlc_load_mtime_unix,
+            "process_start_unix": self.process_start_unix,
             "enabled_mods": self.enabled_mods.iter().map(|m| json!({
                 "descriptor_entry": m.descriptor_entry,
                 "descriptor_path": m.descriptor_path.as_ref().map(|p| p.display().to_string()),
@@ -101,13 +133,37 @@ impl ModsetReport {
                 "version": m.version,
                 "remote_file_id": m.remote_file_id,
                 "content_path": m.content_path,
+                "content_fingerprint": m.content_fingerprint.map(|(files, bytes, mtime)| json!({
+                    "files": files, "bytes": bytes, "max_mtime_unix": mtime,
+                })),
             })).collect::<Vec<_>>(),
             "dlc": {
                 "installed": self.installed_dlcs,
                 "disabled": self.disabled_dlcs,
                 "enabled": self.enabled_dlcs,
             },
-        })
+        });
+        if self.resolved {
+            let mut doc = json!({
+                "resolved": true,
+                "errors": self.errors,
+            });
+            if let (Value::Object(doc_map), Value::Object(ev)) = (&mut doc, evidence) {
+                for (k, v) in ev {
+                    doc_map.insert(k, v);
+                }
+            }
+            doc
+        } else {
+            // FAIL-CLOSED SHAPE (G2 finding 8): a naive consumer looking for
+            // top-level enabled_mods/dlc on an UNRESOLVED report finds nothing
+            // — partial evidence cannot be misread as a vanilla binding.
+            json!({
+                "resolved": false,
+                "errors": self.errors,
+                "partial_evidence": evidence,
+            })
+        }
     }
 }
 
@@ -121,86 +177,123 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
         exe_size_bytes: None,
         exe_sha256: None,
         user_dir: None,
+        user_dir_source: None,
+        dlc_load_mtime_unix: None,
+        process_start_unix: None,
         enabled_mods: Vec::new(),
         installed_dlcs: Vec::new(),
         disabled_dlcs: Vec::new(),
         enabled_dlcs: Vec::new(),
     };
+    macro_rules! fail {
+        ($($arg:tt)*) => {{
+            report.resolved = false;
+            report.errors.push(format!($($arg)*));
+        }};
+    }
 
     // --- game build binding ---
     match query_process_image_path(pid) {
         Ok(exe) => {
-            match hash_file_streaming(&exe) {
+            match hash_file_streaming_stable(&exe) {
                 Ok((size, sha)) => {
                     report.exe_size_bytes = Some(size);
                     report.exe_sha256 = Some(sha);
                 }
-                Err(e) => {
-                    report.resolved = false;
-                    report.errors.push(format!("exe hash failed: {e}"));
-                }
+                Err(e) => fail!("exe hash failed: {e}"),
             }
             report.exe_path = Some(exe);
         }
-        Err(e) => {
-            report.resolved = false;
-            report.errors.push(format!("exe path query failed: {e}"));
-        }
+        Err(e) => fail!("exe path query failed: {e}"),
+    }
+    match query_process_start_unix(pid) {
+        Ok(start) => report.process_start_unix = Some(start),
+        Err(e) => fail!("process start time query failed: {e}"),
     }
 
     // --- Paradox user dir + dlc_load.json ---
-    let user_dir = match locate_user_dir(user_dir_override) {
-        Ok(dir) => Some(dir),
-        Err(e) => {
-            report.resolved = false;
-            report.errors.push(e);
-            None
+    match locate_user_dir(user_dir_override) {
+        Ok((dir, source)) => {
+            report.user_dir = Some(dir);
+            report.user_dir_source = Some(source);
         }
-    };
-    report.user_dir = user_dir.clone();
+        Err(e) => fail!("{e}"),
+    }
 
     let mut disabled_dlcs: Vec<String> = Vec::new();
-    if let Some(user_dir) = &user_dir {
+    if let Some(user_dir) = report.user_dir.clone() {
         let dlc_load_path = user_dir.join("dlc_load.json");
+        report.dlc_load_mtime_unix = file_mtime_unix(&dlc_load_path);
+        // Config newer than the process start: the launcher state on disk is
+        // not provably the state the running game was launched with.
+        if let (Some(mtime), Some(start)) =
+            (report.dlc_load_mtime_unix, report.process_start_unix)
+        {
+            if mtime > start {
+                fail!(
+                    "dlc_load.json modified AFTER the game process started \
+                     (mtime {mtime} > start {start}); launcher state unprovable"
+                );
+            }
+        }
         match fs::read_to_string(&dlc_load_path) {
             Ok(text) => match serde_json::from_str::<Value>(&text) {
                 Ok(doc) => {
-                    let enabled_mods = string_array(&doc, "enabled_mods");
-                    disabled_dlcs = string_array(&doc, "disabled_dlcs");
-                    for entry in enabled_mods {
-                        let resolved = resolve_mod_descriptor(user_dir, &entry);
-                        if resolved.descriptor_sha256.is_none() {
-                            report.resolved = false;
-                            report.errors.push(format!(
-                                "mod descriptor unreadable: {entry:?}"
-                            ));
+                    // G2 finding 2: absent or mistyped fields are NOT empty
+                    // lists — they are unproven state and fail closed.
+                    match required_string_array(&doc, "enabled_mods") {
+                        Ok(enabled_mods) => {
+                            for entry in enabled_mods {
+                                let resolved = resolve_mod_descriptor(&user_dir, &entry);
+                                if resolved.descriptor_sha256.is_none() {
+                                    fail!("mod descriptor unreadable: {entry:?}");
+                                } else if resolved.content_path.is_none() {
+                                    fail!(
+                                        "mod descriptor carries no path=/archive= \
+                                         (binding incomplete): {entry:?}"
+                                    );
+                                } else if resolved.content_fingerprint.is_none() {
+                                    fail!(
+                                        "mod content not fingerprintable: {entry:?} -> {:?}",
+                                        resolved.content_path
+                                    );
+                                }
+                                report.enabled_mods.push(resolved);
+                            }
                         }
-                        report.enabled_mods.push(resolved);
+                        Err(e) => fail!("dlc_load.json enabled_mods: {e}"),
+                    }
+                    match required_string_array(&doc, "disabled_dlcs") {
+                        Ok(list) => disabled_dlcs = list,
+                        Err(e) => fail!("dlc_load.json disabled_dlcs: {e}"),
                     }
                 }
-                Err(e) => {
-                    report.resolved = false;
-                    report
-                        .errors
-                        .push(format!("dlc_load.json parse failed: {e}"));
-                }
+                Err(e) => fail!("dlc_load.json parse failed: {e}"),
             },
-            Err(e) => {
-                report.resolved = false;
-                report.errors.push(format!(
-                    "dlc_load.json read failed at {}: {e}",
-                    dlc_load_path.display()
-                ));
-            }
+            Err(e) => fail!(
+                "dlc_load.json read failed at {}: {e}",
+                dlc_load_path.display()
+            ),
         }
     }
     report.disabled_dlcs = disabled_dlcs.clone();
 
     // --- installed / enabled DLC census (game_root/dlc/<dir>/<name>.dlc) ---
-    if let Some(exe) = &report.exe_path {
+    if let Some(exe) = report.exe_path.clone() {
         match exe.parent() {
             Some(game_root) => match census_installed_dlcs(game_root) {
                 Ok(installed) => {
+                    // G2 finding 6: every disabled key must match an installed
+                    // census key EXACTLY, else the subtraction is unproven
+                    // (format/case drift could silently re-enable a DLC).
+                    for disabled in &disabled_dlcs {
+                        if !installed.iter().any(|rel| rel == disabled) {
+                            fail!(
+                                "disabled_dlcs entry matches no installed DLC \
+                                 (format drift?): {disabled:?}"
+                            );
+                        }
+                    }
                     report.enabled_dlcs = installed
                         .iter()
                         .filter(|rel| !disabled_dlcs.iter().any(|d| d == *rel))
@@ -208,34 +301,32 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                         .collect();
                     report.installed_dlcs = installed;
                 }
-                Err(e) => {
-                    report.resolved = false;
-                    report.errors.push(format!("dlc census failed: {e}"));
-                }
+                Err(e) => fail!("dlc census failed: {e}"),
             },
-            None => {
-                report.resolved = false;
-                report
-                    .errors
-                    .push("exe path has no parent directory".to_string());
-            }
+            None => fail!("exe path has no parent directory"),
         }
     }
 
     report
 }
 
-fn string_array(doc: &Value, key: &str) -> Vec<String> {
-    doc.get(key)
-        .and_then(Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(Value::as_str)
+/// A field that MUST exist as an array of strings. Anything else is unproven
+/// launcher state, not an empty list.
+fn required_string_array(doc: &Value, key: &str) -> Result<Vec<String>, String> {
+    let field = doc
+        .get(key)
+        .ok_or_else(|| format!("field {key:?} absent (unproven, not empty)"))?;
+    let entries = field
+        .as_array()
+        .ok_or_else(|| format!("field {key:?} is not an array"))?;
+    entries
+        .iter()
+        .map(|v| {
+            v.as_str()
                 .map(str::to_string)
-                .collect()
+                .ok_or_else(|| format!("field {key:?} carries a non-string entry"))
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 fn query_process_image_path(pid: u32) -> Result<PathBuf, String> {
@@ -255,9 +346,43 @@ fn query_process_image_path(pid: u32) -> Result<PathBuf, String> {
     }
 }
 
-/// Streaming sha256 so hashing the ~60MB exe never spikes the recorder's peak
-/// private commit (the G5 bounded-memory headline reads from the same manifest).
-fn hash_file_streaming(path: &Path) -> Result<(u64, String), String> {
+/// Process creation time as unix seconds (FILETIME epoch conversion).
+fn query_process_start_unix(pid: u32) -> Result<i64, String> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return Err(format!("OpenProcess({pid}) failed"));
+        }
+        let (mut creation, mut exit, mut kernel, mut user) = (0u64, 0u64, 0u64, 0u64);
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        CloseHandle(handle);
+        if ok == 0 {
+            return Err(format!("GetProcessTimes({pid}) failed"));
+        }
+        // FILETIME: 100ns ticks since 1601-01-01. Unix epoch offset in ticks:
+        const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+        if creation < UNIX_EPOCH_TICKS {
+            return Err("process creation time precedes the unix epoch".to_string());
+        }
+        Ok(((creation - UNIX_EPOCH_TICKS) / 10_000_000) as i64)
+    }
+}
+
+fn file_mtime_unix(path: &Path) -> Option<i64> {
+    let mtime = fs::metadata(path).ok()?.modified().ok()?;
+    match mtime.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => Some(d.as_secs() as i64),
+        Err(_) => Some(-(SystemTime::UNIX_EPOCH.duration_since(mtime).ok()?.as_secs() as i64)),
+    }
+}
+
+/// Streaming sha256 with a size+mtime stability bracket (G2 finding 4): the
+/// file's metadata is captured before hashing and re-checked after; any
+/// mid-hash mutation (game update mid-capture, partial write) fails closed
+/// instead of recording a mixed hash as the build binding.
+fn hash_file_streaming_stable(path: &Path) -> Result<(u64, String), String> {
+    let meta_before = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (size_before, mtime_before) = (meta_before.len(), meta_before.modified().ok());
     let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut total = 0u64;
@@ -272,6 +397,20 @@ fn hash_file_streaming(path: &Path) -> Result<(u64, String), String> {
         total += n as u64;
         hasher.update(&chunk[..n]);
     }
+    let meta_after = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if total != size_before
+        || meta_after.len() != size_before
+        || meta_after.modified().ok() != mtime_before
+    {
+        return Err(format!(
+            "{} changed while hashing (size {}->{} read {}, mtime moved: {})",
+            path.display(),
+            size_before,
+            meta_after.len(),
+            total,
+            meta_after.modified().ok() != mtime_before,
+        ));
+    }
     Ok((total, to_hex(&hasher.finalize())))
 }
 
@@ -279,10 +418,12 @@ fn hash_file_streaming(path: &Path) -> Result<(u64, String), String> {
 /// must itself prove out (contain the file). Without one, both the plain and
 /// the OneDrive-redirected Documents locations are probed; exactly one match
 /// resolves, zero or several fail closed with the probed paths recorded.
-fn locate_user_dir(user_dir_override: Option<&Path>) -> Result<PathBuf, String> {
+fn locate_user_dir(
+    user_dir_override: Option<&Path>,
+) -> Result<(PathBuf, &'static str), String> {
     if let Some(dir) = user_dir_override {
         if dir.join("dlc_load.json").is_file() {
-            return Ok(dir.to_path_buf());
+            return Ok((dir.to_path_buf(), "override"));
         }
         return Err(format!(
             "--pdx-user-dir {} does not contain dlc_load.json",
@@ -307,7 +448,7 @@ fn locate_user_dir(user_dir_override: Option<&Path>) -> Result<PathBuf, String> 
         .filter(|dir| dir.join("dlc_load.json").is_file())
         .collect();
     match hits.as_slice() {
-        [only] => Ok((*only).clone()),
+        [only] => Ok(((*only).clone(), "probed")),
         [] => Err(format!(
             "dlc_load.json not found; probed {} and {}; pass --pdx-user-dir",
             candidates[0].display(),
@@ -327,7 +468,9 @@ fn locate_user_dir(user_dir_override: Option<&Path>) -> Result<PathBuf, String> 
 /// Entries are usually user-dir-relative (`mod/ugc_123.mod`); absolute entries
 /// are honored as-is. Field extraction is line-based on the Clausewitz
 /// `key="value"` descriptor grammar — unknown lines are ignored, absent fields
-/// stay None (recorded, never fabricated).
+/// stay None (recorded, never fabricated). The CALLER enforces the
+/// completeness invariant (readable + content_path + fingerprint) and fails
+/// resolution closed when any part is missing.
 fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
     let mut resolved = ResolvedMod {
         descriptor_entry: entry.to_string(),
@@ -337,6 +480,7 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
         version: None,
         remote_file_id: None,
         content_path: None,
+        content_fingerprint: None,
     };
     let candidate = {
         let as_path = Path::new(entry);
@@ -350,8 +494,9 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
         return resolved;
     };
     resolved.descriptor_sha256 = Some(Sha256::hex(text.as_bytes()));
-    resolved.descriptor_path = Some(candidate);
-    for line in text.lines() {
+    // Strip a UTF-8 BOM so `\u{feff}name=...` still parses (G2 finding 7).
+    let text_body = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    for line in text_body.lines() {
         let line = line.trim();
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -365,13 +510,69 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
             _ => {}
         }
     }
+    if let Some(content) = resolved.content_path.as_deref() {
+        let content_abs = {
+            let as_path = Path::new(content);
+            if as_path.is_absolute() {
+                as_path.to_path_buf()
+            } else {
+                user_dir.join(content)
+            }
+        };
+        resolved.content_fingerprint = fingerprint_content(&content_abs);
+    }
+    resolved.descriptor_path = Some(candidate);
     resolved
+}
+
+/// Content fingerprint: (file_count, total_bytes, max_mtime_unix) over a
+/// bounded recursive walk (or the single file for `archive=` mods). Catches
+/// the descriptor-unchanged content-update case (Workshop updates). This is a
+/// FINGERPRINT (collision-prone by design, cheap) — not a content proof.
+fn fingerprint_content(root: &Path) -> Option<(u64, u64, i64)> {
+    if root.is_file() {
+        let meta = fs::metadata(root).ok()?;
+        return Some((1, meta.len(), file_mtime_unix(root)?));
+    }
+    if !root.is_dir() {
+        return None;
+    }
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    let mut max_mtime = i64::MIN;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir).ok()?;
+        for entry in entries {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let meta = entry.metadata().ok()?;
+            if meta.is_dir() {
+                stack.push(path);
+            } else {
+                files += 1;
+                if files as usize > MOD_CONTENT_MAX_FILES {
+                    return None;
+                }
+                bytes = bytes.saturating_add(meta.len());
+                if let Some(mtime) = file_mtime_unix(&path) {
+                    max_mtime = max_mtime.max(mtime);
+                }
+            }
+        }
+    }
+    if files == 0 {
+        // An empty content dir binds nothing — treat as not fingerprintable.
+        return None;
+    }
+    Some((files, bytes, max_mtime))
 }
 
 /// Enumerate installed DLC descriptors as game-root-relative
 /// forward-slash paths (`dlc/dlc023_man_the_guns/dlc023.dlc`) — the exact key
 /// format `dlc_load.json.disabled_dlcs` uses, so the subtraction is a string
-/// match with no normalization guesswork.
+/// match with no normalization guesswork (and `resolve_modset` REFUSES any
+/// disabled key that matches no installed entry).
 fn census_installed_dlcs(game_root: &Path) -> Result<Vec<String>, String> {
     let dlc_root = game_root.join("dlc");
     let entries = fs::read_dir(&dlc_root).map_err(|e| format!("{}: {e}", dlc_root.display()))?;
@@ -390,7 +591,11 @@ fn census_installed_dlcs(game_root: &Path) -> Result<Vec<String>, String> {
         for child in children {
             let child = child.map_err(|e| format!("{}: {e}", dir.display()))?;
             let path = child.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("dlc") {
+            if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("dlc"))
+            {
                 if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                     installed.push(format!("dlc/{dir_name}/{file_name}"));
                 }
@@ -405,12 +610,26 @@ fn census_installed_dlcs(game_root: &Path) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
 
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "modset_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
-    fn mod_descriptor_fields_parse_and_hash() {
-        let dir = std::env::temp_dir().join(format!("modset_test_{}", std::process::id()));
-        fs::create_dir_all(dir.join("mod")).unwrap();
+    fn mod_descriptor_fields_parse_hash_and_fingerprint() {
+        let dir = temp_dir("descriptor");
+        fs::create_dir_all(dir.join("mod").join("test")).unwrap();
         let descriptor = "version=\"1.2\"\nname=\"Test Mod\"\nremote_file_id=\"12345\"\npath=\"mod/test\"\n";
         fs::write(dir.join("mod").join("test.mod"), descriptor).unwrap();
+        fs::write(dir.join("mod").join("test").join("a.txt"), b"hello").unwrap();
 
         let resolved = resolve_mod_descriptor(&dir, "mod/test.mod");
         assert_eq!(resolved.name.as_deref(), Some("Test Mod"));
@@ -421,18 +640,66 @@ mod tests {
             resolved.descriptor_sha256.as_deref(),
             Some(Sha256::hex(descriptor.as_bytes()).as_str())
         );
+        let (files, bytes, _mtime) = resolved.content_fingerprint.expect("fingerprint");
+        assert_eq!((files, bytes), (1, 5));
+
+        // Content change WITHOUT a descriptor change moves the fingerprint.
+        fs::write(dir.join("mod").join("test").join("b.txt"), b"world!").unwrap();
+        let again = resolve_mod_descriptor(&dir, "mod/test.mod");
+        assert_eq!(again.descriptor_sha256, resolved.descriptor_sha256);
+        assert_ne!(again.content_fingerprint, resolved.content_fingerprint);
 
         // A missing descriptor stays evidence-free (caller records the error).
         let missing = resolve_mod_descriptor(&dir, "mod/absent.mod");
         assert!(missing.descriptor_sha256.is_none());
         assert!(missing.descriptor_path.is_none());
 
+        // A descriptor without path=/archive= parses but carries no content
+        // binding — the caller fails resolution closed on that.
+        fs::write(dir.join("mod").join("nopath.mod"), "name=\"X\"\n").unwrap();
+        let nopath = resolve_mod_descriptor(&dir, "mod/nopath.mod");
+        assert!(nopath.descriptor_sha256.is_some());
+        assert!(nopath.content_path.is_none());
+
+        // BOM-prefixed first key still parses (finding 7).
+        fs::write(
+            dir.join("mod").join("bom.mod"),
+            "\u{feff}name=\"Bom\"\npath=\"mod/test\"\n",
+        )
+        .unwrap();
+        let bom = resolve_mod_descriptor(&dir, "mod/bom.mod");
+        assert_eq!(bom.name.as_deref(), Some("Bom"));
+
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
+    fn missing_or_mistyped_dlc_load_fields_fail_closed() {
+        // `{}`: both fields absent -> both errors, never "vanilla".
+        let empty: Value = serde_json::from_str("{}").unwrap();
+        assert!(required_string_array(&empty, "enabled_mods").is_err());
+        assert!(required_string_array(&empty, "disabled_dlcs").is_err());
+
+        // Wrong types fail closed.
+        let corrupt: Value =
+            serde_json::from_str(r#"{"enabled_mods":"corrupt","disabled_dlcs":[1]}"#).unwrap();
+        assert!(required_string_array(&corrupt, "enabled_mods").is_err());
+        assert!(required_string_array(&corrupt, "disabled_dlcs").is_err());
+
+        // The real shape passes.
+        let ok: Value = serde_json::from_str(
+            r#"{"enabled_mods":["mod/a.mod"],"disabled_dlcs":["dlc/d/d.dlc"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            required_string_array(&ok, "enabled_mods").unwrap(),
+            vec!["mod/a.mod".to_string()]
+        );
+    }
+
+    #[test]
     fn dlc_census_emits_dlc_load_relative_keys_and_subtraction_matches() {
-        let root = std::env::temp_dir().join(format!("modset_dlc_test_{}", std::process::id()));
+        let root = temp_dir("dlc");
         fs::create_dir_all(root.join("dlc").join("dlc023_man_the_guns")).unwrap();
         fs::create_dir_all(root.join("dlc").join("dlc013_sabaton")).unwrap();
         fs::write(
@@ -454,8 +721,6 @@ mod tests {
                 "dlc/dlc023_man_the_guns/dlc023.dlc".to_string(),
             ]
         );
-        // The disabled_dlcs entries observed in a real dlc_load.json use this
-        // exact relative form — subtraction must be a plain string match.
         let disabled = vec!["dlc/dlc013_sabaton/dlc013.dlc".to_string()];
         let enabled: Vec<&String> = installed
             .iter()
@@ -463,21 +728,72 @@ mod tests {
             .collect();
         assert_eq!(enabled, vec!["dlc/dlc023_man_the_guns/dlc023.dlc"]);
 
+        // An unmatched disabled key is detectable by the same exact-match rule
+        // resolve_modset enforces (fails closed there).
+        let drifted = "DLC/dlc013_sabaton/dlc013.dlc".to_string();
+        assert!(!installed.iter().any(|rel| rel == &drifted));
+
         fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn ambiguous_or_missing_user_dir_fails_closed() {
-        let dir = std::env::temp_dir().join(format!("modset_override_{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+    fn ambiguous_or_missing_user_dir_fails_closed_and_records_source() {
+        let dir = temp_dir("override");
         // Override without dlc_load.json inside: must FAIL, never fall back to
         // probing (an explicit pin that does not prove out is an error).
         let err = locate_user_dir(Some(&dir)).unwrap_err();
         assert!(err.contains("does not contain dlc_load.json"));
 
         fs::write(dir.join("dlc_load.json"), "{}").unwrap();
-        assert_eq!(locate_user_dir(Some(&dir)).unwrap(), dir);
+        let (found, source) = locate_user_dir(Some(&dir)).unwrap();
+        assert_eq!(found, dir);
+        assert_eq!(source, "override");
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unresolved_report_nests_evidence_under_partial_evidence() {
+        let report = ModsetReport {
+            resolved: false,
+            errors: vec!["x".to_string()],
+            exe_path: None,
+            exe_size_bytes: None,
+            exe_sha256: None,
+            user_dir: None,
+            user_dir_source: None,
+            dlc_load_mtime_unix: None,
+            process_start_unix: None,
+            enabled_mods: Vec::new(),
+            installed_dlcs: vec!["dlc/a/a.dlc".to_string()],
+            disabled_dlcs: Vec::new(),
+            enabled_dlcs: vec!["dlc/a/a.dlc".to_string()],
+        };
+        let doc = report.as_json();
+        // A naive consumer reading top-level lists on an unresolved report
+        // finds NOTHING (fail-closed shape).
+        assert!(doc.get("enabled_mods").is_none());
+        assert!(doc.get("dlc").is_none());
+        assert_eq!(doc["resolved"], Value::Bool(false));
+        assert!(doc["partial_evidence"]["dlc"]["enabled"].is_array());
+
+        let resolved = ModsetReport {
+            resolved: true,
+            ..report
+        };
+        let doc = resolved.as_json();
+        assert!(doc.get("partial_evidence").is_none());
+        assert!(doc["dlc"]["enabled"].is_array());
+    }
+
+    #[test]
+    fn hash_stability_bracket_detects_midhash_growth() {
+        let dir = temp_dir("hash");
+        let f = dir.join("x.bin");
+        fs::write(&f, vec![7u8; 4096]).unwrap();
+        let (size, sha) = hash_file_streaming_stable(&f).unwrap();
+        assert_eq!(size, 4096);
+        assert_eq!(sha.len(), 64);
         fs::remove_dir_all(&dir).ok();
     }
 }
