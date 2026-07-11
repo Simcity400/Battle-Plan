@@ -28,9 +28,16 @@ CLOSED or IN-PROGRESS by evidence G5 could not see:
 
 TRUE BLOCKING LIST for F1 (no independent adversarial verdict anywhere):
 1. 1cac48222 serial-wall (G3 owed; P1b evidence pack required first).
-2. Prefetch plumbing final state (1b8ed7d66 -> bd4fb09b5 -> 8487be6a7): re-stamp was
-   dispatched (tid 019f4b91-0528) but its VERDICT was never recorded — recover the thread
-   or re-gate the net state.
+2. ~~Prefetch plumbing final state (1b8ed7d66 -> bd4fb09b5 -> 8487be6a7)~~ **CLOSED
+   2026-07-11: the re-stamp verdict was RECOVERED by resuming tid 019f4b91-0528 —
+   REFUTED with 2 findings (substring key-aliasing in the control parser; MAX-aggregated
+   applied-label on mixed streams). BOTH were already fixed in 8487be6a7 (the parser is
+   now structural — escape-aware literal tokenization, key-requires-colon, whole-token
+   values, lib.rs parse_json_u32_strict whose doc cites 'both rounds' — and main.rs
+   suppresses prefetch_dist_*_applied whenever the *_mixed flag is set, which today's
+   palindrome manifests demonstrate live: applied echoed per-arm, mixed=false).
+   Orchestrator re-verified both fixes against current source. Verdict + mapping recorded
+   here; the thread reviewed the pre-8487be6a7 state.**
 3. 3a80881f2 prefetch default 16->8 (two live palindromes = evidence, but the one-line
    default change never had an adversarial look; fold-inert, low risk — batch into the
    integrated F5 RC gate).
