@@ -434,3 +434,29 @@ it fails closed → PARTIAL. To restore POPULATED-and-sound d69:
 - Alternative (if count RE fails): a d69 PARTIAL-upsert fold contract (merge observed groups,
   never full-replace) — lossless-critical fold change, own design + gate, also needs live.
 BLOCKED: user is playing (game off-limits); no captures until released.
+
+## D69 ACTIVE-COUNT RE — EVIDENCE LANDED (2026-07-12 tip window tipval_085800)
+d69_stale_vtable_rva_sample = 43364200 = 0x295AF68 == CPROVINCE_VTABLE_RVA.derived_from_rva
+(UNIQUE match in rtti_vtable_map.json). So the d69 "stale" tech-sharing-group slots hold
+RECYCLED CProvince objects from a shared allocator pool — NOT torn tech-group reads. This
+CONFIRMS the freelist/pool-reuse hypothesis and kills the fixed-slot-count model: past the
+active count, slots hold whatever the allocator reused (here CProvince). d69_fail_vtable_unproven
+= 13212 (fail-closed, correct). groups 6606 / members 37434 flowing; flags=512 PARTIAL (accounted).
+RE TARGET now concrete: find CTechSharingManager's active-group COUNT field (candidate near
+DOMAIN69_..._OFF 0x3A0, or slots = pdx::vector begin/end/count) and iterate ONLY [0..count),
+so a vacated slot reused by CProvince is never walked. Validate against the D04 melt oracle
+(9/9 groups) on a paused deep-war save. This is now UNBLOCKED for static RE (evidence in hand).
+
+## D47 ZERO-ROWS ON FRESH-LOADED SAVE — dedup fix EXONERATED, prewarm suspect (2026-07-12)
+tipval_085800 (tip bb75395c, 2201 game-hours): d47 emitted 0 char rows, flags=768 (SOURCE|PARTIAL),
+domain47_adapter_country_roots_seen=0, prewarm_skipped_root_rows=2137, sweep_skipped_ranges=3146.
+Every PRIOR window (all on the user's LONG-WARMED game) emitted 400k-1.7M rows / 500-1572 roots.
+VERIFIED NOT THE DEDUP FIX (615d24125): country_roots_seen = input.countries.len()
+(lanes/characters_leaders_cabinet_live/src/adapter.rs:258) is measured UPSTREAM of the char_id
+dedup — 0 countries in means the dedup never ran. Root cause = d47 country-root ACQUISITION
+supplying 0 countries to the adapter, consistent with a COLD d47 prewarm on a freshly-loaded
+save (this window ran on an orchestrator -start_save=autosave relaunch; all d47-working windows
+were on the user's continuously-running game). DIAGNOSIS NEEDED: does the d47 prewarm/sweep warm
+within a capture window on a freshly-loaded save, or does fresh-load leave input.countries empty
+indefinitely? If the latter, production captures that START on a loaded save have a total d47
+coverage hole = real bug. NOT a revert. Confirm on the next fresh-load window (is d47 still 0?).
