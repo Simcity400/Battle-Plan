@@ -1,0 +1,257 @@
+{
+ "CBUILDING_VTABLE_RVA": {
+  "class": ".?AVCBuilding@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2973b88"
+ },
+ "CPROVINCE_VTABLE_RVA": {
+  "class": ".?AVCProvince@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x295af68"
+ },
+ "DOMAIN43_PURCHASE_CONTRACT_VTABLE_RVA": {
+  "class": ".?AVCPurchaseContract@NInternationalMarket@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2954c70"
+ },
+ "DOMAIN45_TARGETED_TIMED_DECISION_VTABLE_RVA": {
+  "class": ".?AVCTargetedDecision@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x27d5038"
+ },
+ "DOMAIN47_CADVISOR_VTABLE_RVA": {
+  "class": ".?AVCAdvisor@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2990e60"
+ },
+ "DOMAIN47_CARMY_LEADER_VTABLE_RVA": {
+  "class": ".?AVCArmyLeader@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x293f538"
+ },
+ "DOMAIN47_CCHARACTER_VTABLE_RVA": {
+  "class": ".?AVCCharacter@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2967e30"
+ },
+ "DOMAIN47_CCOUNTRY_LEADER_VTABLE_RVA": {
+  "class": ".?AVCCountryLeader@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x296a720"
+ },
+ "DOMAIN47_CNAVY_LEADER_VTABLE_RVA": {
+  "class": ".?AVCNavyLeader@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x293f650"
+ },
+ "DOMAIN47_CUNIT_LEADER_TRAIT_VTABLE_RVA": {
+  "class": ".?AVCUnitLeaderTrait@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x292f160"
+ },
+ "DOMAIN51_CDELAYED_EVENT_VTABLE_RVA": {
+  "class": ".?AVCDelayedEvent@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x27d0fb8"
+ },
+ "DOMAIN53_AGENCY_VTABLE_RVA": {
+  "class": ".?AVCIntelligenceAgency@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x296b338"
+ },
+ "DOMAIN53_COUNTRY_INTEL_NETWORK_VTABLE_RVA": {
+  "class": ".?AVCCountryIntelNetwork@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x298ab48"
+ },
+ "DOMAIN53_COUNTRY_VTABLE_RVA": {
+  "class": ".?AVCCountry@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x27d0e90"
+ },
+ "DOMAIN53_CRYPTOLOGY_RECORD_VTABLE_RVA": {
+  "class": ".?AVCCountryDecryptionState@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x29a64f0"
+ },
+ "DOMAIN53_CRYPTOLOGY_VTABLE_RVA": {
+  "class": ".?AVCCryptology@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x29a6540"
+ },
+ "DOMAIN53_INCOMING_ACTION_VTABLE_RVA": {
+  "class": ".?AVCIncomingDiplomaticAction@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2a209a0"
+ },
+ "DOMAIN53_OPERATION_DEF_VTABLE_RVA": {
+  "class": ".?AVCOperation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2928c98"
+ },
+ "DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA": {
+  "class": ".?AVCOperationInstance@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x29a76c0"
+ },
+ "DOMAIN53_OPERATIVE_VTABLE_RVA": {
+  "class": ".?AVCOperativeLeader@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x293f790"
+ },
+ "DOMAIN53_REL_AIR_BASE_ACCESS_VTABLE_RVA": {
+  "class": ".?AVCAirBaseAccessRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2a0a9d8"
+ },
+ "DOMAIN53_REL_ATTACHE_VTABLE_RVA": {
+  "class": ".?AVCAttacheRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2949b58"
+ },
+ "DOMAIN53_REL_DOCKING_RIGHTS_VTABLE_RVA": {
+  "class": ".?AVCDockingRightsRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2a0abc8"
+ },
+ "DOMAIN53_REL_EMBARGO_VTABLE_RVA": {
+  "class": ".?AVCEmbargoRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x294a070"
+ },
+ "DOMAIN53_REL_EQUIPMENT_PURCHASE_RELATION_VTABLE_RVA": {
+  "class": ".?AVCEquipmentPurchaseRelation@NInternationalMarket@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2a0ae58"
+ },
+ "DOMAIN53_REL_GUARANTEE_VTABLE_RVA": {
+  "class": ".?AVCGuaranteeRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2949cd8"
+ },
+ "DOMAIN53_REL_IMPROVE_RELATIONS_VTABLE_RVA": {
+  "class": ".?AVCImproveRelationsRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2949a98"
+ },
+ "DOMAIN53_REL_LICENCE_PRODUCTION_VTABLE_RVA": {
+  "class": ".?AVCLicenceProductionAccessRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2949858"
+ },
+ "DOMAIN53_REL_MARKET_ACCESS_RIGHTS_VTABLE_RVA": {
+  "class": ".?AVCMarketAccessRightsRelation@NInternationalMarket@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2a0af20"
+ },
+ "DOMAIN53_REL_MILITARY_ACCESS_VTABLE_RVA": {
+  "class": ".?AVCMilitaryAccessRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2949918"
+ },
+ "DOMAIN53_REL_NAVAL_BLOCKADE_VTABLE_RVA": {
+  "class": ".?AVCNavalBlockadeRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2a0ad70"
+ },
+ "DOMAIN53_REL_NON_AGGRESSION_PACT_VTABLE_RVA": {
+  "class": ".?AVCNonAggressionPactRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2949d98"
+ },
+ "DOMAIN53_REL_SUBJECT_VTABLE_RVA": {
+  "class": ".?AVCSubjectRelation@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2949f18"
+ },
+ "DOMAIN53_STRATEGIC_OPERATIVE_VTABLE_RVA": {
+  "class": ".?AVCStrategicOperative@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x298b448"
+ },
+ "DOMAIN53_WAR_GAME_DATE_VTABLE_RVA": {
+  "class": ".?AVCGameDate@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2702388"
+ },
+ "DOMAIN53_WAR_GREGORIAN_DATE_VTABLE_RVA": {
+  "class": ".?AVCGregorianDate@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2702190"
+ },
+ "DOMAIN54_ARMY_VTABLE_RVA": {
+  "class": ".?AVCOrdersGroup@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x293bc60"
+ },
+ "DOMAIN54_ORDER_VTABLE_RVA": {
+  "class": ".?AVCOrderInstance@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x296fae8"
+ },
+ "DOMAIN57_CLOCK_VTABLE_RVA": {
+  "class": ".?AVCInGameIdler@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2952510"
+ },
+ "DOMAIN65_PROGRAM_STATUS_VTABLE_RVA": {
+  "class": ".?AVCProgramStatus@NProject@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x295ac88"
+ },
+ "DOMAIN65_PROGRAM_VTABLE_RVA": {
+  "class": ".?AVCProgram@NProject@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x295ac30"
+ },
+ "DOMAIN66_OCCUPATION_DATA_VTABLE_RVA": {
+  "class": ".?AVCCountryOccupationData@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x296dd00"
+ },
+ "DOMAIN66_OCCUPATION_LAW_VTABLE_RVA": {
+  "class": ".?AVCOccupationLaw@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x2928218"
+ },
+ "DOMAIN66_OCCUPATION_STATUS_SECONDARY_VTABLE_RVA": {
+  "class": ".?AVCCountryOccupationStatus@@",
+  "col_offset": 24,
+  "derived_from_rva": "0x296dd88"
+ },
+ "DOMAIN66_OCCUPATION_STATUS_VTABLE_RVA": {
+  "class": ".?AVCCountryOccupationStatus@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x296dd50"
+ },
+ "DOMAIN66_STATE_GARRISON_DATA_VTABLE_RVA": {
+  "class": ".?AVCStateGarrisonData@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x296dcb0"
+ },
+ "DOMAIN66_STATE_VTABLE_RVA": {
+  "class": ".?AVCState@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x29206c0"
+ },
+ "DOMAIN67_DYNAMIC_MODIFIER_CONTAINER_VTABLE_RVA": {
+  "class": ".?AVCDynamicModifierContainer@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x27bfde8"
+ },
+ "DOMAIN67_DYNAMIC_MODIFIER_DEF_VTABLE_RVA": {
+  "class": ".?AVCDynamicModifier@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x27bfd48"
+ },
+ "DOMAIN69_TECH_SHARING_GROUP_VTABLE_RVA": {
+  "class": ".?AVCTechnologySharingGroup@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x270b720"
+ },
+ "STATE_VTABLE_RVA": {
+  "class": ".?AVCState@@",
+  "col_offset": 0,
+  "derived_from_rva": "0x29206c0"
+ }
+}

@@ -89,3 +89,19 @@ schema-exact, 0 bails), IDENTICAL compressor both sides (zstd level 3, window_lo
   domain-grouping = default-window artifact, d53 delta-emit CPU-negative + byte-redundant,
   columnar NEGATIVE. **No remaining lossless layout lever worth building.** Future size wins
   can only come from semantic scope decisions (out of bounds under zero-data-loss).
+
+## O4 SHIPPED 2026-07-11 (SELF-PROVEN): RTTI auto-re-derivation tool
+
+`scripts/rtti_rederive.py` + `scripts/rtti_vtable_map.json` (the durable manifest,
+auto-derived FROM the current exe: constant -> mangled RTTI class + COL offset, which
+disambiguates multiple-inheritance vtables like CCountryOccupationStatus @0/@24).
+- `--derive-map`: 51/51 build_profile `*_VTABLE_RVA` constants resolved to RTTI identities
+  (bonus corrections of record: DOMAIN54_ARMY is COrdersGroup; DOMAIN57_CLOCK is CInGameIdler).
+- `--verify` (the self-proof): re-derives all 51 from class names alone against the CURRENT
+  exe — **51/51 byte-for-byte exact, 0 unresolved**.
+- `--rederive <new hoi4.exe>` (patch day): emits the updated constants block, flags CHANGED
+  values, FAIL-CLOSED lists unresolved/ambiguous classes rather than guessing.
+SCOPE: covers every vtable RVA. NOT covered (stays validator-oracled per the U-series plan):
+field offsets, function-sentinel offsets (daily-update etc.), static data RVAs (gs pointer,
+version banner). Those still need the post-patch shadow/scan re-validation pass (d53
+offsets-vs-scan referee is MANDATORY after any exe update — already standing law).
