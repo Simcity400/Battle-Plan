@@ -72,3 +72,78 @@ It is not proven. Other possibilities are that the census joins frame flags only
 
 6. **d48 gate-reason vector**  
    Separate hard inherited failure, construction-row skip, non-construction-line skip, and any other gate clause. This determines whether the current gate is detecting real incompleteness or conservatively rejecting irrelevant rows.
+---
+
+# ROUND 2 (2026-07-12, two inlined Codex Mode-A audits — jobA tid 019f5178-bebb d49/d50/d60/d48, jobB tid 019f5178-d6e6 d53/d51/frame-OR; sandbox broken so ALL evidence was inlined; line ranges re-verified unchanged at tip c2f3a817f)
+
+ORCHESTRATOR VERIFICATION (every load-bearing claim checked against the code before folding —
+user directive 2026-07-11):
+- VERIFIED: TBR set site 25310 is inside read_compact_land_combat_detail_events_live (fn at
+  25220, land_detail55) — the census's "d51 TRANSITION_BASELINE_RESET" pair is CROSS-DOMAIN
+  MISATTRIBUTED; the only collector-side TBR setter is d55-owned (ORs PARTIAL simultaneously
+  on tracker.last_frame_rebaselined()).
+- VERIFIED with refinement: frame-level CONTROL_INVALID setter 14247 is owned by
+  build_compact_extraction_gate_records (fn at 14228) — frame-scoped via the extraction-gate
+  record path, fanned to domains through incoming status_flags. The "d51 alone copies frame
+  flags" rival is structurally REFUTED (d53 accepts/preserves incoming flags the same way);
+  "only emitted domain in the transition frame" vs "census join artifact" remains undecided —
+  deciding unit = one affected frame's {sequence_start, scheduled_domains, emitted_domains,
+  status_flags} + the census frame-to-domain join rule.
+- VERIFIED: d60 sites (21352-53 SOURCE|PARTIAL in capwar60_source_unavailable_read; 21409
+  inherited PARTIAL; 21571 torn-row PARTIAL with the "never emit a frame that silently
+  dropped" comment; 21611 WORKER_PANIC|PARTIAL) and d48 sites (23422 inherited; 23437 roots
+  Err; 23457 frame-flag merge; 23458 gate construct; 23463 hard_failure||!gate.ok) all match.
+- RESOLVED (was jobA's top unresolved): naval_combat_live_partial_read lives at lib.rs 22885
+  (just ABOVE the extracted range, which is why the audit couldn't see it). Body: ORs
+  status_flags|PARTIAL_DATA and lane naval4950::STATUS_DELTA_DATA|STATUS_PARTIAL_DATA into
+  naval_combat_live_empty_read (ZERO rows) with torn_reason carried; sibling
+  naval_combat_live_source_unavailable_read (22907) ORs SOURCE|PARTIAL into an empty read;
+  compact_naval_combat_live_worker_panic_read ORs WORKER_PANIC|PARTIAL. ALL naval failure
+  paths are EMPTY reads -> d49/d50 fail-closed is PROVEN (both domains receive the bits via
+  the one shared read struct). Remaining open: upstream construction of incoming naval
+  status_flags (a pre-set PARTIAL before the reader).
+
+JOB A VERDICT (verbatim): see /tmp archive + threads log; key rows folded here:
+- d49/d50 PARTIAL first-introduction: transitions at 22945 (inherited failure),
+  23029/23066 (NavalWalkError::Torn), 23116 (member/OOB join Torn|Degraded) -> all funnel
+  into naval_combat_live_partial_read (22885, PROVEN empty/fail-closed). Classification:
+  inherited / transient-torn / torn-or-structural (Degraded). Deciding unit:
+  naval_status_origin {domain_id, site_id, incoming_status_flags, join_error_kind,
+  torn_reason, observed_combats, observed_member_rows, stale_dropped_total}.
+- d60 SOURCE: all via capwar60_source_unavailable_read (21352-53). sweep-not-warmed =
+  control-transition; needle unavailable/overflow + validated-set degradation =
+  per-frame-structural; generic extract errors = cannot-determine (failure_reason erases
+  detail). Unit: capwar60_status_origin {incoming_status_flags, failure_reason,
+  extract_error_kind, observed_rows, stale_dropped, sweep_generation, validated_gen}.
+- d60 PARTIAL: 21409 inherited; SOURCE-helper co-introduction; 21571 torn rows; 21611 worker
+  panic. All empty-payload fail-closed (PROVEN). Unit: capwar60_partial_origin {site_id, ...}.
+- d48 PARTIAL: 23422 inherited; 23437 roots Err(_) (cause-erasing — preserve the concrete
+  error type to decide structural vs torn); possible producer inside collect_domain48_frame
+  merged at 23457; 23463 hard_failure_flags||!gate.ok. gate_decoded_frame dataflow still
+  missing -> "!gate.ok" stays cannot-determine. Unit: d48_status_origin {site_id,
+  input_status_flags, collector_status_flags, merged_status_flags, hard_failure_flags,
+  gate_ok, gate_errors, roots_error_kind}.
+
+JOB B VERDICT (verbatim key rows):
+- d53 SOURCE: domain53_source_unavailable_read calls (unresolved/overflowed needles, cold
+  discovery, missing validated war addresses, degraded/invalid roots, extraction error) +
+  explicit SOURCE|PARTIAL on !report.ok()||payload_failure. Unit: d53 read unit
+  {status_flags, observed_rows, emitted_rows, diag.failure_reason, prevalidate totals/stale,
+  diag.reportfail}.
+- d53 PARTIAL: 19924 inherited; partial_frame = skipped_rows!=0 || relation_shadow_mismatches
+  !=0 (tolerated row-level incompleteness — emits validated rows, keeps the bit); worker
+  panic path adds WORKER_PANIC|PARTIAL. Future typed split: PartialData {cause:
+  UpstreamFailure|SourceFailure|RowSkipped|RelationShadowMismatch|PostBuildGate|WorkerPanic}.
+- d51 TBR + CONTROL_INVALID: see orchestrator verification above (census misattribution +
+  frame-scoped fan-out; d51 owns NEITHER bit).
+
+STILL UNRESOLVED AFTER ROUND 2 (queue for round 3 / C1 stage A instrumentation):
+1. domain53_source_unavailable_read + domain53_success_status_flags bodies (literal OR sites;
+   possible extra PARTIAL producer from stale_dropped_total).
+2. Upstream naval status_flags construction (pre-set PARTIAL before the reader).
+3. capwar60::extractor::snapshot_from_frame body (rule out indirect mutation).
+4. domain48: collect_domain48_frame + gate_decoded_frame bodies (the "!gate.ok" limb).
+5. land_detail55 lane internals for any additional TBR encoding.
+6. The census frame-to-domain join rule (decides the d51 CONTROL_INVALID census question).
+NOTE: items 1-5 are exactly the per-subsource first-introduction sites C1 stage A units
+instrument — the instrumentation closes them without further static reading.
