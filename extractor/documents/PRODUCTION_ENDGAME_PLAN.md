@@ -89,6 +89,12 @@ context across follow-ups.
 
 ## 2. WAVE P — perf endgame (live windows serialize on the ONE game; analysis parallel)
 
+**MEASUREMENT REGIME (user directive 2026-07-11): all optimization A/Bs run at GAME SPEED 2**
+(the user keeps the game at speed 2; speed 5 takes too long to run often). Relative verdicts
+at speed 2 decide every lever. The SINGLE true-speed-5 acceptance run (P5) happens ONCE, at
+the END, only after every lever is shipped / measured-null / declined — it is verification,
+not iteration. Speed-2 absolute numbers are never quoted as production numbers.
+
 Order chosen so each window answers one question; ~15 min each; gate-bracket every run
 (pause/unpause = discard). DLL-hold gotcha: -SkipBuild between same-binary windows, 35s+
 spacing (build-retry loop against the hold), NEVER cargo-build while a capture is in flight.
