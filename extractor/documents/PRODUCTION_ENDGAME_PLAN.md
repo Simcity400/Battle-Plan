@@ -222,7 +222,14 @@ table. Each: record final .battleplan bytes, decode/fold equality, offline CPU +
 - B1 pack-time d53 explicit delta/tombstones (offline transform — the capture-time CPU
   verdict does NOT cover this).
 - B2 trained zstd dictionaries at actual container-entry granularity (global + per-domain).
-- B3 production-parameter zstd ultra/window/LDM sweep beyond window-27 — **PARTIAL RESULT
+- B3 — **CLOSED 2026-07-11.** Final table (w6 corpus, 9.65GB decoded, w27+LDM unless
+  noted): level 3 = 59.02MB (shipped) / 12 = 49.68 (−15.8%) / **19 = 42.37 (−28.2%,
+  pack 57 MB/s single-core-idle ≈ 12 min per 40GB session — SHIP CANDIDATE:
+  ReplayZstdLevel default 3→19)** / 22@w30 = 40.32 (−31.7%) **DECLINED** (only −4.8% more
+  than 19 while window-30 needs ~1GB decode memory — violates the weaker-PC replay bound;
+  window stays 27). Implementation owed: default flip + fold-identity on a 19-packed
+  artifact + gate (batch with the container-fix re-gate). Superseded partial note below:
+- B3 (history) production-parameter zstd ultra/window/LDM sweep — **PARTIAL RESULT
   2026-07-11 (w6_d16 corpus, 9.65GB decoded, identical w27+LDM both sides): level 12 =
   49.68MB (−15.8%), level 19 = 42.37MB (−28.2%) vs production level-3 59.02MB.** Far past
   the 3% materiality bar — v1's "container levels exhausted" was WRONG (the old level
