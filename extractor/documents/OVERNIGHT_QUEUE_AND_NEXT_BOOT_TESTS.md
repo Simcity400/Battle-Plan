@@ -105,3 +105,19 @@ SCOPE: covers every vtable RVA. NOT covered (stays validator-oracled per the U-s
 field offsets, function-sentinel offsets (daily-update etc.), static data RVAs (gs pointer,
 version banner). Those still need the post-patch shadow/scan re-validation pass (d53
 offsets-vs-scan referee is MANDATORY after any exe update — already standing law).
+
+## NEXT-BOOT LIST refresh (2026-07-11 end of solo block; game exited mid-palindrome)
+
+1. **Candidates-prefetch palindrome** — driver ready:
+   scratchpad ab_candidates_driver.ps1 (arms [32,16,0,0,16,32], 240s windows, -SkipBuild
+   after w1, 35s spacing for the DLL-hold gotcha). Died on w1 launch: hoi4.exe not running.
+   Run as-is on next boot; analyze per_domain d53 read_time + lane_wall like the relation sweep.
+2. d47/d69 CLEAN soak (longer window): confirm decisive2 results hold over a deep-war hour+
+   (d47 rows flowing, parse errors 0, dead_roots ~churn; d69 status 0).
+3. Pace-exogeneity experiment; hour-latch ON default decision (user call) — unchanged.
+
+DONE this block (all live-verified or measured): d47 restored (831k rows), d69 restored
+(clean), O4 RTTI tool self-proven 51/51, O6 columnar buried (-2.9%), O7 war-segment
+accounting bit, PARTIAL-upsert deferred (measure-first: 1 rowless frame per 509h).
+BLOCKED: final net Codex gate + O5 modset gate (credits); O8 SourceDisposition (wants a
+Codex design pass first — XL semantic surface); cross-modset matrix (user's modded session).
