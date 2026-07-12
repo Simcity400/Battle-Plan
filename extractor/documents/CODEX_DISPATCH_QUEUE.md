@@ -1623,3 +1623,30 @@ wargoal vector, chosen_option_index, FoW fork A/B, dig_in/org_max/bombardment me
 scans, air-sup index law. USER-GATED LIVE: multi-value speed gate, bit12 live
 confirm, autoattach+WMI live matrix, S/D/M campaign matrix, cross-modset, speed-5
 acceptance, deep-war soak, d69 <9-save confirm.
+
+### 2026-07-13 ~01:15 — POST-RESET REVIEWER PHASE (Codex back, credits live)
+ROUND-6 CENSUS GATE: REFUTED 1 CRITICAL (tid 019f56d6-8290...) — registry parser's
+entry regex never proved FULL consumption of the array body; a wrapper macro
+(conditional_domain!(domain(...))), bare const (EXTRA_DOMAIN,), include!(), or
+additive expr could compile-differ from the inner literal the regex saw (round-5
+class via a new vector). ORCHESTRATOR FIX APPLIED (census tool is my owned instrument,
+6th round of its chain): REGISTRY_ARRAY_OPEN_RE + full-consumption residue check in
+registry_scope (after removing literal domain() entries only commas/whitespace may
+remain -> else fail closed); 4 new non-literal selftests + extra-arg now caught
+earlier as shortfall. Selftest 44/44, live census unchanged exit 1/47, real registry
+residue-clean (no false positive). Closure-by-construction: parser now rejects any
+non-literal array-body token. ROUND-7 RE-GATE LAUNCHED (tid in threads log,
+combined_round7) — terminal by that argument; census batch commits on SHIP.
+
+REVIEW SWEEP batch 1 (Mode A read-only, one per lane): autoattach-impl = FIX-ROUND
+(4 CRITICAL + 3 MAJOR, all valid, review layer caught them): (1) no per-user/session
+singleton -> two supervisors can double-inject; (2) child spawned BEFORE registry
+commit+journal sync -> crash-window reinjection; (3) pre-injection guard doesn't
+re-probe identity -> PID-reuse before spawn injects the replacement; (4) journal
+recovery silently skips malformed records + read-fail->empty history -> reinjection;
+(5) transient identity-probe failure -> live PID omitted -> false ProcessExited badge;
+(6) pipe token/session hashed but NOT the values actually used -> fabricated
+correlation evidence; (7) production worker adapter only ever reports Handshaking ->
+CLI can't reach Recording/Complete, fake-only tests concealed it. VERDICT: does NOT
+merge; needs a Codex Mode-C fix lane (queued; NOT on the core-data critical path,
+attach live-validation is user-gated anyway).
