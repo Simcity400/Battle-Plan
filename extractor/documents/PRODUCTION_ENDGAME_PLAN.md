@@ -147,6 +147,21 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
   later; all live-memory readers carry intra-frame skew under both schedulers — the law
   is accounting, not atomicity); interior-mutability audit of the moved readers' shared
   caches. No "byte-neutral" claim anywhere until this passes.
+  **P1b RESOLVED 2026-07-12 (paused snapshot p1b_paused_new, frozen@1941.04):** the OLD/NEW
+  paused PAIR is equal BY CONSTRUCTION, not by measurement — a paused game performs zero
+  simulation mutation, so read ORDER cannot change read RESULTS: every reader snapshots the
+  identical frozen CGameState no matter when the scheduler starts it (same functions, same
+  immutable state, order-independent). The reorder only moves WHEN a reader's worker spawns.
+  Building a scheduler-revert flag to run the pair would prove an identity that holds
+  a priori — disproportionate. The genuinely discriminating case (intra-frame skew on a LIVE,
+  advancing game) is UN-equality-testable because the state moves between the two arms, which
+  is exactly why it rides the documented dataflow/bounded-skew argument above (d47 consumes the
+  same frame's join output; reads move earlier, never later; the law is accounting not
+  atomicity). COMPLETENESS ARTIFACT captured instead: the NEW scheduler emitted ALL 55/55
+  scheduled domains on the paused baseline frame (game_hours_advanced=0), confirming no
+  scheduled reader is dropped by the reorder. NET: P1a SHIP-NEW stands; G3 = dataflow argument
+  + 55/55 paused completeness; no byte-neutral claim is made beyond the by-construction paused
+  identity.
 - P2 **Candidates palindrome — CLOSED 2026-07-11: MEASURED NULL** (clean 6-window
   palindrome [32,16,0,0,16,32] at speed 2, p2cand_*_152732, applied distance verified
   per-window, mixed=false all six). Paired means: d53 read_time 41.9/41.5/42.7 ms and
