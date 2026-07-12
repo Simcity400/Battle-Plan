@@ -720,3 +720,18 @@ blocker-1 rewrite + populated-sound fix. ACTION: do NOT blind-fire the stale pro
 against current HEAD only for the parts NOT already covered (G2 modset resolver, G5 audit
 reconciliation), and treat G1/G4 as superseded pending a spot re-check. Restored-Codex priority
 is the HELD gated code work (R2 bound-trip-samples, C1 stage-A), gated fresh.
+
+## 2026-07-12 — d69 re-gate 019f5467 (auto-fired on Codex recovery): 1 BLOCKER + 2 MAJOR, fix round DONE
+The watcher auto-fired the queued d69 re-gate on Codex recovery. It found REAL issues the outage
+had left ungated (vindicating the gate):
+- BLOCKER: collector emits up to 256 groups but host consumers (world_fold.rs:5078, main.rs:14080)
+  hard-rejected >9 -> a clean 10-group frame dropped entirely. FIXED: both caps = shared
+  DOMAIN69_TECH_SHARING_MAX_GROUPS (256). Commit 18a9f44ec.
+- MAJOR: slot[size] peek false-PARTIAL'd after a shrink (spare slot retains popped ptr, can't be
+  distinguished from a live group). REMOVED (coherent header + post-walk re-read still catch torn
+  size).
+- MAJOR: stale-HIGH phantom documented as pre-existing bounded-negative (no worse than old fixed-9).
+All 3 verified against the code before fixing (user directive). collector 356/0, host 190+194/0.
+RE-GATE 2 dispatched (tid d69_regate2) to confirm the fix round. NOTE: this proves the value of
+NOT trusting the outage-time self-review — the re-gate caught a real >9 regression the live D04/
+frozen tests (both <=9 groups) could not surface.
