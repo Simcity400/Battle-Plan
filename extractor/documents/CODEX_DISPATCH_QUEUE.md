@@ -1581,3 +1581,21 @@ Genuinely open: org_max, combat progress (no save oracle — H1/H2 fork), air-su
 0..9 index law (data recorded in d38/d31/d30, law in mapicons.gui/defines),
 active_ability container, attrition (likely not stored — labelled proxy). Ship
 order in dossier: folds first, then the one-liner read, then the two melt-scans.
+
+OPUS O3 HARVESTS 2+3 (both independently verified): librs-readers2 tip b44881ba5 —
+d51 bit12 SHIPPED a02cc8319 (rooted CCountry+0x1290/+0x1298 delayed-event walk,
+validated-empty = MeasuredEmpty clears the badge, ANY uncertainty = FailedClosed
+keeps it; 359+30+37 verified incl. new lane test; live confirm owed: bit12 clear on
+clean frames + rooted-vs-heap shadow compare). d68 identity pair = CORRECTLY BLOCKED
+(zero fabrication): NO proven live offset exists for game_unique_id/seed anywhere —
+the design says so itself; NEW RE WORK ITEM: identity-pair offset hunt
+(serializer-xref/same-tick method) before lib.rs item 7 can ship; proposed wire
+diffs staged in W12C_LIBRS_READERS2.md. heartbeat-wmi 6414418cd — REAL WMI
+Win32_ProcessTrace source in raw COM FFI, ZERO new crates (ExecNotificationQuery
+vtable@22 self-audited, VARIANT 24B x64, non-Send pump seam, fail-closed health,
+bounded first-subscribe, Drop cancels+joins); 261/+10 lib + 199 bin verified;
+heartbeat/first-frame proof protocol DESIGN reusing existing collector artifacts
+(hello + first valid COMPACT_RECORD_MAGIC frame; no coordinator change needed;
+out-of-fence diffs specified). REVIEW PRIORITY: the COM FFI (vtable/VARIANT layout,
+watcher-thread cancellation) gets a focused Mode-A gate before merge — lane
+self-flagged it.
