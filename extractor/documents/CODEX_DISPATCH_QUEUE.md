@@ -1983,3 +1983,17 @@ nit when the proposed telemetry lands].
 SWEEP TALLY: 12 code/tooling FIX-ROUND + 6 doc REVISE + 1 doc REJECT + 1 doc SOUND-WITH-NITS.
 FIRST mergeable. Notably d53-badges was a CAREFUL evidence-first dossier (all cites verified,
 no overclaim) — the contrast with the REJECT/REVISE dossiers is exactly rigor vs overclaim.
+
+REVIEW: fow-scope = REVISE (2 HIGH — PARENT of fow-re, shared root overclaim): (1) IntelTex
+causal path NOT render-proven — actual bound producers are TerrainDiffuse/HeightNormal/
+TerrainColorTint; IntelMapSampler/ExtraFOW are generic FUNCTION-PARAM names not proven bound
+resources; ledger says producer inputs UNKNOWN (relabel rank1 HYPOTHESIS; find the actual
+bound SRV/channel that changes with POV first, then back-slice); (2) cadence recipe can't
+prove GENERAL hourly losslessness — 10 hours can't exclude daily/event/POV/radar/allied/
+movement updates outside postHourlyUpdate (needs static call-graph proof or producer-entry
+instrumentation across all transition classes). -> doc-revision [R] fow-scope, COORDINATE
+with [J] fow-re (same IntelTex overclaim propagated parent->child; fix once).
+
+ALL 23 REVIEW TARGETS DISPATCHED. SWEEP TALLY: 12 code/tooling FIX-ROUND + 7 doc REVISE +
+1 doc REJECT + 1 SOUND-WITH-NITS. Awaiting: c1-stageb-design, d51-badges reviews +
+census-oracle (Mode-C fix). FoW revisions [J]+[R] merge into one coordinated fix.
