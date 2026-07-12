@@ -1416,3 +1416,14 @@ locjoin-verify, speedpause-scope, test-debt. Notable adjudication inputs for the
 cycle: d51 bit12 closable from existing build-profile root; d48 SO-mapping
 reconciliation item (above); libr-pairs incidence closure now possible from the
 d04stageA capture's so_* ledger; D56 unit = raw CFixedPoint dominance points.
+
+### 2026-07-12 ~22:15 — USER-AUTHORIZED OPUS WAVE (per-instance exception to
+codex-only delegation): while Codex is credit-walled, 5 Claude Opus subagents took
+the remaining work — w12b-locjoin-verify / w12b-speedpause-scope / w12-test-debt
+(their existing worktrees, same briefs/fences), a libr-pairs incidence-closure
+ADDENDUM from the d04stageA so_* ledger, and w12c-autoattach-impl (task #36 build
+half, new worktree from b42bdb420, single-injection + portability laws in the brief).
+WORKFLOW: Opus agents finish -> Codex adversarially reviews ALL work (wave-12/12b
+commits + Opus diffs) post-reset -> all subsequent changes revert to the Codex
+workflow. Post-reset cron updated accordingly (round6e gate + review sweep; NO
+Codex relaunch of the 3 lanes Opus owns).
