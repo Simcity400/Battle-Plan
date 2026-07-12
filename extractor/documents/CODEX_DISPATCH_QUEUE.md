@@ -2234,3 +2234,11 @@ restarted over the 13 not-yet-done lanes (4 docs + 9 code). Drives to completion
 the ~6-7 host limit. HARVEST as each worktree goes dirty: orchestrator commit -> verify ->
 re-gate -> deferred reconciliation merge (owner-serialization plan above). FIX-PHASE MERGED
 so far: d53, duplex, d48. HARVESTED-awaiting-regate: [J/R]fow, [L]rewar.
+
+DOC-REVISION WAVE COMPLETE (all 6 harvested in-worktree, awaiting re-gate): [J/R]fow
+19da6ade6, [L]rewar d936e3fe8, [N]counterbadge-redo 50234f2d1, [P]events 8c3e340c9,
+[K]pass2 f8ca581c7 (selftest 19/19 verified), [Q]librpairs c5f7c58cf. RE-GATE DEFERRED to a
+unified wave once the 9 code/transport lanes land (avoids capacity contention with the refire
+driver). Code lanes ([D][G][H][F][E][A][C/O][S][B/M]) cycling via refire_fixwaves.sh; harvest
+Monitor armed. Then: unified adversarial re-gate (doc-citation audits + code fix re-gates) ->
+reconciliation merge with owner-serialization.
