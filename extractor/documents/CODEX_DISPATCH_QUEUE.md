@@ -746,3 +746,78 @@ sandbox full-run failures (175/190, 160/194) were all PermissionDenied on temp-f
 tests, not assertions — my own full runs are green (356/0, 190+194/0, 18/0). Verify-findings
 pass also corrected an overclaiming comment in my own fix (push-window stable-lag stale-low is
 a bounded residual, dff1b6ab4). d69 fix round CLOSED, double-gated.
+
+## 2026-07-12 afternoon — G2-regen + G5-regen verdicts (both ran on current HEAD 2818b2f35)
+
+### G2-regen (modset, tid 019f5490-f030-7242-8534-a50a1b0fdc36): REFUTED — 5 BLOCKER + 2 MAJOR
+Fresh review of modset.rs after both fix rounds (b24ac1ce3, e908a0f61). Regression table: 7 of
+14 prior findings CLOSED; G2-1 (content hashing), G2-3/G2-5 (process binding / override
+corroboration) NOT closed; G2-4 exe-image residual documented-partial. New findings:
+1. BLOCKER unicode-escaped duplicate keys ("enabled_mods") bypass the raw-slice duplicate
+   scanner while serde keeps-last -> resolved:true vanilla. Fix: compare DECODED key names.
+2. BLOCKER --pdx-user-dir override (and stale probed dir) never corroborated against the
+   attached process -> wrong-but-well-formed dir resolves vanilla. (G2-3/G2-5 unclosed.)
+3. BLOCKER fingerprint (count,bytes,max-mtime) systematically non-unique (rename/same-length
+   edit/same-second edits invisible). Fix: SHA-256 over sorted paths+bytes, bracketed.
+4. BLOCKER mod/DLC disk evidence read AFTER process start still resolves (Workshop update
+   between launch and attach binds v2 while the process runs v1). Fix: any input at/after
+   process start fails closed (interim; real fix = loaded-set evidence).
+5. BLOCKER dlc_load.json stability check is mtime-only -> same-mtime atomic replacement
+   (OneDrive sync) passes. Fix: file-identity + double-read/hash bracket.
+6. MAJOR descriptor with both path= and archive= (or repeated keys) accepted last-wins without
+   engine-precedence proof. Fix: reject ambiguous descriptors.
+7. MAJOR repack path (main.rs ~1123/1911/2093) bypasses modset resolution AND manifest modset
+   validation -> can republish legacy/absent/pre-fix modset shapes. Fix: repack requires a
+   current-schema modset object (resolved bool; unresolved => partial_evidence-only shape).
+Failed attacks recorded in out_g2_regen.txt (kept). FIX ROUND OWED (queued below vs usage limit).
+
+### G5-regen (audit reconciliation, tid 019f5491-014b-74a3-8740-5809f231d0ec): FAIL + roadmap
+65 commits in 319dc641b..HEAD: 20 CODE / 45 DOC-ONLY; only 6 CODE demonstrably covered by
+queue-recorded verdicts; 2 under G2-regen; 12 lack a qualifying verdict (2 = exact M1
+edit/revert net-zero pair). Regenerated blocking list (by lossless-criticality):
+1. container/fold/B3 net gate at current HEAD (old chain + 70eeeefca/9810a7e9b/4b7f15c11/
+   4912c05ff + fold-perf lane + a09c772db zstd19);
+2. G1-residue gate (d43 part of 615d24125, O7 2a9dc5091, 11b0cc9c3/b0897b457, 55287bd6a);
+3. G3 serial-wall (1cac48222 + restore 07ef3cad9) — NOW DISPATCHABLE (P1b resolved by
+   construction; queue state was stale);
+4. modset (in-flight G2-regen -> now the fix round above);
+5. exact-domain scheduling + surviving probe (6d666fa1a, 49c0228e7) — small fresh gate
+   (019f53e9's fixes never got a recorded clean re-gate and 49c0228e7 changed code after);
+6. prefetch: append recovered 019f4b91 verdict (done below) + default 16->8 into F5;
+7. C0 census tooling gate (3ecf9f7eb, synthetic-manifest adversary);
+8. M1 pair: administrative net-zero disposition (done below).
+Ledger-integrity findings fixed by the administrative records below.
+
+### ADMINISTRATIVE VERDICT RECORDS (G5-regen findings D1-D3: verdicts existed only in
+AUDIT_RECONCILIATION.md / session records; tids verified in ~/.claude/codex_threads.log)
+- 019f5079-1662-73c1-b385-27eabe1024c2 = the stream-container NET GATE, FOUR ROUNDS on
+  trees e908a0f61 -> 70eeeefca -> 9810a7e9b -> 4b7f15c11: 12 findings total (mid-record EOF
+  Ok; repack laundering; unbounded payload_len; syntactic closure; unguarded skip-fold seal;
+  agreement gaps; single-slot open-hour tracking; under-cap swallow; same-shape source views;
+  terminal swallowing; FNV caveat -> per-type payload bounds + SHA-256 agreement), each fixed
+  same-day (final code commit 4912c05ff). The 4th round ended with fixes, NOT a clean SHIP —
+  G5-regen is right that F5 owns the final integrated verdict on the current tree.
+- 019f5078-fa99-7570-8fb9-4b9676f16a3a = M1 buildings Arc/RwLock code-soundness gate,
+  verdict SOUND (5 attack classes failed). SUPERSEDED ADMINISTRATIVELY: 97a5d902c was exactly
+  reverted by 0a9771955 (git-verified empty pair diff); M1 is NOT in HEAD. Disposition:
+  net-zero pair, no runtime gate owed unless M1 is reintroduced; status docs must stop saying
+  M1 is shipped.
+- 019f4b91-0528-7223-8c7e-2d40f7192fe0 = prefetch-restamp verdict recovery: REFUTED 2
+  (substring key-aliasing in the control parser; MAX-aggregated applied-label on mixed
+  streams); BOTH already fixed in 8487be6a7 (structural tokenizer; *_applied suppressed when
+  *_mixed) — orchestrator re-verified against source 2026-07-11. Remaining prefetch item =
+  default 16->8 (3a80881f2) into F5.
+- G3 state correction: P1b is RESOLVED BY CONSTRUCTION (paused state immutable /
+  order-independent; 55/55 domains emitted — plan §2). G3 serial-wall gate is DISPATCHABLE,
+  no longer held.
+
+## QUEUED on Codex usage limit (hit 2026-07-12 14:46, resets ~18:52 — never retry into it)
+1. R2 bound-trips gate (commit 903461fde): prompt ~/.claude/hoi4_gate_prompts/
+   r2_bound_trips_gate.txt; failed-turn tid 019f54a6-2ac0-7992-910b-16a9e05eb01d (turn.failed
+   on usage limit — re-dispatch fresh from the prompt file, do not resume).
+2. Modset fix round re-gate (after the G2-regen findings above are implemented).
+3. G3 serial-wall gate (1cac48222 + 07ef3cad9, P1b by-construction argument + 55/55 artifact).
+4. Exact-domain + surviving-probe gate (6d666fa1a + 49c0228e7).
+5. G1-residue gate (d43/O7/backstop surviving code).
+6. C0 census tooling gate (3ecf9f7eb).
+(F5 container/fold/B3 net gate stays the integrated final word per plan §5.)
