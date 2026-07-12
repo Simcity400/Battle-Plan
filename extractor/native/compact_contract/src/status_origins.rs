@@ -107,18 +107,26 @@ pub fn record_status_origin(id: usize) {
     if id >= STATUS_ORIGIN_ID_COUNT {
         return;
     }
-    ORIGIN_COUNTS[id].fetch_add(1, Ordering::Relaxed);
+    ORIGIN_COUNTS[id].fetch_add(1, Ordering::Release);
 }
 
 /// Count one introduction AND attach this frame's deciding raw word (flags,
 /// reason hash, packed counts). Last value wins within a frame.
+///
+/// Ordering (R2 gate finding 1, same defect class as bound_trips): the sample
+/// and its set-flag are stored BEFORE the counter is published (Release), and
+/// the drain consumes the counter with Acquire first — so a drain observing
+/// the count also observes the sample that trip stored. The old
+/// count-first order let a drain consume the count while the sample/flag were
+/// still unwritten, emitting the incidence WITHOUT its deciding word and
+/// leaving the flag to a later frame whose count is zero (sample lost).
 pub fn record_status_origin_sample(id: usize, sample: u64) {
     if id >= STATUS_ORIGIN_ID_COUNT {
         return;
     }
-    ORIGIN_COUNTS[id].fetch_add(1, Ordering::Relaxed);
     ORIGIN_SAMPLES[id].store(sample, Ordering::Relaxed);
-    ORIGIN_SAMPLE_SET[id].store(1, Ordering::Relaxed);
+    ORIGIN_SAMPLE_SET[id].store(1, Ordering::Release);
+    ORIGIN_COUNTS[id].fetch_add(1, Ordering::Release);
 }
 
 /// Drain this frame's introductions: per id, (count since last drain,
@@ -128,8 +136,10 @@ pub fn record_status_origin_sample(id: usize, sample: u64) {
 pub fn drain_frame_origins() -> [(u64, Option<u64>); STATUS_ORIGIN_ID_COUNT] {
     let mut out = [(0u64, None); STATUS_ORIGIN_ID_COUNT];
     for (id, slot) in out.iter_mut().enumerate() {
-        let count = ORIGIN_COUNTS[id].swap(0, Ordering::Relaxed);
-        let sample_set = ORIGIN_SAMPLE_SET[id].swap(0, Ordering::Relaxed) != 0;
+        // Acquire pairs with the Release publishes in the record fns: a
+        // counted trip's sample + flag stores are visible below.
+        let count = ORIGIN_COUNTS[id].swap(0, Ordering::Acquire);
+        let sample_set = ORIGIN_SAMPLE_SET[id].swap(0, Ordering::Acquire) != 0;
         let sample = sample_set.then(|| ORIGIN_SAMPLES[id].load(Ordering::Relaxed));
         *slot = (count, sample);
     }
@@ -139,11 +149,21 @@ pub fn drain_frame_origins() -> [(u64, Option<u64>); STATUS_ORIGIN_ID_COUNT] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
 
-    // Distinct ids per test — the registry is global and tests run threaded.
+    // R2 gate finding 4 (bound_trips twin): drain_frame_origins() resets
+    // EVERY id, so parallel tests would steal each other's counts. Every
+    // test that records or drains takes this lock.
+    static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_registry() -> MutexGuard<'static, ()> {
+        REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn record_and_drain_counts_reset() {
+        let _guard = lock_registry();
+        drain_frame_origins(); // clean slate
         let id = SO_D45_PARTIAL_TARGETED_TIMED_STRUCTURAL;
         record_status_origin(id);
         record_status_origin(id);
@@ -154,6 +174,8 @@ mod tests {
 
     #[test]
     fn sample_emitted_only_on_recording_frames_last_value_wins() {
+        let _guard = lock_registry();
+        drain_frame_origins(); // clean slate
         let id = SO_D60_SOURCE_UNAVAILABLE;
         record_status_origin_sample(id, 0x100);
         record_status_origin_sample(id, 0x200);
@@ -166,9 +188,47 @@ mod tests {
     #[test]
     fn zero_sample_value_is_still_a_sample() {
         // A site recording flags=0 must not be confused with "no sample".
+        let _guard = lock_registry();
+        drain_frame_origins(); // clean slate
         let id = SO_FRAME_CONTROL_INVALID;
         record_status_origin_sample(id, 0);
         assert_eq!(drain_frame_origins()[id], (1, Some(0)));
+    }
+
+    #[test]
+    fn concurrent_drain_never_sees_count_without_sample() {
+        // Sample-publish ordering (R2 gate finding 1 twin): every recording
+        // here carries a sample, so a drained (count>0, None) pair means a
+        // consumed count whose deciding word was lost.
+        let _guard = lock_registry();
+        drain_frame_origins(); // clean slate
+        let id = SO_D48_PARTIAL_HARD_OR_GATE;
+        let recorder = std::thread::spawn(move || {
+            for i in 0..20_000u64 {
+                record_status_origin_sample(id, 0x1000 + (i % 5));
+            }
+        });
+        let mut drained_total = 0u64;
+        loop {
+            let (count, sample) = drain_frame_origins()[id];
+            if count != 0 {
+                assert!(
+                    sample.is_some(),
+                    "drained counted sample-recordings without their sample"
+                );
+                drained_total += count;
+            }
+            if recorder.is_finished() {
+                break;
+            }
+        }
+        recorder.join().unwrap();
+        let (count, sample) = drain_frame_origins()[id];
+        if count != 0 {
+            assert!(sample.is_some());
+            drained_total += count;
+        }
+        assert_eq!(drained_total, 20_000, "no incidence count may be lost");
     }
 
     #[test]

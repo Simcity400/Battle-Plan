@@ -62,12 +62,19 @@ static TRIP_LAST_RAW: [AtomicU64; BOUND_TRIP_ID_COUNT] = [ATOMIC_ZERO; BOUND_TRI
 /// Record one bound trip: the observed `raw` value exceeded the bound `id`
 /// guards. Out-of-range `id` is ignored (defensive; all callers use the
 /// constants above).
+///
+/// Ordering (R2 gate finding 1): the raw value is stored BEFORE the counter is
+/// published (Release), and the drain swaps the counter with Acquire before
+/// loading raw — so whenever a drain observes a nonzero count, at least one
+/// counted trip's raw store happens-before its raw load. The old
+/// count-then-raw order let a drain race in between and emit (trips=1, raw=0)
+/// with the genuine value lost forever (its count already consumed).
 pub fn record_bound_trip(id: usize, raw: u64) {
     if id >= BOUND_TRIP_ID_COUNT {
         return;
     }
-    TRIP_COUNTS[id].fetch_add(1, Ordering::Relaxed);
     TRIP_LAST_RAW[id].store(raw, Ordering::Relaxed);
+    TRIP_COUNTS[id].fetch_add(1, Ordering::Release);
 }
 
 /// Upper-bound gate preserving CLAMP-DROP acceptance: `Some(value)` iff
@@ -106,7 +113,9 @@ pub fn bound_exceeded_u32(value: u32, max: u32, id: usize) -> bool {
 pub fn drain_frame_trips() -> [(u64, u64); BOUND_TRIP_ID_COUNT] {
     let mut out = [(0u64, 0u64); BOUND_TRIP_ID_COUNT];
     for (id, slot) in out.iter_mut().enumerate() {
-        let count = TRIP_COUNTS[id].swap(0, Ordering::Relaxed);
+        // Acquire pairs with the Release publish in record_bound_trip: a
+        // counted trip's raw store is visible to the load below.
+        let count = TRIP_COUNTS[id].swap(0, Ordering::Acquire);
         let raw = TRIP_LAST_RAW[id].load(Ordering::Relaxed);
         *slot = (count, raw);
     }
@@ -116,12 +125,21 @@ pub fn drain_frame_trips() -> [(u64, u64); BOUND_TRIP_ID_COUNT] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
 
-    // Each test uses a DISTINCT bound id: the registry is global and the test
-    // harness is multi-threaded, so sharing an id across tests would race.
+    // R2 gate finding 4: distinct ids are NOT enough — drain_frame_trips()
+    // resets EVERY id, so a parallel test's drain steals another test's
+    // counts. Every test that records or drains takes this lock.
+    static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_registry() -> MutexGuard<'static, ()> {
+        REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn gate_passes_in_range_and_records_over_max() {
+        let _guard = lock_registry();
+        drain_frame_trips(); // clean slate
         let id = BOUND_TRIP_UNIT_LEADER_SKILL;
         assert_eq!(gate_u32(15, 15, id), Some(15));
         assert_eq!(gate_u32(0, 15, id), Some(0));
@@ -138,6 +156,8 @@ mod tests {
 
     #[test]
     fn bound_exceeded_records_only_over_max() {
+        let _guard = lock_registry();
+        drain_frame_trips(); // clean slate
         let id = BOUND_TRIP_FACTION_SLOTS;
         assert!(!bound_exceeded_u32(512, 512, id));
         assert!(bound_exceeded_u32(513, 512, id));
@@ -152,6 +172,45 @@ mod tests {
         // No panic; nothing to assert beyond not corrupting valid ids.
     }
 
+    #[test]
+    fn concurrent_drain_never_sees_count_without_raw() {
+        // R2 gate finding 1: with the old count-then-raw publish order, a
+        // drain racing between them consumed the count while raw was still
+        // the 0 sentinel — the genuine value was lost forever. All recorded
+        // raws here are nonzero, so a drained (count>0, raw==0) pair is
+        // exactly that lost-attribution defect.
+        let _guard = lock_registry();
+        drain_frame_trips(); // clean slate
+        let id = BOUND_TRIP_PLAYER_TAG_DB_ID;
+        let recorder = std::thread::spawn(move || {
+            for i in 0..20_000u64 {
+                record_bound_trip(id, 2_049 + (i % 7));
+            }
+        });
+        let mut drained_total = 0u64;
+        loop {
+            let (count, raw) = drain_frame_trips()[id];
+            if count != 0 {
+                assert_ne!(
+                    raw, 0,
+                    "drained a counted trip whose raw attribution was lost"
+                );
+                drained_total += count;
+            }
+            if recorder.is_finished() {
+                break;
+            }
+        }
+        recorder.join().unwrap();
+        let (count, raw) = drain_frame_trips()[id];
+        if count != 0 {
+            assert_ne!(raw, 0);
+            drained_total += count;
+        }
+        assert_eq!(drained_total, 20_000, "no trip count may be lost");
+    }
+
+    // Name-table test needs no lock: it never touches the registry.
     #[test]
     fn unit_names_satisfy_diagnostic_charset_and_sample_suffix() {
         for (trips, sample) in BOUND_TRIP_UNITS {
