@@ -1786,3 +1786,22 @@ between-reads TOCTOU the stress test's per-iteration reconstruction couldn't sur
 the adversarial reviewer caught what live stress didn't. Fix groups now [A]autoattach+
 heartbeat [B]stitching [C]campaign-id [D]fold-wave1 [E]d51-bit12 [F]librs-readers(speed+
 FixP). Speed emitter(librs)+consumer(fold-wave3) merge-coupled; Fix P spans test-debt+librs.
+
+REVIEW: fold-wave3 = FIX-ROUND (3 MAJOR): (1) ordinary hourly ANCHORS fabricated as
+change events — Pause anchor emitted every hour with command_sequence=0, fold stages it
+into speed_pause_changes -> a quiet hour emits {wall_ms:0,kind:pause} falsely claiming an
+observed transition; old-capture test codifies the bug (needs an anchor/change
+DISCRIMINATOR in the WIRE CONTRACT: anchors update current state only, transitions enter
+the timeline); (2) event_hour_raw (wire row +48) silently discarded -> a change buffered
+in hour H but drained in frame H+1 is misattributed to H+1 despite claimed (event_hour,
+wall_ms) ordering (preserve event_hour_raw per timeline entry, partition buffered rows by
+it); (3) state-isolation test non-load-bearing — both segments only FRAME_END, nothing
+persistent to leak, asserts filenames/hours only (populate baseline+tombstones across the
+cut per STITCHING_DESIGN:506). Segment filename format matches the planner exactly; no
+portability/memory regression.
+
+WIRE-CONTRACT COUPLING: speed/pause feature = coordinated fix across collector lib.rs
+(speed emitter, default-off) + session_multiplayer_metadata_live wire (add anchor/change
+discriminator + surface event_hour_raw) + world_fold.rs (consume discriminator, preserve
+event_hour, timeline). Fix group [F] speed now spans 3 files + is gated on the live
+multi-value check. 8/8 code lanes FIX-ROUND.
