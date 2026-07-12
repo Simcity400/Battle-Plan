@@ -1443,3 +1443,14 @@ cadence law. FIX QUEUED for the lib.rs owner slot: on-change (is_paused,
 speed_index) poll -> timestamped change events -> per-hour change timeline in the
 fold (exact proposed diffs in W12B_SPEEDPAUSE_SCOPE.md); true zero-loss upgrade =
 CSetGameSpeedCommand::DoExecute hook, documented future item.
+
+OPUS WAVE HARVEST 3: locjoin-verify 2ea8bbdad — REQUIREMENT ITEM 9 CLOSED, verdict
+PASS: production launcher passes --static-localisation-join in all modes (fail-closed
+Assert-File, runtime-derived path), recorder embeds at capture time (main.rs:1760 /
+repack :3035), artifact byte-identical + integrity-verified across finalized AND
+.failed recovery containers (sha256 30d4cde2..., 50.7MB). Coverage: all 4 ideology
+name families, 52 TOPBAR_*, focus 99.92% / idea 83.41% / tech 92.82% / decision
+98.32% resolvable (unresolved set = documented static-scope exclusions). Checker
+locjoin_coverage.py selftest 11/11 with proven red capability — ORCHESTRATOR
+INDEPENDENTLY RERAN both selftest and the d04stageA live run, PASS/PASS. Useful law
+captured: static artifacts embed at CAPTURE time and ride even .failed containers.
