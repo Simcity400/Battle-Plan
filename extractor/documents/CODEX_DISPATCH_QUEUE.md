@@ -1943,3 +1943,15 @@ consumer inventory + shared stateful stream validator). AFFIRMED: d68 evidence i
 impl [C] + stitching [B/M] which consume identity).
 
 SWEEP TALLY: 12 code/tooling FIX-ROUND + 4 doc REVISE + 1 doc REJECT. 0 SHIP.
+
+REVIEW: events-decisions = REVISE (3 HIGH + 1 MED + 1 LOW): (1) "war grouping quick fold"
+doesn't exist — fold keys FIRST|SECOND, no named-war identity/sides (remove; would collapse
+overlapping wars); (2) d16.days promoted to A21 remaining_timer_days on OLD-build draft
+evidence (expose days_raw only until 870ebf same-tick UI/save proof); (3 MED) warscore +0x68
+anchor stale-build (16022851) — 870ebf revalidates it only as echo discriminator; (4) fired-
+event recipe tests 1 of 5 engine event classes -> silent missed-event risk (cover all 5 +
+player/AI/timeout/repeat-ID controls); (5 LOW) 3 unqualified citation paths. -> doc-revision
+[P] events-decisions.
+
+SWEEP TALLY: 12 code/tooling FIX-ROUND + 5 doc REVISE + 1 doc REJECT. 0 SHIP. Doc pattern:
+overclaim (quick-fold-that-doesn't-exist, hypothesis-as-fact) + stale-build offsets as current.
