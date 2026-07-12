@@ -10,6 +10,7 @@
 pub mod bound_trips;
 pub mod build_profile;
 pub mod calendar;
+pub mod status_origins;
 
 pub type CompactDomainId = u16;
 

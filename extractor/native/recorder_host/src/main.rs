@@ -1002,6 +1002,16 @@ struct Summary {
     parse_errors: Vec<String>,
 }
 
+/// One status-origin ledger row (C1 stage A): the aggregated value (summed
+/// count, or last raw word for `_sample` units) plus the first/last game hour
+/// the unit was seen — enough to attribute a chronic bit from one manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StatusOriginAgg {
+    value: u64,
+    first_hour: i32,
+    last_hour: i32,
+}
+
 #[derive(Debug, Default)]
 struct CompactSummary {
     record_count: usize,
@@ -1042,6 +1052,12 @@ struct CompactSummary {
     // compact_stream.bound_trips. Nonzero on vanilla = a bug; nonzero on a
     // modded capture = the named bound needs raising for that modset (R3).
     bound_trips: BTreeMap<String, u64>,
+    // C1 stage A status-origin incidence ledger: `so_*` units on the probe
+    // domain name the FIRST-INTRODUCTION site (and cause) of every status bit
+    // (C0_DOSSIERS.md ranked telemetry). Counters sum; `_sample` units keep
+    // the last raw word; both carry first/last incidence hour. Kept OUT of
+    // per_domain / domains_seen; surfaced as compact_stream.status_origins.
+    status_origins: BTreeMap<String, StatusOriginAgg>,
     // lane/hour-latch: zero-skip hour-boundary latch accounting, carried by
     // `hl_*` diagnostic units on the reserved probe domain (250). Counters are
     // cumulative/monotonic and aggregate by MAX; `last_observe_failed` is a
@@ -5295,6 +5311,7 @@ fn summarize_compact_stream_chunk(
             decode_compact_domain_perf_diagnostic_units(
                 offset,
                 domain_id,
+                game_hour_raw,
                 record_flags,
                 payload,
                 summary,
@@ -5363,6 +5380,7 @@ fn summarize_compact_stream_chunk(
                     decode_compact_domain_perf_diagnostic_units(
                         offset,
                         domain_id,
+                        game_hour_raw,
                         record_flags,
                         payload,
                         summary,
@@ -17338,6 +17356,24 @@ fn compact_stream_manifest_json(
         // bound dropped real content this session (bound named by the unit,
         // last raw value in the paired `_raw_sample`). Empty on vanilla.
         "bound_trips": serde_json::to_value(&summary.bound_trips).unwrap_or(Value::Null),
+        // C1 stage A status-origin incidence ledger: which site/cause first
+        // introduced each status bit, how often, over which hour span.
+        "status_origins": Value::Object(
+            summary
+                .status_origins
+                .iter()
+                .map(|(name, agg)| {
+                    (
+                        name.clone(),
+                        json!({
+                            "value": agg.value,
+                            "first_hour": agg.first_hour,
+                            "last_hour": agg.last_hour,
+                        }),
+                    )
+                })
+                .collect(),
+        ),
         "lane_wall": lane_wall_summary_json(summary),
         "hour_latch": hour_latch_summary_json(summary),
     })
@@ -17463,6 +17499,7 @@ fn add_compact_domain_data_unit(
 fn decode_compact_domain_perf_diagnostic_units(
     offset: usize,
     domain_id: u16,
+    game_hour_raw: i32,
     record_flags: u32,
     payload: &[u8],
     summary: &mut CompactSummary,
@@ -17532,7 +17569,7 @@ fn decode_compact_domain_perf_diagnostic_units(
             ));
             continue;
         }
-        add_compact_domain_perf_diagnostic_unit(summary, domain_id, name, value);
+        add_compact_domain_perf_diagnostic_unit(summary, domain_id, game_hour_raw, name, value);
     }
     if cursor != payload.len() {
         summary.parse_errors.push(format!(
@@ -17552,6 +17589,7 @@ fn is_valid_compact_perf_diagnostic_name(name: &str) -> bool {
 fn add_compact_domain_perf_diagnostic_unit(
     summary: &mut CompactSummary,
     domain_id: u16,
+    game_hour_raw: i32,
     name: &str,
     value: u64,
 ) {
@@ -17584,6 +17622,27 @@ fn add_compact_domain_perf_diagnostic_unit(
             } else {
                 *entry = entry.saturating_add(value);
             }
+            return;
+        }
+        // C1 stage A status-origin ledger: counters sum, `_sample` units keep
+        // the last value; both track {first_hour, last_hour} of incidence —
+        // exactly the C0 cross-domain incidence ledger shape.
+        if name.starts_with("so_") {
+            let entry = summary
+                .status_origins
+                .entry(name.to_string())
+                .or_insert(StatusOriginAgg {
+                    value: 0,
+                    first_hour: game_hour_raw,
+                    last_hour: game_hour_raw,
+                });
+            if name.ends_with("_sample") {
+                entry.value = value;
+            } else {
+                entry.value = entry.value.saturating_add(value);
+            }
+            entry.first_hour = entry.first_hour.min(game_hour_raw);
+            entry.last_hour = entry.last_hour.max(game_hour_raw);
             return;
         }
         // Plan-v2 read A/B probe units go to a dedicated aggregate, never
@@ -32312,7 +32371,13 @@ mod tests {
             ("bt_owner_tag_db_id_trips", 2),
             ("bt_owner_tag_db_id_raw_sample", 3_000),
         ] {
-            add_compact_domain_perf_diagnostic_unit(&mut summary, RC_PROBE_DOMAIN_ID, name, value);
+            add_compact_domain_perf_diagnostic_unit(
+                &mut summary,
+                RC_PROBE_DOMAIN_ID,
+                100,
+                name,
+                value,
+            );
         }
         assert_eq!(
             summary.bound_trips.get("bt_owner_tag_db_id_trips").copied(),
@@ -32326,6 +32391,49 @@ mod tests {
                 .copied(),
             Some(3_000),
             "_raw_sample must keep the last observed value, not a sum"
+        );
+        assert!(summary.per_domain.is_empty());
+        assert!(summary.read_ab_probe.is_empty());
+    }
+
+    #[test]
+    fn status_origin_units_aggregate_count_sample_and_hour_span() {
+        // C1 stage A ledger: so_* counters sum across frames, so_*_sample
+        // keeps the last value, both track first/last incidence hour, and
+        // nothing leaks into per_domain / read_ab_probe (gate isolation).
+        let mut summary = CompactSummary::default();
+        for (hour, name, value) in [
+            (200, "so_d60_source_unavailable", 2),
+            (200, "so_d60_source_unavailable_sample", 0x100),
+            (350, "so_d60_source_unavailable", 1),
+            (350, "so_d60_source_unavailable_sample", 0x300),
+        ] {
+            add_compact_domain_perf_diagnostic_unit(
+                &mut summary,
+                RC_PROBE_DOMAIN_ID,
+                hour,
+                name,
+                value,
+            );
+        }
+        let counter = summary.status_origins["so_d60_source_unavailable"];
+        assert_eq!(
+            counter,
+            StatusOriginAgg {
+                value: 3,
+                first_hour: 200,
+                last_hour: 350
+            }
+        );
+        let sample = summary.status_origins["so_d60_source_unavailable_sample"];
+        assert_eq!(
+            sample,
+            StatusOriginAgg {
+                value: 0x300,
+                first_hour: 200,
+                last_hour: 350
+            },
+            "sample keeps LAST value, never a sum"
         );
         assert!(summary.per_domain.is_empty());
         assert!(summary.read_ab_probe.is_empty());
