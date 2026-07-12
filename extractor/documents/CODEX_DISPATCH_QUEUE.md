@@ -1474,3 +1474,20 @@ fingerprint (validated, smallest), 2. speed reader +0x4BC + on-change pause/spee
 stream (dossier diffs, multi-value live gate owed), 3. counter-badge division fields
 + world_tension, 4. libr-pairs proposed SO extensions (incl. SO_D47_*), 5. d48
 SO-mapping remap (merge reconciliation), 6. d51 bit12 delayed-event rooted read.
+
+OPUS WAVE HARVEST 5 (WAVE SEALED, 5/5): autoattach-impl 855723cf1 on
+w12c-autoattach-impl — dual-order auto-attach coordinator, 4229 insertions purely
+additive (lib.rs +1, main.rs +83), 9-module tree (identity/state/journal/policy/
+reducer/sources/staging/coordinator). ORCHESTRATOR VERIFIED: 251+199 tests green
+(+54 new: dual order, subscribe-race dedup, PID reuse, identity fail-close x5,
+no-second-DLL barrier, multi-instance, crash recovery); no-double-inject guard =
+fail-closed reducer transition (reducer.rs:195-216, test :336); rig-path grep clean
+(sole F:\SteamLibrary literal is a name-matcher TEST fixture proving path
+insensitivity). Documented §9 deviations (WMI COM binding -> SnapshotOnlyEventSource
+bounded fallback; collector heartbeat/first-frame proof protocol not built — the
+protected outcome 'no Recording without collector proof' still enforced+tested;
+stricter-than-design: committed-but-unproven identities NEVER re-injected). Live
+validation matrix in W12C_AUTOATTACH_IMPL.md is user-gated.
+POST-RESET REVIEW SET (Codex, per merge protocol): 13 wave-12/12b lane commits +
+5 Opus deliverables (fe3180ec3+1ebabcdd2, 07fc80b1d, 2ea8bbdad, 9c1d26c3b,
+855723cf1). After reviews + merges: all changes revert to the Codex workflow.
