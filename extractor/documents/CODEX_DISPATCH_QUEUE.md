@@ -889,3 +889,92 @@ stagger, tids in ~/.claude/codex_threads.log as they complete, prompts + outputs
 6. g1-residue-gate (d43 part of 615d24125, O7 2a9dc5091, O2 11b0cc9c3+b0897b457,
    55287bd6a; known-empty full-replace is the named top risk) -> out_g1_residue.txt
 Verdicts to be recorded here as they land; fix rounds follow the ONE-round cap.
+
+## 2026-07-12 evening — ALL SIX GATE VERDICTS IN (1 SHIP, 5 REFUTED, ~24 findings)
+Full verdicts in ~/.claude/hoi4_gate_prompts/out_*.txt; tids in the threads log.
+
+### G3 serial-wall (tid 019f54c9-b87b): **SHIP** — CLOSED
+Byte/fold identity verified (fixed emit order; only PERF-record values vary); running-game
+temporal skew adjudicated lawful under the documented bounded-skew contract; alias safety
+incl. the NEW registries (readers joined before drain); panic semantics preserved;
+07ef3cad9 restoration git-proven blob-identical. 1cac48222 leaves the blocking list.
+
+### R2 bound-trips (tid 019f54c7-3a5e): REFUTED — 3 BLOCKER + 1 MAJOR
+1. count-published-before-raw race loses attribution (FIXED 639661ec1 + stress test; also
+   applied to status_origins which shared the defect).
+2. Unwired live gates remain: collector d66 occupied-tag 38641 + garrison source 38914;
+   occupation lane collector_module 385 (country count), 666 (tag), 840 (owner/controller);
+   plus a mechanical lane-crate sweep owed. -> fix round.
+3. PRE-EXISTING: compact_replay_verification_gates counts probe-domain-250 records; the
+   recorder manifest excludes them -> the independent battery cannot agree with any stream
+   carrying lane-wall probes (VERIFIED: no 250-exclusion in its scan loop). -> fix round.
+4. registry test races (FIXED 639661ec1).
+
+### exact-domain/probe (tid 019f54c9-eb31): REFUTED — 1 BLOCKER + 2 MAJOR
+1. BLOCKER: unknown --scheduled-domain names accepted syntactically; coverage derives via
+   filter_map -> typo = silently narrower expected set; empty expected set skips domain
+   checks entirely (gate-passed empty replay constructible). Fix: fail-closed registry
+   resolution at parse + coverage; test battery.
+2. MAJOR: refuted +0x48 probe still emits authoritative-looking units (delete constant,
+   reads, verdict counters, topology sample).
+3. MAJOR: 9-bit topology masks incompatible with [0..size) walk (>9 groups misreported);
+   d69_vec_end/cap_sample labels wrong vs confirmed +0x3A8/+0x3AC layout. Delete obsolete;
+   keep vec_size_word + active_walk_count + current-walk failure samples.
+
+### C1 stage-A (tid 019f54c7-c9cc): REFUTED — 5 MAJOR + 1 MINOR (no semantics BLOCKER;
+insertion-only confirmed)
+1. Missing producers: d53 post-build gate SOURCE (20883), d48 lane-set PARTIAL-only frames
+   + worker panic, d54 missing-dependency/panic helpers, d65 pre-rows early SOURCE returns.
+2. Last-value samples lose multi-cause evidence per hour-span; deciding units short of the
+   dossier spec (witnesses for d53/d60/d65; control-transition trace fields).
+3. DRAIN GAP: origins drain only inside the lane-wall probe emission (lane_spans-gated;
+   early returns skip it) -> counts leak to later frames/hours or die at shutdown; NO_CLOCK
+   frames stamp hour 0 into spans. Fix: unconditional frame-finalization drain + missing-
+   hour sentinel.
+4. d45 counts per failing COUNTRY not per frame (dossier specifies _frames).
+5. d54 21-bit packing truncates silently at 2^21 (emit 3 u64 units or saturate+overflow bit).
+6. Tests: no wire-path encode->decode->manifest test; registry test races (races FIXED
+   639661ec1; wire test owed).
+
+### modset re-gate (tid 019f54c7-97a2): REFUTED — 4 BLOCKER + 1 MAJOR
+Closure table: findings 1 (unicode dup), 5 (dlc_load double-read), 6 (descriptor conflicts)
+CLOSED; 2/3/4/7 not closed:
+1. Log-mtime corroboration insufficient: ANY writer touching logs/ post-launch corroborates
+   a wrong dir (no the game instance needed). Fix: process-specific evidence (open log handle
+   owned by PID / command-line), keep mtime as liveness only.
+2. Namespace changes invisible: rename preserves file mtimes (dir mtimes unchecked) ->
+   post-launch renamed tree binds; EMPTY DLC census with no timestamp resolves. Fix: include
+   directory mtimes in walks + launch checks; identity-stable double census; empty census
+   fails closed.
+3. Repack/writers REREAD the manifest from disk at pack time (validated Value discarded;
+   also the non-repack writers 3764/3942) -> post-validation replacement gets embedded.
+   Fix: serialize the validated in-memory Value; never reread.
+4. resolved:true bypasses ALL schema validation on repack (test even blesses a bare shape).
+   Fix: full resolved-schema validation + require errors empty.
+5. MAJOR: content walk follows directory reparse cycles forever (no visited set; only files
+   bounded). Fix: reject reparse points / visited-identity set + dir bound.
+
+### G1-residue (tid from threads log): REFUTED — 4 CRITICAL + 1 HIGH + 1 LOW (all NEW,
+pre-existing silent-loss class — the worst findings of the storm)
+1. d43 fold accepts PARTIAL frames as authoritative full-replacement (first-hold PARTIAL
+   folds A/B while omitting unseen C). Fix: fold treats d43 PARTIAL as unknown/retain.
+2. d43 CLEAN-empty authorized by an ASYNC snapshot (30s-stale Some([]) full-replaces live
+   contracts allocated since). Fix: no CLEAN empty from async heap snapshots — needs a
+   current-frame witness; until then fail closed.
+3. d17 fold ignores its status word ENTIRELY (real failures fold as authoritative). Fix:
+   gate on COMPACT_STATUS_FAILURE_MASK at fold; WAR_SEGMENT_ABSENT alone stays acceptable.
+4. Epoch reset not honored by consumers: d47 hold+12-frame backoff stays CLEAN across a
+   sweep-thread restart (new-epoch chars silently missing); d60 keeps consuming an old
+   validated discovery at generation 0. Fix: epoch-bind consumer caches.
+5. HIGH: work-implies-rows is whole-run aggregate (1 early row masks total later loss) +
+   counter families incomplete. Fix: per-frame adapter_work_without_emission accounting.
+6. LOW: O7 WAR_SEGMENT_ABSENT missing on the country-worker panic fallback.
+
+### FIX-ROUND PLAN (severity order; one Codex round already consumed by these verdicts —
+remaining fixes are orchestrator-implemented, re-gates batch into F5 or per-item)
+P0 (live silent loss): G1-residue 1-4.
+P1 (false-green/verification): exact-domain 1 (unknown domains), modset 3+4 (manifest
+    reread + resolved bypass), R2 3 (probe-domain in verification gates), G1-residue 5.
+P2 (mod-robustness completeness): R2 2 (unwired sites + lane sweep), modset 1+2+5.
+P3 (evidence quality): stage-A 1-5, exact-domain 2+3 (probe deletion), G1-residue 6.
+DONE: R2 1+4 / stage-A 6a (639661ec1); G3 CLOSED SHIP.
