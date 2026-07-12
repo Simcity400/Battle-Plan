@@ -592,3 +592,28 @@ winner). CONFIRMED against the code, fixed (tombstone on quarantine). MINOR — 
 test 1 was bookkeeping-only; CONFIRMED, upgraded to integration-style (real admit loop +
 production filter + the exact blocker sequence). Re-gate on the same thread: SHIP.
 All 4 tid-019f5387 acceptance tests present; collector 356/0.
+
+## 2026-07-12 — d69 COUNT FIELD FOUND (CGameState+0x3AC = active group count)
+Live probe series (telemetry-only, reviewed tid 019f53e9) cracked the d69 topology:
+- +0x48-count REFUTED (stable non-count constant 0x90038D00B9490FCD).
+- CGameState+0x3A0 is NOT a 9-slot inline manager: it is a growable vector of
+  CTechnologySharingGroup* — `{ T* begin @+0x3A0; u32 capacity @+0x3A8; u32 size @+0x3AC }`
+  (size = high dword of the +0x3A8 u64). The current reader dereferences +0x3A0 to `begin`
+  and walks a FIXED 9 slots; slots [size..9) are OUT OF BOUNDS and hold stale/string data —
+  the SOLE source of the chronic d69 PARTIAL (every frame badged PARTIAL, domain out of every
+  replay).
+- EVIDENCE (size == decoded valid-group count, capacity >= size, BOTH saves):
+  frozen 1940.12: cap=4 size=4, 4 valid groups (slots 0-3).
+  deep-war 1941.02 (coherent tuple read): cap=6 size=5, 5 valid groups (slots 0-4); slots 7,8
+  non-null but OOB garbage (the PARTIAL trigger). [frozen coherent re-confirm in flight]
+POPULATED-AND-SOUND FIX DESIGN (NOT yet implemented — gated on the melt oracle):
+  read count = u32 @ CGameState+0x3AC (double-read-stable); FAIL CLOSED if unreadable, or if
+  count > capacity, or capacity implausible (> small cap, e.g. 512). Walk begin[0..count) with
+  the EXISTING per-group vtable/id/member validation. A slot < count that fails validation is a
+  REAL torn read -> keep PARTIAL (do not silently drop a live group). Slots >= count are simply
+  not read (no more OOB, no more chronic PARTIAL). Contract constant:
+  DOMAIN69_CGAMESTATE_TECH_SHARING_GROUP_COUNT_OFF = 0x3AC (+ CAPACITY_OFF 0x3A8, BEGIN_OFF 0x3A0).
+PROMOTION BAR before switching emission: coherent frozen re-confirm (cap=4/size=4) + a D04 melt
+oracle cross-check that size == the TRUE group count on a matching save (guards the case where a
+real group fails vtable and size > decoded-valid-count). Until then d69 stays fail-closed PARTIAL
+(no data loss — the domain is CORRECT, just unpopulated).
