@@ -617,3 +617,24 @@ PROMOTION BAR before switching emission: coherent frozen re-confirm (cap=4/size=
 oracle cross-check that size == the TRUE group count on a matching save (guards the case where a
 real group fails vtable and size > decoded-valid-count). Until then d69 stays fail-closed PARTIAL
 (no data loss — the domain is CORRECT, just unpopulated).
+
+## 2026-07-12 — d69 count-field: coherent frozen re-confirm BLOCKED by advancing save (not a refutation)
+The hardened coherent probe (read_u64_stable per word, DLL f4360971) still emitted NO
+d69_vec_* triple on the "frozen" fixture across two windows. Cause identified, NOT a defect:
+the fixture ADVANCES once unpaused (1940.12 -> 1941.02) and GREW from 4 to 5 tech-sharing
+groups during the window (valid_slot_mask 0x0f -> 0x1f), so `size` at +0x3AC mutates mid-read
+and the double-tuple coherence guard correctly rejects every frame. A clean coherent frozen
+point needs a PAUSED game (static size) — user-gated (no reliable keystroke to the fullscreen
+game). 
+EVIDENCE STANDING for CGameState+0x3AC = active count (unchanged, still strong):
+- deep-war 1941.02 COHERENT same-frame (d69r4tuple): begin=heap ptr, cap=6, size=5, 5 valid
+  groups. size==groups, cap>=size.
+- frozen 1940.12 INDEPENDENT sample (d69r3vec): +0x3A8 u64 = 0x400000004 => cap=4 size=4,
+  4 valid groups. size==groups, cap>=size.
+- semantic invariant holds in every window: cap>=size, size==decoded-valid-group-count.
+PROMOTION GATE remains the D04 MELT ORACLE (validates size == TRUE group count, covering the
+case a real group fails vtable so size>decoded-valid) + one coherent read on a PAUSED game.
+The +0x48 verdict counters (d69_probe_count_match/mismatch) now test the REFUTED +0x48
+hypothesis and are MEANINGLESS noise — the harvest "STRUCTURALLY VIOLATED" line reads those,
+ignore it; the +0x3AC finding is judged by the VEC line + the table above. d69 stays
+fail-closed PARTIAL = CORRECT (zero data loss), just unpopulated, until the gate clears.
