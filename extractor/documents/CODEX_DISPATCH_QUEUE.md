@@ -735,3 +735,14 @@ All 3 verified against the code before fixing (user directive). collector 356/0,
 RE-GATE 2 dispatched (tid d69_regate2) to confirm the fix round. NOTE: this proves the value of
 NOT trusting the outage-time self-review — the re-gate caught a real >9 regression the live D04/
 frozen tests (both <=9 groups) could not surface.
+
+RE-GATE 2 VERDICT (tid 019f547f-feae-7830-b929-9ee48b2424df): **SHIP — no findings.** Verified:
+10..=256 accepted end-to-end via the shared ceiling (both host consumers on the same const);
+fold attaches every declared group without truncation; slot[size] peek gone (shrink-spare no
+longer forces persistent PARTIAL); coherent-header/fallback-PARTIAL/null-active-slot/post-walk
+re-read all intact; stale-HIGH no worse under the validated vector contract (documented
+bounded-negative); no new panic or data-loss path; 10-group/257 regression test passed. Codex's
+sandbox full-run failures (175/190, 160/194) were all PermissionDenied on temp-file-writing
+tests, not assertions — my own full runs are green (356/0, 190+194/0, 18/0). Verify-findings
+pass also corrected an overclaiming comment in my own fix (push-window stable-lag stale-low is
+a bounded residual, dff1b6ab4). d69 fix round CLOSED, double-gated.
