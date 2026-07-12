@@ -2031,3 +2031,63 @@ b918e4854. ROUND-8 adversarial gate launched (tid in threads log, combined_round
 residual bypass/false-positive, esp. "does registry_dump build under the SAME cfg/profile/
 features as the production collector DLL". On round-8 SHIP: port census.py + registry_dump.rs
 to main tree, commit the full census v3.3 + stage-A batch, close task #30.
+
+REVIEW: d51-badges = REVISE (2 HIGH + 1 MEDIUM — FINAL review target). (1) bit-12 root
+CCountry+0x1290 mischaracterized as vector<CDelayedEvent*> — it's a SHARED timed-effects
+vector (CDelayedEvent AND CModifier; ITA=[CDelayedEvent,CModifier x3]); the vtable-gated
+walk fails-closed on the proven ITA fixture -> "code-only closure" wrong (accept
+RTTI-validated CModifier slots, require event ownership match, or leave bit12 unresolved);
+(2) country_identity.rows NOT a completeness witness — 40-row-min cache, omitted country ->
+false measured-empty (current-frame tag-indexed traversal; unreadable slot fails family);
+(3 MED) C0 proposal makes status_name domain-aware but not CLASSIFICATION — bit13 still
+typed via global WAR_SEGMENT_ABSENT. Confirms+extends librs-readers2 findings; the DESIGN
+dossier AND the impl (a02cc8319) share the shared-container defect. -> merges into d51 fix
+[E]. Principal claims survived: 870ebf manifests, exact counts, key:None, broken-selftest
+repro.
+
+================= REVIEW SWEEP COMPLETE (23/23 targets) =================
+FINAL TALLY: 12 code/tooling FIX-ROUND + 9 doc REVISE + 1 doc REJECT + 1 SOUND-WITH-NITS.
+MERGEABLE NOW (1): d53-badges (SOUND-WITH-NITS; 1 LOW telemetry-placement nit fix-forward).
+CENSUS BATCH: round-7b fix (oracle) independently verified + round-8 gate running -> commits
+on SHIP (task #30).
+
+FIX/REVISION GROUPS (Codex lanes, per the regime):
+ PREREQ-0  DUPLEX CONTROL TRANSPORT (recorder<->collector) — blocks [A-heartbeat][O][S];
+           design+build a reverse control channel FIRST (none exists today).
+ [A] autoattach + heartbeat-wmi (auto_attach subsystem; shared staging.rs token/session
+     ownership; single-injection commit-ordering; WMI liveness; needs PREREQ-0 for heartbeat).
+ [B]+[M] stitching impl + design (COUPLED: design has the cross-session-gap + same-hour-
+     backfill + multi-campaign-ownership flaws the impl inherits; fix design then impl).
+ [C]+[O] campaign-id impl + design (COUPLED: rollover wire-contract needs PREREQ-0;
+     validator type/range strictness; Known-guard).
+ [D] fold-wave1 (naval-combat stale-across-failed-frame; faction roster unreadable->empty;
+     cross-faction exclusivity).
+ [E] d51 bit12 impl + design (shared timed-effects container; current-frame country
+     traversal; domain-aware classification).
+ [F] librs-readers (speed reader DEFAULT-OFF until live multi-value gate; Fix P
+     double-read-stable snapshot + exact-byte identity; couples with test-debt Fix P +
+     fold-wave3 wire discriminator).
+ [F-wire]+fold-wave3 speed/pause: collector emitter + session wire (anchor/change
+     discriminator + event_hour_raw) + world_fold consumer — coordinated 3-file fix.
+ [G] fold-wave2 (d11 partial-status; production measured-empty REGRESSION -> per-country
+     leaf presence bits in wire; roster_size; admiral attack/defense + schema sign-off).
+ [H] dlc-meta (validator reject impossible nulls; strict Clausewitz parser; launch-state
+     binding; cross-layer replay session_metadata consumption).
+ [I] d48-fold-skip (REVERT-leaning: non-59 back to skip+PARTIAL; torn-read must not
+     tombstone-delete; apply collector diagnostic diff atomically).
+ [J]+[R] FoW dossiers fow-re + fow-scope (COUPLED: shared IntelTex overclaim parent->child;
+     relabel HYPOTHESIS, find actual bound SRV, cadence proof).
+ [K] pass2-spans (domain-aware status registry; PERF coverage enforcement; missing-field
+     fail-closed; zero-sample accept) — shares domain-aware registry with census tooling.
+ [L] re-war-decisions dossier (downgrade HIGH->HYPOTHESIS; drop proven-null path; extend
+     oracles; account random_item/decision_to_remove).
+ [N] re-counterbadge dossier REDO (reconcile with existing 870ebf cracks dig_in/combat-
+     progress; fix fail-closed proposals; revalidate offsets).
+ [P] events-decisions dossier (remove nonexistent war quick-fold; days_raw only; stale-build
+     warscore->HYPOTHESIS; 5-class event hook recipe).
+ [Q] libr-pairs (ORCHESTRATOR-owned: d54 permanent-closure overclaim -> STILL-OPEN + stable
+     line anchors — my addendum correction).
+MERGE ORDER: PREREQ-0 -> census batch (round-8 SHIP) -> d53-badges -> code fixes [A-I,F-wire,
+G,H] re-reviewed -> doc revisions [J-R] -> integration. Recurring class checklist for all code
+fixes: absent-stays-absent, fail-closed-on-uncertainty, current-frame completeness witness,
+no-stale-across-failed-frame, validator rejects producer-impossible shapes.
