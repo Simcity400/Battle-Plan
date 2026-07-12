@@ -80,7 +80,29 @@ pub const SO_D48_WORKER_PANIC: usize = 30;
 pub const SO_D54_SOURCE_DEPENDENCY: usize = 31;
 /// d54 worker panic.
 pub const SO_D54_WORKER_PANIC: usize = 32;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 33;
+/// d65 early SOURCE: country identity has no scalar source this frame (the
+/// walk never starts). Stage-A residue producer (fix-round re-gate
+/// adjudication): the terminal empty-no-witness site could not distinguish
+/// "walk found nothing" from "walk never ran".
+pub const SO_D65_SOURCE_NO_SCALAR: usize = 33;
+/// d65 early SOURCE: a DOMAIN65 vtable RVA overflowed module_base — build
+/// profile/base mismatch, the walk never starts.
+pub const SO_D65_SOURCE_VTABLE_RVA: usize = 34;
+/// d48 lane-walk partial causes (stage-A residue producer): the lane module
+/// itself sets PARTIAL from per-arm walk failures the inherited/hard-or-gate
+/// sites never see. ONE ID PER CAUSE (stage-A residue gate MEDIUM: a packed
+/// multi-cause sample under last-value semantics kept only the FINAL frame's
+/// causes — hour 100 country-root + hour 101 resource-row left no trace of
+/// the country arm). Count sums affected frames per cause; sample = the
+/// cause's last per-frame counter; hour spans come from the recorder agg.
+pub const SO_D48_LANE_FAILED_COUNTRY_ROOTS: usize = 35;
+pub const SO_D48_LANE_FAILED_STATE_BUILDING_ROOTS: usize = 36;
+pub const SO_D48_LANE_FAILED_STATE_RESOURCE_ROOTS: usize = 37;
+pub const SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS: usize = 38;
+pub const SO_D48_LANE_SKIPPED_CONSTRUCTION_ROWS: usize = 39;
+pub const SO_D48_LANE_SKIPPED_BUILDING_ROWS: usize = 40;
+pub const SO_D48_LANE_SKIPPED_RESOURCE_ROWS: usize = 41;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 42;
 
 /// Unit names, index-aligned with the ids. `<name>` counts introductions
 /// (summed in the recorder); `<name>_sample` (emitted only when a site
@@ -121,6 +143,15 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d48_worker_panic",
     "so_d54_source_dependency",
     "so_d54_worker_panic",
+    "so_d65_source_no_scalar",
+    "so_d65_source_vtable_rva",
+    "so_d48_lane_failed_country_roots",
+    "so_d48_lane_failed_state_building_roots",
+    "so_d48_lane_failed_state_resource_roots",
+    "so_d48_lane_failed_province_building_roots",
+    "so_d48_lane_skipped_construction_rows",
+    "so_d48_lane_skipped_building_rows",
+    "so_d48_lane_skipped_resource_rows",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -300,5 +331,79 @@ mod tests {
             assert!(!name.ends_with("_sample"));
             assert!(seen.insert(name), "duplicate unit name {name}");
         }
+    }
+
+    #[test]
+    fn every_id_constant_indexes_its_exact_unit_name() {
+        // Combined-gate MEDIUM: swapping two names in the array compiles and
+        // passes the uniqueness test, permanently mislabeling two causes in
+        // every manifest. Pin the FULL id -> name registry mechanically.
+        let expected: [(usize, &str); STATUS_ORIGIN_ID_COUNT] = [
+            (SO_D45_PARTIAL_TARGETED_TIMED_STRUCTURAL,
+             "so_d45_partial_targeted_timed_structural"),
+            (SO_D48_PARTIAL_INHERITED, "so_d48_partial_inherited"),
+            (SO_D48_PARTIAL_ROOTS_ERR, "so_d48_partial_roots_err"),
+            (SO_D48_PARTIAL_HARD_OR_GATE, "so_d48_partial_hard_or_gate"),
+            (SO_NAVAL_PARTIAL_INHERITED, "so_naval_partial_inherited"),
+            (SO_NAVAL_PARTIAL_TORN_WALK, "so_naval_partial_torn_walk"),
+            (SO_NAVAL_PARTIAL_JOIN, "so_naval_partial_join"),
+            (SO_NAVAL_SOURCE_EMPTY, "so_naval_source_empty"),
+            (SO_NAVAL_WORKER_PANIC, "so_naval_worker_panic"),
+            (SO_D60_SOURCE_UNAVAILABLE, "so_d60_source_unavailable"),
+            (SO_D60_PARTIAL_INHERITED, "so_d60_partial_inherited"),
+            (SO_D60_PARTIAL_TORN_ROW, "so_d60_partial_torn_row"),
+            (SO_D60_WORKER_PANIC, "so_d60_worker_panic"),
+            (SO_D53_SOURCE_UNAVAILABLE, "so_d53_source_unavailable"),
+            (SO_D53_PARTIAL_INHERITED, "so_d53_partial_inherited"),
+            (SO_D53_PARTIAL_ROW_SKIPPED, "so_d53_partial_row_skipped"),
+            (SO_D53_PARTIAL_SHADOW_MISMATCH, "so_d53_partial_shadow_mismatch"),
+            (SO_D53_WORKER_PANIC, "so_d53_worker_panic"),
+            (SO_D54_PARTIAL_INHERITED, "so_d54_partial_inherited"),
+            (SO_D54_PARTIAL_ARMY_ORDERS, "so_d54_partial_army_orders"),
+            (SO_D54_PARTIAL_OOB_COMMAND, "so_d54_partial_oob_command"),
+            (SO_D54_HARD_DEPENDENCY, "so_d54_hard_dependency"),
+            (SO_D54_PARTIAL_SKIPPED_ROWS, "so_d54_partial_skipped_rows"),
+            (SO_D65_SOURCE_EMPTY_NO_WITNESS, "so_d65_source_empty_no_witness"),
+            (SO_D65_PARTIAL_DROPPED_AMBIGUOUS,
+             "so_d65_partial_dropped_ambiguous"),
+            (SO_D55_TRANSITION_BASELINE_RESET,
+             "so_d55_transition_baseline_reset"),
+            (SO_FRAME_CONTROL_INVALID, "so_frame_control_invalid"),
+            (SO_D43_SOURCE_EMPTY_WARM_KNOWN, "so_d43_source_empty_warm_known"),
+            (SO_D43_SOURCE_EMPTY_COLD, "so_d43_source_empty_cold"),
+            (SO_D53_POSTBUILD_GATE, "so_d53_postbuild_gate"),
+            (SO_D48_WORKER_PANIC, "so_d48_worker_panic"),
+            (SO_D54_SOURCE_DEPENDENCY, "so_d54_source_dependency"),
+            (SO_D54_WORKER_PANIC, "so_d54_worker_panic"),
+            (SO_D65_SOURCE_NO_SCALAR, "so_d65_source_no_scalar"),
+            (SO_D65_SOURCE_VTABLE_RVA, "so_d65_source_vtable_rva"),
+            (SO_D48_LANE_FAILED_COUNTRY_ROOTS,
+             "so_d48_lane_failed_country_roots"),
+            (SO_D48_LANE_FAILED_STATE_BUILDING_ROOTS,
+             "so_d48_lane_failed_state_building_roots"),
+            (SO_D48_LANE_FAILED_STATE_RESOURCE_ROOTS,
+             "so_d48_lane_failed_state_resource_roots"),
+            (SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS,
+             "so_d48_lane_failed_province_building_roots"),
+            (SO_D48_LANE_SKIPPED_CONSTRUCTION_ROWS,
+             "so_d48_lane_skipped_construction_rows"),
+            (SO_D48_LANE_SKIPPED_BUILDING_ROWS,
+             "so_d48_lane_skipped_building_rows"),
+            (SO_D48_LANE_SKIPPED_RESOURCE_ROWS,
+             "so_d48_lane_skipped_resource_rows"),
+        ];
+        for (id, name) in expected {
+            assert_eq!(
+                STATUS_ORIGIN_UNITS[id], name,
+                "id {id} must index unit {name}"
+            );
+        }
+        // Every id 0..COUNT is covered exactly once by a named constant.
+        let mut ids: Vec<usize> = expected.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), STATUS_ORIGIN_ID_COUNT);
+        assert_eq!(ids.first(), Some(&0));
+        assert_eq!(ids.last(), Some(&(STATUS_ORIGIN_ID_COUNT - 1)));
     }
 }

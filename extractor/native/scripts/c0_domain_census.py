@@ -8,9 +8,9 @@ gate's 5 CRITICALs; v3 closes the combined gate's 4 CRITICAL + 2 MEDIUM
 
 Fail-closed guarantees (each pinned by --selftest through the REAL entry
 path, not a private helper):
-  * the pinned roster is cross-checked at startup against the Rust registry
-    SOURCE (compact_contract/src/lib.rs); any drift/parse failure blocks
-    before any manifest is read (combined-gate finding 1)
+  * the pinned roster is cross-checked at startup against a deterministic
+    JSONL dump of the RELEASE-COMPILED Rust registry; build/run/dump failure
+    or any drift blocks before any manifest is read
   * hourly_requirement must be an object with required=True, met=True,
     problems == [] — absent/older-schema/met-false all block, matching the
     authoritative verification gate (finding 2)
@@ -25,17 +25,31 @@ path, not a private helper):
 
 Usage: python c0_domain_census.py [manifest.json ...]
        python c0_domain_census.py --selftest
+       python c0_domain_census.py --build-and-attest [artifact options]
+       python c0_domain_census.py --verify-artifact-only [artifact options]
        (no args: the built-in representative set)
 """
+import argparse
+import hashlib
+import io
 import json
 import os
-import re
+import shutil
+import subprocess
 import sys
+import tempfile
+from dataclasses import dataclass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RUNS = os.path.normpath(os.path.join(HERE, "..", "runs"))
-REGISTRY_SRC = os.path.normpath(
-    os.path.join(HERE, "..", "compact_contract", "src", "lib.rs"))
+NATIVE_ROOT = os.path.normpath(os.path.join(HERE, ".."))
+RUNS = os.path.join(NATIVE_ROOT, "runs")
+REGISTRY_GOLDEN = os.path.join(NATIVE_ROOT, "c0_registry_golden.json")
+
+ORACLE_PACKAGE = "collector"
+PRODUCTION_PACKAGES = ("collector", "recorder_host")
+ATTESTATION_SCHEMA_VERSION = 2
+BUILD_INPUT_SUFFIXES = {".rs", ".c", ".h", ".toml", ".lock", ".json"}
+CARGO_CACHE_TAG_SIGNATURE = "Signature: 8a477f597d28d172789f06886806bc55"
 
 DEFAULT_MANIFESTS = [
     os.path.join(RUNS, "production_speed5_ShortSpeed5_20260711_113625",
@@ -44,7 +58,7 @@ DEFAULT_MANIFESTS = [
                  "native_session_manifest.json"),
 ]
 
-# --- Pinned roster, cross-checked at startup against REGISTRY_SRC ----------
+# --- Pinned roster, cross-checked against the release-compiled registry ----
 # wire_name -> (domain_id, in_production_profile)
 ROSTER = {
     "clock": (1, False),
@@ -101,199 +115,401 @@ PROFILE_STATUSES = {
     "Existing", "ProductionComplete", "ProductionCompleteBase",
     "ValidatedSlice", "ValidatedPartialSlice", "ValidatedSliceOpenGaps",
 }
-# Round-3/4 gate finding 1: the parse must see what the COMPILER sees.
-# Round 4 killed the regex comment-strip: Rust block comments NEST
-# (`/* /* */ */` hides an entry from rustc but not from a non-nesting
-# regex), and a block comment OPENED BEFORE the declaration made the raw
-# `find` select a commented-out copy. The lexer below is character-level:
-# nested block comments, line comments, string/char literals with escapes,
-# and lifetimes (`&'static` is not a char literal) are all handled; comments
-# become spaces so nothing inside them can match, and the ACTIVE declaration
-# is located in the stripped text.
-REGISTRY_ARRAY_DECL = "pub const ASSIGNED_COMPACT_DOMAINS:"
-REGISTRY_ENTRY_RE = re.compile(
-    r'domain\(\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*'
-    r'CompactDomainStatus::(\w+),\s*(true|false),\s*(true|false),\s*'
-    r'&\[[^\]]*\]\s*,?\s*\)')
-# The `= &[` value opener (round-6: distinguish the array BODY from the type
-# annotation `&[CompactDomainDescriptor]`; anchored on `=` so the type's own
-# `&[` never matches).
-REGISTRY_ARRAY_OPEN_RE = re.compile(r'=\s*&\s*\[')
-CHAR_LITERAL_RE = re.compile(r"'(\\.|\\u\{[0-9a-fA-F_]+\}|[^\\'])'")
 # All profile domains require data records (pinned: only clock/d59/frame
 # carry requires_data_record=false, all non-profile). A registry change here
 # must drift so the dark-domain check gets re-judged.
 REQUIRES_DATA_FALSE = {"clock", "templates_equipment_catalog_live", "frame"}
 
 
-def strip_rust_comments(source):
-    """Blank every comment (nested block + line) to spaces, preserving
-    newlines and string/char literal contents. Character-level so the result
-    matches what rustc compiles; a truncation-relevant `];` inside a STRING
-    is deliberately preserved (it can only shrink the scope -> fewer entries
-    -> drift -> fail closed)."""
-    out = []
-    i, n = 0, len(source)
-    depth = 0
-    in_line = in_str = False
-    while i < n:
-        c = source[i]
-        pair = source[i:i + 2]
-        if in_line:
-            if c == "\n":
-                in_line = False
-                out.append(c)
-            else:
-                out.append(" ")
-            i += 1
-        elif depth > 0:
-            if pair == "/*":
-                depth += 1
-                out.append("  ")
-                i += 2
-            elif pair == "*/":
-                depth -= 1
-                out.append("  ")
-                i += 2
-            else:
-                out.append(c if c == "\n" else " ")
-                i += 1
-        elif in_str:
-            out.append(c)
-            if c == "\\" and i + 1 < n:
-                out.append(source[i + 1])
-                i += 2
-                continue
-            if c == '"':
-                in_str = False
-            i += 1
-        else:
-            if pair == "//":
-                in_line = True
-                out.append("  ")
-                i += 2
-            elif pair == "/*":
-                depth = 1
-                out.append("  ")
-                i += 2
-            elif c == '"':
-                in_str = True
-                out.append(c)
-                i += 1
-            elif c == "'":
-                literal = CHAR_LITERAL_RE.match(source, i)
-                if literal:
-                    out.append(literal.group(0))
-                    i = literal.end()
-                else:
-                    # A lifetime ('static, 'a): just the tick.
-                    out.append(c)
-                    i += 1
-            else:
-                out.append(c)
-                i += 1
-    return "".join(out)
+def _failure_detail(completed):
+    detail = (completed.stderr or completed.stdout or "").strip()
+    return " ".join(detail.split())[:240] or "no diagnostic output"
 
 
-def hash_outside_strings(scoped):
-    """True when a `#` occurs outside string literals — an attribute like
-    #[cfg(debug_assertions)] inside the array means the compiled registry can
-    differ per build profile, which a textual pin cannot evaluate (round-5
-    gate CRITICAL: a cfg'd entry compiles in test builds — keeping the Rust
-    exact-ID test green — while release omits it)."""
-    in_str = False
-    i, n = 0, len(scoped)
-    while i < n:
-        c = scoped[i]
-        if in_str:
-            if c == "\\":
-                i += 2
-                continue
-            if c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        elif c == "#":
-            return True
-        i += 1
-    return False
+@dataclass(frozen=True)
+class BuildEvidence:
+    dump_text: str
+    collector_path: str
+    collector_facts: tuple
+    registry_dump_path: str
 
 
-def registry_scope(registry_text):
-    """(scoped_array_text, None) or (None, reason). Fail closed on anything
-    a textual parse cannot faithfully evaluate."""
-    stripped = strip_rust_comments(registry_text)
-    count = stripped.count(REGISTRY_ARRAY_DECL)
-    if count != 1:
-        return None, (f"ASSIGNED_COMPACT_DOMAINS declaration count {count} "
-                      "!= 1 (hidden/renamed/ambiguous)")
-    tail = stripped[stripped.find(REGISTRY_ARRAY_DECL):]
-    end = tail.find("];")
-    if end < 0:
-        return None, "array unterminated"
-    scoped = tail[:end]
-    if hash_outside_strings(scoped):
-        return None, ("attribute (#[...]) inside the registry array - "
-                      "conditional compilation is not textually evaluable")
-    # Round-6 gate CRITICAL: the `#` scan closes in-array attributes, but the
-    # entry regex previously never proved it consumed the ENTIRE array body.
-    # A non-literal element the pin cannot evaluate -- a wrapper macro
-    # (conditional_domain!(domain(...))), a bare const name (EXTRA_DOMAIN,),
-    # an include!("..."), or any additive expression producing a descriptor --
-    # can compile-differ between test and release while the regex still
-    # extracts an inner literal domain(...). Require FULL grammatical
-    # consumption: after removing the array opener and every literal domain()
-    # entry, only commas and whitespace may remain. Any other token = parse
-    # shortfall = fail closed.
-    opener = REGISTRY_ARRAY_OPEN_RE.search(scoped)
-    if opener is None:
-        return None, "registry array opener `= &[` not found"
-    body = scoped[opener.end():]
-    residue = REGISTRY_ENTRY_RE.sub("", body).replace(",", "").strip()
-    if residue:
-        snippet = " ".join(residue.split())[:60]
-        return None, ("registry array body has non-literal tokens the pin "
-                      "cannot evaluate (wrapper/additive/const/include "
-                      f"expression): {snippet!r}")
-    return scoped, None
+def _reported_path(path):
+    if type(path) is not str or not path:
+        raise ValueError("build-reported artifact path is not a nonempty string")
+    if not os.path.isabs(path):
+        path = os.path.join(NATIVE_ROOT, path)
+    return os.path.abspath(os.path.normpath(path))
 
 
-def registry_entries(registry_text):
-    """Active domain() calls exactly as the compiler sees them, or None on
-    parse shortfall (= drift)."""
-    scoped, _reason = registry_scope(registry_text)
-    return None if scoped is None else REGISTRY_ENTRY_RE.findall(scoped)
+def _path_identity(path):
+    return os.path.normcase(os.path.abspath(os.path.normpath(path)))
 
 
-def registry_drift(registry_text):
-    """Compare ROSTER against the Rust registry source. Returns a list of
-    drift findings (empty = exact match). Any parse shortfall is drift:
-    an audit pin that cannot be verified is not a pin."""
-    scoped, reason = registry_scope(registry_text)
-    if scoped is None:
-        return [f"registry parse shortfall (fail closed): {reason}"]
-    entries = REGISTRY_ENTRY_RE.findall(scoped)
+def _source_identity(path):
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _target_is(message, name, kind, source_path, manifest_path):
+    if type(message) is not dict or message.get("reason") != "compiler-artifact":
+        return False
+    target = message.get("target")
+    if type(target) is not dict:
+        return False
+    # Round-10: bind to PACKAGE identity, not just target name/kind/src_path.
+    # Cargo lets a target's src_path be configured relative to ANOTHER package's
+    # manifest, so a recorder_host-package `registry_dump` pointing at collector's
+    # source (compiled against a different contract) would otherwise match. The
+    # message's manifest_path MUST resolve to the collector package's Cargo.toml.
+    reported_manifest = message.get("manifest_path")
+    if type(reported_manifest) is not str:
+        return False
+    if _source_identity(reported_manifest) != _source_identity(manifest_path):
+        return False
+    kinds = target.get("kind")
+    return (target.get("name") == name
+            and type(kinds) is list and kinds
+            and all(type(value) is str for value in kinds) and kind in kinds
+            and type(target.get("src_path")) is str
+            and _source_identity(target["src_path"])
+            == _source_identity(source_path))
+
+
+def _artifact_outputs(message):
+    filenames = message.get("filenames")
+    if type(filenames) is not list or any(type(path) is not str
+                                           for path in filenames):
+        raise ValueError("compiler-artifact filenames is not a string array")
+    return [_reported_path(path) for path in filenames]
+
+
+def _read_stderr(stderr_file):
+    stderr_file.seek(0)
+    try:
+        return stderr_file.read().decode("utf-8", errors="strict")
+    except UnicodeError as e:
+        raise ValueError(f"production build stderr was not UTF-8: {e}") from e
+
+
+def obtain_compiler_truth(requested_collector_path=None,
+                          popen_factory=subprocess.Popen,
+                          run_command=subprocess.run,
+                          find_executable=shutil.which):
+    """Build production's package set once and use only its reported outputs.
+
+    Cargo JSON is parsed as it streams. The unique collector cdylib is the
+    artifact attested by callers, and the unique registry_dump executable is
+    invoked directly; no second Cargo command can change feature unification or
+    redirect the artifact path between the build and the oracle.
+    """
+    cargo = find_executable("cargo")
+    if cargo is None:
+        return None, "cargo/toolchain absent from PATH"
+    command = [cargo, "build", "--release"]
+    for package in PRODUCTION_PACKAGES:
+        command.extend(("-p", package))
+    command.append("--message-format=json")
+    messages = []
+    try:
+        with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            process = popen_factory(
+                command, cwd=NATIVE_ROOT, stdout=subprocess.PIPE,
+                stderr=stderr_file, text=True, encoding="utf-8",
+                errors="strict")
+            if process.stdout is None:
+                return None, "production build stdout pipe was unavailable"
+            parse_error = None
+            try:
+                for line_number, raw_line in enumerate(process.stdout, 1):
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        message = json.loads(
+                            line, object_pairs_hook=reject_duplicate_keys)
+                    except (UnicodeError, ValueError) as e:
+                        parse_error = ("production build JSON line "
+                                       f"{line_number} was malformed: {e}")
+                        continue
+                    if (type(message) is not dict
+                            or type(message.get("reason")) is not str):
+                        parse_error = ("production build JSON line "
+                                       f"{line_number} had an unexpected shape")
+                        continue
+                    messages.append(message)
+            except UnicodeError as e:
+                parse_error = f"production build JSON was not UTF-8: {e}"
+            returncode = process.wait()
+            try:
+                stderr = _read_stderr(stderr_file)
+            except ValueError as e:
+                return None, str(e)
+    except OSError as e:
+        return None, f"production build could not start: {e}"
+    except UnicodeError as e:
+        return None, f"production build JSON was not UTF-8: {e}"
+    if returncode != 0:
+        detail = " ".join(stderr.split())[:240] or "no diagnostic output"
+        return None, (f"production build failed (exit {returncode}): {detail}")
+    if parse_error is not None:
+        return None, parse_error
+
+    collector_source = os.path.join(NATIVE_ROOT, "collector", "src", "lib.rs")
+    dump_source = os.path.join(
+        NATIVE_ROOT, "collector", "src", "bin", "registry_dump.rs")
+    collector_manifest = os.path.join(NATIVE_ROOT, "collector", "Cargo.toml")
+    collector_messages = [
+        message for message in messages
+        if _target_is(message, "collector", "cdylib", collector_source,
+                      collector_manifest)]
+    dump_messages = [
+        message for message in messages
+        if _target_is(message, "registry_dump", "bin", dump_source,
+                      collector_manifest)]
+    if len(collector_messages) != 1:
+        return None, ("production build reported "
+                      f"{len(collector_messages)} collector cdylib artifacts; "
+                      "exactly one required")
+    if len(dump_messages) != 1:
+        return None, ("production build reported "
+                      f"{len(dump_messages)} registry_dump binary artifacts; "
+                      "exactly one required")
+    # Round-10: the attested DLL and the dump we trust must be the SAME nonempty
+    # collector package. Both already bind to collector/Cargo.toml via _target_is;
+    # cross-check their package_id so the dump can never come from a sibling
+    # package that merely reuses collector's source path.
+    collector_pid = collector_messages[0].get("package_id")
+    dump_pid = dump_messages[0].get("package_id")
+    if not (type(collector_pid) is str and collector_pid
+            and type(dump_pid) is str and dump_pid
+            and collector_pid == dump_pid):
+        return None, ("collector cdylib and registry_dump report different or "
+                      f"empty package_id ({collector_pid!r} vs {dump_pid!r}); "
+                      "both must be the collector package")
+
+    try:
+        collector_outputs = _artifact_outputs(collector_messages[0])
+        cdylib_names = {"collector.dll", "libcollector.so", "libcollector.dylib"}
+        collector_paths = [
+            path for path in collector_outputs
+            if os.path.basename(path).lower() in cdylib_names]
+        if len(collector_paths) != 1:
+            raise ValueError(
+                "collector compiler-artifact reported "
+                f"{len(collector_paths)} shipped cdylib outputs; exactly one required")
+        collector_path = collector_paths[0]
+        if (requested_collector_path is not None
+                and _path_identity(requested_collector_path)
+                != _path_identity(collector_path)):
+            raise ValueError(
+                "externally supplied collector artifact is not the build-reported "
+                f"cdylib output: supplied {os.path.abspath(requested_collector_path)}, "
+                f"reported {collector_path}")
+        collector_facts = _artifact_facts(collector_path)
+
+        dump_message = dump_messages[0]
+        dump_outputs = _artifact_outputs(dump_message)
+        executable = _reported_path(dump_message.get("executable"))
+        if _path_identity(executable) not in {
+                _path_identity(path) for path in dump_outputs}:
+            raise ValueError(
+                "registry_dump executable is not among its compiler-artifact filenames")
+        registry_dump_facts = _artifact_facts(executable)
+    except (OSError, ValueError) as e:
+        return None, f"cannot obtain build's exact artifacts: {e}"
+
+    try:
+        dumped = run_command(
+            [executable], cwd=NATIVE_ROOT,
+            capture_output=True, text=True, encoding="utf-8",
+            errors="strict", check=False)
+    except OSError as e:
+        return None, f"build-reported registry_dump could not run: {e}"
+    except UnicodeError as e:
+        return None, f"build-reported registry_dump output was not UTF-8: {e}"
+    if dumped.returncode != 0:
+        return None, (f"build-reported registry_dump failed (exit "
+                      f"{dumped.returncode}): "
+                      f"{_failure_detail(dumped)}")
+    if not dumped.stdout.strip():
+        return None, "build-reported registry_dump stdout was empty"
+    try:
+        if _artifact_facts(executable) != registry_dump_facts:
+            raise ValueError("registry_dump changed during its execution")
+        if _artifact_facts(collector_path) != collector_facts:
+            raise ValueError("collector cdylib changed during registry_dump execution")
+    except ValueError as e:
+        return None, f"cannot obtain build's exact artifacts: {e}"
+    return BuildEvidence(
+        dumped.stdout, collector_path, collector_facts, executable), None
+
+
+DESCRIPTOR_FIELDS = (
+    "id", "wire_name", "internal_name", "status", "schedulable",
+    "requires_data_record", "tags",
+)
+
+
+def _validate_descriptor(entry, location):
+    required = set(DESCRIPTOR_FIELDS)
+    if type(entry) is not dict:
+        raise ValueError(f"{location} is not a JSON object")
+    if set(entry) != required:
+        missing = sorted(required - set(entry))
+        extra = sorted(set(entry) - required)
+        raise ValueError(
+            f"{location} descriptor keys differ "
+            f"(missing={missing}, extra={extra})")
+    if type(entry["id"]) is not int or entry["id"] <= 0:
+        raise ValueError(f"{location} id is not a positive int")
+    for key in ("wire_name", "internal_name", "status"):
+        if type(entry[key]) is not str or not entry[key]:
+            raise ValueError(f"{location} {key} is not a nonempty string")
+    for key in ("schedulable", "requires_data_record"):
+        if type(entry[key]) is not bool:
+            raise ValueError(f"{location} {key} is not a bool")
+    tags = entry["tags"]
+    if (type(tags) is not list
+            or any(type(tag) is not str or not tag for tag in tags)):
+        raise ValueError(f"{location} tags is not a nonempty-string array")
+    return entry
+
+
+def parse_registry_dump(dump_text):
+    """Parse strict one-object-per-line compiler truth, or raise ValueError."""
+    if type(dump_text) is not str or not dump_text.strip():
+        raise ValueError("release oracle stdout was empty")
+    entries = []
+    for line_number, line in enumerate(dump_text.splitlines(), 1):
+        if not line.strip():
+            raise ValueError(f"blank JSONL record at line {line_number}")
+        try:
+            entry = json.loads(line, object_pairs_hook=reject_duplicate_keys)
+        except ValueError as e:
+            raise ValueError(f"invalid JSON at line {line_number}: {e}") from e
+        entries.append(_validate_descriptor(entry, f"line {line_number}"))
+    return entries
+
+
+def load_registry_golden(path=REGISTRY_GOLDEN):
+    """Load the checked-in full-tuple authority with strict JSON semantics."""
+    try:
+        with open(path, encoding="utf-8") as golden_file:
+            golden = json.load(
+                golden_file, object_pairs_hook=reject_duplicate_keys)
+    except (OSError, UnicodeError, ValueError) as e:
+        raise ValueError(f"full registry golden unreadable/malformed: {e}") from e
+    if type(golden) is not list or not golden:
+        raise ValueError("full registry golden is not a nonempty array")
+    return [_validate_descriptor(entry, f"golden entry {index}")
+            for index, entry in enumerate(golden)]
+
+
+def descriptor_uniqueness_findings(entries, label):
+    """Reject ambiguous IDs and scheduled-name/alias routing."""
     findings = []
+    ids = {}
+    scheduled_names = {}
+    lookup_names = {}
+    for entry in entries:
+        wire = entry["wire_name"]
+        domain_id = entry["id"]
+        prior_wire = ids.get(domain_id)
+        if prior_wire is not None:
+            findings.append(
+                f"{label} duplicates id {domain_id}: {prior_wire!r} and "
+                f"{wire!r}")
+        else:
+            ids[domain_id] = wire
+
+        # matches_scheduled_name() accepts wire_name plus aliases. Check every
+        # descriptor, including currently-unschedulable entries, so making one
+        # schedulable later cannot silently activate a pre-existing collision.
+        local_names = set()
+        for name in [wire, *entry["tags"]]:
+            if name in local_names:
+                findings.append(
+                    f"{label} descriptor {wire!r} repeats scheduled name/alias "
+                    f"{name!r}")
+                continue
+            local_names.add(name)
+            prior = scheduled_names.get(name)
+            if prior is not None and prior != wire:
+                findings.append(
+                    f"{label} scheduled name/alias {name!r} is shared by "
+                    f"{prior!r} and {wire!r}")
+            else:
+                scheduled_names[name] = wire
+        # assigned_descriptor_by_name()/matches_any_name() additionally accept
+        # internal_name. Same-descriptor equality is normal; cross-descriptor
+        # equality is ambiguous and must fail even if the golden was updated.
+        for name in set([wire, entry["internal_name"], *entry["tags"]]):
+            prior = lookup_names.get(name)
+            if prior is not None and prior != wire:
+                findings.append(
+                    f"{label} lookup name/alias {name!r} is shared by "
+                    f"{prior!r} and {wire!r}")
+            else:
+                lookup_names[name] = wire
+    return findings
+
+
+def registry_digest(entries):
+    canonical = json.dumps(
+        entries, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def registry_drift(dump_text, golden_loader=load_registry_golden):
+    """Compare every compiled descriptor value to the full golden and pins."""
+    try:
+        entries = parse_registry_dump(dump_text)
+        golden = golden_loader()
+    except ValueError as e:
+        return [f"cannot obtain compiler truth (fail closed): {e}"]
+
+    findings = []
+    findings.extend(descriptor_uniqueness_findings(entries, "compiled registry"))
+    findings.extend(descriptor_uniqueness_findings(golden, "full registry golden"))
+    if len(entries) != len(golden):
+        findings.append(
+            f"compiled registry has {len(entries)} descriptors, full golden "
+            f"has {len(golden)}")
+    for index, (compiled, pinned) in enumerate(zip(entries, golden)):
+        for field in DESCRIPTOR_FIELDS:
+            if compiled[field] != pinned[field]:
+                findings.append(
+                    f"full descriptor drift at index {index} "
+                    f"({pinned['wire_name']!r}) field {field}: golden "
+                    f"{pinned[field]!r}, compiled {compiled[field]!r}")
+
+    # Keep the original 60-entry semantic pins as an independent cross-check.
     if len(entries) != len(ROSTER):
-        findings.append(f"registry has {len(entries)} active domain() "
-                        f"entries, pinned roster has {len(ROSTER)}")
+        findings.append(f"compiled registry has {len(entries)} descriptors, "
+                        f"semantic roster has {len(ROSTER)}")
     seen = {}
-    for domain_id, _internal, wire, status, schedulable, data in entries:
-        domain_id = int(domain_id)
-        in_profile = schedulable == "true" and status in PROFILE_STATUSES
+    for entry in entries:
+        domain_id = entry["id"]
+        wire = entry["wire_name"]
+        in_profile = (entry["schedulable"]
+                      and entry["status"] in PROFILE_STATUSES)
+        if wire in seen:
+            findings.append(f"compiled registry duplicates wire name {wire!r}")
         seen[wire] = (domain_id, in_profile)
         pinned = ROSTER.get(wire)
         if pinned is None:
-            findings.append(f"registry domain {wire} (d{domain_id}) missing "
-                            "from the pinned roster")
+            findings.append(
+                f"compiled registry domain {wire} (d{domain_id}) missing "
+                "from the semantic roster")
         elif pinned != (domain_id, in_profile):
-            findings.append(f"pin mismatch for {wire}: pinned {pinned}, "
-                            f"registry ({domain_id}, {in_profile})")
-        if (data == "false") != (wire in REQUIRES_DATA_FALSE):
+            findings.append(f"semantic pin mismatch for {wire}: pinned "
+                            f"{pinned}, compiled ({domain_id}, {in_profile})")
+        if ((not entry["requires_data_record"])
+                != (wire in REQUIRES_DATA_FALSE)):
             findings.append(f"requires_data_record drift for {wire}: the "
                             "dark-domain check's assumptions changed")
     for wire in sorted(set(ROSTER) - set(seen)):
-        findings.append(f"pinned domain {wire} absent from the registry")
+        findings.append(f"pinned domain {wire} absent from compiled registry")
     return findings
 
 
@@ -396,6 +612,208 @@ def reject_duplicate_keys(pairs):
             raise ValueError(f"duplicate JSON object member {key!r}")
         obj[key] = value
     return obj
+
+
+ATTESTATION_FIELDS = {
+    "schema_version", "oracle_package", "production_packages",
+    "registry_sha256", "source_sha256", "collector_sha256",
+    "collector_size", "collector_path",
+}
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _is_cargo_cache_root(path):
+    marker = os.path.join(path, "CACHEDIR.TAG")
+    try:
+        with open(marker, encoding="ascii", errors="strict") as source:
+            return source.readline().strip() == CARGO_CACHE_TAG_SIGNATURE
+    except (OSError, UnicodeError):
+        return False
+
+
+def build_input_digest(native_root=NATIVE_ROOT):
+    """Hash deterministic native compiler inputs, excluding outputs/corpora."""
+    inputs = []
+    native_root = os.path.abspath(native_root)
+    try:
+        for root, dirs, files in os.walk(native_root):
+            dirs.sort()
+            if os.path.abspath(root) == native_root:
+                dirs[:] = [d for d in dirs if d != "runs"]
+            dirs[:] = [
+                directory for directory in dirs
+                if not _is_cargo_cache_root(os.path.join(root, directory))]
+            for filename in sorted(files):
+                suffix = os.path.splitext(filename)[1].lower()
+                if (suffix not in BUILD_INPUT_SUFFIXES
+                        and filename not in {"build.rs", "rust-toolchain"}):
+                    continue
+                path = os.path.join(root, filename)
+                relative = os.path.relpath(path, native_root).replace(os.sep, "/")
+                inputs.append((relative, _sha256_file(path)))
+    except OSError as e:
+        raise ValueError(f"native build inputs unreadable: {e}") from e
+    if not inputs:
+        raise ValueError("native build-input set was empty")
+    canonical = json.dumps(inputs, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _artifact_facts(path):
+    try:
+        if not os.path.isfile(path):
+            raise ValueError(f"collector artifact missing/not a file: {path}")
+        size = os.path.getsize(path)
+        if size <= 0:
+            raise ValueError(f"collector artifact is empty: {path}")
+        return size, _sha256_file(path)
+    except OSError as e:
+        raise ValueError(f"collector artifact unreadable: {e}") from e
+
+
+def _default_attestation_path(collector_path):
+    return os.path.join(
+        os.path.dirname(os.path.abspath(collector_path)),
+        "collector.c0-attestation.json")
+
+
+def create_artifact_attestation(dump_text, artifact_path, attestation_path,
+                                expected_source_hash=None,
+                                expected_artifact_facts=None):
+    """Bind the exact DLL to compiled registry truth and current source."""
+    drift = registry_drift(dump_text)
+    if drift:
+        return [f"cannot attest collector artifact: {finding}"
+                for finding in drift]
+    try:
+        if _path_identity(artifact_path) == _path_identity(attestation_path):
+            raise ValueError("attestation path aliases the collector artifact")
+        entries = parse_registry_dump(dump_text)
+        size, artifact_hash = _artifact_facts(artifact_path)
+        source_hash = build_input_digest()
+        if (expected_source_hash is not None
+                and source_hash != expected_source_hash):
+            raise ValueError(
+                "native source changed before attestation write: expected "
+                f"{expected_source_hash}, current {source_hash}")
+        if (expected_artifact_facts is not None
+                and (size, artifact_hash) != expected_artifact_facts):
+            raise ValueError(
+                "collector artifact changed before attestation write: expected "
+                f"{expected_artifact_facts!r}, current {(size, artifact_hash)!r}")
+        attestation = {
+            "schema_version": ATTESTATION_SCHEMA_VERSION,
+            "oracle_package": ORACLE_PACKAGE,
+            "production_packages": list(PRODUCTION_PACKAGES),
+            "registry_sha256": registry_digest(entries),
+            "source_sha256": source_hash,
+            "collector_sha256": artifact_hash,
+            "collector_size": size,
+            "collector_path": os.path.abspath(os.path.normpath(artifact_path)),
+        }
+        parent = os.path.dirname(os.path.abspath(attestation_path))
+        os.makedirs(parent, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            prefix=".c0-attestation-", suffix=".tmp", dir=parent, text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as output:
+                json.dump(attestation, output, sort_keys=True, separators=(",", ":"))
+                output.write("\n")
+            os.replace(temporary, attestation_path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+    except (OSError, ValueError) as e:
+        return [f"collector artifact attestation could not be written: {e}"]
+    return []
+
+
+def _load_artifact_attestation(path):
+    try:
+        with open(path, encoding="utf-8") as source:
+            value = json.load(source, object_pairs_hook=reject_duplicate_keys)
+    except (OSError, UnicodeError, ValueError) as e:
+        raise ValueError(f"attestation unreadable/malformed: {e}") from e
+    if type(value) is not dict or set(value) != ATTESTATION_FIELDS:
+        keys = set(value) if type(value) is dict else set()
+        raise ValueError(
+            "attestation fields differ "
+            f"(missing={sorted(ATTESTATION_FIELDS - keys)}, "
+            f"extra={sorted(keys - ATTESTATION_FIELDS)})")
+    if type(value["schema_version"]) is not int:
+        raise ValueError("attestation schema_version is not an int")
+    if type(value["oracle_package"]) is not str:
+        raise ValueError("attestation oracle_package is not a string")
+    if (type(value["production_packages"]) is not list
+            or any(type(item) is not str
+                   for item in value["production_packages"])):
+        raise ValueError("attestation production_packages is not a string array")
+    for field in ("registry_sha256", "source_sha256", "collector_sha256"):
+        digest = value[field]
+        if (type(digest) is not str or len(digest) != 64
+                or any(ch not in "0123456789abcdef" for ch in digest)):
+            raise ValueError(f"attestation {field} is not lowercase SHA-256")
+    if type(value["collector_size"]) is not int or value["collector_size"] <= 0:
+        raise ValueError("attestation collector_size is not a positive int")
+    collector_path = value["collector_path"]
+    if (type(collector_path) is not str or not collector_path
+            or not os.path.isabs(collector_path)):
+        raise ValueError("attestation collector_path is not an absolute path")
+    return value
+
+
+def artifact_attestation_findings(dump_text, artifact_path, attestation_path):
+    """Verify source, full registry, and exact DLL against strict evidence."""
+    drift = registry_drift(dump_text)
+    if drift:
+        return [f"artifact registry truth invalid: {finding}"
+                for finding in drift]
+    try:
+        entries = parse_registry_dump(dump_text)
+        attestation = _load_artifact_attestation(attestation_path)
+        attested_path = attestation["collector_path"]
+        if (artifact_path is not None
+                and _path_identity(artifact_path) != _path_identity(attested_path)):
+            raise ValueError(
+                "externally supplied collector artifact does not match the "
+                f"build-reported attested path: supplied {os.path.abspath(artifact_path)}, "
+                f"attested {attested_path}")
+        artifact_path = attested_path
+        size, artifact_hash = _artifact_facts(artifact_path)
+        source_hash = build_input_digest()
+    except ValueError as e:
+        return [str(e)]
+
+    expected = {
+        "schema_version": ATTESTATION_SCHEMA_VERSION,
+        "oracle_package": ORACLE_PACKAGE,
+        "production_packages": list(PRODUCTION_PACKAGES),
+        "registry_sha256": registry_digest(entries),
+        "source_sha256": source_hash,
+        "collector_sha256": artifact_hash,
+        "collector_size": size,
+        "collector_path": os.path.abspath(os.path.normpath(artifact_path)),
+    }
+    findings = []
+    for field in sorted(ATTESTATION_FIELDS):
+        if attestation[field] != expected[field]:
+            findings.append(
+                f"artifact attestation mismatch for {field}: attested "
+                f"{attestation[field]!r}, current {expected[field]!r}")
+    return findings
 
 
 def string_list(value):
@@ -578,15 +996,22 @@ def evaluate_source(label, text, session_ids, blocking, notes, quiet=False):
     return cs
 
 
-def run_paths(paths, registry_text, quiet=False):
-    """Full run: registry cross-check, then every manifest. Returns
+def run_paths(paths, dump_text, oracle_error=None, artifact_findings=None,
+              quiet=False):
+    """Full run: compiled-registry cross-check, then every manifest. Returns
     (blocking, notes)."""
     blocking, notes = [], []
-    for drift in registry_drift(registry_text):
+    if oracle_error is not None:
+        blocking.append(
+            f"COMPILER TRUTH UNAVAILABLE (fail closed): {oracle_error}")
+        return blocking, notes
+    for drift in registry_drift(dump_text):
         blocking.append(f"ROSTER DRIFT (audit pin unverifiable): {drift}")
     if blocking:
         # A wrong pin invalidates every downstream judgment - stop here.
         return blocking, notes
+    for finding in artifact_findings or []:
+        blocking.append(f"ARTIFACT ATTESTATION FAILED: {finding}")
     session_ids = set()
     usable = 0
     for p in paths:
@@ -605,18 +1030,111 @@ def run_paths(paths, registry_text, quiet=False):
     return blocking, notes
 
 
-def main(argv):
+def _argument_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--build-and-attest", action="store_true",
+                      help="build production packages, then attest collector")
+    mode.add_argument("--verify-artifact-only", action="store_true",
+                      help="verify collector attestation without manifests")
+    parser.add_argument(
+        "--collector-artifact", default=None,
+        help="optional expected path; must equal this build's reported cdylib")
+    parser.add_argument(
+        "--artifact-attestation", default=None,
+        help="sidecar path (default: beside the build-reported collector)")
+    parser.add_argument("manifests", nargs="*")
+    return parser
+
+
+def main(argv, oracle_loader=obtain_compiler_truth,
+         artifact_verifier=artifact_attestation_findings,
+         attestation_writer=create_artifact_attestation):
     if argv and argv[0] == "--selftest":
         return selftest()
-    paths = argv or DEFAULT_MANIFESTS
-    try:
-        with open(REGISTRY_SRC, encoding="utf-8") as f:
-            registry_text = f.read()
-    except OSError as e:
-        print(f"BLOCKING: registry source unreadable ({e}); the roster pin "
-              "cannot be verified")
-        return 1
-    blocking, notes = run_paths(paths, registry_text)
+    args = _argument_parser().parse_args(argv)
+
+    if args.build_and_attest:
+        try:
+            source_before = build_input_digest()
+        except ValueError as e:
+            print(f"ARTIFACT ATTESTATION BLOCKED: {e}")
+            return 1
+        evidence, oracle_error = oracle_loader(args.collector_artifact)
+        if oracle_error is not None:
+            print(f"ARTIFACT ATTESTATION BLOCKED: {oracle_error}")
+            return 1
+        dump_text = evidence.dump_text
+        artifact_path = evidence.collector_path
+        attestation_path = (args.artifact_attestation
+                            or _default_attestation_path(artifact_path))
+        if (_path_identity(attestation_path)
+                == _path_identity(evidence.registry_dump_path)):
+            print("ARTIFACT ATTESTATION BLOCKED: attestation path aliases "
+                  "the build-reported registry_dump executable")
+            return 1
+        try:
+            source_after = build_input_digest()
+            artifact_after_oracle = _artifact_facts(artifact_path)
+        except ValueError as e:
+            print(f"ARTIFACT ATTESTATION BLOCKED: {e}")
+            return 1
+        if source_after != source_before:
+            print("ARTIFACT ATTESTATION BLOCKED: native source changed "
+                  f"during build/oracle ({source_before} -> {source_after})")
+            return 1
+        if artifact_after_oracle != evidence.collector_facts:
+            print("ARTIFACT ATTESTATION BLOCKED: collector artifact changed "
+                  "during registry oracle execution")
+            return 1
+        findings = attestation_writer(
+            dump_text, artifact_path, attestation_path,
+            expected_source_hash=source_after,
+            expected_artifact_facts=artifact_after_oracle)
+        if findings:
+            for finding in findings:
+                print(f"ARTIFACT ATTESTATION BLOCKED: {finding}")
+            return 1
+        verification = artifact_verifier(
+            dump_text, artifact_path, attestation_path)
+        if verification:
+            for finding in verification:
+                print(f"ARTIFACT ATTESTATION BLOCKED: post-write {finding}")
+            return 1
+        summary = {
+            "artifact_attestation": os.path.abspath(attestation_path),
+            "collector_path": artifact_path,
+        }
+        print("C0_BUILD_ATTESTATION=" + json.dumps(
+            summary, sort_keys=True, separators=(",", ":")))
+        print("collector artifact attested: one production-equivalent JSON "
+              "build + full registry + exact reported artifact bound")
+        return 0
+
+    evidence, oracle_error = oracle_loader(args.collector_artifact)
+    dump_text = evidence.dump_text if evidence is not None else None
+    artifact_findings = []
+    if oracle_error is None:
+        artifact_path = evidence.collector_path
+        attestation_path = (args.artifact_attestation
+                            or _default_attestation_path(artifact_path))
+        artifact_findings = artifact_verifier(
+            dump_text, artifact_path, attestation_path)
+    if args.verify_artifact_only:
+        if oracle_error is not None:
+            print(f"ARTIFACT ATTESTATION BLOCKED: {oracle_error}")
+            return 1
+        if artifact_findings:
+            for finding in artifact_findings:
+                print(f"ARTIFACT ATTESTATION BLOCKED: {finding}")
+            return 1
+        print("collector artifact attestation verified against this build's "
+              "reported cdylib")
+        return 0
+
+    paths = args.manifests or DEFAULT_MANIFESTS
+    blocking, notes = run_paths(
+        paths, dump_text, oracle_error, artifact_findings)
     for name, note in PROFILE_EXCLUDED_NOTE.items():
         print(f"profile-excluded (visible, non-blocking): d{ROSTER[name][0]} "
               f"{name} - {note}")
@@ -636,7 +1154,6 @@ def main(argv):
 
 # --- Self-test: every claim above, exercised through the REAL paths --------
 def selftest():
-    global REGISTRY_SRC
 
     def domain(name, **kw):
         base = {"domain_id": PROFILE[name], "record_count": 10,
@@ -674,7 +1191,134 @@ def selftest():
     def pd(m):
         return m["compact_stream"]["per_domain"]
 
-    registry_text = open(REGISTRY_SRC, encoding="utf-8").read()
+    def compiled_descriptors():
+        # JSON round-trip makes nested alias arrays independent for mutations.
+        return json.loads(json.dumps(load_registry_golden()))
+
+    def dump_descriptors(descriptors):
+        return "".join(json.dumps(descriptor, separators=(",", ":")) + "\n"
+                       for descriptor in descriptors)
+
+    collector_manifest = os.path.join(NATIVE_ROOT, "collector", "Cargo.toml")
+    recorder_manifest = os.path.join(NATIVE_ROOT, "recorder_host", "Cargo.toml")
+    collector_pkg_id = "path+file:///native/collector#collector@0.1.0"
+
+    def build_messages(collector_path, dump_path, duplicate_collector=False,
+                       duplicate_dump=False, omit_collector=False,
+                       omit_dump=False, dump_manifest=collector_manifest,
+                       dump_package_id=collector_pkg_id,
+                       collector_package_id=collector_pkg_id):
+        collector = {
+            "reason": "compiler-artifact",
+            "package_id": collector_package_id,
+            "manifest_path": collector_manifest,
+            "target": {
+                "name": "collector", "kind": ["cdylib", "rlib"],
+                "src_path": os.path.join(
+                    NATIVE_ROOT, "collector", "src", "lib.rs"),
+            },
+            "filenames": [collector_path],
+            "executable": None,
+        }
+        dump = {
+            "reason": "compiler-artifact",
+            "package_id": dump_package_id,
+            "manifest_path": dump_manifest,
+            "target": {
+                "name": "registry_dump", "kind": ["bin"],
+                "src_path": os.path.join(
+                    NATIVE_ROOT, "collector", "src", "bin",
+                    "registry_dump.rs"),
+            },
+            "filenames": [dump_path],
+            "executable": dump_path,
+        }
+        messages = []
+        if not omit_collector:
+            messages.append(collector)
+        if not omit_dump:
+            messages.append(dump)
+        if duplicate_collector:
+            messages.append(collector)
+        if duplicate_dump:
+            messages.append(dump)
+        return "".join(json.dumps(message) + "\n" for message in messages)
+
+    class FakePopen:
+        def __init__(self, stdout_text, returncode=0, stderr=b""):
+            self.stdout = io.StringIO(stdout_text)
+            self.returncode = returncode
+            self.stderr_bytes = stderr
+
+        def wait(self):
+            return self.returncode
+
+    def fake_oracle(dump_text=None, available=True, build_rc=0, run_rc=0,
+                    decode_phase=None, requested_path=None,
+                    duplicate_collector=False, duplicate_dump=False,
+                    omit_collector=False, omit_dump=False,
+                    malformed_json=False, unexpected_json=False,
+                    dump_manifest=collector_manifest,
+                    dump_package_id=collector_pkg_id,
+                    command_sink=None):
+        if dump_text is None:
+            dump_text = registry_dump
+        with tempfile.TemporaryDirectory() as td:
+            collector_name = ("collector.dll" if os.name == "nt"
+                              else "libcollector.so")
+            collector_path = os.path.join(td, collector_name)
+            dump_path = os.path.join(
+                td, "registry_dump.exe" if os.name == "nt"
+                else "registry_dump")
+            with open(collector_path, "wb") as artifact:
+                artifact.write(b"synthetic collector from build JSON")
+            with open(dump_path, "wb") as executable:
+                executable.write(b"synthetic registry executable")
+
+            json_stream = build_messages(
+                collector_path, dump_path, duplicate_collector,
+                duplicate_dump, omit_collector, omit_dump,
+                dump_manifest=dump_manifest,
+                dump_package_id=dump_package_id)
+            if malformed_json:
+                json_stream += "not-json\n"
+            if unexpected_json:
+                json_stream += "[]\n"
+
+            def fake_popen(command, stderr=None, **_kwargs):
+                if command_sink is not None:
+                    command_sink.append(command)
+                if decode_phase == "build":
+                    raise UnicodeDecodeError(
+                        "utf-8", b"\xff", 0, 1, "synthetic invalid byte")
+                if stderr is not None:
+                    stderr.write(b"synthetic build failure")
+                return FakePopen(json_stream, build_rc)
+
+            def fake_run(command, **_kwargs):
+                if decode_phase == "run":
+                    raise UnicodeDecodeError(
+                        "utf-8", b"\xff", 0, 1, "synthetic invalid byte")
+                if command_sink is not None:
+                    command_sink.append(command)
+                return subprocess.CompletedProcess(
+                    command, run_rc, dump_text, "synthetic run failure")
+
+            return obtain_compiler_truth(
+                requested_path, fake_popen, fake_run,
+                lambda _name: "cargo-stub" if available else None)
+
+    def caught_oracle_error(result, needle):
+        evidence, error = result
+        return ([error] if evidence is None and error is not None
+                and needle in error else [])
+
+    def caught(findings, needle):
+        return [next(finding for finding in findings if needle in finding)] \
+            if any(needle in finding for finding in findings) else []
+
+    descriptors = compiled_descriptors()
+    registry_dump = dump_descriptors(descriptors)
     cases = []
     # Clean manifest through the REAL path -> zero blocking.
     cases.append(("clean", run_m(), 0))
@@ -739,88 +1383,214 @@ def selftest():
     # Duplicate sessions across manifests.
     cases.append(("duplicate-session", run_texts(
         json.dumps(full_manifest()), json.dumps(full_manifest())), 1))
-    # combined finding 1: roster drift vs registry blocks before manifests.
-    synthetic_registry = registry_text.replace(
-        'domain(\n        69,', 'domain(\n        70,', 1)
-    drift_blocking, _ = run_paths([], synthetic_registry, quiet=True)
-    cases.append(("registry-drift",
-                  [b for b in drift_blocking if "ROSTER DRIFT" in b], 1))
-    # Real registry matches the pin exactly.
-    cases.append(("registry-exact", registry_drift(registry_text), 0))
-    # Round-3 finding 1: a BLOCK-COMMENTED active entry must drift (the
-    # compiler would build 59 descriptors while the raw-text regex saw 60).
-    entry = re.search(r"domain\(\s*10,.*?\),", registry_text, re.S)
-    commented = (registry_text[:entry.start()] + "/*"
-                 + registry_text[entry.start():entry.end()] + "*/"
-                 + registry_text[entry.end():])
-    cases.append(("registry-commented-entry", registry_drift(commented), 2))
-    # ...and an extra trailing argument (arity change) must drift, never
-    # silently prefix-match. Round-6: the arity-changed entry no longer matches
-    # the literal 7-arg domain() form, so the full-consumption residue check
-    # now fails it closed as a parse shortfall (1 finding) BEFORE the old
-    # count-mismatch path -- still drift, caught earlier and more precisely.
-    extra_arg = registry_text.replace("&[],\n    ),", "&[],\n        true,\n    ),", 1)
-    cases.append(("registry-extra-arg", registry_drift(extra_arg), 1))
-    # Round-5 CRITICAL: a cfg-attributed entry compiles conditionally —
-    # release can omit it while test builds (and a textual pin) keep it.
-    # ANY attribute inside the array = fail closed.
-    for attr in ("#[cfg(test)]", "#[cfg(debug_assertions)]"):
-        cfg_entry = (registry_text[:entry.start()] + attr + "\n    "
-                     + registry_text[entry.start():])
-        cases.append((f"registry-attr-{attr[6:-2]}",
-                      [d for d in registry_drift(cfg_entry)
-                       if "not textually evaluable" in d], 1))
-    # Round-4 finding 1a: NESTED block comments hide an entry from rustc;
-    # the lexer must agree (a non-nesting strip left the entry visible).
-    nested = (registry_text[:entry.start()] + "/* /* x */ "
-              + registry_text[entry.start():entry.end()] + " */"
-              + registry_text[entry.end():])
-    cases.append(("registry-nested-comment", registry_drift(nested), 2))
-    # Round-4 finding 1b: the WHOLE original declaration block-commented out
-    # with a modified active copy appended — the census must judge the ACTIVE
-    # copy (raw-text find previously selected the commented corpse). The
-    # lexer is length-preserving, so stripped-text offsets are valid raw
-    # offsets — locating the TRUE array end this way (a raw `];` find hits
-    # the literal `];` inside the lib.rs:1268 comment and truncates).
-    stripped_all = strip_rust_comments(registry_text)
-    decl_start = stripped_all.find(REGISTRY_ARRAY_DECL)
-    decl_end = stripped_all.find("];", decl_start) + 2
-    active_copy = registry_text[decl_start:decl_end].replace(
-        "\n        69,", "\n        70,", 1)
-    shadowed = (registry_text[:decl_start] + "/*"
-                + registry_text[decl_start:decl_end] + "*/\n"
-                + active_copy + registry_text[decl_end:])
-    cases.append(("registry-shadowed-decl",
-                  [d for d in registry_drift(shadowed) if "mismatch" in d],
+    # Compiler-truth pin: mutations are applied to the emitted descriptors,
+    # never inferred from Rust source text.
+    id_mutant = [dict(descriptor) for descriptor in descriptors]
+    next(d for d in id_mutant if d["wire_name"] == "tech_sharing_groups_live")[
+        "id"] = 70
+    cases.append(("registry-drift", caught(
+        registry_drift(dump_descriptors(id_mutant)),
+        "field id"), 1))
+    cases.append(("registry-exact", registry_drift(registry_dump), 0))
+
+    missing_fuel = [
+        d for d in descriptors if d["wire_name"] != "fuel_live"]
+    missing_findings = registry_drift(dump_descriptors(missing_fuel))
+    cases.append(("registry-commented-entry",
+                  caught(missing_findings, "compiled registry has 59")
+                  + caught(missing_findings, "fuel_live absent"), 2))
+    cases.append(("registry-extra-arg",
+                  registry_drift("{not-json}\n"), 1))
+
+    # Round 7 mutation A: an outer macro can make the release registry empty.
+    # The compiled oracle observes empty stdout and blocks.
+    cases.append(("registry-attr-test-outer-macro-release-empty",
+                  registry_drift(""), 1))
+
+    # Round 7 mutation B: domain() can rewrite schedulable under cfg!(test).
+    constructor_mutant = [dict(descriptor) for descriptor in descriptors]
+    for descriptor in constructor_mutant:
+        descriptor["schedulable"] = False
+    cases.append(("registry-attr-debug_assertions-constructor-cfg",
+                  caught(registry_drift(
+                      dump_descriptors(constructor_mutant)),
+                      "semantic pin mismatch"), 1))
+
+    # Round 8 critical: under the collector-package oracle, compact_contract is
+    # a dependency. A CARGO_PRIMARY_PACKAGE-gated constructor therefore emits
+    # false here and must be caught, unlike the old primary-package oracle.
+    cases.append(("registry-cargo-primary-package-dependency-mutation",
+                  caught(registry_drift(
+                      dump_descriptors(constructor_mutant)),
+                      "field schedulable"), 1))
+
+    internal_mutant = json.loads(json.dumps(descriptors))
+    next(d for d in internal_mutant if d["wire_name"] == "fuel_live")[
+        "internal_name"] = "fuel_internal_mutant"
+    cases.append(("registry-internal-name-mutation",
+                  caught(registry_drift(dump_descriptors(internal_mutant)),
+                         "field internal_name"), 1))
+
+    status_mutant = json.loads(json.dumps(descriptors))
+    next(d for d in status_mutant if d["wire_name"] == "fuel_live")[
+        "status"] = "ProductionComplete"
+    cases.append(("registry-exact-status-mutation",
+                  caught(registry_drift(dump_descriptors(status_mutant)),
+                         "field status"), 1))
+
+    alias_mutant = json.loads(json.dumps(descriptors))
+    next(d for d in alias_mutant if d["wire_name"] == "fuel_live")[
+        "tags"] = ["fuel_alias_mutant"]
+    cases.append(("registry-ordered-alias-mutation",
+                  caught(registry_drift(dump_descriptors(alias_mutant)),
+                         "field tags"), 1))
+
+    duplicate_alias = json.loads(json.dumps(descriptors))
+    next(d for d in duplicate_alias if d["wire_name"] == "fuel_live")[
+        "tags"] = ["production_live"]
+    cases.append(("registry-duplicate-name-alias",
+                  caught(registry_drift(dump_descriptors(duplicate_alias)),
+                         "scheduled name/alias 'production_live' is shared"),
                   1))
-    # Round-6 CRITICAL: the entry regex must not leave non-literal array-body
-    # tokens unconsumed. Each of these wraps/augments the array with an
-    # element the pin cannot evaluate (all compile-different-from-textual);
-    # every one must fail closed via the full-consumption residue check.
-    def _wrap_first_entry(prefix, suffix):
-        return (registry_text[:entry.start()] + prefix
-                + registry_text[entry.start():entry.end() - 1]  # drop entry ','
-                + suffix + registry_text[entry.end() - 1:])
-    non_literal = {
-        # wrapper macro around a real inner domain() literal
-        "wrapper-macro": _wrap_first_entry("conditional_domain!(", ")"),
-        # additive bare const element
-        "additive-const": (registry_text[:entry.start()]
-                           + "EXTRA_DOMAIN,\n    "
-                           + registry_text[entry.start():]),
-        # additive descriptor-producing macro call
-        "additive-macro": (registry_text[:entry.start()]
-                          + "extra_domain!(),\n    "
-                          + registry_text[entry.start():]),
-        # additive include! of an out-of-file expression
-        "additive-include": (registry_text[:entry.start()]
-                            + 'include!("extra_domain_expr.rs"),\n    '
-                            + registry_text[entry.start():]),
-    }
-    for name, mutant in non_literal.items():
-        cases.append((f"registry-nonliteral-{name}",
-                      [d for d in registry_drift(mutant)
-                       if "non-literal tokens" in d], 1))
+
+    missing_production = [
+        d for d in descriptors if d["wire_name"] != "production_live"]
+    missing_production_findings = registry_drift(
+        dump_descriptors(missing_production))
+    cases.append(("registry-nested-comment",
+                  caught(missing_production_findings,
+                         "compiled registry has 59")
+                  + caught(missing_production_findings,
+                           "production_live absent"), 2))
+
+    shadowed = [dict(descriptor) for descriptor in descriptors]
+    next(d for d in shadowed if d["wire_name"] == "fuel_live")["id"] = 999
+    cases.append(("registry-shadowed-decl",
+                  caught(registry_drift(dump_descriptors(shadowed)),
+                         "field id"), 1))
+
+    additive = dict(descriptors[0])
+    additive.update(id=2000, wire_name="extra_domain",
+                    internal_name="extra_domain")
+    duplicate = [dict(descriptor) for descriptor in descriptors]
+    duplicate.append(dict(descriptors[1]))
+    cases.append(("registry-nonliteral-wrapper-macro",
+                  registry_drift(""), 1))
+    cases.append(("registry-nonliteral-additive-const",
+                  caught(registry_drift(dump_descriptors(
+                      descriptors + [additive])),
+                      "compiled registry has 61"), 1))
+    cases.append(("registry-nonliteral-additive-macro",
+                  caught(registry_drift(dump_descriptors(duplicate)),
+                         "duplicates id"), 1))
+    cases.append(("registry-nonliteral-additive-include",
+                  registry_drift(registry_dump + "include!()\n"), 1))
+
+    # Legal Rust raw strings are irrelevant to JSONL compiler truth and cannot
+    # false-positive merely because the source spelling changed.
+    cases.append(("registry-raw-string-wire-name",
+                  registry_drift(registry_dump), 0))
+
+    # Acquisition failures are each distinct and fail closed without cargo.
+    cases.append(("oracle-toolchain-absent",
+                  caught_oracle_error(
+                      fake_oracle(available=False), "absent from PATH"), 1))
+    cases.append(("oracle-build-failure",
+                  caught_oracle_error(
+                      fake_oracle(build_rc=17), "build failed (exit 17)"), 1))
+    cases.append(("oracle-run-nonzero",
+                  caught_oracle_error(
+                      fake_oracle(run_rc=23),
+                      "registry_dump failed (exit 23)"), 1))
+    cases.append(("oracle-build-non-utf8",
+                  caught_oracle_error(
+                      fake_oracle(decode_phase="build"), "not UTF-8"), 1))
+    cases.append(("oracle-run-non-utf8",
+                  caught_oracle_error(
+                      fake_oracle(decode_phase="run"), "not UTF-8"), 1))
+    cases.append(("oracle-empty-dump",
+                  caught_oracle_error(
+                      fake_oracle(dump_text=""), "stdout was empty"), 1))
+    cases.append(("oracle-count-mismatch",
+                  caught(missing_findings, "compiled registry has 59")
+                  + caught(missing_findings, "fuel_live absent"), 2))
+    cases.append(("oracle-unparseable-dump",
+                  registry_drift("not-json\n"), 1))
+    oracle_commands = []
+    role_evidence, role_error = fake_oracle(command_sink=oracle_commands)
+    expected_build_command = [
+        "cargo-stub", "build", "--release", "-p", "collector",
+        "-p", "recorder_host", "--message-format=json",
+    ]
+    command_shape_ok = (
+        role_error is None and role_evidence.dump_text == registry_dump
+        and len(oracle_commands) == 2
+        and oracle_commands[0] == expected_build_command
+        and oracle_commands[1] == [role_evidence.registry_dump_path])
+    cases.append(("oracle-production-json-artifact-command",
+                  [] if command_shape_ok else [str(oracle_commands)], 0))
+    cases.append(("oracle-duplicate-collector-artifact-blocks",
+                  caught_oracle_error(
+                      fake_oracle(duplicate_collector=True),
+                      "2 collector cdylib artifacts"), 1))
+    cases.append(("oracle-zero-collector-artifact-blocks",
+                  caught_oracle_error(
+                      fake_oracle(omit_collector=True),
+                      "0 collector cdylib artifacts"), 1))
+    cases.append(("oracle-duplicate-dump-artifact-blocks",
+                  caught_oracle_error(
+                      fake_oracle(duplicate_dump=True),
+                      "2 registry_dump binary artifacts"), 1))
+    cases.append(("oracle-zero-dump-artifact-blocks",
+                  caught_oracle_error(
+                      fake_oracle(omit_dump=True),
+                      "0 registry_dump binary artifacts"), 1))
+    cases.append(("oracle-malformed-build-json-blocks",
+                  caught_oracle_error(
+                      fake_oracle(malformed_json=True), "was malformed"), 1))
+    cases.append(("oracle-unexpected-build-json-shape-blocks",
+                  caught_oracle_error(
+                      fake_oracle(unexpected_json=True),
+                      "had an unexpected shape"), 1))
+    # Round-10: a registry_dump whose manifest_path is a SIBLING package
+    # (recorder_host reusing collector's src_path) must not be accepted as
+    # collector's dump -> it is filtered out and the count check blocks.
+    cases.append(("oracle-foreign-manifest-dump-blocks",
+                  caught_oracle_error(
+                      fake_oracle(dump_manifest=recorder_manifest),
+                      "0 registry_dump binary artifacts"), 1))
+    # Round-10: a dump binding to collector's manifest but reporting a DIFFERENT
+    # package_id than the attested cdylib must block on the cross-check.
+    cases.append(("oracle-mismatched-package-id-dump-blocks",
+                  caught_oracle_error(
+                      fake_oracle(dump_package_id=(
+                          "path+file:///native/recorder_host"
+                          "#recorder_host@0.1.0")),
+                      "different or empty package_id"), 1))
+    wrong_external = os.path.join(
+        tempfile.gettempdir(), "stale-default-target", "collector.dll")
+    cases.append(("oracle-wrong-external-artifact-path-blocks",
+                  caught_oracle_error(
+                      fake_oracle(requested_path=wrong_external),
+                      "not the build-reported cdylib output"), 1))
+
+    # Round 9 CRITICAL: a recorder_host-only feature may change the unified
+    # compact_contract descriptors. The collector-only dump would be golden,
+    # but the one selected two-package build's emitted dump is authoritative.
+    feature_unified_dump = dump_descriptors(constructor_mutant)
+    feature_commands = []
+    feature_evidence, feature_error = fake_oracle(
+        dump_text=feature_unified_dump, command_sink=feature_commands)
+    feature_findings = ([] if feature_error is not None else registry_drift(
+        feature_evidence.dump_text))
+    feature_caught = (
+        feature_error is None
+        and feature_commands[0] == expected_build_command
+        and registry_drift(registry_dump) == []
+        and bool(caught(feature_findings, "field schedulable")))
+    cases.append(("registry-recorder-host-feature-unification-mutation",
+                  [] if feature_caught else [
+                      feature_error or str(feature_findings)], 0))
     # ...and a duplicate-padded expected_domains must not pass via set
     # collapse (round-3 finding 3), nor a float count.
     cases.append(("expected-domains-dup-padded", run_m(
@@ -836,15 +1606,33 @@ def selftest():
         lambda m: m.update(ordering_errors=None)), 1))
     # Zero usable manifests blocks (through run_paths' real path).
     zero_blocking, _ = run_paths(
-        [os.path.join(HERE, "definitely_missing.json")], registry_text,
+        [os.path.join(HERE, "definitely_missing.json")], registry_dump,
         quiet=True)
     cases.append(("zero-usable",
                   [b for b in zero_blocking
                    if "ZERO usable" in b or "unreadable" in b], 2))
     # Round-3 finding 4: pin main()'s OWN exit-code gate (the decisive
     # return), including the registry-unreadable arm.
-    import tempfile
     with tempfile.TemporaryDirectory() as td:
+        digest_root = os.path.join(td, "digest-root")
+        cache_root = os.path.join(digest_root, "redirected-cargo-output")
+        os.makedirs(cache_root)
+        with open(os.path.join(digest_root, "source.rs"), "w",
+                  encoding="utf-8") as source:
+            source.write("pub const PIN: u8 = 1;\n")
+        with open(os.path.join(cache_root, "CACHEDIR.TAG"), "w",
+                  encoding="ascii") as marker:
+            marker.write(CARGO_CACHE_TAG_SIGNATURE + "\n")
+        digest_before_output = build_input_digest(digest_root)
+        with open(os.path.join(cache_root, "compiler-output.json"), "w",
+                  encoding="utf-8") as output:
+            output.write('{"fresh":false}\n')
+        digest_after_output = build_input_digest(digest_root)
+        cases.append(("source-digest-redirected-cargo-target-excluded",
+                      [] if digest_before_output == digest_after_output
+                      else [f"{digest_before_output} != {digest_after_output}"],
+                      0))
+
         clean_path = os.path.join(td, "clean.json")
         with open(clean_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(full_manifest()))
@@ -852,32 +1640,171 @@ def selftest():
         with open(blocked_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(full_manifest(
                 lambda m: pd(m).pop("fuel_live"), session="s2")))
+        custom_target = os.path.join(td, "custom-target", "release")
+        os.makedirs(custom_target)
+        artifact_path = os.path.join(
+            custom_target, "collector.dll" if os.name == "nt"
+            else "libcollector.so")
+        with open(artifact_path, "wb") as artifact:
+            artifact.write(b"synthetic collector artifact v1")
+        synthetic_dump_path = os.path.join(custom_target, "registry_dump")
+        with open(synthetic_dump_path, "wb") as executable:
+            executable.write(b"synthetic registry executable")
+        evidence = BuildEvidence(
+            registry_dump, artifact_path, _artifact_facts(artifact_path),
+            synthetic_dump_path)
+
+        def loader(requested_path=None):
+            if (requested_path is not None
+                    and _path_identity(requested_path)
+                    != _path_identity(artifact_path)):
+                return None, "synthetic wrong build-reported artifact"
+            return evidence, None
+
+        no_artifact_findings = lambda *_args: []
         cases.append(("main-clean-exit0",
-                      [] if main([clean_path]) == 0 else ["wrong exit"], 0))
+                      [] if main([clean_path], loader,
+                                 no_artifact_findings) == 0
+                      else ["wrong exit"], 0))
         cases.append(("main-blocking-exit1",
-                      [] if main([blocked_path]) == 1 else ["wrong exit"], 0))
-        # Round-4 finding 2: pin the PROCESS exit code (a dropped sys.exit
-        # wrapper printed 47 blockers and exited 0). Subprocess = the real
-        # CLI contract.
-        import subprocess
+                      [] if main([blocked_path], loader,
+                                 no_artifact_findings) == 1
+                      else ["wrong exit"], 0))
+
+        attestation_path = os.path.join(td, "collector.attestation.json")
+        attestation_errors = create_artifact_attestation(
+            registry_dump, artifact_path, attestation_path)
+        cases.append(("artifact-attestation-create", attestation_errors, 0))
+        cases.append(("artifact-attestation-cannot-alias-collector", caught(
+            create_artifact_attestation(
+                registry_dump, artifact_path, artifact_path),
+            "aliases the collector artifact"), 1))
+        alias_dump_rc = main([
+            "--build-and-attest", "--artifact-attestation",
+            synthetic_dump_path,
+        ], loader)
+        cases.append(("artifact-attestation-cannot-alias-registry-dump",
+                      [] if alias_dump_rc == 1 else [f"rc={alias_dump_rc}"],
+                      0))
+        attested = _load_artifact_attestation(attestation_path)
+        cases.append(("artifact-cargo-target-dir-reported-path-bound",
+                      [] if (_path_identity(attested["collector_path"])
+                             == _path_identity(artifact_path))
+                      else [str(attested)], 0))
+        stale_default_path = os.path.join(
+            td, "default-target", "release",
+            "collector.dll" if os.name == "nt" else "libcollector.so")
+        os.makedirs(os.path.dirname(stale_default_path))
+        with open(stale_default_path, "wb") as stale:
+            stale.write(b"stale default-path collector")
+        cases.append(("artifact-wrong-path-substitution-blocks", caught(
+            artifact_attestation_findings(
+                registry_dump, stale_default_path, attestation_path),
+            "does not match the build-reported attested path"), 1))
+        cases.append(("artifact-attestation-source-race-blocks", caught(
+            create_artifact_attestation(
+                registry_dump, artifact_path, attestation_path,
+                expected_source_hash="0" * 64),
+            "source changed before attestation write"), 1))
+        cases.append(("artifact-attestation-exact",
+                      artifact_attestation_findings(
+                          registry_dump, artifact_path, attestation_path), 0))
+        with open(artifact_path, "ab") as artifact:
+            artifact.write(b"-mutated")
+        mismatch_findings = artifact_attestation_findings(
+            registry_dump, artifact_path, attestation_path)
+        cases.append(("artifact-digest-mismatch-blocks",
+                      caught(mismatch_findings, "collector_sha256"), 1))
+        verify_mismatch_rc = main([
+            "--verify-artifact-only",
+            "--collector-artifact", artifact_path,
+            "--artifact-attestation", attestation_path,
+        ], loader)
+        cases.append(("artifact-digest-mismatch-exit1",
+                      [] if verify_mismatch_rc == 1
+                      else [f"rc={verify_mismatch_rc}"], 0))
+        with open(artifact_path, "wb") as artifact:
+            artifact.write(b"synthetic collector artifact v1")
+
+        build_attest_args = [
+            "--build-and-attest", "--collector-artifact", artifact_path,
+            "--artifact-attestation", attestation_path,
+        ]
+        build_attest_rc = main(
+            build_attest_args, loader, artifact_attestation_findings,
+            create_artifact_attestation)
+        cases.append(("main-build-and-attest-hermetic",
+                      [] if build_attest_rc == 0 else [f"rc={build_attest_rc}"],
+                      0))
+
+        # Pin the actual command-line sys.exit wrapper with a stub cargo found
+        # only through this child process's temporary PATH.
+        dump_path = os.path.join(td, "registry_dump.jsonl")
+        with open(dump_path, "w", encoding="utf-8") as f:
+            f.write(registry_dump)
+        if os.name == "nt":
+            registry_executable = os.path.join(td, "registry_dump.bat")
+            registry_stub = "@echo off\ntype \"%C0_CENSUS_TEST_DUMP%\"\n"
+            cargo_path = os.path.join(td, "cargo.bat")
+            cargo_stub = (
+                "@echo off\n"
+                "if \"%1\"==\"build\" (\n"
+                "  type \"%C0_CENSUS_BUILD_JSON%\"\n"
+                "  exit /b 0\n"
+                ")\n"
+                "exit /b 9\n")
+        else:
+            registry_executable = os.path.join(td, "registry_dump")
+            registry_stub = (
+                "#!/bin/sh\n"
+                "while IFS= read -r line || [ -n \"$line\" ]; do\n"
+                "  printf '%s\\n' \"$line\"\n"
+                "done < \"$C0_CENSUS_TEST_DUMP\"\n")
+            cargo_path = os.path.join(td, "cargo")
+            cargo_stub = (
+                "#!/bin/sh\n"
+                "if [ \"$1\" = build ]; then\n"
+                "  while IFS= read -r line || [ -n \"$line\" ]; do\n"
+                "    printf '%s\\n' \"$line\"\n"
+                "  done < \"$C0_CENSUS_BUILD_JSON\"\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 9\n")
+        with open(registry_executable, "w", encoding="utf-8", newline="\n") as f:
+            f.write(registry_stub)
+        os.chmod(registry_executable, 0o755)
+        build_json_path = os.path.join(td, "cargo_build.jsonl")
+        with open(build_json_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(build_messages(artifact_path, registry_executable))
+        with open(cargo_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(cargo_stub)
+        os.chmod(cargo_path, 0o755)
+        child_env = os.environ.copy()
+        child_env["PATH"] = td + os.pathsep + child_env.get("PATH", "")
+        child_env["C0_CENSUS_TEST_DUMP"] = dump_path
+        child_env["C0_CENSUS_BUILD_JSON"] = build_json_path
+        artifact_args = [
+            "--collector-artifact", artifact_path,
+            "--artifact-attestation", attestation_path,
+        ]
         clean_rc = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), clean_path],
-            capture_output=True).returncode
+            [sys.executable, os.path.abspath(__file__), *artifact_args,
+             clean_path],
+            capture_output=True, env=child_env).returncode
         blocked_rc = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), blocked_path],
-            capture_output=True).returncode
+            [sys.executable, os.path.abspath(__file__), *artifact_args,
+             blocked_path],
+            capture_output=True, env=child_env).returncode
         cases.append(("process-clean-exit0",
                       [] if clean_rc == 0 else [f"rc={clean_rc}"], 0))
         cases.append(("process-blocking-exit1",
                       [] if blocked_rc == 1 else [f"rc={blocked_rc}"], 0))
-        saved_registry = REGISTRY_SRC
-        REGISTRY_SRC = os.path.join(td, "missing_registry.rs")
-        try:
-            cases.append(("main-registry-unreadable-exit1",
-                          [] if main([clean_path]) == 1 else ["wrong exit"],
-                          0))
-        finally:
-            REGISTRY_SRC = saved_registry
+        unavailable = lambda _requested=None: (
+            None, "synthetic oracle unavailable")
+        cases.append(("main-oracle-unavailable-exit1",
+                      [] if main([clean_path], unavailable,
+                                 no_artifact_findings) == 1
+                      else ["wrong exit"], 0))
 
     failures = 0
     for name, blocking, want in cases:
