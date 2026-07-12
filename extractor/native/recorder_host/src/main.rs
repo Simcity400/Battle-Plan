@@ -1033,6 +1033,15 @@ struct CompactSummary {
     // domains_seen / domain_perf_record_count so the exact perf-count
     // verification gate is unaffected; surfaced as compact_stream.read_ab_probe.
     read_ab_probe: BTreeMap<String, u64>,
+    // R2 bound-trip attribution: `bt_*` units on the probe domain record every
+    // plausibility-bound trip (a modded save legitimately exceeding a
+    // vanilla-tuned ceiling would otherwise CLAMP-DROP the field silently).
+    // `*_trips` counters sum across frames; `*_raw_sample` units keep the LAST
+    // observed raw value (summing destroys raw words). Kept OUT of per_domain /
+    // domains_seen so the coverage/perf-count gates are unaffected; surfaced as
+    // compact_stream.bound_trips. Nonzero on vanilla = a bug; nonzero on a
+    // modded capture = the named bound needs raising for that modset (R3).
+    bound_trips: BTreeMap<String, u64>,
     // lane/hour-latch: zero-skip hour-boundary latch accounting, carried by
     // `hl_*` diagnostic units on the reserved probe domain (250). Counters are
     // cumulative/monotonic and aggregate by MAX; `last_observe_failed` is a
@@ -17277,6 +17286,10 @@ fn compact_stream_manifest_json(
         "per_domain": compact_domain_summaries_json(summary),
         "frame_time_us": timing_summary_json(&summary.frame_times_us),
         "read_ab_probe": serde_json::to_value(&summary.read_ab_probe).unwrap_or(Value::Null),
+        // R2 bound-trip attribution: nonzero = a vanilla-tuned plausibility
+        // bound dropped real content this session (bound named by the unit,
+        // last raw value in the paired `_raw_sample`). Empty on vanilla.
+        "bound_trips": serde_json::to_value(&summary.bound_trips).unwrap_or(Value::Null),
         "lane_wall": lane_wall_summary_json(summary),
         "hour_latch": hour_latch_summary_json(summary),
     })
@@ -17510,6 +17523,18 @@ fn add_compact_domain_perf_diagnostic_unit(
             } else {
                 let entry = summary.hour_latch.entry(rest.to_string()).or_default();
                 *entry = (*entry).max(value);
+            }
+            return;
+        }
+        // R2 bound-trip attribution units: `*_trips` counters sum; `*_raw_sample`
+        // keeps the last observed value (the `_sample` unit class — summing
+        // destroys raw words).
+        if name.starts_with("bt_") {
+            let entry = summary.bound_trips.entry(name.to_string()).or_default();
+            if name.ends_with("_sample") {
+                *entry = value;
+            } else {
+                *entry = entry.saturating_add(value);
             }
             return;
         }
@@ -32173,6 +32198,38 @@ mod tests {
         assert_eq!(value["frames"], json!(0));
         assert_eq!(value["crit_wall_us"]["count"], json!(0));
         assert_eq!(value["crit_wall_us_total"], json!(0));
+    }
+
+    #[test]
+    fn bound_trip_units_route_to_bound_trips_with_sample_semantics() {
+        // R2 bound-trip attribution: `bt_*` probe-domain units go to the
+        // dedicated bound_trips aggregate (NEVER per_domain — the coverage/
+        // perf-count gates read that). Counters sum across frames; the paired
+        // `_raw_sample` keeps the LAST value (summing destroys raw words).
+        let mut summary = CompactSummary::default();
+        for (name, value) in [
+            ("bt_owner_tag_db_id_trips", 3),
+            ("bt_owner_tag_db_id_raw_sample", 2_500),
+            ("bt_owner_tag_db_id_trips", 2),
+            ("bt_owner_tag_db_id_raw_sample", 3_000),
+        ] {
+            add_compact_domain_perf_diagnostic_unit(&mut summary, RC_PROBE_DOMAIN_ID, name, value);
+        }
+        assert_eq!(
+            summary.bound_trips.get("bt_owner_tag_db_id_trips").copied(),
+            Some(5),
+            "trip counters must sum across frames"
+        );
+        assert_eq!(
+            summary
+                .bound_trips
+                .get("bt_owner_tag_db_id_raw_sample")
+                .copied(),
+            Some(3_000),
+            "_raw_sample must keep the last observed value, not a sum"
+        );
+        assert!(summary.per_domain.is_empty());
+        assert!(summary.read_ab_probe.is_empty());
     }
 
     #[test]

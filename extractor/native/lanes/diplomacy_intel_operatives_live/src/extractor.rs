@@ -1317,7 +1317,14 @@ fn read_faction_rows<M: Domain53Memory>(
         };
     let size = (packed_count & 0xFFFF_FFFF) as u32;
     let capacity = ((packed_count >> 32) & 0xFFFF_FFFF) as u32;
-    if size == 0 || size > capacity || capacity > profile::DOMAIN53_FACTION_MAX_SLOTS {
+    if size == 0
+        || size > capacity
+        || compact_contract::bound_trips::bound_exceeded_u32(
+            capacity,
+            profile::DOMAIN53_FACTION_MAX_SLOTS,
+            compact_contract::bound_trips::BOUND_TRIP_FACTION_SLOTS,
+        )
+    {
         return Ok(Vec::new());
     }
 
@@ -1383,7 +1390,17 @@ fn read_faction_row<M: Domain53Memory>(
         faction_ptr,
         profile::DOMAIN53_FACTION_MEMBERS_SIZE,
     )?) {
-        Ok(value) if value > 0 && value <= profile::DOMAIN53_FACTION_MAX_MEMBERS => value,
+        Ok(value)
+            if value > 0
+                && compact_contract::bound_trips::gate_u32(
+                    value,
+                    profile::DOMAIN53_FACTION_MAX_MEMBERS,
+                    compact_contract::bound_trips::BOUND_TRIP_FACTION_MEMBERS,
+                )
+                .is_some() =>
+        {
+            value
+        }
         _ => return Ok(None),
     };
     let members_base = match mem.read_u64(add_addr(faction_ptr, profile::DOMAIN53_FACTION_MEMBERS)?)

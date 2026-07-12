@@ -77,3 +77,17 @@ Convert the **NO** CLAMP-DROP bounds to the FAIL-SAMPLE pattern: on `> MAX`, emi
 semantics, never summed — so ANY modded trip names itself in one capture. Mechanical, per-site;
 the d69 `*_sample` and d47 attribution units are the templates. This is the single change that
 makes the extractor's bounds mod-robust-by-construction rather than mod-robust-by-vanilla-luck.
+
+**IMPLEMENTED 2026-07-12** (`compact_contract::bound_trips` registry + `bt_*` units on the
+probe domain 250, drained once per frame in every profile; acceptance behavior unchanged).
+Wired bounds (8 ids): `MAX_UNIT_LEADER_SKILL`, `MAX_FOCUS_COUNT` (filters + cap arm),
+`MAX_COMPLETED_TECH_COUNT` (filters + cap arm), `MAX_COMPACT_OWNER_TAG_DB_ID` (all five
+collector 2048 gates: d47/d48/d68-roster/market-trade/frd helpers), `DOMAIN68_MAX_PLAYER_TAG_DB_ID`,
+the narrow 1024 tag/count gates (bridges, air-wing owner, map state/province controller,
+country-table walk — 14 sites, shared `bt_tag_db_id_1024` id), `DOMAIN53_FACTION_MAX_SLOTS`,
+`DOMAIN53_FACTION_MAX_MEMBERS`. `*_trips` counters sum in the recorder; `*_raw_sample` units
+are last-value. Manifest surfaces `compact_stream.bound_trips` (empty on vanilla). The
+`_LEN` string caps and REVIEW rows (decision-status 4096, projects 64) remain unwired —
+lower severity, revisit with R3 evidence. Escalating nonzero bound_trips to a run-failing
+problem is deliberately deferred to the C1 disposition design (a modded trip is accounted,
+visible loss — not yet a gate verdict).

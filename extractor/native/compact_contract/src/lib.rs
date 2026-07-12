@@ -7,6 +7,7 @@
 //! in `extractor/documents/DOMAIN_REGISTRY.md`; the `ASSIGNED_COMPACT_DOMAINS`
 //! table below must stay in sync with that registry.
 
+pub mod bound_trips;
 pub mod build_profile;
 pub mod calendar;
 
