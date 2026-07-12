@@ -821,3 +821,46 @@ AUDIT_RECONCILIATION.md / session records; tids verified in ~/.claude/codex_thre
 5. G1-residue gate (d43/O7/backstop surviving code).
 6. C0 census tooling gate (3ecf9f7eb).
 (F5 container/fold/B3 net gate stays the integrated final word per plan §5.)
+
+## 2026-07-12 afternoon — session progress: R2 shipped, modset fix round shipped, C1 stage A mechanism shipped
+- R2 bound-trip attribution SHIPPED (903461fde): compact_contract::bound_trips registry +
+  bt_* probe-domain units + compact_stream.bound_trips manifest section; ~28 CLAMP-DROP
+  sites wired (skill/focus/tech/2048-tag/1024-tag/faction). Gate queued (usage limit).
+- Modset fix round SHIPPED (d46ead1de): all 7 G2-regen findings closed (decoded-key dup
+  scan, live-log user-dir corroboration, SHA-256 content binding w/ double-pass bracket,
+  evidence-predates-launch checks, dlc_load double-read, descriptor location conflicts,
+  repack modset schema validation). Re-gate queued.
+- C1 stage A chunk 1/2 SHIPPED (727f82c69): status_origins registry (27 site ids from the
+  C0 dossiers), collector per-frame drain to so_*/so_*_sample units, recorder
+  compact_stream.status_origins {value, first_hour, last_hour} ledger.
+
+### C1 stage A chunk 2/2 — SITE WIRING (next work item; ids + anchors)
+Wire record_status_origin(_sample) at these collector/src/lib.rs anchors (line refs at
+tree 727f82c69; ids in compact_contract/src/status_origins.rs):
+- FUNNEL-BODY recordings (one edit covers all callers; sample = incoming status_flags or
+  packed reason): domain53_source_unavailable_read (fn 19887) -> SO_D53_SOURCE_UNAVAILABLE;
+  capwar60_source_unavailable_read (fn 21833) -> SO_D60_SOURCE_UNAVAILABLE (sample should
+  pack/ hash failure_reason — the dossier flags reason-erasure);
+  naval_combat_live_source_unavailable_read (23393) -> SO_NAVAL_SOURCE_EMPTY;
+  compact_naval_combat_live_worker_panic_read (23409) -> SO_NAVAL_WORKER_PANIC.
+- PER-CALL-SITE recordings where one funnel serves several causes:
+  naval_combat_live_partial_read callers: 23431 (incoming failure-class = INHERITED),
+  torn-walk callers (dossier 23029/23066 shifted; anchor NavalWalkError::Torn) = TORN_WALK,
+  member/OOB join (anchor Torn|Degraded join) = JOIN.
+- d60: inherited PARTIAL (dossier 21409 anchor), torn-row 21571 anchor ("never emit a frame
+  that silently dropped"), worker panic 21611 -> SO_D60_PARTIAL_INHERITED/_TORN_ROW/
+  SO_D60_WORKER_PANIC.
+- d53: partial inherited (19924 anchor), partial_frame skipped_rows!=0 vs
+  relation_shadow_mismatches!=0 (split!), worker panic -> the four SO_D53_* ids.
+- d54 five routes 27110/27154/27166/27174/27250 anchors in read_compact_army_battleplans_
+  depth_live -> the five SO_D54_* ids.
+- d48 23422/23437/23463 anchors -> SO_D48_* ids (sample at 23463 = packed
+  {hard_failure_flags, gate_ok} per the dossier's d48_status_origin spec).
+- d45 anchor decisions.targeted_timed_live.structural_failure -> SO_D45_...
+- d65 37474 rows.is_empty() -> SO_D65_SOURCE_EMPTY_NO_WITNESS; 37480 dropped_ambiguous ->
+  SO_D65_PARTIAL_DROPPED_AMBIGUOUS (sample = dropped count).
+- d55 TBR site 25310 anchor (last_frame_rebaselined) -> SO_D55_TRANSITION_BASELINE_RESET.
+- frame CONTROL_INVALID 14247 anchor (build_compact_extraction_gate_records) ->
+  SO_FRAME_CONTROL_INVALID (sample = scheduled_domains_valid packed word if cheap).
+Then: cargo test collector+recorder; Codex gate the combined stage-A diff when credits
+return; a Debug live window afterwards closes C0 round-3 items 1-5 from ONE manifest.
