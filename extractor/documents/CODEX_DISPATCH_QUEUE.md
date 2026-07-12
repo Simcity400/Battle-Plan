@@ -2091,3 +2091,24 @@ MERGE ORDER: PREREQ-0 -> census batch (round-8 SHIP) -> d53-badges -> code fixes
 G,H] re-reviewed -> doc revisions [J-R] -> integration. Recurring class checklist for all code
 fixes: absent-stays-absent, fail-closed-on-uncertainty, current-frame completeness witness,
 no-stale-across-failed-frame, validator rejects producer-impossible shapes.
+
+### CENSUS ROUND-8: REFUTED 2 CRITICAL + 1 HIGH (tid in threads log, combined_round8).
+Round-7b textual problem CONFIRMED solved, but the oracle introduced/left 3 production-
+equivalence holes:
+(1) CRITICAL package-role divergence — oracle builds compact_contract as PRIMARY package;
+production builds -p collector -p recorder_host (compact_contract = DEPENDENCY).
+CARGO_PRIMARY_PACKAGE differs -> `schedulable: if option_env!("CARGO_PRIMARY_PACKAGE")
+.is_some(){schedulable}else{false}` passes oracle, ships unschedulable. FIX: build the dump
+in the collector crate via the production invocation, OR export a registry digest from the
+collector DLL.
+(2) CRITICAL incomplete tuple — census compares only wire/id/profile/requires_data; DISCARDS
+aliases/status/internal_name. Aliasing production_live onto d10 misroutes the recorder's
+name lookup (main.rs:17197) while the oracle passes. FIX: pin the FULL descriptor tuple incl
+ordered aliases + cross-descriptor name uniqueness (a checked-in full JSON golden also fixes
+the raw-string spelling concern).
+(3) HIGH artifact TOCTOU — -SkipBuild checks only that collector.dll exists -> census verifies
+current source while production injects a stale/differently-configured DLL. FIX: bind to the
+exact collector artifact (embedded registry digest) + reject -SkipBuild in the gated path.
+Fail-closed handling CONFIRMED sound; stage-A source-identical to 9cb7fbed8 (d48/d65/42-id
+all intact). DELEGATED round-8 fix to Codex Mode-C on w12c-census-oracle. Batch stays
+uncommitted.
