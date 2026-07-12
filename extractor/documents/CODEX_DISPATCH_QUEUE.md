@@ -2142,3 +2142,16 @@ build-and-attest STILL PASSES (real Cargo manifest_path/package_id satisfy the b
 Rounds 8-10 together comprehensively close "does the oracle's registry provably come from the
 SAME package+build+feature-set+artifact as the shipped collector DLL": same two-pkg json build
 + package-identity-bound artifacts + exact-path attestation. ROUND-11 terminal re-gate launched.
+
+================= CENSUS ROUND-11: SHIP — BATCH COMMITTED (task #30 CLOSED) =================
+After an 11-round adversarial gate chain (6,7,7b,8,9,10,11 — each a distinct real false-green
+hole), the census v3.3 + stage-A batch is COMMITTED to main at 5fe47da1d. Main-tree verified:
+selftest 80/80, both prod packages build release clean with the ported oracle + stage-A. C1
+stage A closed. The compiler-truth oracle is the audit instrument of record; the textual
+registry parser is retired. DOCUMENTED FOLLOW-UP (not blocking): the launcher -SkipBuild-reject
++ attested-DLL-load patch (exact diff in W12C_CENSUS_ORACLE.md) — a production-script change,
+separate from this batch. Accepted TCB: Cargo/rustc/build-cache/JSON integrity.
+
+MERGE PHASE NOW OPEN. First clean merge available: d53-badges (SOUND-WITH-NITS). Fix-plan
+[A-R] + PREREQ-0 duplex-transport stand as the sequenced backlog (Codex fix lanes per the
+regime). Merge order: d53-badges -> PREREQ-0 -> code fixes re-reviewed -> doc revisions.
