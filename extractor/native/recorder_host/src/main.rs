@@ -1005,11 +1005,15 @@ struct Summary {
 /// One status-origin ledger row (C1 stage A): the aggregated value (summed
 /// count, or last raw word for `_sample` units) plus the first/last game hour
 /// the unit was seen — enough to attribute a chronic bit from one manifest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Hours are None until a REAL-clock observation arrives: a NO_CLOCK frame's
+/// attribution record carries the sentinel hour and is counted in `no_clock`
+/// instead of fabricating a calendar-hour-zero span (stage-A gate finding 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct StatusOriginAgg {
     value: u64,
-    first_hour: i32,
-    last_hour: i32,
+    first_hour: Option<i32>,
+    last_hour: Option<i32>,
+    no_clock_observations: u64,
 }
 
 #[derive(Debug, Default)]
@@ -17484,6 +17488,7 @@ fn compact_stream_manifest_json(
                             "value": agg.value,
                             "first_hour": agg.first_hour,
                             "last_hour": agg.last_hour,
+                            "no_clock_observations": agg.no_clock_observations,
                         }),
                     )
                 })
@@ -17746,18 +17751,20 @@ fn add_compact_domain_perf_diagnostic_unit(
             let entry = summary
                 .status_origins
                 .entry(name.to_string())
-                .or_insert(StatusOriginAgg {
-                    value: 0,
-                    first_hour: game_hour_raw,
-                    last_hour: game_hour_raw,
-                });
+                .or_default();
             if name.ends_with("_sample") {
                 entry.value = value;
             } else {
                 entry.value = entry.value.saturating_add(value);
             }
-            entry.first_hour = entry.first_hour.min(game_hour_raw);
-            entry.last_hour = entry.last_hour.max(game_hour_raw);
+            if game_hour_raw == compact_contract::status_origins::ATTRIBUTION_NO_CLOCK_HOUR {
+                entry.no_clock_observations = entry.no_clock_observations.saturating_add(1);
+            } else {
+                entry.first_hour =
+                    Some(entry.first_hour.map_or(game_hour_raw, |h| h.min(game_hour_raw)));
+                entry.last_hour =
+                    Some(entry.last_hour.map_or(game_hour_raw, |h| h.max(game_hour_raw)));
+            }
             return;
         }
         // Plan-v2 read A/B probe units go to a dedicated aggregate, never
@@ -32648,8 +32655,9 @@ mod tests {
             counter,
             StatusOriginAgg {
                 value: 3,
-                first_hour: 200,
-                last_hour: 350
+                first_hour: Some(200),
+                last_hour: Some(350),
+                no_clock_observations: 0,
             }
         );
         let sample = summary.status_origins["so_d60_source_unavailable_sample"];
@@ -32657,11 +32665,38 @@ mod tests {
             sample,
             StatusOriginAgg {
                 value: 0x300,
-                first_hour: 200,
-                last_hour: 350
+                first_hour: Some(200),
+                last_hour: Some(350),
+                no_clock_observations: 0,
             },
             "sample keeps LAST value, never a sum"
         );
+        // A NO_CLOCK frame's attribution record (sentinel hour) counts the
+        // incidence but must NOT fabricate/extend the hour span.
+        add_compact_domain_perf_diagnostic_unit(
+            &mut summary,
+            RC_PROBE_DOMAIN_ID,
+            compact_contract::status_origins::ATTRIBUTION_NO_CLOCK_HOUR,
+            "so_d60_source_unavailable",
+            2,
+        );
+        let counter = summary.status_origins["so_d60_source_unavailable"];
+        assert_eq!(counter.value, 5);
+        assert_eq!(counter.first_hour, Some(200), "sentinel must not become first_hour");
+        assert_eq!(counter.last_hour, Some(350));
+        assert_eq!(counter.no_clock_observations, 1);
+        // A row seen ONLY on NO_CLOCK frames reports null hours, never hour 0.
+        add_compact_domain_perf_diagnostic_unit(
+            &mut summary,
+            RC_PROBE_DOMAIN_ID,
+            compact_contract::status_origins::ATTRIBUTION_NO_CLOCK_HOUR,
+            "so_frame_control_invalid",
+            1,
+        );
+        let only_no_clock = summary.status_origins["so_frame_control_invalid"];
+        assert_eq!(only_no_clock.first_hour, None);
+        assert_eq!(only_no_clock.last_hour, None);
+        assert_eq!(only_no_clock.no_clock_observations, 1);
         assert!(summary.per_domain.is_empty());
         assert!(summary.read_ab_probe.is_empty());
     }

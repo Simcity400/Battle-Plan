@@ -24,6 +24,13 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+/// Sentinel game hour carried by an attribution-probe record emitted on a
+/// frame with no valid clock (NO_CLOCK). The recorder counts the incidence
+/// but must NOT fold this into a ledger row's first/last-hour span — a
+/// NO_CLOCK frame stamping calendar hour 0 fabricated a false `first_hour=0`
+/// (C1 stage A gate finding 3).
+pub const ATTRIBUTION_NO_CLOCK_HOUR: i32 = i32::MIN;
+
 /// Site identities. One per FIRST-INTRODUCTION site of a status bit in a
 /// reader (or per cause branch within one site when the dossier requires the
 /// split). Line references are the C0 round-2 verified sites at tree
