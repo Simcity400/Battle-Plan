@@ -1972,6 +1972,84 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
                     .to_string(),
             );
         }
+        return Ok(());
+    }
+    // Modset re-gate finding 4 (2026-07-12): resolved:true previously
+    // bypassed ALL validation — a bare {"resolved":true,"enabled_mods":[]}
+    // with no build hash, provenance, or content bindings republished as
+    // resolved vanilla. A resolved binding must carry the complete evidence
+    // schema (it cannot be reconstructed after capture, so anything short of
+    // complete is a legacy/corrupt shape and refuses the repack).
+    if obj
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_none_or(|errors| !errors.is_empty())
+    {
+        return Err(
+            "fold-and-repack manifest modset is resolved:true but carries errors \
+             (or no errors array); a resolved binding must be error-free"
+                .to_string(),
+        );
+    }
+    let game = obj
+        .get("game")
+        .and_then(Value::as_object)
+        .ok_or("fold-and-repack manifest modset lacks the game build object")?;
+    let exe_sha = game
+        .get("exe_sha256")
+        .and_then(Value::as_str)
+        .ok_or("fold-and-repack manifest modset lacks game.exe_sha256")?;
+    if exe_sha.len() != 64 || !exe_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("fold-and-repack manifest modset game.exe_sha256 is not a sha256".into());
+    }
+    for (field, kind) in [
+        ("exe_path", "string"),
+        ("exe_size_bytes", "number"),
+    ] {
+        let present = match kind {
+            "string" => game.get(field).and_then(Value::as_str).is_some(),
+            _ => game.get(field).and_then(Value::as_u64).is_some(),
+        };
+        if !present {
+            return Err(format!(
+                "fold-and-repack manifest modset lacks game.{field}"
+            ));
+        }
+    }
+    for field in ["pdx_user_dir", "user_dir_source"] {
+        if obj.get(field).and_then(Value::as_str).is_none() {
+            return Err(format!("fold-and-repack manifest modset lacks {field}"));
+        }
+    }
+    for field in ["dlc_load_mtime_unix", "process_start_unix"] {
+        if obj.get(field).and_then(Value::as_i64).is_none() {
+            return Err(format!("fold-and-repack manifest modset lacks {field}"));
+        }
+    }
+    let mods = obj
+        .get("enabled_mods")
+        .and_then(Value::as_array)
+        .ok_or("fold-and-repack manifest modset lacks the enabled_mods array")?;
+    for (index, entry) in mods.iter().enumerate() {
+        for field in ["descriptor_sha256", "content_sha256"] {
+            if entry.get(field).and_then(Value::as_str).is_none() {
+                return Err(format!(
+                    "fold-and-repack manifest modset enabled_mods[{index}] lacks {field} \
+                     (incomplete content binding)"
+                ));
+            }
+        }
+    }
+    let dlc = obj
+        .get("dlc")
+        .and_then(Value::as_object)
+        .ok_or("fold-and-repack manifest modset lacks the dlc object")?;
+    for field in ["installed", "enabled", "disabled"] {
+        if dlc.get(field).and_then(Value::as_array).is_none() {
+            return Err(format!(
+                "fold-and-repack manifest modset dlc.{field} is not an array"
+            ));
+        }
     }
     Ok(())
 }
@@ -28778,11 +28856,18 @@ mod tests {
                 "{bad:?} -> {err}"
             );
         }
+        // Unique per RUN (nanos), never pre-removed: on Windows a
+        // remove_dir_all + create_dir_all pair on a leftover same-name dir
+        // (PIDs are reused) races the pending delete and the dir can vanish
+        // after the create succeeds.
         let dir = std::env::temp_dir().join(format!(
-            "battle-plan-recorder_host_unknown_domain_{}",
-            std::process::id()
+            "battle-plan-recorder_host_unknown_domain_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
-        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         // Valid-plus-unknown must fail the WHOLE parse (never a silently
         // narrower schedule).
@@ -32421,8 +32506,47 @@ mod tests {
             .unwrap_err()
             .contains("without a partial_evidence"));
 
-        // Current shapes pass: resolved, and fail-closed unresolved.
-        let resolved = json!({"modset": {"resolved": true, "errors": [], "enabled_mods": []}});
+        // Modset re-gate finding 4: a BARE resolved:true (no build hash /
+        // provenance / bindings) previously passed — it must now refuse.
+        let bare_resolved =
+            json!({"modset": {"resolved": true, "errors": [], "enabled_mods": []}});
+        assert!(validate_repack_manifest_modset(&bare_resolved)
+            .unwrap_err()
+            .contains("game build object"));
+        // resolved with errors also refuses.
+        let resolved_with_errors = json!({"modset": {
+            "resolved": true, "errors": ["x"], "enabled_mods": []
+        }});
+        assert!(validate_repack_manifest_modset(&resolved_with_errors)
+            .unwrap_err()
+            .contains("error-free"));
+        // A mod entry missing its content binding refuses.
+        let full = |mods: Value| {
+            json!({"modset": {
+                "resolved": true,
+                "errors": [],
+                "game": {
+                    "exe_path": "F:/hoi4.exe",
+                    "exe_size_bytes": 123u64,
+                    "exe_sha256": "ab".repeat(32),
+                },
+                "pdx_user_dir": "C:/pdx",
+                "user_dir_source": "probed",
+                "dlc_load_mtime_unix": 1i64,
+                "process_start_unix": 2i64,
+                "enabled_mods": mods,
+                "dlc": {"installed": [], "enabled": [], "disabled": []},
+            }})
+        };
+        let missing_content = full(json!([{"descriptor_sha256": "ab".repeat(32)}]));
+        assert!(validate_repack_manifest_modset(&missing_content)
+            .unwrap_err()
+            .contains("content_sha256"));
+        // The COMPLETE resolved schema passes.
+        let resolved = full(json!([{
+            "descriptor_sha256": "ab".repeat(32),
+            "content_sha256": "cd".repeat(32),
+        }]));
         assert!(validate_repack_manifest_modset(&resolved).is_ok());
         let unresolved_ok = json!({"modset": {
             "resolved": false, "errors": ["y"], "partial_evidence": {"dlc": {}}
