@@ -2155,3 +2155,13 @@ separate from this batch. Accepted TCB: Cargo/rustc/build-cache/JSON integrity.
 MERGE PHASE NOW OPEN. First clean merge available: d53-badges (SOUND-WITH-NITS). Fix-plan
 [A-R] + PREREQ-0 duplex-transport stand as the sequenced backlog (Codex fix lanes per the
 regime). Merge order: d53-badges -> PREREQ-0 -> code fixes re-reviewed -> doc revisions.
+
+FIX PHASE — PREREQ-0 duplex transport LANDED + VERIFIED (3e3bb0417 in worktree): reverse
+recorder->collector control-channel primitive (framed hello/heartbeat/stream-boundary/token-
+echo/ack; magic+len+checksum+monotonic-seq+version; fail-closed; single-injection-safe;
+fake-backend tested), +12 tests -> 408 INDEPENDENTLY VERIFIED (209 lib + 199 bin). Design
+DUPLEX_CONTROL_TRANSPORT.md gives [A]/[C,O]/[S] concrete consumer interfaces. Adversarial
+review gate RUNNING. On SHIP -> merge, then the 3 transport-dependent fix lanes unblock.
+Independent code fixes [D]fold-wave1 [E]d51 [F]librs [G]fold-wave2 [H]dlc-meta [I]d48 need no
+PREREQ-0 and can run in parallel. FIX-PHASE MACHINERY PROVEN: fix lane -> orchestrator verify
+-> adversarial re-gate -> merge (same as census chain + review sweep).
