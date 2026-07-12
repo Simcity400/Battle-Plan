@@ -1,4 +1,5 @@
 pub mod compact_domain_registry;
+pub mod control_transport;
 pub mod mmap;
 pub mod modset;
 pub mod proc_mem;
