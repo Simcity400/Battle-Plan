@@ -103,7 +103,16 @@ fn in_module(module_base: u64, value: u64) -> bool {
 }
 
 fn valid_tag_db_id(value: u32) -> bool {
-    value > 0 && value <= MAX_TAG_DB_ID
+    // R2 gate finding 2: callers include SILENT skips (root-roster `continue`
+    // arms), so an over-ceiling tag must record its bound trip — a >1024-tag
+    // overhaul would otherwise silently drop whole country roots.
+    value > 0
+        && compact_contract::bound_trips::gate_u32(
+            value,
+            MAX_TAG_DB_ID,
+            compact_contract::bound_trips::BOUND_TRIP_TAG_DB_ID_1024,
+        )
+        .is_some()
 }
 
 fn war_date_vtables(module_base: u64) -> Result<[u64; 2], ExtractError> {

@@ -382,7 +382,14 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
         country_count,
         ..CountryOccupationStatusSummary::default()
     };
-    if !is_heap_ptr(country_table) || country_count == 0 || country_count > MAX_TAG_DB_ID {
+    if !is_heap_ptr(country_table)
+        || country_count == 0
+        || compact_contract::bound_trips::bound_exceeded_u32(
+            country_count,
+            MAX_TAG_DB_ID,
+            compact_contract::bound_trips::BOUND_TRIP_TAG_DB_ID_1024,
+        )
+    {
         return Ok((BTreeMap::new(), summary));
     }
 
@@ -663,7 +670,17 @@ pub fn read_state_garrison_scalars<M: OccupationMemory>(
                 occupation_data_ptr,
                 COUNTRY_OCCUPATION_DATA_OCCUPIED_TAG_OFF,
             ) {
-                Ok(value) if value != 0 && value <= MAX_TAG_DB_ID => value,
+                Ok(value)
+                    if value != 0
+                        && compact_contract::bound_trips::gate_u32(
+                            value,
+                            MAX_TAG_DB_ID,
+                            compact_contract::bound_trips::BOUND_TRIP_TAG_DB_ID_1024,
+                        )
+                        .is_some() =>
+                {
+                    value
+                }
                 _ => {
                     anomaly_rows = anomaly_rows.saturating_add(1);
                     continue;
@@ -837,7 +854,15 @@ fn read_state_row<M: OccupationMemory>(
     let resistance_speed_raw = i32_from(&blob, STATE_OFF_RESISTANCE_SPEED);
     let compliance_raw = i32_from(&blob, STATE_OFF_COMPLIANCE);
     let compliance_speed_raw = i32_from(&blob, STATE_OFF_COMPLIANCE_SPEED);
-    if owner > MAX_TAG_DB_ID || controller > MAX_TAG_DB_ID {
+    if compact_contract::bound_trips::bound_exceeded_u32(
+        owner,
+        MAX_TAG_DB_ID,
+        compact_contract::bound_trips::BOUND_TRIP_TAG_DB_ID_1024,
+    ) || compact_contract::bound_trips::bound_exceeded_u32(
+        controller,
+        MAX_TAG_DB_ID,
+        compact_contract::bound_trips::BOUND_TRIP_TAG_DB_ID_1024,
+    ) {
         return Ok(None);
     }
     if [
