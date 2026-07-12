@@ -446,6 +446,11 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "domain47_adapter_advisor_roster_rows",
             "domain47_adapter_country_leader_role_rows",
             "domain47_adapter_unit_leader_rows",
+            // G1-residue finding 5: previously-missing output families — an
+            // active-ruler-only or trait-only session must not bypass the
+            // invariant.
+            "domain47_adapter_active_ruler_rows",
+            "domain47_adapter_unit_leader_trait_rows",
         ],
         shared_recorder_known: true,
     },
@@ -924,6 +929,21 @@ fn validate_domain_manifest(
     // came out. (row_count_total is the emitted-row total; requires_data only
     // checks records exist, not rows.)
     if !contract.work_implies_rows_units.is_empty() {
+        // G1-residue gate finding 5: the aggregate rule alone let ONE early
+        // emitted row mask total loss on every later frame. The collector now
+        // counts per-frame work-without-emission (adapter built output-family
+        // rows, frame emitted zero data rows); any nonzero total is the same
+        // silent-loss class and fails regardless of the aggregate.
+        let work_without_emission_frames = units
+            .get("domain47_work_without_emission_frames")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if contract.id == 47 && work_without_emission_frames != 0 {
+            errors.push(format!(
+                "domain {} discarded every built row on {work_without_emission_frames} frame(s)                  (adapter work without emission — silent per-frame data loss even though the                  whole-run row total is nonzero)",
+                contract.name,
+            ));
+        }
         let emitted_rows = domain
             .get("row_count_total")
             .and_then(Value::as_u64)
