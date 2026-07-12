@@ -1391,3 +1391,16 @@ worktree base 6fd03c653 (treats the flag as a manifest arg -> 0 domains -> GREEN
 0 = the known v1 empty-input fail-open). The uncommitted v3.3 already closes it:
 --selftest is a real entry (40/40) and zero-usable input blocks (exit 1, selftest
 zero-usable: blocking=2). No new work; closure rides the round6e-gated commit.
+
+LANE LEDGER DELTA 2: w12-pass2-spans COMPLETE (08005fe7a: c0_pass2_spans.py selftest
+6/6, both production streams byte-exact, zero so_* pre-stage-A = correct producer
+tracking; stale-base claims re-adjudicated same as d53-badges'). w12-d48-fold-skip
+COMPLETE (code lane, in-worktree commit: non-59 queue entries reclassified
+informational filter — new filtered_construction_non_construction_line_rows counter,
+legacy counter kept always-zero; 26/0 tests). MERGE-TIME RECONCILIATION ITEM: the
+uncommitted stage-A domain48_lane_partial_causes() maps the LEGACY counter to an SO
+id — harmless post-merge (always zero) but the mapping should drop-or-remap to the
+new filtered counter as INFORMATIONAL (not a partial cause) in the merge commit, and
+the census d48 expectations re-checked. The D04 capture's so_d48 sample=11 likely
+decomposes into non-59 filters (would clear d48 PARTIAL) — verify on the first
+post-merge capture.
