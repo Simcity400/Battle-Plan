@@ -1669,3 +1669,22 @@ same-hour observations the design requires. VERDICT: does NOT merge; Codex Mode-
 lane queued (session-mgmt layer, not core-data critical path). Green focused tests did
 not exercise any of these — the fake/subset tests concealed them (same pattern as
 autoattach). BOTH top-roadmap builds need hardening passes before merge.
+
+REVIEW: campaign-id-impl = FIX-ROUND (2 MAJOR + 3 MINOR, valid): (1) resolve()
+promotes to Known with no stability/hour/profile/CID1 evidence -> once the pair is
+wired a stale/copied manifest mis-stitches SameCampaign (LATENT: pair not sourced
+today, but guard must tighten before wiring — stay Unavailable until CID1 hash
+exists); (2) closed grammar checks witness KEYS but not types/ranges -> from_manifest
+silently casts start_date_raw=4294967296->0, wraps out-of-range hour, drops non-string
+roster via filter_map (fail-closed violation: use checked conversions, reject); (3
+MINOR) d68 witnesses committed before string/status validation; (4 MINOR)
+missing/malformed component mislabeled identity_component_conflict (should be
+Unavailable; conflict only on 2-observation transition); (5 MINOR) digest test
+self-compares — reviewer supplied the known-answer digest
+b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f. VERDICT: Codex fix
+lane queued (findings actionable; core binding shape sound).
+
+CENSUS ROUND-7 GATE WEDGED (CreateProcessWithLogonW failed:2, zero-progress) — the 6th
+concurrent session tipped the host past its ~6-7 sustainable limit; all 5 reviews
+stayed healthy. Refired FRESH (round7b) after a slot freed. CAPACITY LESSON re-confirmed:
+keep gate+reviews <= 5-6 concurrent.
