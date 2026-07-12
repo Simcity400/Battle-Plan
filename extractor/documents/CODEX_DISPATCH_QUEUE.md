@@ -1491,3 +1491,16 @@ validation matrix in W12C_AUTOATTACH_IMPL.md is user-gated.
 POST-RESET REVIEW SET (Codex, per merge protocol): 13 wave-12/12b lane commits +
 5 Opus deliverables (fe3180ec3+1ebabcdd2, 07fc80b1d, 2ea8bbdad, 9c1d26c3b,
 855723cf1). After reviews + merges: all changes revert to the Codex workflow.
+
+### 2026-07-12 ~23:30 — OPUS WAVE O2 LAUNCHED (user: keep lodging Opus waves until
+Codex returns). 6 lanes: w12c-campaign-id-impl (task #34 build, from 4637b6dce),
+w12c-stitching-impl (task #35 build, from dd85e52bb), w12c-fold-wave2 (item-15 deep
+panels, STACKED on fold-wave1 cac61710b, world_fold owner slot 2),
+w12c-librs-readers (tip 804f2ecd7 = PENDING-GATE census/stage-A baseline copied
+from main tree + Fix P + speed reader (+0x4BC) + world_tension — MERGE ONLY AFTER
+round6e SHIPs), w12c-re-war-decisions (warscore/wargoals/decision-state offset
+candidates, from e07fef384), w12c-fow-re (FoW CPU source hunt ranks 1-4 -> concrete
+plans, from 190cc0015). Remaining post-O2 extractor backlog: WMI event source +
+collector heartbeat protocol (autoattach §9), counter-badge fields RE, fired-event
+hooks, d51 bit13 root, SnowMud, fold wave 3 (speed-event fold + O2 leftovers), all
+user-gated live validations. All O2 work -> Codex review post-reset.
