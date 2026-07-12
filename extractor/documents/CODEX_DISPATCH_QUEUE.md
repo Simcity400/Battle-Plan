@@ -1171,3 +1171,38 @@ scope); no non-object mod-entry fixture (rejection branch is direct + compiled).
 FULL CHAIN: fixround regate REFUTED(3) -> r2 fixes -> gate REFUTED(3) -> r3 fixes -> gate
 REFUTED(3) -> r4 fixes -> gate REFUTED(3+LOW) -> r5 fixes -> gate SHIP. Every hunk in the
 committed diff was adversarially reviewed pre-commit (user directive 2026-07-12).
+COMMITTED: e7bce36b1 (+ PRODUCT_SESSION_SEMANTICS.md, the owner's session-semantics vision
+of record: dual-order auto-attach, campaign identity, later-supersedes stitching policy —
+both owner decisions 2026-07-12).
+
+### POST-CHAIN DISPATCHES (2026-07-12)
+- **O5 modset gate (e9f21a1c8): SUPERSEDED, never dispatching** — its entire surface
+  (fail-closed resolution, census-vs-dlc_load key format, manifest semantics) was covered
+  at newer tree states by G2-regen (5B+2M, fixed) + this five-gate chain (SHIP).
+- **G1 final net gate resumed** (tid 019f4ebb-0fb6-7cc1-88e8-3755a1ae6b2f, g1_prompt.txt
+  piped with tree-advanced preamble): the 6-commit d47-dedup/d69-tombstone/O7 net-state
+  adjudication.
+- **G4 O8 design gate resumed** (tid 019f4f8d-2021-7ca3-9b8d-1ac319ff970a, full prompt
+  re-sent — first turn died pre-consumption on the limit).
+Remaining after these: C0 census tooling gate (3ecf9f7eb) + F5 container/fold/B3
+integrated final gate (owns the final word per plan §5; prefetch 16->8 batches in).
+
+### G1 + G4 RESUME VERDICTS (2026-07-12): both DISCHARGED AT HEAD — stale evidence
+Both resumed threads reasoned over their INLINED evidence (tree 319dc641b, tool calls
+prohibited by the broken-shell-era prompts) and re-derived verdicts already processed:
+- **G1 net gate REFUTED(3 CRITICAL)** — ALL THREE pre-fixed at HEAD with their own citing
+  comments + re-gates: d43 PARTIAL-from-first-incomplete-hold (lib.rs ~29475, landed in
+  the G1res batch), d69 fail-closed-on-any-stable-vtable-mismatch (lib.rs ~37960, re-gate
+  019f5066), d47 country-disagreement quarantine + leader-ptr tombstone (admit_character
+  ~18508, review 019f53fb). VALUE RETAINED: its failed-attacks list discharges the OWED
+  adjudication of ebdc5bc4b + 1fbd9f3a4 (a679df5b8 amendment) — stable zero/high-bit d69
+  members confirmed structural non-members, lossy-adoption/degraded-bypass/O7/_sample
+  surfaces clean, no new findings. Owed-gate debt CLOSED.
+- **G4 O8 design REFUTED(9)** — all nine corrective amendments were ALREADY FOLDED into
+  CONFIRMED_COMPLETE_DESIGN.md as the design of record on 2026-07-11 (0ece437f3, same tid
+  019f4f8d): deny-by-default declaration registry (empty tolerance set), transactional
+  epochs (session nonce + epoch tokens), mandatory presence sentinel, per-subsource
+  evidence units over aggregate bits (= C1 stage A, in flight), Captured =
+  contract-completion, wire major bump, C0 = discovery-only, provenance axis + d17
+  NATIVE default. C1 stage 3 tolerance stays blocked behind stages B-E as amended.
+AUDIT BLOCKING LIST now exactly: C0 census tooling gate + F5 integrated final gate.
