@@ -2222,3 +2222,15 @@ serialize [F]+[E] (+ the committed census/stage-A); recorder_host/src/world_fold
 -> [B/M] alone. Each lane STILL owes its adversarial re-gate before merge (same loop as d48/duplex).
 Doc wave w12f (6 lanes) also in flight. Total fleet: 6 (w12f) + 9 (w12g) = 15 -> host wedges above
 ~6-7; refire wedged on drain.
+
+FIX-WAVE REFIRE MECHANICS (corrected): the initial "dirty=done" signal was FOOLED for the
+6 w12f doc lanes because their dossiers were pre-staged as untracked copies (dirty from the
+start). CONTENT-diff vs source revealed only 2 of 6 actually revised. FIX: harvested the 2
+real revisions ([J/R]fow 19da6ade6, [L]rewar d936e3fe8); baseline-COMMITTED the staged
+source in the 4 bailed doc lanes (counterbadge/events/pass2/librpairs) so a real edit now
+shows DIRTY and a bail leaves CLEAN. Self-sustaining refire driver (refire_fixwaves.sh,
+CAP=6 sessions, refires only clean+bail-marker lanes, never double-fires an active one)
+restarted over the 13 not-yet-done lanes (4 docs + 9 code). Drives to completion despite
+the ~6-7 host limit. HARVEST as each worktree goes dirty: orchestrator commit -> verify ->
+re-gate -> deferred reconciliation merge (owner-serialization plan above). FIX-PHASE MERGED
+so far: d53, duplex, d48. HARVESTED-awaiting-regate: [J/R]fow, [L]rewar.
