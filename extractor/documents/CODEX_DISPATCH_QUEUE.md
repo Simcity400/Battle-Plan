@@ -1569,3 +1569,15 @@ proposed diff), w12c-heartbeat-wmi (stacked 855723cf1: WMI ProcessEventSource
 attempt fail-closed to design + collector heartbeat protocol design), and
 w12c-re-counterbadge (counter-badge division fields + battle-bubble RE dossier,
 from base). Same regime: Codex reviews everything post-reset.
+
+OPUS O3 HARVEST 1: re-counterbadge 2919af399 — counter-badge ask MOSTLY ALREADY
+SHIPPED: supply ratio (+0x600/+0x5F0), training (experience +0x420), has_orders
+(+0xC8 link) all emitted in the d20 row TODAY = pure fold wins (the real gap is the
+replay-side view binding); orders-kind = ONE added read of the proven
+COrderInstance+0x30 order_type (d54 lane already reads it, lib.rs:9088; the
+division's +0xC8 order is vtable-gated to the same class, :7243). Melt-oracle scans
+available for dig_in (save field, atlas:1005) + shore-bombardment factor (:588).
+Genuinely open: org_max, combat progress (no save oracle — H1/H2 fork), air-sup
+0..9 index law (data recorded in d38/d31/d30, law in mapicons.gui/defines),
+active_ability container, attrition (likely not stored — labelled proxy). Ship
+order in dossier: folds first, then the one-liner read, then the two melt-scans.
