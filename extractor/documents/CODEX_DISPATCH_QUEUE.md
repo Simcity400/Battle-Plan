@@ -1824,3 +1824,21 @@ HARVEST-TIME LESSON: my praise of fold-wave2's A25 fix was premature — it fixe
 loss and introduced another (measured-empty). Independent adversarial review caught what
 orchestrator harvest-verification (tests-green + diff-scan) did not. Reinforces: green
 tests + clean diff != fail-closed-correct; the review gate is load-bearing.
+
+REVIEW: dlc-meta = FIX-ROUND (4 MAJOR): (1) validator accepts resolved:true + null
+name/language the live resolver could NEVER emit (it fail!s) — positive fixture even
+asserts null-name acceptance -> publishes incomplete metadata as authoritative (require
+nonempty strings in resolved reports; null only in unresolved partial_evidence); (2)
+trim_matches('"') accepts TORN assignments — language="l_english (unmatched quote) ->
+measured value, duplicates last-wins (needs strict Clausewitz parser Result<Option>,
+reject unbalanced/dup/whitespace); (3) values not bound to launch state — settings.txt/
+DLC descriptor read once, post-launch change emitted as resolved (stability-bracket +
+mtime-predates-launch + bind to census); (4) CROSS-LAYER contract not closed — fields
+land in recorder manifest but replay session_metadata() reads snapshot session/
+world.scenario -> real capture still gets active_dlcs/language absent -> wrong no-DLC
+cosmetics + all-DLC fallback (surface via canonical session metadata or teach the replay
+loader; e2e test). -> Codex fix lane [H] dlc-meta. 10/10 code lanes FIX-ROUND.
+
+CROSS-LANE VALIDATOR PATTERN: dlc-meta #1 == campaign-id #2 == a closed-grammar validator
+accepting null/shapes the live producer can't emit. Recurring fail-closed-strictness class
+worth a shared checklist for the fix lanes.
