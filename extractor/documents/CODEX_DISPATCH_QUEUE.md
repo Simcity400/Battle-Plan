@@ -2191,3 +2191,15 @@ fix -> re-gate -> merge. REMAINING: independent core-data [D]fold-wave1 [E]d51 [
 [K]pass2-spans. Each follows the same loop. Note [G]fold-wave2 + [E]d51 + [F]librs-speed need
 a collector WIRE change (leaf presence bits / anchor-change discriminator) so they touch the
 lib.rs single-owner file -> serialize those (one owner at a time).
+
+FIX WAVE w12f (doc/tooling revisions, 6 parallel Codex lanes, disjoint files -> no merge
+collision): [J/R]fow-revise (both FoW dossiers, coupled IntelTex-hypothesis relabel + save-
+negative qualification + multi-outcome fork), [L]rewar-revise (drop proven-null decoder,
+HIGH->HYPOTHESIS, missed decision families), [N]counterbadge-redo (REJECT -> reconcile with
+already-cracked dig_in/combat-progress + fix fail-closed proposals + revalidate offsets),
+[P]events-revise (remove nonexistent war quick-fold, days_raw-only, stale warscore->HYP),
+[K]pass2-fix (domain-aware status registry + PERF coverage + missing-field + zero-sample),
+[Q]librpairs-fix (my d54 permanent-closure overclaim -> STILL-OPEN + stable anchors). Each ->
+orchestrator verify (citation + selftest for pass2) -> re-gate (doc/citation audit) -> merge.
+Code-fix wave (serialize collector-lib.rs + world_fold.rs owners) + transport-dependent
+[A]/[C-O]/[S] follow. Fix-phase merges so far: d53, duplex, d48.
