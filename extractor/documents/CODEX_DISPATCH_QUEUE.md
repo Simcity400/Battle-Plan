@@ -2130,3 +2130,15 @@ TERMINAL SOLUTION (both closed together): build both packages once with --messag
 run the emitted registry_dump, attest the emitted cdylib. DELEGATED round-9 fix to Codex
 Mode-C on w12c-census-oracle. Rounds 6->9 each found a distinct real hole in the audit
 instrument; this is the last production-equivalence layer. Batch stays uncommitted.
+
+CENSUS ROUND-10: REFUTED 1 CRITICAL (artifact selector matched name/kind/src_path but NOT
+package_id/manifest_path -> a recorder_host-package registry_dump reusing collector's src_path,
+compiled against a different contract, emits a clean dump while collector's DLL is swapped =
+false green). ORCHESTRATOR FIX APPLIED DIRECTLY (small precise selector hardening, ef206edf3):
+_target_is now requires manifest_path==collector/Cargo.toml + a package_id cross-check binding
+both attested artifacts to the same nonempty collector package. INDEPENDENTLY VERIFIED:
+selftest 80/80 (+2 foreign-manifest-dump / mismatched-package-id both BLOCK), real two-package
+build-and-attest STILL PASSES (real Cargo manifest_path/package_id satisfy the binding).
+Rounds 8-10 together comprehensively close "does the oracle's registry provably come from the
+SAME package+build+feature-set+artifact as the shipped collector DLL": same two-pkg json build
++ package-identity-bound artifacts + exact-path attestation. ROUND-11 terminal re-gate launched.
