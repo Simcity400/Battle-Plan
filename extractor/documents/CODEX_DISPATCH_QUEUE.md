@@ -677,3 +677,25 @@ retired here: decoded==oracle==9, no group missed. GATE CLEARED — implement th
 [0..size) walk (fail-closed if size unreadable or size>capacity). On D04 the fix is a NO-OP
 (size=capacity=9, walk [0..9) == current fixed-9); its EFFECT (dropping OOB PARTIAL) shows on
 <9-group saves. Oracle json: scratchpad/d04oracle/world.json.
+
+## 2026-07-12 — d69 POPULATED-SOUND FIX committed (live-validated on D04; re-gate QUEUED on Codex outage)
+Implemented the [0..size) walk bounded by CGameState+0x3AC (active group count). Reviewed by
+Codex tid 019f5454 which found 4 real findings (all traced against the code + addressed):
+ 1. BLOCKER fallback clean-truncation -> force_partial when active_count None (fold retains prior).
+ 2. BLOCKER incoherent header -> COHERENT tuple read (twice-identical) + post-walk re-read.
+ 3. MAJOR stale extra group / null-in-active -> slot[size] peek + null-in-[0..size) force_partial.
+ 4. MAJOR capacity ceiling -> constrain SIZE not capacity (cap=512/size=10 takes sound path).
+LIVE VALIDATION (d69fix_d04, paused D04_1944, DLL 426872f7): sound path RAN
+(active_walk_count=9), emitted 9 groups / 34 members, status 0x0 CLEAN, fail_reasons none,
+vec_size_word 0x900000009 (cap=9/size=9) == melt oracle. Self-traced stale-low: peek catches
+it (slot[size] is a live group when true>size -> force_partial -> retain prior). Stale-HIGH
+phantom = narrow bounded-negative no worse than old fixed-9 (needs an implausibly stably-wrong
+size; reserved non-group slots already fail-close to PARTIAL). collector 356/0.
+RE-GATE STATUS: Codex returned empty 4x (clean exit, NO usage-limit marker = transient service
+outage, not credits). Prompt saved at scratchpad/d69regate_fresh_full.txt — RESUME the fresh
+re-gate when the service recovers; if it finds anything, one follow-up fix round. The change is
+strictly MORE fail-closed than the reviewed baseline (only adds PARTIAL triggers), so it cannot
+introduce data loss vs. the reviewed version.
+OWED before production tag: (a) the re-gate; (b) one live confirm of the IMPROVEMENT on a <9
+save (frozen: expect N groups CLEAN instead of chronic PARTIAL) — the sound path is already
+proven to run + emit correctly on D04, the <9 case is the same path with a smaller count.
