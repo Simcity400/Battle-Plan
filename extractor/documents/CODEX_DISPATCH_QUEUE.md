@@ -699,3 +699,12 @@ introduce data loss vs. the reviewed version.
 OWED before production tag: (a) the re-gate; (b) one live confirm of the IMPROVEMENT on a <9
 save (frozen: expect N groups CLEAN instead of chronic PARTIAL) — the sound path is already
 proven to run + emit correctly on D04, the <9 case is the same path with a smaller count.
+
+## 2026-07-12 — d69 IMPROVEMENT LIVE-PROVEN on a <9 save (before/after CLOSED)
+d69fix_frozen (frozen fixture, 4 groups, DLL 426872f7, 351 frames): per-frame 4 groups /
+24 members, active_walk_count=4, vec size=4/cap=4, valid_slot_mask 0xf, status_flags 0x0
+CLEAN, fail_reasons NONE. The OLD fixed-9 walk read slots 4-8 OOB and badged EVERY such
+frame PARTIAL (d69 absent from every under-populated replay); the fix walks [0..4) and emits
+the 4 real groups CLEAN. Together with D04 (9/9 no-op, oracle-matched) this is the full
+before/after: fully-populated saves unchanged, under-populated saves go PARTIAL->CLEAN.
+d69 domain COMPLETE pending only the Codex re-gate formality (retried after the outage).
