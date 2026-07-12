@@ -1704,3 +1704,25 @@ fold-wave1): fail-closed edge gaps where unreadable-or-failed-frame state become
 SILENT empty/stale value without a completeness badge — the core absent-stays-absent-vs-
 measured-empty discipline. Opus scaffolding is shape-correct; the adversarial pass is
 catching the edge-case hardening every time. All -> Codex fix lanes.
+
+REVIEW: heartbeat-wmi = FIX-ROUND (4 MAJOR + 1 MINOR, valid). NOTE: the hand-written
+COM FFI ABI (vtable indices, VARIANT 24B layout) the lane self-flagged is SOUND — all
+findings are in liveness/recovery semantics, not the raw binding: (1) post-outage
+resubscribe advertises Healthy WITHOUT an authoritative snapshot -> misses a process
+started during the outage (the exact priority concern) — stay Recovering until a
+snapshot runs; (2) unreadable WMI props fabricated to ""/0/"" then silently filtered
+(absent-stays-absent violation) — preserve as Malformed, degrade, reconcile; (3)
+ConnectServer(flags=0) can block indefinitely, cancel flag not observed during the COM
+call, Drop unconditionally joins -> shutdown hang (MS-doc-cited) — needs
+CoEnableCallCancellation; (4) heartbeat proof values don't exist — staging discards raw
+token, worker generates new session/token -> journal records unrelated evidence [SAME
+staging.rs seam as autoattach #6 — COUPLED FIX]; (5 MINOR) live smoke test can't go red
+(passed printing Degraded/0 events). MERGE-COUPLING: autoattach + heartbeat-wmi = ONE
+combined Codex fix lane (same auto_attach subsystem, heartbeat stacks on autoattach,
+shared token/session ownership fix).
+
+REVIEW TALLY (5/5 code lanes so far all FIX-ROUND): autoattach(7), stitching(10),
+campaign-id(5), fold-wave1(5), heartbeat-wmi(5). Consistent: shape-correct + focused
+tests green, but fail-closed/stale-on-failure edges uncaught. Fix-lane grouping:
+[A] autoattach+heartbeat-wmi (auto_attach subsystem), [B] stitching, [C] campaign-id,
+[D] fold-wave1. None on core-data critical path.
