@@ -1206,3 +1206,181 @@ prohibited by the broken-shell-era prompts) and re-derived verdicts already proc
   contract-completion, wire major bump, C0 = discovery-only, provenance axis + d17
   NATIVE default. C1 stage 3 tolerance stays blocked behind stages B-E as amended.
 AUDIT BLOCKING LIST now exactly: C0 census tooling gate + F5 integrated final gate.
+
+### C0 TOOLING GATE VERDICT: REFUTED 5 CRITICAL + 1 HIGH + 1 LOW (tid in threads log,
+c0-tooling-gate) — the v1 census was itself a false-green instrument
+1. no roster/coverage check (a fully dark domain = invisible, exit 0; registry actually
+   has 56 schedulable domains — d18 country_identity is ActiveIntegration = DOCUMENTED
+   profile exclusion, verified in status_in_production_profile);
+2. empty/unreadable/gate-failed inputs pass (zero sessions = exit 0; decodable/ordered/
+   domain_coverage.ok/hourly ignored);
+3. problems + fold state never gate (world_folded is STATIC FOLDED_DOMAIN_IDS membership,
+   not per-session acceptance — verified main.rs:17520);
+4. not domain-aware: d49/d51 lane-local bits misread as global; bit13 on d45 (an INVALID
+   combination present in the built-ins) silently accepted; unknown bits >13 dropped by
+   bits_of();
+5. d69 must-be-zero policy documented but dead (key "tech_sharing_groups" vs recorder's
+   "tech_sharing_groups_live");
+6. session-OR attribution launders second causes (ATTRIBUTED cleared the whole pair);
+7. LOW mechanicals. Failed attacks: recorder field names exact; problems-object iteration
+   fine; real d69 regression currently exits 1 (via the misspell, ironically).
+
+### C0 CENSUS v2 SHIPPED (uncommitted until the combined gate SHIPs)
+Full rewrite: pinned 60-entry roster (55 profile) + drift-blocking both directions;
+schema/stream gates (decodable/ordered/coverage/expected-set/parse/ordering/non-bit-derived
+hourly problems; zero-usable-manifests blocks); dark-domain + zero-data blocking;
+fold problems block; world_folded renamed-in-semantics to fold_supported (False = drift);
+domain-aware bits incl. d53 lane bits 16-22 (domain44_compact.rs) + d60 bit 16
+(capwar compact.rs) — BOTH previously invisible; unknown-bit blocking; bit13 valid only
+on d17/d53; ATTRIBUTED policies must_be_zero (d69 tripwire ENFORCED, correct key) and
+candidate (labels, still blocks pending pass-2 status_origins reconciliation);
+--selftest pins all gate false-green scenarios (11/11). ASCII-only output (end-user
+codepages). LIVE RESULT on the 2 production manifests: exit 1 with 41 blocking findings =
+the HONEST open C0 state (v1 said 13); newly visible: d53 RESISTED/UNVALIDATED segment
+badges (16/17/20/22), d45 bit13 invalid-combination anomaly (needs attribution: who sets
+it?), d48 fold problems (skipped construction rows reaching the fold), d51 lane badges.
+
+### STAGE-A RESIDUE GATE VERDICT: REFUTED 1 MEDIUM (tid in threads log,
+stagea-residue-gate) + FIX
+Finding: the d48 packed multi-cause sample under LAST-VALUE semantics kept only the final
+frame's causes (hour-100 country-root + hour-101 resource-row left no country-arm trace).
+Failed attacks: id/name alignment, predicate match, capture-semantics drift (additions
+only), no double-recording, no missed d65 pre-walk returns, recorder so_* generic.
+FIX: one origin id PER CAUSE (SO_D48_LANE_* x7, ids 35-41, COUNT 42); collector maps the
+7 pub CollectorStats counters via domain48_lane_partial_causes(); test covers per-cause
+mapping + the gate's two-frame different-causes scenario. collector 358/0, contract 29/0.
+Combined pre-commit gate covers stage-A residue v2 + census v2 together.
+
+### COMBINED GATE VERDICT: REFUTED 4 CRITICAL + 2 MEDIUM (tid in threads log,
+combined-stagea-census) — part 1 runtime SOUND (recorder aggregation verified end-to-end,
+d48/d65 attribution complete, no capture drift); all criticals on census v2:
+1. pinned roster never checked against the registry SOURCE (pin+old-manifests can agree
+   while the registry moves); 2. hourly_requirement optional/met-false tolerated (the
+   authoritative verification gate requires required+met); 3. bool-passes-isinstance-int
+   + negative counts + nonempty coverage errors + unvalidated session_id; 4. duplicate
+   JSON members last-wins (clean dup shadows a failing first member). MEDIUMs: 5. id/name
+   array order not mechanically coupled (swap compiles + passes uniqueness test);
+   6. selftest bypassed the real entry path. BONUS: d45 bit13 adjudicated REAL (d45 ORs a
+   dependency bundle's flags at collector lib.rs ~39359 — d17-only bit bleeds; census
+   correctly exposes it); roster pin verified exact vs all 60 descriptors.
+
+### FIX ROUND (v3 census + coupling test; uncommitted pending gate round 3)
+1. registry_drift(): startup cross-check of the pin against compact_contract/src/lib.rs
+   (regex over domain(...) entries; parse shortfall = drift = blocking BEFORE manifests).
+2. hourly must positively prove {required: true, met: true, problems: []} — absent/
+   older-schema/met-false block (live manifests now honestly add 2 hourly blockers).
+3. strict types: type(v) is int (bools rejected), nonneg counters, exact-[] coverage
+   errors, string-list expected_domains, nonempty unique session_id.
+4. json object_pairs_hook rejects duplicate members recursively.
+5. Rust test every_id_constant_indexes_its_exact_unit_name pins the FULL 42-entry
+   id->name registry (contract 30/0).
+6. selftest rebuilt through the REAL path (evaluate_source/run_paths): 25/25 incl.
+   registry-drift, registry-exact, dup-member, dup-session, hourly x3, strict-type x5,
+   d53/d60 lane bits, zero-usable. d45 bit13 now ATTRIBUTED candidate (real bleed, fix =
+   mask dependency bits — new work item). Live census: exit 1, 47 blockers (45 + 2
+   hourly) = the honest C0 state.
+
+### ROUND-3 GATE VERDICT: REFUTED 2 CRITICAL + 2 MEDIUM (tid in threads log,
+combined-round3) — all census; stage-A runtime held again; gate EXECUTED its probes
+(block-commented an entry in memory, watched the pin stay silent):
+1. registry parse comment-blind + prefix-arity (a /*...*/'d active entry produced no
+   drift; trailing-arg changes invisible); 2. absent parse/ordering evidence exited
+   green ("!= [] and is not None" tolerated absence); 3. float expected_domain_count +
+   dup-padded expected_domains passed via set collapse; 4. selftest never pinned main()'s
+   decisive exit return (mutating 1->0 in memory kept 25/25 green).
+Failed attacks: hourly shapes, strict per-domain types, recursive dup-key hook (nested
+dup members raise), 42-entry Rust id/name pin unforgeable, reordered registry
+order-free, stage-A unchanged-sound.
+
+### ROUND-3 FIX (v3.1, uncommitted pending round-4 gate)
+1. registry_entries(): scoped to the pub const ASSIGNED_COMPACT_DOMAINS decl,
+   comments stripped BEFORE locating the `];` terminator (own finding on top of the
+   gate's: a comment at lib.rs:1268 contains a literal `0x3316E90];` which truncated the
+   raw-text scope at 58/60 entries — comment-first ordering is load-bearing), full 7-arg
+   arity through the closing paren, requires_data_record pinned (clock/d59/frame false,
+   all non-profile — a flag change re-judges the dark-domain check). Parse shortfall =
+   drift = blocking.
+2. parse/ordering_errors must be EXACTLY [] (absent/null/mistyped blocks).
+3. expected_domain_count strict int; expected_domains length + set equality (dup-padding
+   dead).
+4. selftest pins main()'s own exit codes via tempfile manifests (clean->0, blocking->1,
+   registry-unreadable->1) + registry-commented-entry and registry-extra-arg drift cases.
+Selftest 34/34; live census exit 1 / 47 blockers unchanged. Gate: combined-round4.
+
+### ROUND-4 GATE VERDICT: REFUTED 1 CRITICAL + 1 MEDIUM (tid in threads log,
+combined-round4; executed probes again):
+1. regex comment-strip vs rustc: NESTED /* /* */ */ left a hidden entry visible (no
+   drift); a block comment OPENED BEFORE the decl made raw find select the commented
+   corpse while an appended active copy (d69->70) went unjudged.
+2. process exit unpinned: gate dropped the sys.exit wrapper in memory — 47 blockers
+   printed, process exited 0, selftest stayed 34/34 (main() was called in-process only).
+Failed attacks: string-`];` and alias-`]` truncations both BLOCK (fail-closed), extra-arg
++ plain-commented-entry block, top-level parse/ordering precedence correct + authoritative,
+float count/dup-padding/absent-evidence block, drift-early-return + zero-usable mutations
+caught by selftest.
+
+### ROUND-4 FIX (v3.2, uncommitted pending round-5 gate)
+1. strip_rust_comments(): character-level lexer — NESTED block comments, line comments,
+   string/char literals with escapes, lifetimes ('static is not a char literal); comments
+   blanked to spaces (LENGTH-PRESERVING, so stripped offsets are raw offsets); decl located
+   in STRIPPED text and must appear EXACTLY once (0 or >1 = drift). String-`];` truncation
+   stays fail-closed by design.
+2. selftest gained registry-nested-comment + registry-shadowed-decl probes (the latter
+   needed the length-preserving offset trick — a raw `];` find hits the lib.rs:1268
+   comment) and PROCESS-level subprocess pins (clean rc=0, blocking rc=1) that catch the
+   dropped-sys.exit mutation.
+Selftest 38/38; live exit 1 / 47 blockers. Gate: combined-round5 (expected terminal).
+
+### ROUND-5 GATE VERDICT: REFUTED 1 CRITICAL (tid in threads log, combined-round5) —
+round-4 findings confirmed closed; lexer survived raw/byte strings, escapes, lifetimes,
+comment-semantics agreement, shadowed decls, string-embedded decls. The ONE fail-open
+left: #[cfg(...)] on a registry entry — release omits it, test builds (and the Rust
+exact-ID test) keep it, textual pin sees it -> no drift, stale manifests agree. Gate
+correctly separated this from the fail-closed raw-string residual.
+
+### ROUND-5 FIX (v3.3, uncommitted pending round-6 gate)
+registry_scope(): any `#` outside string literals inside the array = parse shortfall =
+fail closed ("conditional compilation is not textually evaluable"); distinct drift
+message; 2 new selftest probes (#[cfg(test)], #[cfg(debug_assertions)]). Selftest 40/40;
+live exit 1 / 47. CLOSURE ARGUMENT for round 6: every remaining non-literal construct
+(macro invocations, include!, const indirection) fails the entry regex -> count/name
+drift -> fail closed BY CONSTRUCTION; cfg was the unique textual-match-compile-different
+case. Gate: combined-round6 (terminal by that argument).
+
+### 2026-07-12 ~21:30 — CREDIT WALL #4 + D04 STAGE-A CAPTURE HARVEST
+Round-6 attempts a/b/c all wedged on the host sandbox; round6d (fresh, tid
+019f5611-aac2...) died instantly on the ChatGPT usage limit (reset stated: Jul 13
+00:50). QUEUED post-reset via relaunch_post_reset_20260713.sh (~/hoi4_lanes/):
+round6gate (-> round6e, CRITICAL PATH for committing census v3.3 + stage-A) +
+locjoin fresh + speedpause fresh. Long-running lane sessions from before the wall
+left alive (they retry internally).
+
+CAPTURE production_speed5_ShortSpeed5_d04stageA_211128 (600s, paused D04, stage-A
+DLL b6205df4) — LIVE EVIDENCE FOR THE UNCOMMITTED BATCH:
+- d69 tech_sharing_groups_live: status_flags_or=0 (CLEAN), 3 groups / 17 members,
+  world_folded=true — vacant-slot fix holds on the cold baseline frame.
+- d68 session_header_live: flags_or=0, 1 row, folded — campaign-identity source
+  (game_unique_id/seed) reads clean; corroborates CAMPAIGN_IDENTITY_DESIGN.md.
+- STAGE-A STATUS-ORIGIN PRODUCERS EMIT LIVE (new ids 33-41):
+  so_d48_lane_skipped_construction_rows value=1 sample=11;
+  so_d65_partial_dropped_ambiguous value=1 sample=5 — both ride the stream into the
+  manifest ledger with first/last_hour stamps. Also live: d43 empty_cold, d45
+  partial_targeted_timed_structural, d53/d60 source_unavailable (+samples), d54
+  partial_skipped_rows.
+- Pause semantics confirmed: sweep consumers d43/d47/d53/d60 flags 256/768 =
+  cold-state SOURCE_UNAVAILABLE family, NOT regressions. d51 flags_or=14336 =
+  exactly bits 11-13 (the w12-d51-badges attribution targets) — good fixture.
+- extraction_perf_gate=false + .failed.battleplan suffix: expected on a paused
+  capture (partial_data_seen from the cold sweep consumers).
+NOTE: this capture is VALIDATION EVIDENCE, not the adversarial gate — round6e still
+owed before commit.
+
+LANE LEDGER DELTA: w12-d53-badges COMPLETE (dossier committed f40229d7e in-worktree;
+verdict: all 4 badges chronic capture gaps 717/717 frames, no safe in-fence clear,
+proposed diffs in dossier; census --selftest false-green claim needs verification —
+flagged for the round6e reviewer follow-up). w12b-events-decisions-scope COMPLETE
+(dossier e07fef384; fired-events full A18 needs runtime hooks, d16/d45 partial folds
+possible now, d60 lacks warscore/IC/wargoals). w12b-speedpause-scope BAILED (wedge;
+provisional intel: speed NOT read anywhere today, d57 = pause rows only, no speed
+offset in build profile). w12b-locjoin-verify: 40-try refire loop exhausted into the
+wall; requeued.
