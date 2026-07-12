@@ -1520,3 +1520,17 @@ CDelayedEvent->CEvent crack already yields event_id (+0x0C) + target_tag (+0x18)
 (d60 row +0x6C..+0x120 window-walk recipe), CWar object (no RTTI vtable — LOW),
 wargoal vector off CCountry+0xF88, chosen_option_index. Both dossiers carry
 executable melt-equality recipes for a future live session.
+
+OPUS O2 HARVEST 3: campaign-id-impl 9dd3a93a1 (1140 insertions; 213+201 tests
+independently verified, +18 new). LANE REFUTED THE BRIEF PREMISE correctly: d68's
+compact payload does NOT carry (game_unique_id, game_unique_seed) — design offsets
+exist but the collector never emits them. Shipped the fail-closed binding: manifest
+field campaign_identity with state known/unavailable/unbound/conflict (null identity
++ resolution note when unsourced, fabricated-identity REJECTED by its own
+closed-grammar validator + digest recompute), stitching consumer interface
+(StitchDecision, never auto-stitch on unbound/conflict). Flips to known with zero
+recorder wiring once the collector sources the pair. NEW LIB.RS QUEUE ITEM (slot 7):
+emit the identity pair in the d68 payload (or the design's CID1 stream-header
+record) from the design's CGameState offsets — after that, the S/D/M capture matrix
+(design:227-243) live-gates state=known. Clone-lineage residual documented, not
+silently solved.
