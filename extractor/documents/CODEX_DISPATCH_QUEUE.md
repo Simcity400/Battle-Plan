@@ -575,3 +575,20 @@ into a [0..count) walk = populated-AND-sound d69.
   (`_sample` units pair across different frames) CONFIRMED and fixed in the same commit
   (3-way verdict + packed topology sample). One fix round used.
 - Gates: collector 353/0, recorder_host 190+194/0, compact_contract 18/0.
+
+## 2026-07-12 — d47 BLOCKER-1 (latent dedup defect) FIXED + double-gated
+Implemented the tid-019f5387-verified design: `Domain47CharacterDedup` (pure bookkeeper) —
+country-conflicting char_id => QUARANTINE (kept root filtered post-loop via
+`domain47_filter_quarantined_roots`, its leader mapping removed AND tombstoned, all further
+hits dropped), cross-country unit-leader claim => mapping dropped + ptr poisoned, both roots
+kept. Ambiguities counted in NEW `ambiguous_root_rows` (summary + cache + unit
+`domain47_prewarm_ambiguous_root_rows`), DECOUPLED from `skipped_root_rows` — the adoption
+gate (extracted `domain47_prewarm_adoption_blocked`) takes torn reads + zero-root only, so a
+persistent localized ambiguity can no longer zero the whole domain forever. Zero-ambiguity
+saves are behavior-identical (verified: same merge path, same map type/order).
+Review round (Codex tid 019f53fb): BLOCKER — quarantine removed the leader mapping WITHOUT
+tombstoning, so a later claim re-inserted via the Vacant branch (order-dependent arbitrary
+winner). CONFIRMED against the code, fixed (tombstone on quarantine). MINOR — acceptance
+test 1 was bookkeeping-only; CONFIRMED, upgraded to integration-style (real admit loop +
+production filter + the exact blocker sequence). Re-gate on the same thread: SHIP.
+All 4 tid-019f5387 acceptance tests present; collector 356/0.
