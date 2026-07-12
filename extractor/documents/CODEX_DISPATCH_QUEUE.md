@@ -1504,3 +1504,19 @@ plans, from 190cc0015). Remaining post-O2 extractor backlog: WMI event source +
 collector heartbeat protocol (autoattach §9), counter-badge fields RE, fired-event
 hooks, d51 bit13 root, SnowMud, fold wave 3 (speed-event fold + O2 leftovers), all
 user-gated live validations. All O2 work -> Codex review post-reset.
+
+OPUS O2 HARVESTS 1+2 (dossier lanes, worktrees clean): fow-re d1126db87 — FoW still
+unlocated but structurally bounded: SAVE-NEGATIVE proof (no per-province/per-country
+visibility serialized anywhere) => FoW is runtime-only evaluated state; rank-1 forks
+into A (durable 13,414-length CPU array, CSupplySystem-shaped) vs B (per-frame
+IntelTex regen from raw inputs); decisive POV-invariance experiment specified (dump
+non-active POV, switch observe-as, re-dump); all draft anchors flagged as old-build,
+re-derivation mandatory. re-war-decisions cb035619e — capitulation_progress =
+DERIVED (existing §A5 recompute, no RE); division_count = already foldable;
+decisions D1 active-targeted (+0x88, d45 decoder reuse), D2 taken, D3 cooldown
+crackable from the EXISTING CCountry+0xFA0 root; fired-events: d64's
+CDelayedEvent->CEvent crack already yields event_id (+0x0C) + target_tag (+0x18) —
+2 of 4 A18 fields at the origin object; genuinely-new RE = war_score sub-block
+(d60 row +0x6C..+0x120 window-walk recipe), CWar object (no RTTI vtable — LOW),
+wargoal vector off CCountry+0xF88, chosen_option_index. Both dossiers carry
+executable melt-equality recipes for a future live session.
