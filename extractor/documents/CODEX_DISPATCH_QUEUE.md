@@ -2165,3 +2165,11 @@ review gate RUNNING. On SHIP -> merge, then the 3 transport-dependent fix lanes 
 Independent code fixes [D]fold-wave1 [E]d51 [F]librs [G]fold-wave2 [H]dlc-meta [I]d48 need no
 PREREQ-0 and can run in parallel. FIX-PHASE MACHINERY PROVEN: fix lane -> orchestrator verify
 -> adversarial re-gate -> merge (same as census chain + review sweep).
+
+REVIEW: duplex-transport = FIX-ROUND (1 MAJOR + 1 MINOR): (1) MAJOR — into_inner defeats
+permanent poisoning + same-session replay protection: caller extracts backend, rebuilds a
+ControlChannel with the SAME SessionId, resets counters+poisoned -> a duplicate sequence-0
+frame is accepted, breaking no-reconnect/no-retry (remove production into_inner -> test-only
+accessor; one-shot session/connection capability; reinit-after-poison regression); (2) MINOR
+stale citation line refs (main.rs 5343->5357, lib.rs 46056->45944; [A]/[O]/[S] refs accurate).
+12 transport tests pass. -> Codex fix lane [PREREQ-0-fix] on w12d-duplex-transport.
