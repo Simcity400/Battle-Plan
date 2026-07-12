@@ -269,6 +269,7 @@ spacing (build-retry loop against the hold), NEVER cargo-build while a capture i
   DEVIATION from the fixed-save design: runs on the advancing live game with palindrome
   ordering as the load control (a save reload needs the user); escalate to fixed-save arms
   only if the palindrome verdict is ambiguous.
+  **P4 RUN 2026-07-12 INVALID (mw_p4pace_102622): subset never applied.** Root cause: --profile production (passed by the driver) UNCONDITIONALLY force-adds ALL production domains to scheduled_domains (recorder_host/src/main.rs:2482 `if production { for domain in production_profile_scheduled_names() { push } }`), overriding --scheduled-domain. All 6 windows captured the full 55-domain load (light window w3: 54/55 domains with rows, d53 at 120M rows) so hours/sec was flat (light/full 0.996) for a TRIVIAL reason (identical load), NOT pace exogeneity. FIX: subset windows must NOT pass --profile production (use a non-production profile, or add a --profile flag that respects an explicit --scheduled-domain subset). Until then P4 has NO valid verdict. Cheap alternative load-lever to consider: vary --sample-ms (cadence) instead of domain count — but that changes hour resolution, so it needs care.
 - P5 **Speed-5 re-acceptance** (the benchmark of record, after P1a–P3 land). Full
   production preset, 600s runs at THREE strata: early-game, ordinary-war, deepest-war.
   **Numerical acceptance set (finding 4 — p95<100 alone is NOT the bar):**
