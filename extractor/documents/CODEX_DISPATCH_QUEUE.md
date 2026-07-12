@@ -2018,3 +2018,16 @@ built FIRST; those three designs depend on it. Flag for the fix-lane sequencing.
 
 SWEEP: 12 code/tooling FIX-ROUND + 8 doc REVISE + 1 REJECT + 1 SOUND-WITH-NITS. 1 review
 left (d51-badges) + census-oracle.
+
+CENSUS ORACLE (round-7b fix) — INDEPENDENTLY VERIFIED by orchestrator: selftest 53/53
+(incl. oracle-unavailable fail-closed case), release build clean, dump = 60 valid JSON
+descriptors. MUTATION TEST (my own injection of round-7b mutation B: domain() constructor
+`schedulable: if cfg!(test) { schedulable } else { false }` — entries textually still say
+`true`): the OLD textual parser would PASS (source reads true); the compiler-truth oracle
+BLOCKED with 55 pin mismatches ("fuel_live: pinned (10,True), compiled registry (10,False)"),
+exit 1. Reverted clean. => the cfg-divergence class round-7b exposed is CLOSED BY
+CONSTRUCTION (oracle reads compiled truth, not source text). Oracle committed in worktree
+b918e4854. ROUND-8 adversarial gate launched (tid in threads log, combined_round8) — hunting
+residual bypass/false-positive, esp. "does registry_dump build under the SAME cfg/profile/
+features as the production collector DLL". On round-8 SHIP: port census.py + registry_dump.rs
+to main tree, commit the full census v3.3 + stage-A batch, close task #30.
