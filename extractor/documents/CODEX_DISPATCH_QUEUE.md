@@ -1726,3 +1726,25 @@ campaign-id(5), fold-wave1(5), heartbeat-wmi(5). Consistent: shape-correct + foc
 tests green, but fail-closed/stale-on-failure edges uncaught. Fix-lane grouping:
 [A] autoattach+heartbeat-wmi (auto_attach subsystem), [B] stitching, [C] campaign-id,
 [D] fold-wave1. None on core-data critical path.
+
+### CENSUS ROUND-7b: REFUTED 2 CRITICAL + 1 MEDIUM (tid 019f56ec-65ac...) — ARCHITECTURAL.
+The closure-by-construction argument is DISPROVEN: a textual parser cannot establish
+compiler equivalence because cfg-divergence can hide ANYWHERE in the compile path, not
+just the array body I hardened:
+(1) CRITICAL — an OUTER macro wrapping the whole declaration (emit_registry!{ pub const
+ASSIGNED_COMPACT_DOMAINS ... = &[60 entries]; } expanding to `#[cfg(test)] = &[..60..]`
+vs `#[cfg(not(test))] = &[]`) — scope starts AT the decl text, enclosing tokens invisible;
+real registry_drift() returned [] while production compiles empty.
+(2) CRITICAL — the domain() CONSTRUCTOR (lib.rs:618) can transform literal args under cfg
+(`schedulable: if cfg!(test) { schedulable } else { false }`) — array textually unchanged,
+pin sees true, release descriptor false, production_profile_domains() empties.
+(3) MEDIUM false positive — raw string literals r"fuel_live" wrongly rejected by the
+residue check.
+Stage-A PRODUCER code spot-checked CLEAN by the reviewer (d48 7-map exact, d65 two SOURCE
+returns recorded, 42-id/name test covers all) — the weakness is in the AUDIT INSTRUMENT's
+textual parse, not the shipped code. FIX (reviewer-specified, correct): replace textual
+registry parsing with a NON-TEST release-compiled registry-dump ORACLE (cfg!(test) is
+false in a normal cargo build, so a release bin dumping ASSIGNED_COMPACT_DOMAINS as JSON
+reveals any cfg-divergence vs the ROSTER pin); fail closed if the toolchain is
+unavailable. DELEGATED to Codex Mode-C lane w12c-census-oracle (transition back to Codex
+implementation per the regime); I gate it (round 8). Batch stays uncommitted until SHIP.
