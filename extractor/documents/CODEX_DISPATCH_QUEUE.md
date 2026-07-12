@@ -873,3 +873,19 @@ every wired site (instrumentation must not change any accept/reject outcome), sa
 correctness (d54 21-bit fields, d48 gate_ok bit 32, naval reason hashes), drain/emission
 identity with the bt_* pattern, and recorder hour-span aggregation. After the gate: ONE live
 Debug window closes C0 round-3 items 1-5 from compact_stream.status_origins alone.
+
+## 2026-07-12 evening — Codex RECOVERED early; ALL SIX queued gates dispatched in parallel
+User confirmed recovery; watcher killed (would have double-fired R2). Dispatched with 5-10s
+stagger, tids in ~/.claude/codex_threads.log as they complete, prompts + outputs durable in
+~/.claude/hoi4_gate_prompts/:
+1. r2-bound-trips-gate-v2 (commit 903461fde) -> out_r2_gate.txt
+2. modset-fixround-regate (d46ead1de vs the 7 G2-regen findings) -> out_modset_regate.txt
+3. c1-stage-a-gate (727f82c69 + c348504c3) -> out_c1_stagea_gate.txt
+4. g3-serial-wall-gate (1cac48222 + restore 07ef3cad9; P1a SHIP-NEW + P1b by-construction
+   inlined as evidence; running-game temporal-skew adjudication requested) ->
+   out_g3_serial_wall.txt
+5. exact-domain-probe-gate (6d666fa1a + 49c0228e7 SURVIVING state; incl. dead-probe-unit
+   and 9-bit-mask-vs->9-groups checks) -> out_exact_domain_probe.txt
+6. g1-residue-gate (d43 part of 615d24125, O7 2a9dc5091, O2 11b0cc9c3+b0897b457,
+   55287bd6a; known-empty full-replace is the named top risk) -> out_g1_residue.txt
+Verdicts to be recorded here as they land; fix rounds follow the ONE-round cap.
