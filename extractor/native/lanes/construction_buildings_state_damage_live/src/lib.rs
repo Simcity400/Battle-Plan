@@ -435,6 +435,11 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
         // sub-object (template/target) behind `sub_ptr` stays a per-field chase.
         let window = mem.read_object_window::<LINE_WINDOW_LEN>(line_ptr);
         let win = window.as_ref().map(|w| w.as_slice());
+        // Only type 59 is proven to identify a construction row for this
+        // profile. The converse is not proven: under live mutation this slot
+        // may have been torn or reused after the vector snapshot. Without a
+        // vector/object-window stability witness, keep the frame partial so
+        // delta processing cannot turn this uncertain omission into deletion.
         if win_u32(win, mem, line_ptr, LINE_TYPE)? != LINE_TYPE_CONSTRUCTION {
             read.skip_construction(ConstructionSkipReason::NonConstructionLine);
             continue;
@@ -1519,6 +1524,151 @@ mod tests {
         assert_eq!(read.rows[0].active_factories, 15);
         assert_eq!(read.rows[0].cost_raw, 1_450_000_000);
         assert_eq!(read.rows[0].priority, 0);
+    }
+
+    #[test]
+    fn extractor_counts_non_construction_type_as_uncertain_skip() {
+        let manager = 0x1000_0000_0000usize;
+        let vector = 0x1000_0000_1000usize;
+        let construction_line = 0x1000_0000_2000usize;
+        let other_line = 0x1000_0000_2100usize;
+        let sub = 0x1000_0000_3000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(manager + CONSTRUCTION_BEGIN, vector as u64);
+        mem.write_u32(manager + CONSTRUCTION_CAP, 2);
+        mem.write_u32(manager + CONSTRUCTION_SIZE, 2);
+        mem.write_u64(vector, construction_line as u64);
+        mem.write_u64(vector + 8, other_line as u64);
+        mem.write_u32(construction_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
+        mem.write_u32(construction_line + LINE_ID, 77);
+        mem.write_i32(construction_line + LINE_ACTIVE_FACTORIES, 15);
+        mem.write_i32(construction_line + LINE_COST, 1_450_000_000);
+        mem.write_i32(construction_line + LINE_PRODUCED, 5_000_000);
+        mem.write_u64(construction_line + LINE_CONSTRUCTION_SUB, sub as u64);
+        mem.write_u32(sub + CONSTRUCTION_TEMPLATE_ID, 20_013);
+        mem.write_u32(other_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION - 1);
+
+        let read = read_construction_queue_from_manager(&mem, manager, 123).unwrap();
+
+        assert_eq!(read.rows.len(), 1);
+        assert_eq!(read.rows[0].line_id, 77);
+        assert_eq!(read.skipped_rows, 1);
+        assert_eq!(read.construction_skip_stats.total(), 1);
+        assert_eq!(read.construction_skip_stats.non_construction_line_rows, 1);
+    }
+
+    #[test]
+    fn collector_non_construction_type_sets_partial() {
+        let country = 0x1000_0000_0000usize;
+        let manager = 0x1000_0000_1000usize;
+        let vector = 0x1000_0000_2000usize;
+        let construction_line = 0x1000_0000_2800usize;
+        let other_line = 0x1000_0000_3000usize;
+        let sub = 0x1000_0000_4000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(country + OBJ_PROD_MANAGER, manager as u64);
+        mem.write_u64(manager + CONSTRUCTION_BEGIN, vector as u64);
+        mem.write_u32(manager + CONSTRUCTION_CAP, 2);
+        mem.write_u32(manager + CONSTRUCTION_SIZE, 2);
+        mem.write_u64(vector, construction_line as u64);
+        mem.write_u64(vector + 8, other_line as u64);
+        mem.write_u32(construction_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
+        mem.write_u32(construction_line + LINE_ID, 77);
+        mem.write_i32(construction_line + LINE_ACTIVE_FACTORIES, 15);
+        mem.write_i32(construction_line + LINE_COST, 1_450_000_000);
+        mem.write_i32(construction_line + LINE_PRODUCED, 5_000_000);
+        mem.write_u64(construction_line + LINE_CONSTRUCTION_SUB, sub as u64);
+        mem.write_u32(sub + CONSTRUCTION_TEMPLATE_ID, 20_013);
+        mem.write_u32(other_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION - 1);
+
+        let output = collector_module::collect_domain48_frame(
+            &mem,
+            collector_module::CollectorRoots {
+                module_base: 0x1400_0000,
+                game_hour_raw: 321,
+                country_roots: vec![CountryConstructionRoot {
+                    tag_db_id: 123,
+                    country_ptr: country,
+                }],
+                state_roots: Vec::new(),
+                province_roots: Vec::new(),
+            },
+        );
+
+        assert_eq!(output.stats.skipped_construction_rows, 1);
+        assert_eq!(
+            output.stats.skipped_construction_non_construction_line_rows,
+            1
+        );
+        assert_ne!(output.frame.status_flags & STATUS_PARTIAL_DATA, 0);
+        assert_eq!(output.frame.construction_rows.len(), 1);
+        assert_eq!(output.frame.construction_rows[0].line_id, 77);
+    }
+
+    #[test]
+    fn uncertain_type_mismatch_after_baseline_stays_partial_without_tombstone() {
+        let country = 0x1000_0000_0000usize;
+        let manager = 0x1000_0000_1000usize;
+        let vector = 0x1000_0000_2000usize;
+        let line = 0x1000_0000_3000usize;
+        let sub = 0x1000_0000_4000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(country + OBJ_PROD_MANAGER, manager as u64);
+        mem.write_u64(manager + CONSTRUCTION_BEGIN, vector as u64);
+        mem.write_u32(manager + CONSTRUCTION_CAP, 1);
+        mem.write_u32(manager + CONSTRUCTION_SIZE, 1);
+        mem.write_u64(vector, line as u64);
+        mem.write_u32(line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
+        mem.write_u32(line + LINE_ID, 77);
+        mem.write_i32(line + LINE_ACTIVE_FACTORIES, 15);
+        mem.write_i32(line + LINE_COST, 1_450_000_000);
+        mem.write_i32(line + LINE_PRODUCED, 5_000_000);
+        mem.write_u64(line + LINE_CONSTRUCTION_SUB, sub as u64);
+        mem.write_u32(sub + CONSTRUCTION_TEMPLATE_ID, 20_013);
+
+        let roots = |game_hour_raw| collector_module::CollectorRoots {
+            module_base: 0x1400_0000,
+            game_hour_raw,
+            country_roots: vec![CountryConstructionRoot {
+                tag_db_id: 123,
+                country_ptr: country,
+            }],
+            state_roots: Vec::new(),
+            province_roots: Vec::new(),
+        };
+
+        let baseline = collector_module::collect_domain48_frame(&mem, roots(320));
+        assert_eq!(baseline.frame.status_flags & STATUS_PARTIAL_DATA, 0);
+        assert_eq!(baseline.frame.construction_rows.len(), 1);
+        assert_eq!(baseline.frame.construction_rows[0].line_id, 77);
+
+        // Model a live mutation/reuse between the vector snapshot and the line
+        // read: K was a construction row at N, but its readable discriminator
+        // is non-59 at N+1. This is uncertainty, not positive absence.
+        mem.write_u32(line + LINE_TYPE, LINE_TYPE_CONSTRUCTION - 1);
+        let uncertain = collector_module::collect_domain48_frame(&mem, roots(321));
+
+        assert_eq!(uncertain.stats.skipped_construction_rows, 1);
+        assert_eq!(
+            uncertain
+                .stats
+                .skipped_construction_non_construction_line_rows,
+            1
+        );
+        assert_ne!(
+            uncertain.frame.status_flags & STATUS_PARTIAL_DATA,
+            0,
+            "uncertain type mismatch must keep the frame partial"
+        );
+        assert!(
+            uncertain
+                .frame
+                .construction_rows
+                .iter()
+                .all(|row| construction_row_deleted_id(row).is_none()),
+            "uncertain omission must not emit a deletion tombstone for baseline row K"
+        );
+        assert!(uncertain.frame.construction_rows.is_empty());
     }
 
     #[test]
