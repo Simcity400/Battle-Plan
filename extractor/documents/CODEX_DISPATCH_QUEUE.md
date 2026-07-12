@@ -1548,3 +1548,24 @@ orthogonality. Sub-hour on-change stream deferred (fold drops non-Pause rows at
 world_fold.rs:11444 — fold wave 3 item). (3) world_tension 9a25f986c = NO CODE,
 correct: CRACKED_LEDGER D3 = computed-not-stored decayed threat-ledger sum, replay
 reports Absent; RE work item written instead of a guess.
+
+OPUS WAVE O2 SEALED (6/6, all orchestrator-verified): fow-re d1126db87 (fork A/B +
+POV-invariance experiment), re-war-decisions cb035619e (capitulation=derived, 3
+decision vectors from existing root, fired-events 2/4 via d64), campaign-id-impl
+9dd3a93a1 (213+201 verified; fail-closed binding, premise refuted -> lib.rs item 7:
+d68 identity-pair emission), librs-readers 9a25f986c (359+30 verified; Fix P +
+speed anchor + world_tension NO-CODE), stitching-impl 18984c266 (221+199+3+27+21+
+2+3+6 all verified; supersede algorithm + rollback retention + container v2;
+derived-filename strengthening; remaining: segment formation fold diff, wire major,
+atomic publication, finalize wiring), fold-wave2 c1b4e7ccf (399 verified; A25
+stockpile ARRAY->MAP silent replay-boundary rejection FIXED + A30 admirals
+projection; 6 proposed collector diffs; A33 script_variables = replay-schema owner
+decision owed).
+
+### OPUS WAVE O3 LAUNCHED (~00:30): w12c-librs-readers2 (stacked 9a25f986c: d68
+identity-pair emission + d51 bit12 delayed-event read), w12c-fold-wave3 (stacked
+c1b4e7ccf: GameSpeed change-timeline fold + stitching's fresh-WorldFold-per-segment
+proposed diff), w12c-heartbeat-wmi (stacked 855723cf1: WMI ProcessEventSource
+attempt fail-closed to design + collector heartbeat protocol design), and
+w12c-re-counterbadge (counter-badge division fields + battle-bubble RE dossier,
+from base). Same regime: Codex reviews everything post-reset.
