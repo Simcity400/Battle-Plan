@@ -1009,3 +1009,26 @@ modset-5 (reparse-cycle guard); P3 = stage-A 1-5 (missing producers, per-cause l
 shape, unconditional frame-finalization drain + NO_CLOCK hour sentinel, d45 per-frame,
 d54 u64 units), exact-domain 2+3 (delete +0x48 probe + obsolete topology/vec units),
 G1-residue 6 done / 5 pending. Re-gate the whole round when done (one batch).
+
+## 2026-07-12 night — FIX ROUND COMPLETE (all six gate verdicts processed; batched re-gate dispatched)
+Every finding across the 5 REFUTED gates is implemented + code-verified-before-fixing +
+suite-green. Commit map (newest first):
+- 250323bbd stage-A finding1 (4 producers wired); 4775bed01 stage-A 4+5 (d45 per-frame,
+  d54 saturate); ad7f1ee93 stage-A finding3 (unconditional drain + NO_CLOCK sentinel);
+  9840a2aaa exact-domain 2+3 (probe deletion); e0bde5136 modset1 (RM ownership);
+  690a19bc7 modset2+5 (dir-mtime/empty-census/reparse); c8922ba88 modset3 (pack-time
+  validate); 0d874dad6 modset4 (resolved schema); 636673d96 exact-domain1 (unknown
+  domains); 04f2a9391 G1res5 (per-frame work-implies-rows); 511bb1882 R2-3 (probe-domain
+  exclusion in verify gates); a7b5bf64f G1res4 (epoch binding); a521cc827 G1res1/2/3/6 +
+  d43/d17 folds; 639661ec1 R2-1/4 ordering+test races; 9ba5506af + 690a19bc7 R2-2
+  (unwired bound sites).
+DEFERRED (explicitly, not point fixes): stage-A finding1 residue (d48 lane-partial +
+d65-early producers — need reader inventory) + finding2 (per-(site,cause) ledger SHAPE =
+C1 stage B/C schema). TEST DEBT for the re-gate to judge: epoch-mismatch arms (need
+CollectorState harness), modset RM symlink refusal (Windows dev-mode), politics_window
+parallel flake (pre-existing).
+
+### BATCHED RE-GATE dispatched (whole fix-round diff a679df5b8..HEAD)
+Attack the fixes for regressions + the deferred/test-debt items. If SHIP, the audit
+blocking list drops to: F5 container/fold/B3 net gate + C0 tooling gate + G4 O8 design
+(next stage). Verdict recorded here on return.
