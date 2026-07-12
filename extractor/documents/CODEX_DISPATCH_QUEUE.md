@@ -2112,3 +2112,21 @@ exact collector artifact (embedded registry digest) + reject -SkipBuild in the g
 Fail-closed handling CONFIRMED sound; stage-A source-identical to 9cb7fbed8 (d48/d65/42-id
 all intact). DELEGATED round-8 fix to Codex Mode-C on w12c-census-oracle. Batch stays
 uncommitted.
+
+### CENSUS ROUND-9: REFUTED 1 CRITICAL + 1 HIGH (tid combined_round9). Round-8's 3 findings
+confirmed closed EXCEPT two residuals that are the LAST layer of build-equivalence:
+(1) CRITICAL feature-unification — oracle builds only `-p collector`; production builds
+`-p collector -p recorder_host`. A feature enabled ONLY by recorder_host that changes a
+descriptor under #[cfg(feature)] unifies into collector.dll in the 2-pkg build but NOT the
+collector-only oracle build -> production DLL differs from the oracle's dump, false green.
+FIX: ONE `cargo build --release -p collector -p recorder_host`, run the registry_dump from
+THAT exact build.
+(2) HIGH artifact-provenance — script assumes Cargo's target/release path; CARGO_TARGET_DIR
+override makes Cargo build elsewhere while the script hashes the STALE default-path DLL ->
+attests unrelated. FIX: parse `cargo --message-format=json` compiler-artifact messages,
+attest the EXACT emitted collector cdylib + registry_dump; reject any artifact path not in
+the build's reported output.
+TERMINAL SOLUTION (both closed together): build both packages once with --message-format=json,
+run the emitted registry_dump, attest the emitted cdylib. DELEGATED round-9 fix to Codex
+Mode-C on w12c-census-oracle. Rounds 6->9 each found a distinct real hole in the audit
+instrument; this is the last production-equivalence layer. Batch stays uncommitted.
