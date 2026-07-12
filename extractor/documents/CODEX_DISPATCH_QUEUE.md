@@ -2180,3 +2180,14 @@ PREREQ-0 dep), highest severity first: [I] d48 (CRITICAL — torn-read reclassif
 tombstone deletion of a live construction row; fix = revert non-59 to skip+PARTIAL + apply
 collector diagnostic diff atomically). Then [D]fold-wave1 [E]d51 [F]librs [G]fold-wave2
 [H]dlc-meta; transport-dependent [A][C/O][S] after; doc revisions [J-R].
+
+FIX PHASE MERGES (running tally): d53-badges (6b9cdad55), PREREQ-0 duplex transport
+(62702d353), d48 [I] CRITICAL fix (8c8d5eae7 — torn-read tombstone-deletion closed, re-gate
+SHIP, 27/0). All via the proven loop: build -> orchestrator-verify -> adversarial review ->
+fix -> re-gate -> merge. REMAINING: independent core-data [D]fold-wave1 [E]d51 [F]librs
+[G]fold-wave2 [H]dlc-meta; transport-dependent (now unblocked) [A]auto-attach+heartbeat
+[C/O]campaign-id [S]c1-stageb (interfaces in DUPLEX_CONTROL_TRANSPORT.md); doc revisions
+[J/R]FoW [L]re-war-decisions [N]re-counterbadge-redo [P]events-decisions [Q]libr-pairs(mine)
+[K]pass2-spans. Each follows the same loop. Note [G]fold-wave2 + [E]d51 + [F]librs-speed need
+a collector WIRE change (leaf presence bits / anchor-change discriminator) so they touch the
+lib.rs single-owner file -> serialize those (one owner at a time).
