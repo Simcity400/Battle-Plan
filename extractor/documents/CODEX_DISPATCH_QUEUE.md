@@ -1534,3 +1534,17 @@ emit the identity pair in the d68 payload (or the design's CID1 stream-header
 record) from the design's CGameState offsets — after that, the S/D/M capture matrix
 (design:227-243) live-gates state=known. Clone-lineage residual documented, not
 silently solved.
+
+OPUS O2 HARVEST 4: librs-readers tip 9a25f986c (STACKED ON PENDING-GATE BASELINE
+804f2ecd7 — merge only after round6e SHIPs). Three commits, all independently
+verified 359/0 collector (+1 new test) + 30/0 contract: (1) Fix P 842388ced —
+content: u64 FNV-1a of string bytes added to MsvcStringFingerprint at its sole
+construction site; flake loop 30/30 full-suite green. (2) Speed reader 520f3c861 —
+DOMAIN57_CGAMESTATE_GAME_SPEED_INDEX (+0x4BC) + tick_progress + 0..=5 fail-closed
+gate, per-hour GameSpeed anchor row behind new DOMAIN57_ROOT_GAME_SPEED evidence
+bit; unreadable speed = bit clear + note, frame NOT poisoned (provisional
+single-value root). SHIP-GATE OWED: live multi-value cycle 1-5 + pause
+orthogonality. Sub-hour on-change stream deferred (fold drops non-Pause rows at
+world_fold.rs:11444 — fold wave 3 item). (3) world_tension 9a25f986c = NO CODE,
+correct: CRACKED_LEDGER D3 = computed-not-stored decayed threat-ledger sum, replay
+reports Absent; RE work item written instead of a guess.
