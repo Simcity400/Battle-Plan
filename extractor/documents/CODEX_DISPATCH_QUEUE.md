@@ -638,3 +638,24 @@ The +0x48 verdict counters (d69_probe_count_match/mismatch) now test the REFUTED
 hypothesis and are MEANINGLESS noise — the harvest "STRUCTURALLY VIOLATED" line reads those,
 ignore it; the +0x3AC finding is judged by the VEC line + the table above. d69 stays
 fail-closed PARTIAL = CORRECT (zero data loss), just unpopulated, until the gate clears.
+
+## 2026-07-12 — d69 +0x3AC count field: FINAL evidence state (RE thread closed for the session)
+Added an independent stable read of the +0x3A8 size word (d69_vec_size_word_sample) as a
+belt-and-suspenders alongside the coherent triple. On the CURRENT frozen process it ALSO
+returned None: gs+0x3A8 is unreadable while gs+0x3A0 (8 bytes earlier) reads fine — a
+per-process PAGE-BOUNDARY artifact (gs+0x3A0 landing at a page edge), NOT a refutation (an
+earlier frozen process read gs+0x3A8 = 0x400000004 cleanly). CORROBORATION from the paused
+frame regardless: the reader decodes exactly 6 valid groups (slots 0-5) then fail2 at slot 6
+(vtable_word 0x0, stably unreadable past-the-end) — the array empirically ENDS at the group
+count, independent of reading the size field.
+STANDING EVIDENCE for CGameState+0x3AC = active group count (3 saves, all consistent):
+- deep-war 1941.02 COHERENT (d69r4tuple): cap=6 size=5, 5 valid groups.
+- frozen 1940.12 INDEPENDENT (d69r3vec): +0x3A8 = 0x400000004 => cap=4 size=4, 4 valid groups.
+- frozen 1941.04 PAUSED (d69paused/2): 6 valid groups, array ends at slot 6 (OOB at 6).
+size == decoded-valid-group-count in all three; cap >= size where readable; the reader's
+fixed-9 walk reads [count..9) OOB = the sole chronic-PARTIAL source.
+PROMOTION GATE (unchanged, both non-live): D04 MELT ORACLE (size == TRUE group count, covering
+a real group that fails vtable) + a coherent read on a process where gs+0x3A8 isn't page-edged.
+d69 stays fail-closed PARTIAL = CORRECT (zero data loss), just unpopulated, until then. RE
+thread CLOSED for this session — the fix is designed, the offset is identified, the gate is a
+tool step, not a live one.
