@@ -95,6 +95,122 @@ extern "system" {
     ) -> i32;
 }
 
+// --- Restart Manager (modset re-gate finding 1): which PIDs hold a file ---
+const CCH_RM_SESSION_KEY: usize = 32;
+const CCH_RM_MAX_APP_NAME: usize = 255;
+const CCH_RM_MAX_SVC_NAME: usize = 63;
+const ERROR_MORE_DATA: u32 = 234;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RmUniqueProcess {
+    process_id: u32,
+    start_time_low: u32,
+    start_time_high: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RmProcessInfo {
+    process: RmUniqueProcess,
+    app_name: [u16; CCH_RM_MAX_APP_NAME + 1],
+    service_short_name: [u16; CCH_RM_MAX_SVC_NAME + 1],
+    application_type: u32,
+    app_status: u32,
+    ts_session_id: u32,
+    restartable: i32,
+}
+
+#[link(name = "rstrtmgr")]
+extern "system" {
+    fn RmStartSession(session: *mut u32, flags: u32, session_key: *mut u16) -> u32;
+    fn RmRegisterResources(
+        session: u32,
+        n_files: u32,
+        file_names: *const *const u16,
+        n_apps: u32,
+        apps: *const c_void,
+        n_services: u32,
+        service_names: *const *const u16,
+    ) -> u32;
+    fn RmGetList(
+        session: u32,
+        needed: *mut u32,
+        n_proc_info: *mut u32,
+        proc_info: *mut RmProcessInfo,
+        reasons: *mut u32,
+    ) -> u32;
+    fn RmEndSession(session: u32) -> u32;
+}
+
+/// True iff `pid` holds an open handle to `file` (Restart Manager query).
+/// Errors are RM-session failures, distinct from a clean "not held".
+fn file_held_by_pid(file: &Path, pid: u32) -> Result<bool, String> {
+    use std::os::windows::ffi::OsStrExt;
+    unsafe {
+        let mut session = 0u32;
+        let mut key = [0u16; CCH_RM_SESSION_KEY + 1];
+        let rc = RmStartSession(&mut session, 0, key.as_mut_ptr());
+        if rc != 0 {
+            return Err(format!("RmStartSession failed: {rc}"));
+        }
+        let result = (|| {
+            let wide: Vec<u16> = file
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let names = [wide.as_ptr()];
+            let rc = RmRegisterResources(
+                session,
+                1,
+                names.as_ptr(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+            );
+            if rc != 0 {
+                return Err(format!("RmRegisterResources failed: {rc}"));
+            }
+            let mut needed = 0u32;
+            let mut count = 0u32;
+            let mut reasons = 0u32;
+            let rc = RmGetList(
+                session,
+                &mut needed,
+                &mut count,
+                std::ptr::null_mut(),
+                &mut reasons,
+            );
+            if rc == 0 {
+                return Ok(false); // nobody holds it
+            }
+            if rc != ERROR_MORE_DATA {
+                return Err(format!("RmGetList size probe failed: {rc}"));
+            }
+            // Headroom for holders appearing between the two calls.
+            let capacity = needed.saturating_add(4) as usize;
+            let mut infos: Vec<RmProcessInfo> = vec![std::mem::zeroed(); capacity];
+            let mut count = capacity as u32;
+            let rc = RmGetList(
+                session,
+                &mut needed,
+                &mut count,
+                infos.as_mut_ptr(),
+                &mut reasons,
+            );
+            if rc != 0 {
+                return Err(format!("RmGetList failed: {rc}"));
+            }
+            infos.truncate(count as usize);
+            Ok(infos.iter().any(|info| info.process.process_id == pid))
+        })();
+        RmEndSession(session);
+        result
+    }
+}
+
 /// One enabled mod, resolved from its launcher-listed `.mod` descriptor.
 #[derive(Debug, Clone)]
 pub struct ResolvedMod {
@@ -266,16 +382,8 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
             // its logs into its real user dir continuously, so this dir's
             // logs/ must have been written at/after process start. No
             // corroboration -> fail closed (override and probed alike).
-            match process_start {
-                Some(start) => {
-                    if let Err(e) = corroborate_user_dir_live(&dir, start) {
-                        fail!(
-                            "user dir not corroborated against the attached process: {e}"
-                        );
-                    }
-                }
-                // process_start unknown already failed resolution closed above.
-                None => {}
+            if let Err(e) = corroborate_user_dir_live(&dir, pid) {
+                fail!("user dir not corroborated against the attached process: {e}");
             }
             report.user_dir = Some(dir);
             report.user_dir_source = Some(source);
@@ -686,34 +794,59 @@ fn decode_json_string(raw: &str) -> Result<String, String> {
 /// a SECOND simultaneously-running the game instance sharing the same user dir
 /// would corroborate it too — but a shared dir shares dlc_load.json, so the
 /// binding evidence is the same either way.
-fn corroborate_user_dir_live(user_dir: &Path, process_start: SystemTime) -> Result<(), String> {
+fn corroborate_user_dir_live(user_dir: &Path, pid: u32) -> Result<(), String> {
+    // Modset re-gate finding 1: mtime liveness was NOT ownership — ANY writer
+    // touching logs/ post-launch (OneDrive, another app, the user) passed the
+    // old check for a wrong-but-well-formed directory. Ownership proof: the
+    // attached PID must HOLD an open handle to a file under <user_dir>/logs
+    // (the game keeps game.log/error.log open for the whole session —
+    // live-verified 2026-07-12: exclusive open fails on both while the game
+    // runs). Restart Manager names the holding PIDs per file. No held file =
+    // this is not the attached process's user dir = fail closed. RM failures
+    // fail closed too (never downgrade to the weaker mtime signal).
     let logs = user_dir.join("logs");
-    let entries = fs::read_dir(&logs)
-        .map_err(|e| format!("{} unreadable ({e}); cannot prove the attached process writes this dir", logs.display()))?;
-    let mut newest: Option<SystemTime> = None;
+    let entries = fs::read_dir(&logs).map_err(|e| {
+        format!(
+            "{} unreadable ({e}); cannot prove the attached process owns this dir",
+            logs.display()
+        )
+    })?;
+    let mut probed = 0usize;
+    let mut rm_errors: Vec<String> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| format!("{}: {e}", logs.display()))?;
         let meta = entry
             .metadata()
             .map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        if !meta.is_dir() {
-            if let Ok(mtime) = meta.modified() {
-                newest = Some(newest.map_or(mtime, |n: SystemTime| n.max(mtime)));
-            }
+        if meta.is_dir() {
+            continue;
+        }
+        probed += 1;
+        if probed > 64 {
+            break; // bounded: a real logs dir has a handful of files
+        }
+        match file_held_by_pid(&entry.path(), pid) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(e) => rm_errors.push(format!("{}: {e}", entry.path().display())),
         }
     }
-    match newest {
-        Some(newest) if newest >= process_start => Ok(()),
-        Some(_) => Err(format!(
-            "newest file under {} predates process start — this dir is not \
-             being written by the attached process",
+    if probed == 0 {
+        return Err(format!(
+            "{} contains no files; cannot prove the attached process owns this dir",
             logs.display()
-        )),
-        None => Err(format!(
-            "{} contains no files; cannot prove the attached process writes this dir",
-            logs.display()
-        )),
+        ));
     }
+    Err(format!(
+        "pid {pid} holds no open handle to any of the {probed} probed file(s) under {} - \
+         this is not the attached process's user dir{}",
+        logs.display(),
+        if rm_errors.is_empty() {
+            String::new()
+        } else {
+            format!(" (restart-manager errors: {})", rm_errors.join("; "))
+        }
+    ))
 }
 
 /// Streaming sha256 with a size+mtime stability bracket (G2 finding 4): the
@@ -1408,28 +1541,33 @@ mod tests {
     }
 
     #[test]
-    fn user_dir_corroboration_requires_live_log_writes() {
-        // G2-regen finding 2: a well-formed but stale/wrong dir must not
-        // resolve. The dir counts as live only when its logs/ was written
-        // at/after process start.
+    fn user_dir_corroboration_requires_pid_held_log_handle() {
+        // Modset re-gate finding 1: mtime liveness was not ownership (any
+        // writer touching logs/ passed). Ownership = the attached PID holds
+        // an open handle to a file under logs/ (Restart Manager query).
         let dir = temp_dir("corrob");
+        let my_pid = std::process::id();
 
         // No logs dir at all -> fail closed.
-        assert!(corroborate_user_dir_live(&dir, SystemTime::UNIX_EPOCH).is_err());
+        assert!(corroborate_user_dir_live(&dir, my_pid).is_err());
 
         // Empty logs dir -> fail closed.
         fs::create_dir_all(dir.join("logs")).unwrap();
-        assert!(corroborate_user_dir_live(&dir, SystemTime::UNIX_EPOCH).is_err());
+        assert!(corroborate_user_dir_live(&dir, my_pid).is_err());
 
-        // Log written now, process "started" at epoch -> corroborated.
-        fs::write(dir.join("logs").join("game.log"), b"[12:00] boot").unwrap();
-        assert!(corroborate_user_dir_live(&dir, SystemTime::UNIX_EPOCH).is_ok());
+        // A log file EXISTS but nobody holds it open -> mere presence (or a
+        // third-party write) is NOT ownership -> fail closed.
+        let log = dir.join("logs").join("game.log");
+        fs::write(&log, b"[12:00] boot").unwrap();
+        let err = corroborate_user_dir_live(&dir, my_pid).unwrap_err();
+        assert!(err.contains("holds no open handle"), "{err}");
 
-        // Process "starts" far in the future -> the newest log predates it ->
-        // this dir is not being written by that process -> fail closed.
-        let future = SystemTime::now() + std::time::Duration::from_secs(3600);
-        let err = corroborate_user_dir_live(&dir, future).unwrap_err();
-        assert!(err.contains("predates process start"), "{err}");
+        // THIS process holds the handle -> corroborated for OUR pid...
+        let held = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        assert!(corroborate_user_dir_live(&dir, my_pid).is_ok());
+        // ...but NOT for a different pid (the wrong-process case).
+        assert!(corroborate_user_dir_live(&dir, my_pid.wrapping_add(7919)).is_err());
+        drop(held);
 
         fs::remove_dir_all(&dir).ok();
     }
