@@ -209,9 +209,16 @@ const SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
 const TECH_SHARING_GROUPS_HEADER_LEN: usize = 16;
 const TECH_SHARING_GROUPS_ROW_LEN: usize = 12;
 const TECH_SHARING_GROUPS_DOMAIN_ID: u16 = 69;
-// Fail-closed ceiling on the number of groups (the collector iterates exactly 9
-// fixed manager slots; a payload claiming more is a torn/crafted record).
-const TECH_SHARING_GROUP_MAX_GROUPS: usize = 9;
+// Fail-closed ceiling on the number of groups. Tied to the collector's own
+// vector-size ceiling (build_profile DOMAIN69_TECH_SHARING_MAX_GROUPS): the
+// reader now walks the tech-sharing std::vector's active size [0..size), not a
+// fixed 9 slots, so a save with MORE than 9 groups emits >9 rows and this host
+// cap MUST match or a clean >9 frame would be rejected outright (regression:
+// re-gate 019f5467 BLOCKER — the old fixed-9 cap silently truncated, the new
+// reader emits the full set). A payload beyond this ceiling is a torn/crafted
+// record.
+const TECH_SHARING_GROUP_MAX_GROUPS: usize =
+    compact_contract::build_profile::DOMAIN69_TECH_SHARING_MAX_GROUPS as usize;
 // Fail-closed ceiling on a group's member count (matches the collector guard).
 const TECH_SHARING_GROUP_MAX_MEMBERS: u32 = 512;
 // Fail-closed ceiling on a member tag_db_id (matches the collector guard).

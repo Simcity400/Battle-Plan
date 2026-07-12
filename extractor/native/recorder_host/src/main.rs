@@ -313,7 +313,12 @@ const COMPACT_SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
 const COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE: u16 = 69;
 const COMPACT_TECH_SHARING_GROUPS_HEADER_LEN: usize = 16;
 const COMPACT_TECH_SHARING_GROUPS_ROW_LEN: usize = 12;
-const COMPACT_TECH_SHARING_GROUP_MAX_GROUPS: usize = 9;
+// Tied to the collector's vector-size ceiling: the reader walks the
+// tech-sharing std::vector's active size [0..size), not a fixed 9 slots, so a
+// >9-group save emits >9 rows and this decoder cap MUST match (re-gate
+// 019f5467 BLOCKER — a mismatched cap rejects a clean >9 frame outright).
+const COMPACT_TECH_SHARING_GROUP_MAX_GROUPS: usize =
+    compact_contract::build_profile::DOMAIN69_TECH_SHARING_MAX_GROUPS as usize;
 const COMPACT_TECH_SHARING_GROUP_MAX_MEMBERS: usize = 512;
 const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
 

@@ -10705,15 +10705,25 @@ fn w6_d69_tech_sharing_groups_rejects_member_out_of_range() {
 }
 
 #[test]
-fn w6_d69_tech_sharing_groups_rejects_group_count_over_nine() {
-    // The collector iterates exactly 9 fixed manager slots; a payload declaring
-    // 10 groups is a torn/crafted record and must fold closed.
-    let groups: Vec<(u32, &[u32])> = (1..=10u32).map(|i| (i, &[1u32][..])).collect();
-    let payload = tech_sharing_groups_payload(&groups, 0);
-    let snap = snapshot_for_domain_records(vec![(69, payload)]);
+fn w6_d69_tech_sharing_groups_accepts_over_nine_up_to_ceiling() {
+    // The collector now walks the tech-sharing std::vector's active size, not a
+    // fixed 9 slots (re-gate 019f5467 BLOCKER): a save with MORE than 9 groups
+    // emits >9 rows and the fold MUST accept them (the old fixed-9 cap rejected a
+    // clean 10-group frame outright). 10 groups attaches; a payload beyond the
+    // shared ceiling (DOMAIN69_TECH_SHARING_MAX_GROUPS = 256) is still a
+    // torn/crafted record and folds closed.
+    let ten: Vec<(u32, &[u32])> = (1..=10u32).map(|i| (i, &[1u32][..])).collect();
+    let snap = snapshot_for_domain_records(vec![(69, tech_sharing_groups_payload(&ten, 0))]);
+    assert!(
+        snap.get("tech_sharing_group").is_some(),
+        "a clean 10-group frame must attach (>9 is now valid)"
+    );
+
+    let over: Vec<(u32, &[u32])> = (1..=257u32).map(|i| (i, &[1u32][..])).collect();
+    let snap = snapshot_for_domain_records(vec![(69, tech_sharing_groups_payload(&over, 0))]);
     assert!(
         snap.get("tech_sharing_group").is_none(),
-        "a group_count > 9 must not attach the section"
+        "a group_count beyond the 256 ceiling must not attach the section"
     );
 }
 
