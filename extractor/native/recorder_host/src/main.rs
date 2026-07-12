@@ -1917,6 +1917,49 @@ fn repack_writer_config(
     })
 }
 
+/// G2-regen finding 7: a repacked replay must carry a CURRENT-SCHEMA modset
+/// binding. Requires `manifest.modset` to be an object with a boolean
+/// `resolved`; an UNRESOLVED modset must use the fail-closed shape (all
+/// evidence nested under `partial_evidence`, NO top-level `enabled_mods`/`dlc`
+/// keys a naive consumer could misread as vanilla). Absent or legacy shapes
+/// refuse the repack — the binding cannot be reconstructed after capture.
+fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
+    let modset = manifest
+        .get("modset")
+        .ok_or_else(|| {
+            "fold-and-repack manifest has no modset binding (pre-M2 capture); \
+             the modset cannot be reconstructed after capture"
+                .to_string()
+        })?;
+    let obj = modset
+        .as_object()
+        .ok_or_else(|| "fold-and-repack manifest modset is not an object".to_string())?;
+    let resolved = obj
+        .get("resolved")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            "fold-and-repack manifest modset has no boolean `resolved` (legacy shape)"
+                .to_string()
+        })?;
+    if !resolved {
+        if obj.contains_key("enabled_mods") || obj.contains_key("dlc") {
+            return Err(
+                "fold-and-repack manifest modset is UNRESOLVED but carries top-level \
+                 enabled_mods/dlc (pre-fix vanilla-looking shape); refusing to republish"
+                    .to_string(),
+            );
+        }
+        if !obj.get("partial_evidence").is_some_and(Value::is_object) {
+            return Err(
+                "fold-and-repack manifest modset is UNRESOLVED without a partial_evidence \
+                 object (legacy shape); refusing to republish"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn fold_and_repack_existing_run_dir(repack: RepackConfig) -> Result<(), String> {
     let manifest_path = repack.run_dir.join("native_session_manifest.json");
     let raw_path = repack.run_dir.join("collector_stream.bin");
@@ -1996,6 +2039,11 @@ fn fold_and_repack_existing_run_dir(repack: RepackConfig) -> Result<(), String> 
             ));
         }
     }
+    // G2-regen finding 7: repack previously bypassed modset validation, so a
+    // pre-M2 manifest (no modset) or a pre-fix unresolved flat shape could be
+    // republished into a replay. The binding cannot be reconstructed after
+    // capture, so an absent/legacy/malformed modset refuses the repack.
+    validate_repack_manifest_modset(&manifest)?;
 
     let replay_file = manifest
         .get("replay_file")
@@ -28271,6 +28319,14 @@ mod tests {
                     "reason": "--skip-host-fold fixture",
                 },
             },
+            // Current-schema UNRESOLVED modset in the fail-closed shape —
+            // repack refuses absent/legacy modset bindings (G2-regen 7), and
+            // this fixture also pins that a lawful unresolved shape passes.
+            "modset": {
+                "resolved": false,
+                "errors": ["fixture: no live process to resolve against"],
+                "partial_evidence": {},
+            },
         });
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         for dir in [&inline_dir, &deferred_dir] {
@@ -32198,6 +32254,49 @@ mod tests {
         assert_eq!(value["frames"], json!(0));
         assert_eq!(value["crit_wall_us"]["count"], json!(0));
         assert_eq!(value["crit_wall_us_total"], json!(0));
+    }
+
+    #[test]
+    fn repack_requires_current_schema_modset() {
+        // G2-regen finding 7: repack must refuse manifests whose modset
+        // binding is absent, legacy-shaped, or vanilla-looking-unresolved —
+        // the binding cannot be reconstructed after capture.
+        let absent = json!({"stream_format": "compact"});
+        assert!(validate_repack_manifest_modset(&absent)
+            .unwrap_err()
+            .contains("no modset binding"));
+
+        let not_object = json!({"modset": "vanilla"});
+        assert!(validate_repack_manifest_modset(&not_object)
+            .unwrap_err()
+            .contains("not an object"));
+
+        let legacy_no_resolved = json!({"modset": {"enabled_mods": []}});
+        assert!(validate_repack_manifest_modset(&legacy_no_resolved)
+            .unwrap_err()
+            .contains("no boolean `resolved`"));
+
+        // Pre-fix flat unresolved shape: vanilla-looking top-level lists.
+        let flat_unresolved = json!({"modset": {
+            "resolved": false, "errors": ["x"], "enabled_mods": [], "dlc": {}
+        }});
+        assert!(validate_repack_manifest_modset(&flat_unresolved)
+            .unwrap_err()
+            .contains("vanilla-looking"));
+
+        // Unresolved without partial_evidence is also legacy.
+        let unresolved_no_evidence = json!({"modset": {"resolved": false, "errors": []}});
+        assert!(validate_repack_manifest_modset(&unresolved_no_evidence)
+            .unwrap_err()
+            .contains("without a partial_evidence"));
+
+        // Current shapes pass: resolved, and fail-closed unresolved.
+        let resolved = json!({"modset": {"resolved": true, "errors": [], "enabled_mods": []}});
+        assert!(validate_repack_manifest_modset(&resolved).is_ok());
+        let unresolved_ok = json!({"modset": {
+            "resolved": false, "errors": ["y"], "partial_evidence": {"dlc": {}}
+        }});
+        assert!(validate_repack_manifest_modset(&unresolved_ok).is_ok());
     }
 
     #[test]

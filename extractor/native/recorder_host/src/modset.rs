@@ -35,6 +35,32 @@
 //! - When `resolved` is false the JSON nests all evidence under
 //!   `partial_evidence` so a naive consumer reading `enabled_mods` at the top
 //!   level finds NOTHING rather than a vanilla-looking answer.
+//!
+//! G2-regen amendments (2026-07-12, REFUTED 5 BLOCKER + 2 MAJOR -> this round):
+//! - Duplicate-key detection compares DECODED key names (spelling one
+//!   `enabled_mods` key with a backslash-u escape of the underscore previously
+//!   bypassed the raw-slice comparison while serde kept the last, empty,
+//!   value — silent vanilla).
+//! - The chosen user dir (override AND probed) must be CORROBORATED against
+//!   the attached process: the dir's `logs/` must have been written at/after
+//!   process start (the running game writes its logs there continuously). A
+//!   stale or wrong-but-well-formed directory no longer resolves.
+//! - Mod content is BOUND by a SHA-256 over sorted relative paths + file
+//!   bytes (double-pass stability bracket); the (count, bytes, max-mtime)
+//!   tuple stays as cheap metadata but no longer carries the binding (rename /
+//!   same-length edits / same-second edits defeated it).
+//! - ALL mod/DLC disk evidence must PREDATE process start: a descriptor,
+//!   content file, or installed-DLC descriptor written at/after launch means
+//!   the disk no longer proves what the running process loaded (Workshop
+//!   update between launch and attach) -> fail closed.
+//! - `dlc_load.json` is read TWICE and must be byte-identical (an atomic
+//!   same-mtime replacement — OneDrive sync — defeated the mtime-only
+//!   bracket). Residual: a replacement completing before the first read with
+//!   a preserved mtime is indistinguishable from user mode; recorded here.
+//! - A descriptor carrying BOTH `path=` and `archive=`, or repeating either,
+//!   is ambiguous (engine precedence unproven) -> fail closed.
+//! - The repack path (main.rs) now refuses manifests without a current-schema
+//!   `modset` object (legacy/absent bindings cannot be reconstructed).
 
 use std::ffi::c_void;
 use std::fs;
@@ -83,11 +109,24 @@ pub struct ResolvedMod {
     pub remote_file_id: Option<String>,
     /// The mod content location the descriptor points at (`path=`/`archive=`).
     pub content_path: Option<String>,
-    /// Content fingerprint of the location `content_path` names:
-    /// (file_count, total_bytes, max_mtime_unix). For an `archive=` mod the
-    /// fingerprint covers the single archive file. None when the content
-    /// location could not be walked (which also fails resolution closed).
+    /// Cheap content metadata of the location `content_path` names:
+    /// (file_count, total_bytes, max_mtime_unix). METADATA ONLY — the binding
+    /// is `content_sha256` (G2-regen finding 3: this tuple is systematically
+    /// non-unique). None when the content location could not be walked (which
+    /// also fails resolution closed).
     pub content_fingerprint: Option<(u64, u64, i64)>,
+    /// SHA-256 over the content: sorted relative paths + per-file length +
+    /// file bytes (or the single archive file), computed under a double-pass
+    /// stability bracket. THE content binding. None -> resolution fails closed.
+    pub content_sha256: Option<String>,
+    /// Newest mtime observed anywhere in the content walk (full precision,
+    /// for the evidence-predates-launch check). None when unknown.
+    pub content_max_mtime: Option<SystemTime>,
+    /// Descriptor file mtime (full precision, same check).
+    pub descriptor_mtime: Option<SystemTime>,
+    /// True when the descriptor repeats `path=`/`archive=` or carries both —
+    /// the effective content location is ambiguous (G2-regen finding 6).
+    pub content_location_conflict: bool,
 }
 
 /// The full modset + build binding, plus every resolution failure met on the
@@ -133,6 +172,7 @@ impl ModsetReport {
                 "version": m.version,
                 "remote_file_id": m.remote_file_id,
                 "content_path": m.content_path,
+                "content_sha256": m.content_sha256,
                 "content_fingerprint": m.content_fingerprint.map(|(files, bytes, mtime)| json!({
                     "files": files, "bytes": bytes, "max_mtime_unix": mtime,
                 })),
@@ -220,6 +260,23 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
     // --- Paradox user dir + dlc_load.json ---
     match locate_user_dir(user_dir_override) {
         Ok((dir, source)) => {
+            // G2-regen finding 2: a well-formed but WRONG directory (stale
+            // override, stale probe while the game runs a custom user dir)
+            // previously resolved. Corroborate: the attached process writes
+            // its logs into its real user dir continuously, so this dir's
+            // logs/ must have been written at/after process start. No
+            // corroboration -> fail closed (override and probed alike).
+            match process_start {
+                Some(start) => {
+                    if let Err(e) = corroborate_user_dir_live(&dir, start) {
+                        fail!(
+                            "user dir not corroborated against the attached process: {e}"
+                        );
+                    }
+                }
+                // process_start unknown already failed resolution closed above.
+                None => {}
+            }
             report.user_dir = Some(dir);
             report.user_dir_source = Some(source);
         }
@@ -256,12 +313,26 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                     if mtime_after != mtime_before {
                         fail!("dlc_load.json changed while being read (mtime moved)");
                     }
+                    // G2-regen finding 5: an atomic replacement can PRESERVE
+                    // the mtime (OneDrive sync, copied-file install), so the
+                    // mtime bracket alone is insufficient. Read the file a
+                    // second time and require byte-identical content. Residual
+                    // (documented): a replacement completing before the FIRST
+                    // read with a preserved mtime is indistinguishable from
+                    // user mode; both reads then see the same (new) bytes.
+                    match fs::read_to_string(&dlc_load_path) {
+                        Ok(text_again) if text_again == text => {}
+                        Ok(_) => fail!(
+                            "dlc_load.json changed while being read (bytes differ between reads)"
+                        ),
+                        Err(e) => fail!("dlc_load.json second stability read failed: {e}"),
+                    }
                     // Duplicate top-level keys (re-gate finding 2): serde_json
                     // silently keeps the last, so a lenient document can hide
                     // an ambiguous enabled_mods/disabled_dlcs behind an empty
                     // override. Reject any duplicated object key at depth 1.
                     if let Err(dup) = reject_duplicate_top_level_keys(&text) {
-                        fail!("dlc_load.json has duplicate top-level key: {dup}");
+                        fail!("dlc_load.json top-level key scan rejected: {dup}");
                     }
                     // G2 finding 2: absent or mistyped fields are NOT empty
                     // lists — they are unproven state and fail closed.
@@ -271,16 +342,47 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                                 let resolved = resolve_mod_descriptor(&user_dir, &entry);
                                 if resolved.descriptor_sha256.is_none() {
                                     fail!("mod descriptor unreadable: {entry:?}");
+                                } else if resolved.content_location_conflict {
+                                    // G2-regen finding 6: repeated or competing
+                                    // path=/archive= — the effective content
+                                    // location is unproven engine semantics.
+                                    fail!(
+                                        "mod descriptor content location ambiguous \
+                                         (repeated or competing path=/archive=): {entry:?}"
+                                    );
                                 } else if resolved.content_path.is_none() {
                                     fail!(
                                         "mod descriptor carries no path=/archive= \
                                          (binding incomplete): {entry:?}"
                                     );
-                                } else if resolved.content_fingerprint.is_none() {
+                                } else if resolved.content_sha256.is_none() {
                                     fail!(
-                                        "mod content not fingerprintable: {entry:?} -> {:?}",
+                                        "mod content not hashable: {entry:?} -> {:?}",
                                         resolved.content_path
                                     );
+                                }
+                                // G2-regen finding 4: descriptor or content
+                                // written AT/AFTER process start means the disk
+                                // no longer proves what the running process
+                                // loaded (Workshop update post-launch).
+                                if let Some(start) = process_start {
+                                    match resolved.descriptor_mtime {
+                                        Some(m) if m >= start => fail!(
+                                            "mod descriptor written at/after process start \
+                                             (post-launch update?): {entry:?}"
+                                        ),
+                                        None if resolved.descriptor_sha256.is_some() => fail!(
+                                            "mod descriptor mtime unavailable: {entry:?}"
+                                        ),
+                                        _ => {}
+                                    }
+                                    match resolved.content_max_mtime {
+                                        Some(m) if m >= start => fail!(
+                                            "mod content written at/after process start \
+                                             (post-launch update?): {entry:?}"
+                                        ),
+                                        _ => {}
+                                    }
                                 }
                                 report.enabled_mods.push(resolved);
                             }
@@ -306,7 +408,18 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
     if let Some(exe) = report.exe_path.clone() {
         match exe.parent() {
             Some(game_root) => match census_installed_dlcs(game_root) {
-                Ok(installed) => {
+                Ok((installed, census_max_mtime)) => {
+                    // G2-regen finding 4 (DLC arm): an installed-DLC descriptor
+                    // written at/after process start means the census describes
+                    // a different DLC set than the one the process loaded.
+                    if let (Some(start), Some(newest)) = (process_start, census_max_mtime) {
+                        if newest >= start {
+                            fail!(
+                                "installed-DLC census changed at/after process start \
+                                 (post-launch install/update?)"
+                            );
+                        }
+                    }
                     // G2 finding 6: every disabled key must match an installed
                     // census key EXACTLY, else the subtraction is unproven
                     // (format/case drift could silently re-enable a DLC).
@@ -405,10 +518,6 @@ fn system_time_unix(t: SystemTime) -> i64 {
     }
 }
 
-fn file_mtime_unix(path: &Path) -> Option<i64> {
-    Some(system_time_unix(fs::metadata(path).ok()?.modified().ok()?))
-}
-
 /// Reject a JSON document that repeats any object key at the TOP level.
 /// `serde_json` silently keeps the last value for a duplicate key, so a
 /// lenient `{"enabled_mods":[...],"enabled_mods":[]}` could resolve as an
@@ -457,7 +566,13 @@ fn reject_duplicate_top_level_keys(text: &str) -> Result<(), String> {
                     if j >= bytes.len() {
                         return Ok(()); // malformed; caller's parse already vouched, be lenient
                     }
-                    let key = text[start..j].to_string();
+                    // G2-regen finding 1: compare DECODED key names. serde_json
+                    // decodes backslash-u escapes inside key names and keeps
+                    // the last value, so a raw-slice comparison lets an escaped
+                    // duplicate smuggle an empty (vanilla-looking) override
+                    // past the scanner. An undecodable key fails closed.
+                    let key = decode_json_string(&text[start..j])
+                        .map_err(|e| format!("undecodable key {:?}: {e}", &text[start..j]))?;
                     if seen.iter().any(|k| k == &key) {
                         return Err(format!("{key:?}"));
                     }
@@ -483,6 +598,99 @@ fn reject_duplicate_top_level_keys(text: &str) -> Result<(), String> {
         i += 1;
     }
     Ok(())
+}
+
+/// Decode a raw JSON string body (the text between the quotes) to its actual
+/// character content: `\uXXXX` (incl. surrogate pairs) and the short escapes.
+/// Duplicate-key detection MUST compare decoded names (G2-regen finding 1) —
+/// serde_json compares decoded names when it keeps-last.
+fn decode_json_string(raw: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let esc = chars.next().ok_or("dangling escape")?;
+        match esc {
+            '"' => out.push('"'),
+            '\\' => out.push('\\'),
+            '/' => out.push('/'),
+            'b' => out.push('\u{0008}'),
+            'f' => out.push('\u{000C}'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'u' => {
+                let read_u16 = |chars: &mut std::str::Chars| -> Result<u32, String> {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() != 4 {
+                        return Err("truncated \\u escape".to_string());
+                    }
+                    u32::from_str_radix(&hex, 16).map_err(|e| format!("bad \\u escape: {e}"))
+                };
+                let first = read_u16(&mut chars)?;
+                let code = if (0xD800..0xDC00).contains(&first) {
+                    // High surrogate: the low half must follow as `\uXXXX`.
+                    if chars.next() != Some('\\') || chars.next() != Some('u') {
+                        return Err("unpaired high surrogate".to_string());
+                    }
+                    let second = read_u16(&mut chars)?;
+                    if !(0xDC00..0xE000).contains(&second) {
+                        return Err("invalid low surrogate".to_string());
+                    }
+                    0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00)
+                } else if (0xDC00..0xE000).contains(&first) {
+                    return Err("unpaired low surrogate".to_string());
+                } else {
+                    first
+                };
+                out.push(char::from_u32(code).ok_or("invalid code point")?);
+            }
+            other => return Err(format!("unknown escape \\{other}")),
+        }
+    }
+    Ok(out)
+}
+
+/// Corroborate that the chosen Paradox user dir is the one the ATTACHED
+/// process actually uses (G2-regen finding 2): a running the game writes its logs
+/// under `<user_dir>/logs/` continuously, so a directory whose newest log
+/// predates process start was NOT written by this process — a stale override
+/// or a stale probed default while the game runs elsewhere. Fail closed on a
+/// missing/unreadable/never-written logs dir. Bounded residual (documented):
+/// a SECOND simultaneously-running the game instance sharing the same user dir
+/// would corroborate it too — but a shared dir shares dlc_load.json, so the
+/// binding evidence is the same either way.
+fn corroborate_user_dir_live(user_dir: &Path, process_start: SystemTime) -> Result<(), String> {
+    let logs = user_dir.join("logs");
+    let entries = fs::read_dir(&logs)
+        .map_err(|e| format!("{} unreadable ({e}); cannot prove the attached process writes this dir", logs.display()))?;
+    let mut newest: Option<SystemTime> = None;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", logs.display()))?;
+        let meta = entry
+            .metadata()
+            .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        if !meta.is_dir() {
+            if let Ok(mtime) = meta.modified() {
+                newest = Some(newest.map_or(mtime, |n: SystemTime| n.max(mtime)));
+            }
+        }
+    }
+    match newest {
+        Some(newest) if newest >= process_start => Ok(()),
+        Some(_) => Err(format!(
+            "newest file under {} predates process start — this dir is not \
+             being written by the attached process",
+            logs.display()
+        )),
+        None => Err(format!(
+            "{} contains no files; cannot prove the attached process writes this dir",
+            logs.display()
+        )),
+    }
 }
 
 /// Streaming sha256 with a size+mtime stability bracket (G2 finding 4): the
@@ -590,6 +798,10 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
         remote_file_id: None,
         content_path: None,
         content_fingerprint: None,
+        content_sha256: None,
+        content_max_mtime: None,
+        descriptor_mtime: None,
+        content_location_conflict: false,
     };
     let candidate = {
         let as_path = Path::new(entry);
@@ -602,9 +814,11 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
     let Ok(text) = fs::read_to_string(&candidate) else {
         return resolved;
     };
+    resolved.descriptor_mtime = fs::metadata(&candidate).and_then(|m| m.modified()).ok();
     resolved.descriptor_sha256 = Some(Sha256::hex(text.as_bytes()));
     // Strip a UTF-8 BOM so `\u{feff}name=...` still parses (G2 finding 7).
     let text_body = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let mut content_location_keys = 0u32;
     for line in text_body.lines() {
         let line = line.trim();
         let Some((key, value)) = line.split_once('=') else {
@@ -618,13 +832,25 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
             // Re-gate finding 5: an EMPTY path=/archive= names no content
             // location (joining "" with user_dir would fingerprint the whole
             // user dir). Leave content_path None so the caller fails closed.
+            // G2-regen finding 6: a SECOND content-location key (repeated
+            // path=, repeated archive=, or both present — empty or not) makes
+            // the effective location ambiguous (engine precedence unproven);
+            // the caller fails resolution closed on the conflict flag.
             "path" | "archive" => {
+                content_location_keys += 1;
+                if content_location_keys > 1 {
+                    resolved.content_location_conflict = true;
+                }
                 if !value.is_empty() {
                     resolved.content_path = Some(value);
                 }
             }
             _ => {}
         }
+    }
+    if resolved.content_location_conflict {
+        // Don't bind ambiguous content; the caller records the failure.
+        resolved.content_path = None;
     }
     if let Some(content) = resolved.content_path.as_deref() {
         let content_abs = {
@@ -635,27 +861,44 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
                 user_dir.join(content)
             }
         };
-        resolved.content_fingerprint = fingerprint_content(&content_abs);
+        if let Some(hashed) = hash_content_stable(&content_abs) {
+            resolved.content_fingerprint =
+                Some((hashed.files, hashed.bytes, system_time_unix(hashed.max_mtime)));
+            resolved.content_sha256 = Some(hashed.sha256);
+            resolved.content_max_mtime = Some(hashed.max_mtime);
+        }
     }
     resolved.descriptor_path = Some(candidate);
     resolved
 }
 
-/// Content fingerprint: (file_count, total_bytes, max_mtime_unix) over a
-/// bounded recursive walk (or the single file for `archive=` mods). Catches
-/// the descriptor-unchanged content-update case (Workshop updates). This is a
-/// FINGERPRINT (collision-prone by design, cheap) — not a content proof.
-fn fingerprint_content(root: &Path) -> Option<(u64, u64, i64)> {
+/// The content binding for one mod: an exact SHA-256 plus cheap metadata.
+struct HashedContent {
+    files: u64,
+    bytes: u64,
+    /// Newest mtime anywhere in the walk, full precision (for the
+    /// evidence-predates-launch check).
+    max_mtime: SystemTime,
+    /// SHA-256 over sorted relative paths + per-file length + file bytes.
+    sha256: String,
+}
+
+/// Metadata pass over a content location: (files, bytes, max_mtime) plus the
+/// sorted relative file list. Any unreadable entry/metadata/mtime fails the
+/// pass closed (re-gate finding 6). The bounded walk REFUSES (None) past
+/// `MOD_CONTENT_MAX_FILES` rather than silently truncating.
+fn walk_content_metadata(root: &Path) -> Option<(u64, u64, SystemTime, Vec<PathBuf>)> {
     if root.is_file() {
         let meta = fs::metadata(root).ok()?;
-        return Some((1, meta.len(), file_mtime_unix(root)?));
+        return Some((1, meta.len(), meta.modified().ok()?, vec![PathBuf::new()]));
     }
     if !root.is_dir() {
         return None;
     }
     let mut files = 0u64;
     let mut bytes = 0u64;
-    let mut max_mtime = i64::MIN;
+    let mut max_mtime: Option<SystemTime> = None;
+    let mut rel_paths: Vec<PathBuf> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = fs::read_dir(&dir).ok()?;
@@ -671,22 +914,70 @@ fn fingerprint_content(root: &Path) -> Option<(u64, u64, i64)> {
                     return None;
                 }
                 bytes = bytes.saturating_add(meta.len());
-                // Re-gate finding 6: a per-file mtime that cannot be read
-                // FAILS the fingerprint closed rather than silently omitting
-                // that file's timestamp (which could leave max_mtime at its
-                // sentinel and hide a content change).
-                match meta.modified().ok().map(system_time_unix) {
-                    Some(mtime) => max_mtime = max_mtime.max(mtime),
-                    None => return None,
-                }
+                let mtime = meta.modified().ok()?;
+                max_mtime = Some(max_mtime.map_or(mtime, |m: SystemTime| m.max(mtime)));
+                rel_paths.push(path.strip_prefix(root).ok()?.to_path_buf());
             }
         }
     }
     if files == 0 {
-        // An empty content dir binds nothing — treat as not fingerprintable.
+        // An empty content dir binds nothing — treat as not bindable.
         return None;
     }
-    Some((files, bytes, max_mtime))
+    rel_paths.sort();
+    Some((files, bytes, max_mtime?, rel_paths))
+}
+
+/// Exact content binding under a double-pass stability bracket (G2-regen
+/// finding 3: the old (count, bytes, max-mtime) tuple was systematically
+/// non-unique — renames, same-length edits, and same-second edits all
+/// collided). SHA-256 over: for each file in sorted relative-path order, the
+/// path (forward-slash, utf-8) + 0x00 + the file length (LE u64) + the file
+/// bytes. The metadata walk runs BEFORE and AFTER hashing and must agree, and
+/// each file's streamed byte count must match its listed length — an
+/// incoherent walk (content changing underneath) fails closed.
+fn hash_content_stable(root: &Path) -> Option<HashedContent> {
+    let (files, bytes, max_mtime, rel_paths) = walk_content_metadata(root)?;
+    let mut hasher = Sha256::new();
+    for rel in &rel_paths {
+        let abs = if rel.as_os_str().is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(rel)
+        };
+        let rel_key = rel.to_str()?.replace('\\', "/");
+        hasher.update(rel_key.as_bytes());
+        hasher.update(&[0u8]);
+        let mut file = fs::File::open(&abs).ok()?;
+        let listed_len = fs::metadata(&abs).ok()?.len();
+        hasher.update(&listed_len.to_le_bytes());
+        let mut streamed = 0u64;
+        let mut chunk = vec![0u8; 1 << 20];
+        loop {
+            let n = file.read(&mut chunk).ok()?;
+            if n == 0 {
+                break;
+            }
+            streamed += n as u64;
+            hasher.update(&chunk[..n]);
+        }
+        if streamed != listed_len {
+            return None;
+        }
+    }
+    // Stability bracket: the metadata pass must reproduce exactly.
+    let (files_after, bytes_after, max_mtime_after, rel_after) = walk_content_metadata(root)?;
+    if (files, bytes, max_mtime) != (files_after, bytes_after, max_mtime_after)
+        || rel_paths != rel_after
+    {
+        return None;
+    }
+    Some(HashedContent {
+        files,
+        bytes,
+        max_mtime,
+        sha256: to_hex(&hasher.finalize()),
+    })
 }
 
 /// Enumerate installed DLC descriptors as game-root-relative
@@ -694,10 +985,13 @@ fn fingerprint_content(root: &Path) -> Option<(u64, u64, i64)> {
 /// format `dlc_load.json.disabled_dlcs` uses, so the subtraction is a string
 /// match with no normalization guesswork (and `resolve_modset` REFUSES any
 /// disabled key that matches no installed entry).
-fn census_installed_dlcs(game_root: &Path) -> Result<Vec<String>, String> {
+/// Also returns the newest `.dlc` descriptor mtime (full precision) so the
+/// caller can prove the census predates process start (G2-regen finding 4).
+fn census_installed_dlcs(game_root: &Path) -> Result<(Vec<String>, Option<SystemTime>), String> {
     let dlc_root = game_root.join("dlc");
     let entries = fs::read_dir(&dlc_root).map_err(|e| format!("{}: {e}", dlc_root.display()))?;
     let mut installed = Vec::new();
+    let mut newest: Option<SystemTime> = None;
     for entry in entries {
         let entry = entry.map_err(|e| format!("{}: {e}", dlc_root.display()))?;
         let dir = entry.path();
@@ -718,13 +1012,17 @@ fn census_installed_dlcs(game_root: &Path) -> Result<Vec<String>, String> {
                 .is_some_and(|e| e.eq_ignore_ascii_case("dlc"))
             {
                 if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                    let mtime = fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .map_err(|e| format!("{}: mtime unreadable: {e}", path.display()))?;
+                    newest = Some(newest.map_or(mtime, |n: SystemTime| n.max(mtime)));
                     installed.push(format!("dlc/{dir_name}/{file_name}"));
                 }
             }
         }
     }
     installed.sort();
-    Ok(installed)
+    Ok((installed, newest))
 }
 
 #[cfg(test)]
@@ -834,7 +1132,7 @@ mod tests {
         )
         .unwrap();
 
-        let installed = census_installed_dlcs(&root).unwrap();
+        let (installed, census_max_mtime) = census_installed_dlcs(&root).unwrap();
         assert_eq!(
             installed,
             vec![
@@ -842,6 +1140,9 @@ mod tests {
                 "dlc/dlc023_man_the_guns/dlc023.dlc".to_string(),
             ]
         );
+        // Freshly-written census files carry a real newest mtime — the
+        // evidence-predates-launch check compares against this.
+        assert!(census_max_mtime.is_some());
         let disabled = vec!["dlc/dlc013_sabaton/dlc013.dlc".to_string()];
         let enabled: Vec<&String> = installed
             .iter()
@@ -928,6 +1229,159 @@ mod tests {
         // Escaped quote inside a value does not desync the scanner.
         let escaped = r#"{"a":"he said \"enabled_mods\"","enabled_mods":[]}"#;
         assert!(reject_duplicate_top_level_keys(escaped).is_ok());
+    }
+
+    #[test]
+    fn unicode_escaped_duplicate_keys_are_rejected() {
+        // G2-regen finding 1: serde_json decodes an escaped-underscore
+        // spelling of enabled_mods to the same key and keeps the LAST (empty)
+        // value; a raw-slice comparison saw two distinct strings and passed.
+        // The scanner must compare DECODED names.
+        // `\ u 0 0 5 f` assembled via concat! so the escape sequence exists
+        // only in the JSON under test, never in this source file.
+        const ESCAPED_UNDERSCORE: &str = concat!(r"\u", "005f");
+        let dup = format!(
+            r#"{{"enabled_mods":["mod/a.mod"],"enabled{}mods":[],"disabled_dlcs":[]}}"#,
+            ESCAPED_UNDERSCORE
+        );
+        let parsed: Value = serde_json::from_str(&dup).unwrap();
+        // Confirm the trap is real: serde sees ONE key holding the empty list.
+        assert_eq!(parsed["enabled_mods"], serde_json::json!([]));
+        let err = reject_duplicate_top_level_keys(&dup).unwrap_err();
+        assert!(err.contains("enabled_mods"), "{err}");
+
+        // Mixed escape forms of the same name are also duplicates.
+        let dup2 = format!(
+            r#"{{"abc":1,"ab{}":2}}"#,
+            concat!(r"\u", "0063")
+        );
+        assert!(reject_duplicate_top_level_keys(&dup2).is_err());
+
+        // Distinct decoded names stay accepted.
+        let ok = r#"{"enabled_mods":[],"disabled_dlcs":[]}"#;
+        assert!(reject_duplicate_top_level_keys(ok).is_ok());
+    }
+
+    #[test]
+    fn decode_json_string_handles_escapes_and_surrogates() {
+        assert_eq!(decode_json_string("plain").unwrap(), "plain");
+        assert_eq!(
+            decode_json_string(&format!("enabled{}mods", concat!(r"\u", "005f"))).unwrap(),
+            "enabled_mods"
+        );
+        assert_eq!(decode_json_string(r#"a\"b\\c\/d\n"#).unwrap(), "a\"b\\c/d\n");
+        // Surrogate pair: U+1F600.
+        assert_eq!(
+            decode_json_string(&format!("{}{}", concat!(r"\u", "D83D"), concat!(r"\u", "DE00")))
+                .unwrap(),
+            "\u{1F600}"
+        );
+        // Unpaired surrogate fails closed.
+        assert!(decode_json_string(r"\uD83D").is_err());
+        assert!(decode_json_string(r"\uZZZZ").is_err());
+        assert!(decode_json_string(r"dangling\").is_err());
+    }
+
+    #[test]
+    fn competing_or_repeated_content_locations_are_conflicts() {
+        // G2-regen finding 6: last-wins content selection is unproven engine
+        // semantics — both-present and repeated keys must fail closed.
+        let dir = temp_dir("conflict");
+        fs::create_dir_all(dir.join("mod").join("a")).unwrap();
+        fs::write(dir.join("mod").join("a").join("f.txt"), b"x").unwrap();
+
+        fs::write(
+            dir.join("mod").join("both.mod"),
+            "name=\"B\"\npath=\"mod/a\"\narchive=\"mod/b.zip\"\n",
+        )
+        .unwrap();
+        let both = resolve_mod_descriptor(&dir, "mod/both.mod");
+        assert!(both.content_location_conflict);
+        assert!(both.content_path.is_none());
+        assert!(both.content_sha256.is_none());
+
+        fs::write(
+            dir.join("mod").join("repeat.mod"),
+            "path=\"mod/a\"\npath=\"mod/a\"\n",
+        )
+        .unwrap();
+        let repeat = resolve_mod_descriptor(&dir, "mod/repeat.mod");
+        assert!(repeat.content_location_conflict);
+        assert!(repeat.content_path.is_none());
+
+        // A single location stays bound.
+        fs::write(dir.join("mod").join("one.mod"), "path=\"mod/a\"\n").unwrap();
+        let one = resolve_mod_descriptor(&dir, "mod/one.mod");
+        assert!(!one.content_location_conflict);
+        assert_eq!(one.content_path.as_deref(), Some("mod/a"));
+        assert!(one.content_sha256.is_some());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn content_sha256_catches_what_the_tuple_fingerprint_misses() {
+        // G2-regen finding 3: (count, bytes, max-mtime) collides on renames
+        // and same-length edits. The sha256 binding must not.
+        let dir = temp_dir("sha");
+        let content = dir.join("mod").join("m");
+        fs::create_dir_all(&content).unwrap();
+        fs::write(content.join("a.txt"), b"hello").unwrap();
+        fs::write(content.join("keep.txt"), b"zzzz").unwrap();
+        fs::write(dir.join("mod").join("m.mod"), "path=\"mod/m\"\n").unwrap();
+
+        let before = resolve_mod_descriptor(&dir, "mod/m.mod");
+        let sha_before = before.content_sha256.clone().expect("sha");
+        let (files_b, bytes_b, _) = before.content_fingerprint.expect("tuple");
+
+        // RENAME: file mtime is preserved, count and bytes unchanged — the
+        // old tuple is blind to this; the sha must move.
+        fs::rename(content.join("a.txt"), content.join("b.txt")).unwrap();
+        let renamed = resolve_mod_descriptor(&dir, "mod/m.mod");
+        let (files_r, bytes_r, _) = renamed.content_fingerprint.expect("tuple");
+        assert_eq!((files_b, bytes_b), (files_r, bytes_r), "tuple collides on rename");
+        assert_ne!(
+            renamed.content_sha256.as_deref(),
+            Some(sha_before.as_str()),
+            "sha256 must catch a rename"
+        );
+
+        // SAME-LENGTH EDIT: count/bytes unchanged; sha must move.
+        let sha_renamed = renamed.content_sha256.clone().unwrap();
+        fs::write(content.join("b.txt"), b"HELLO").unwrap();
+        let edited = resolve_mod_descriptor(&dir, "mod/m.mod");
+        let (files_e, bytes_e, _) = edited.content_fingerprint.expect("tuple");
+        assert_eq!((files_r, bytes_r), (files_e, bytes_e));
+        assert_ne!(edited.content_sha256.as_deref(), Some(sha_renamed.as_str()));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn user_dir_corroboration_requires_live_log_writes() {
+        // G2-regen finding 2: a well-formed but stale/wrong dir must not
+        // resolve. The dir counts as live only when its logs/ was written
+        // at/after process start.
+        let dir = temp_dir("corrob");
+
+        // No logs dir at all -> fail closed.
+        assert!(corroborate_user_dir_live(&dir, SystemTime::UNIX_EPOCH).is_err());
+
+        // Empty logs dir -> fail closed.
+        fs::create_dir_all(dir.join("logs")).unwrap();
+        assert!(corroborate_user_dir_live(&dir, SystemTime::UNIX_EPOCH).is_err());
+
+        // Log written now, process "started" at epoch -> corroborated.
+        fs::write(dir.join("logs").join("game.log"), b"[12:00] boot").unwrap();
+        assert!(corroborate_user_dir_live(&dir, SystemTime::UNIX_EPOCH).is_ok());
+
+        // Process "starts" far in the future -> the newest log predates it ->
+        // this dir is not being written by that process -> fail closed.
+        let future = SystemTime::now() + std::time::Duration::from_secs(3600);
+        let err = corroborate_user_dir_live(&dir, future).unwrap_err();
+        assert!(err.contains("predates process start"), "{err}");
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
