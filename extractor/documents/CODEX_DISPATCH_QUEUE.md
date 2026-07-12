@@ -1650,3 +1650,22 @@ correlation evidence; (7) production worker adapter only ever reports Handshakin
 CLI can't reach Recording/Complete, fake-only tests concealed it. VERDICT: does NOT
 merge; needs a Codex Mode-C fix lane (queued; NOT on the core-data critical path,
 attach live-validation is user-gated anyway).
+
+REVIEW: stitching-impl = FIX-ROUND (3 CRITICAL + 6 MAJOR + 1 MINOR, all valid): (1)
+AppendTicket not the ordering authority — play_order/nonce/process-identity ignored,
+ordering uses SegmentInput fields -> wrong-branch stitch; (2) no build/modset/catalog
+compatibility gate (values serialized but not checked) -> incompatible decoder admitted;
+(3) cross-session holes silently absent not gap-accounted (101-109 produce no coverage
+record; test asserts non-presence and miscalls it explicit); (4) empty recovery segments
+bypass all validation yet take global ordinals -> permutation changes IDs/filenames; (5)
+container v2 validation checks only feature-string existence — v1-shaped index w/o
+segments.json opens, segments()=None; no graph/discriminant/hash validation; (6) e2e
+integrity vacuous — source_path refs never added to entries, verify_all only hashes
+present entries -> dangling refs accepted; (7 MINOR) parentage from FINAL timeline not
+insertion-time; (8) coverage coalesces dropping reason/evidence_id -> different causes
+merge unattributed; (9) stitch_input_digest omits tickets/versions/bindings -> not
+deterministic-complete; (10) coverage BTreeMap<hour,disp> can't represent repeated
+same-hour observations the design requires. VERDICT: does NOT merge; Codex Mode-C fix
+lane queued (session-mgmt layer, not core-data critical path). Green focused tests did
+not exercise any of these — the fake/subset tests concealed them (same pattern as
+autoattach). BOTH top-roadmap builds need hardening passes before merge.
