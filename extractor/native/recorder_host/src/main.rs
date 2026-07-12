@@ -3865,8 +3865,7 @@ where
         "session_manifest_role": "recorder_manifest",
     }))
     .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
-    let manifest_bytes =
-        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+    let manifest_bytes = read_session_manifest_bytes_validated(manifest_path)?;
     let mut entries = vec![
         BorrowedPackEntry {
             path: format!("payload/{game_id}/index.json"),
@@ -4043,8 +4042,7 @@ where
         "session_manifest_role": "recorder_manifest",
     }))
     .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
-    let manifest_bytes =
-        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+    let manifest_bytes = read_session_manifest_bytes_validated(manifest_path)?;
     let mut borrowed_entries = vec![
         BorrowedPackEntry {
             path: format!("payload/{game_id}/index.json"),
@@ -4408,13 +4406,28 @@ fn build_host_finalize_telemetry(
     block
 }
 
+/// Modset re-gate finding 3 (2026-07-12): the container writers REREAD the
+/// session manifest from disk at pack time, so a replacement landing after
+/// validation (OneDrive sync, another process — the repack path folds for
+/// minutes in between) would be embedded and cryptographically sealed instead
+/// of the validated object. Every pack-time read now validates the ACTUAL
+/// bytes being embedded immediately before packing.
+fn read_session_manifest_bytes_validated(manifest_path: &Path) -> Result<Vec<u8>, String> {
+    let bytes =
+        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+    let manifest: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("parse session manifest failed: {e}"))?;
+    validate_repack_manifest_modset(&manifest)
+        .map_err(|e| format!("session manifest modset invalid at pack time: {e}"))?;
+    Ok(bytes)
+}
+
 fn session_manifest_bytes_with_pre_pack_host_finalize(
     manifest_path: &Path,
     capture: &PipeCapture,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
 ) -> Result<Vec<u8>, String> {
-    let bytes =
-        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+    let bytes = read_session_manifest_bytes_validated(manifest_path)?;
     let mut manifest: Value = serde_json::from_slice(&bytes)
         .map_err(|e| format!("parse session manifest failed: {e}"))?;
     manifest
@@ -18267,7 +18280,7 @@ mod tests {
         let manifest_path = dir.join("native_session_manifest.json");
         fs::write(
             &manifest_path,
-            br#"{"schema":"native_collector_session_v1"}"#,
+            br#"{"schema":"native_collector_session_v1","modset":{"resolved":false,"errors":["test fixture"],"partial_evidence":{}}}"#,
         )
         .unwrap();
         let capture = PipeCapture {
@@ -27864,6 +27877,9 @@ mod tests {
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",
+            // Current-schema UNRESOLVED modset (fail-closed shape): pack-time
+            // validation refuses manifests without a modset binding.
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
             "session_id": "failed pack test/session",
             "replay_game_id": replay_game_id("failed pack test/session"),
             "stream_format": "compact",
@@ -27928,6 +27944,9 @@ mod tests {
         let quarantine_path = dir.join(&quarantine_name);
         let manifest = json!({
             "schema": "native_collector_session_v1",
+            // Current-schema UNRESOLVED modset (fail-closed shape): pack-time
+            // validation refuses manifests without a modset binding.
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
             "session_id": "failed quarantine test/session",
             "replay_game_id": replay_game_id("failed quarantine test/session"),
             "stream_format": "compact",
@@ -28026,6 +28045,9 @@ mod tests {
         );
         let manifest = json!({
             "schema": "native_collector_session_v1",
+            // Current-schema UNRESOLVED modset (fail-closed shape): pack-time
+            // validation refuses manifests without a modset binding.
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
             "session_id": "pack test/session",
             "replay_game_id": replay_game_id("pack test/session"),
             "stream_format": "compact",
@@ -28149,6 +28171,9 @@ mod tests {
         }];
         let manifest = json!({
             "schema": "native_collector_session_v1",
+            // Current-schema UNRESOLVED modset (fail-closed shape): pack-time
+            // validation refuses manifests without a modset binding.
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
             "session_id": session_id,
             "replay_game_id": game_id,
             "stream_format": "compact",
@@ -28259,6 +28284,9 @@ mod tests {
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",
+            // Current-schema UNRESOLVED modset (fail-closed shape): pack-time
+            // validation refuses manifests without a modset binding.
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
             "session_id": session_id,
             "replay_game_id": game_id,
             "stream_format": "compact",
@@ -28347,6 +28375,9 @@ mod tests {
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",
+            // Current-schema UNRESOLVED modset (fail-closed shape): pack-time
+            // validation refuses manifests without a modset binding.
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
             "session_id": session_id,
             "replay_game_id": game_id,
             "stream_format": "compact",
@@ -32741,6 +32772,9 @@ mod tests {
     fn write_session_manifest(dir: &Path, session_id: &str) -> (PathBuf, Value) {
         let manifest = json!({
             "schema": "native_collector_session_v1",
+            // Current-schema UNRESOLVED modset (fail-closed shape): pack-time
+            // validation refuses manifests without a modset binding.
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
             "session_id": session_id,
             "replay_game_id": replay_game_id(session_id),
             "stream_format": "compact",
