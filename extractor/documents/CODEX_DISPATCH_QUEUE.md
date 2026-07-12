@@ -1384,3 +1384,10 @@ possible now, d60 lacks warscore/IC/wargoals). w12b-speedpause-scope BAILED (wed
 provisional intel: speed NOT read anywhere today, d57 = pause rows only, no speed
 offset in build profile). w12b-locjoin-verify: 40-try refire loop exhausted into the
 wall; requeued.
+
+ADJUDICATION (orchestrator-verified, 2026-07-12 late): w12-d53-badges' census
+"--selftest falsely exits 0" finding reproduced against the OLD census at the lane's
+worktree base 6fd03c653 (treats the flag as a manifest arg -> 0 domains -> GREEN exit
+0 = the known v1 empty-input fail-open). The uncommitted v3.3 already closes it:
+--selftest is a real entry (40/40) and zero-usable input blocks (exit 1, selftest
+zero-usable: blocking=2). No new work; closure rides the round6e-gated commit.
