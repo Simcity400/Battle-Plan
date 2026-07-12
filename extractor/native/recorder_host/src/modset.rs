@@ -409,6 +409,29 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
         match exe.parent() {
             Some(game_root) => match census_installed_dlcs(game_root) {
                 Ok((installed, census_max_mtime)) => {
+                    // Modset re-gate finding 2 (empty-census arm): a real the game
+                    // install always carries dlc/ descriptors; an EMPTY census
+                    // (dlc/ removed/emptied — possibly post-launch) has no
+                    // timestamp to order against process start and would
+                    // resolve with vanilla-looking empty DLC arrays. Fail
+                    // closed. Stability: a second census must reproduce the
+                    // first exactly (same identity rule as dlc_load.json's
+                    // double read).
+                    if installed.is_empty() || census_max_mtime.is_none() {
+                        fail!(
+                            "installed-DLC census is empty/timestampless; cannot bind \
+                             the DLC set the process loaded"
+                        );
+                    }
+                    match census_installed_dlcs(game_root) {
+                        Ok((again, again_mtime))
+                            if again == installed && again_mtime == census_max_mtime => {}
+                        Ok(_) => fail!(
+                            "installed-DLC census changed while being read \
+                             (unstable between passes)"
+                        ),
+                        Err(e) => fail!("dlc census stability pass failed: {e}"),
+                    }
                     // G2-regen finding 4 (DLC arm): an installed-DLC descriptor
                     // written at/after process start means the census describes
                     // a different DLC set than the one the process loaded.
@@ -887,6 +910,11 @@ struct HashedContent {
 /// sorted relative file list. Any unreadable entry/metadata/mtime fails the
 /// pass closed (re-gate finding 6). The bounded walk REFUSES (None) past
 /// `MOD_CONTENT_MAX_FILES` rather than silently truncating.
+/// Bounded directory count for a mod content walk (modset re-gate finding 5:
+/// only FILES were bounded, so an empty directory reparse cycle looped
+/// forever without ever failing closed).
+const MOD_CONTENT_MAX_DIRS: usize = 50_000;
+
 fn walk_content_metadata(root: &Path) -> Option<(u64, u64, SystemTime, Vec<PathBuf>)> {
     if root.is_file() {
         let meta = fs::metadata(root).ok()?;
@@ -896,8 +924,14 @@ fn walk_content_metadata(root: &Path) -> Option<(u64, u64, SystemTime, Vec<PathB
         return None;
     }
     let mut files = 0u64;
+    let mut dirs = 0usize;
     let mut bytes = 0u64;
-    let mut max_mtime: Option<SystemTime> = None;
+    // Modset re-gate finding 2: DIRECTORY mtimes join the maximum. An NTFS
+    // rename preserves the file's own mtime but updates the parent directory,
+    // so a post-launch renamed tree was invisible to the file-only maximum
+    // (both hash passes already saw the new path; the launch-order check did
+    // not). The root and every traversed directory now contribute.
+    let mut max_mtime: Option<SystemTime> = fs::metadata(root).ok()?.modified().ok();
     let mut rel_paths: Vec<PathBuf> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -905,8 +939,24 @@ fn walk_content_metadata(root: &Path) -> Option<(u64, u64, SystemTime, Vec<PathB
         for entry in entries {
             let entry = entry.ok()?;
             let path = entry.path();
+            // Modset re-gate finding 5: refuse symlinks/reparse points
+            // outright (fail closed) — following them let a junction cycle
+            // walk forever (no file ever incremented the bound), and a link
+            // escaping the content root would bind foreign content.
+            // `DirEntry::metadata()` does not follow symlinks, so file_type
+            // here is the LINK's own type.
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_symlink() {
+                return None;
+            }
             let meta = entry.metadata().ok()?;
             if meta.is_dir() {
+                dirs += 1;
+                if dirs > MOD_CONTENT_MAX_DIRS {
+                    return None;
+                }
+                let mtime = meta.modified().ok()?;
+                max_mtime = Some(max_mtime.map_or(mtime, |m: SystemTime| m.max(mtime)));
                 stack.push(path);
             } else {
                 files += 1;
