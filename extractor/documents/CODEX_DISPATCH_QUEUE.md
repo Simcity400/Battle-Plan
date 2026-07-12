@@ -1860,3 +1860,19 @@ ORCHESTRATOR NOTE: at harvest I approved d48's reclassification as "informationa
 clears PARTIAL" — the review shows that clearing PARTIAL on an UNCERTAIN read is itself the
 bug (torn read -> tombstone -> deletion). My harvest verification (tests+diff) again missed
 a fail-closed inversion the adversarial gate caught. Consistent lesson across the sweep.
+
+REVIEW: fow-re = REVISE (4 HIGH + 2 MEDIUM, doc-brief). Overclaims flagged: (1) "save-
+format negative" is ONE D04 melt census not a serializer proof — supports "no obvious path
+in this melt" NOT "the game never serializes it"; the quoted "only" lists are wrong (states 18
+keys/provinces 5/country-intel 10 subtrees); drop the Fork-B architectural prior; (2)
+acceptance oracle INVENTS own=max/fogged=0/radar=intermediate not in cited evidence (dossier
+itself admits unknown at :474) — label HYPOTHESIS; (3) A/B fork not exhaustive (omits GPU
+resources, sparse/texel caches, event-driven uploads, mixed CPU/GPU); POV experiment proves
+active-view laziness not absence of an eager store — make multi-outcome, UNKNOWN/MIXED
+fail-closed; (4) Fork-B raw-input fallback known-insufficient (W12B already rejected it) ->
+"raw set UNKNOWN"; (5 MED) 13,414 array-length can't come from a raw pointer (supply
+precedent reads an adjacent COUNT first — dossier omits that); (6 MED) spotted-unit citation
+conflates CCountry (begin+packed count) with CStrategicOperative (begin/cap/size). Anchors
+accurate, scope clean, fail-closed-blocked -> REVISE not REJECT. -> doc-revision [J]
+fow-re. LESSON: doc reviews ALSO catch overclaims (hypotheses dressed as near-conclusions);
+the RE dossiers are not automatic SHIPs.
