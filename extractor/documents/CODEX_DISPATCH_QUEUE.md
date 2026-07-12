@@ -1454,3 +1454,23 @@ name families, 52 TOPBAR_*, focus 99.92% / idea 83.41% / tech 92.82% / decision
 locjoin_coverage.py selftest 11/11 with proven red capability — ORCHESTRATOR
 INDEPENDENTLY RERAN both selftest and the d04stageA live run, PASS/PASS. Useful law
 captured: static artifacts embed at CAPTURE time and ride even .failed containers.
+
+OPUS WAVE HARVEST 4: test-debt 9c1d26c3b — (a) MAJOR LATENT PRODUCT BUG proven, not
+a test flake: collector MsvcStringFingerprint {size,cap,chars_addr} ignores string
+BYTES, so same-length inline ideology tokens ("democratic"/"neutrality", len 10) at
+a reused address alias in IDEOLOGY_GROUP_TOKEN_CACHE -> two parties collapse ->
+duplicate guard -> read_political_parties_with_window None on the DELTA path only
+(scalar path keeps Option). Instrument-and-revert evidence: ~50% None per fixture
+reconstruction, 0/80k with cache cleared, Fix P (FNV-1a content hash in the
+fingerprint) 0/600,000 stress across 30 suite runs. FIX P QUEUED for the lib.rs
+owner slot (exact diff in dossiers/w12_politics_window_flake.md; NOTE brief's stated
+location recorder_host was wrong — test lives at collector lib.rs:65167, cross-reload
+production trigger analysis included). (b) In-fence: RM file-symlink refusal test
+(privilege-guarded skip on hosts without SeCreateSymbolicLinkPrivilege — portability
+law respected) + static_artifact_test_dir hardened with nanos suffix; temp-dir audit
+verdict: no active collision. Suite 8/8 stable, 198+199 green.
+LIB.RS OWNER SLOT QUEUE (consolidated, post-census-commit order): 1. Fix P politics
+fingerprint (validated, smallest), 2. speed reader +0x4BC + on-change pause/speed
+stream (dossier diffs, multi-value live gate owed), 3. counter-badge division fields
++ world_tension, 4. libr-pairs proposed SO extensions (incl. SO_D47_*), 5. d48
+SO-mapping remap (merge reconciliation), 6. d51 bit12 delayed-event rooted read.
