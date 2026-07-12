@@ -2125,6 +2125,14 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     // else the legacy default.
     let mut min_game_hours: Option<i32> = None;
     let mut scheduled_domains = Vec::new();
+    // `--scheduled-domains-exact`: run ONLY the explicit --scheduled-domain set,
+    // suppressing the production-profile force-add union. Lets a production-
+    // profile window (identical compression/concurrency/fold presets) run a
+    // domain SUBSET — the P4 pace-exogeneity palindrome's mid/light tiers were
+    // silently promoted to all 55 domains without this (2026-07-12 run
+    // invalidated). Requires at least one explicit --scheduled-domain so an
+    // empty capture can never be requested by accident.
+    let mut scheduled_domains_exact = false;
     let mut production = false;
     let mut profile: Option<compact_contract::CaptureProfile> = None;
     let mut lightweight_root_frame: Option<bool> = None;
@@ -2208,6 +2216,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     scheduled_domains.push(domain);
                 }
             }
+            "--scheduled-domains-exact" => scheduled_domains_exact = true,
             "--production" => production = true,
             "--lightweight-root-frame" => lightweight_root_frame = Some(true),
             "--special-projects-scan" => special_projects_scan = true,
@@ -2479,7 +2488,12 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let min_game_hours = min_game_hours
         .or_else(|| preset.map(|preset| preset.min_game_hours))
         .unwrap_or(12);
-    if production {
+    if scheduled_domains_exact && scheduled_domains.is_empty() {
+        return Err(
+            "--scheduled-domains-exact requires at least one --scheduled-domain".to_string(),
+        );
+    }
+    if production && !scheduled_domains_exact {
         for domain in compact_contract::production_profile_scheduled_names() {
             if !scheduled_domains.iter().any(|existing| existing == domain) {
                 scheduled_domains.push(domain.to_string());
@@ -2697,7 +2711,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path]\n\
      \n\
      Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
      into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
@@ -2713,6 +2727,10 @@ fn usage() -> String {
       profile, unioned with explicit --scheduled-domain values. When omitted,\n\
       --reader-concurrency defaults to 12 for --production and 0 (unbounded) for\n\
       non-production probes; explicit --reader-concurrency always wins.\n\
+      --scheduled-domains-exact suppresses that union: the capture runs ONLY the\n\
+      explicit --scheduled-domain set (at least one required) while keeping every\n\
+      other production/profile preset intact — for A/B windows that must differ\n\
+      ONLY in domain load.\n\
       \n\
       --profile production|debug selects one coherent preset cluster instead of\n\
       hand-assembling flags. BOTH profiles run the identical compact domain\n\
@@ -28569,6 +28587,53 @@ mod tests {
                 .iter()
                 .any(|domain| domain == "naval_missions_status_live"),
             "validated/schedulable domain 56 should be added by --production"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_scheduled_domains_exact_suppresses_production_union() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_exact_domains_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let cfg = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--scheduled-domains-exact",
+                "--scheduled-domain",
+                "fuel_live",
+                "--scheduled-domain",
+                "weather_live",
+            ],
+        ))
+        .unwrap();
+        assert!(cfg.production, "profile production must still apply");
+        assert_eq!(
+            cfg.reader_concurrency, 12,
+            "non-domain production presets must survive exact mode"
+        );
+        assert_eq!(
+            cfg.scheduled_domains,
+            vec!["fuel_live".to_string(), "weather_live".to_string()],
+            "exact mode must run ONLY the explicit domain set"
+        );
+
+        // Exact mode with no explicit domain would schedule NOTHING: hard error.
+        let err = parse_args(profile_test_args(
+            &dir,
+            &["--profile", "production", "--scheduled-domains-exact"],
+        ))
+        .unwrap_err();
+        assert!(
+            err.contains("--scheduled-domains-exact requires"),
+            "unexpected error: {err}"
         );
 
         let _ = fs::remove_dir_all(&dir);

@@ -560,3 +560,18 @@ that stable-reads u32+u64 at manager+0x48 as a _sample, run one live window, and
 value against the reader's own valid-slot count per frame — if they track, candidate 1 is
 live-supported; then confirm dynamic-vs-capacity with the oracle. This turns the fixed-9 walk
 into a [0..count) walk = populated-AND-sound d69.
+
+## 2026-07-12 — d69 active-count probe SHIPPED (telemetry-only) + P4 driver fix reviewed
+- Probe (#24): manager(CGameState+0x3A0)+0x48 (`DOMAIN69_TECH_SHARING_MANAGER_ACTIVE_COUNT_PROBE_OFF`,
+  first word after the 9-slot array) double-read-stable as u32 AND u64 every frame; per-frame
+  3-way verdict counters (match / indeterminate when a below-count slot failed / structural
+  mismatch) + `d69_probe_fail_above_count`; atomic same-frame packed sample
+  `d69_probe_topology_sample` (probe | nonnull<<32 | valid<<41, 9-bit masks). Emission and
+  fail-closed semantics UNTOUCHED. Promotion bar (6 legs, incl. fail_above stale-signature
+  audit + D04 melt oracle) documented in ~/.claude/hoi4_gate_prompts/d69_probe_harvest.py.
+- Adversarial review: Codex Mode A tid 019f53e9-ff39-7c33-add5-aa245b89d4bd. Finding 1
+  (empty --scheduled-domain bypasses exact-mode) REFUTED against validate_domain
+  (main.rs:2833 rejects empty). Findings 2 (verdict false-match/false-mismatch) and 3
+  (`_sample` units pair across different frames) CONFIRMED and fixed in the same commit
+  (3-way verdict + packed topology sample). One fix round used.
+- Gates: collector 353/0, recorder_host 190+194/0, compact_contract 18/0.
