@@ -1748,3 +1748,18 @@ false in a normal cargo build, so a release bin dumping ASSIGNED_COMPACT_DOMAINS
 reveals any cfg-divergence vs the ROSTER pin); fail closed if the toolchain is
 unavailable. DELEGATED to Codex Mode-C lane w12c-census-oracle (transition back to Codex
 implementation per the regime); I gate it (round 8). Batch stays uncommitted until SHIP.
+
+REVIEW: librs-readers2 = FIX-ROUND (2 CRITICAL + 1 MAJOR). d68 NO-CODE decision AFFIRMED
+(no finding — offsets are existing session fields, no game_unique_* present; the Opus
+refusal was correct). d51 bit12 findings: (1) has_scalar_source() cache built ONCE at
+attach, unreadable->zero, marked verified at 40 rows -> a later-created country
+(release/civil war) absent -> falsely measured empty, bit12 clear (validate authoritative
+live country table per frame, fail closed); (2) vector walk not a COHERENT SNAPSHOT —
+begin/count/slots stabilized independently, game mutates between iterations -> emitted set
+never existed at one instant; count==0 returns before rejecting impossible begin (read
+full container, re-read, require byte-identical); (3) new test can't go red — supplies
+MeasuredEmpty directly, never invokes the rooted reader. -> Codex fix lane [E] d51.
+
+REVIEW TALLY 6/6 code lanes FIX-ROUND (autoattach 7, stitching 10, campaign-id 5,
+fold-wave1 5, heartbeat-wmi 5, librs-readers2 3). d68-refusal upheld. Fix-lane groups:
+[A]autoattach+heartbeat-wmi [B]stitching [C]campaign-id [D]fold-wave1 [E]d51-bit12.
