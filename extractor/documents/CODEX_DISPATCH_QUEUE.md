@@ -978,3 +978,34 @@ P1 (false-green/verification): exact-domain 1 (unknown domains), modset 3+4 (man
 P2 (mod-robustness completeness): R2 2 (unwired sites + lane sweep), modset 1+2+5.
 P3 (evidence quality): stage-A 1-5, exact-domain 2+3 (probe deletion), G1-residue 6.
 DONE: R2 1+4 / stage-A 6a (639661ec1); G3 CLOSED SHIP.
+
+## 2026-07-12 late — fix-round progress ledger (verdicts above; every finding code-verified first)
+DONE (commits):
+- 639661ec1 R2-1 ordering + R2-4 test races (both registries) — then SUPERSEDED for
+  status_origins by a521cc827's packed-word fix: my first flag-cell repair was WRONG and the
+  new stress test caught it live under parallel-suite load (count and sample-flag must travel
+  in ONE atomic word; separate cells let a drain consume the flag against the wrong batch).
+- a521cc827 P0: d17 fold status gate (+3-frame test); d43 fold PARTIAL -> retain (+rewritten
+  test that previously PINNED the refuted fold-with-omissions behavior); d43 empty always
+  fail-closed (warm-known-empty kept visible via 2 new status-origin ids 27/28); O7 bit on
+  the country-worker panic fallback.
+- a7b5bf64f P0: sweep-EPOCH binding (d47 prewarm cache poisons dead-epoch roots immediately —
+  the reset-empty snapshot passed coverage_complete() and the steady-state early return
+  served them CLEAN forever; d60 tracker binds validated_epoch through the spawn handle and
+  drops the discovery on mismatch). d53 verified already fail-closed. TEST DEBT: epoch arms
+  lack pure unit tests (need CollectorState harness) — re-gate to adjudicate.
+- 636673d96 P1: exact-domain BLOCKER — unknown --scheduled-domain names fail closed at parse
+  (registry resolution) + coverage derivation can never silently narrow (+battery).
+- 0d874dad6 P1: modset-4 — resolved:true repack requires the complete evidence schema
+  (build hash, provenance, timestamps, per-mod descriptor+content sha, dlc arrays; the old
+  test blessed the bare shape and was rewritten).
+- c8922ba88 P1: modset-3 — pack-time validation of the ACTUAL embedded manifest bytes at all
+  three reread sites; 8 test fixtures gained current-schema unresolved modsets.
+REMAINING (in order): R2-3 verification-gates probe-domain-250 exclusion (+stream test);
+G1-residue-5 per-frame work-implies-rows; P2 = R2-2 unwired lane/d66 bound sites + lane
+sweep, modset-1 (process-specific user-dir evidence: open log handle by PID), modset-2
+(dir mtimes in walks + empty-DLC-census fail-closed + identity-stable double census),
+modset-5 (reparse-cycle guard); P3 = stage-A 1-5 (missing producers, per-cause ledger
+shape, unconditional frame-finalization drain + NO_CLOCK hour sentinel, d45 per-frame,
+d54 u64 units), exact-domain 2+3 (delete +0x48 probe + obsolete topology/vec units),
+G1-residue 6 done / 5 pending. Re-gate the whole round when done (one batch).
