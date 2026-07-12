@@ -1995,52 +1995,277 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
                 .to_string(),
         );
     }
+    // Fix-round re-gate finding 2: presence-only checks still admitted
+    // fabricated evidence (hashes that are strings but not hashes, DLC arrays
+    // holding anything, EMPTY installed censuses the live resolver refuses to
+    // resolve). The validator now enforces the same invariants the live
+    // resolver establishes by construction — a drift-guard test serializes a
+    // fully-resolved live `ModsetReport` through this validator.
+    // Lowercase only: every live hash comes from the shared sha256 encoder's
+    // lowercase hex table (fix-round-3 gate finding 3).
+    let sha256_ok =
+        |s: &str| s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    // Fix-round-4 gate finding 3: as_json writes CLOSED objects — an
+    // unexpected key at any level (a resolved root smuggling
+    // partial_evidence, a fingerprint carrying legacy fields) is a shape the
+    // recorder never wrote. Rejecting extras makes the accepted grammar
+    // exactly the serializer's output; this terminates the
+    // looser-than-as_json finding class by construction.
+    let check_keys = |map: &serde_json::Map<String, Value>,
+                      allowed: &[&str],
+                      what: &str|
+     -> Result<(), String> {
+        for key in map.keys() {
+            if !allowed.contains(&key.as_str()) {
+                return Err(format!(
+                    "fold-and-repack manifest modset {what} carries unexpected key \
+                     `{key}` (not a recorder-written resolved shape)"
+                ));
+            }
+        }
+        Ok(())
+    };
+    check_keys(
+        obj,
+        &[
+            "resolved",
+            "errors",
+            "game",
+            "pdx_user_dir",
+            "user_dir_source",
+            "dlc_load_mtime_unix",
+            "process_start_unix",
+            "enabled_mods",
+            "dlc",
+        ],
+        "resolved object",
+    )?;
     let game = obj
         .get("game")
         .and_then(Value::as_object)
         .ok_or("fold-and-repack manifest modset lacks the game build object")?;
+    check_keys(game, &["exe_path", "exe_size_bytes", "exe_sha256"], "game object")?;
     let exe_sha = game
         .get("exe_sha256")
         .and_then(Value::as_str)
         .ok_or("fold-and-repack manifest modset lacks game.exe_sha256")?;
-    if exe_sha.len() != 64 || !exe_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !sha256_ok(exe_sha) {
         return Err("fold-and-repack manifest modset game.exe_sha256 is not a sha256".into());
     }
-    for (field, kind) in [
-        ("exe_path", "string"),
-        ("exe_size_bytes", "number"),
-    ] {
-        let present = match kind {
-            "string" => game.get(field).and_then(Value::as_str).is_some(),
-            _ => game.get(field).and_then(Value::as_u64).is_some(),
-        };
-        if !present {
+    if game
+        .get("exe_path")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err("fold-and-repack manifest modset lacks a nonempty game.exe_path".into());
+    }
+    if game.get("exe_size_bytes").and_then(Value::as_u64).is_none() {
+        return Err("fold-and-repack manifest modset lacks game.exe_size_bytes".into());
+    }
+    let pdx_user_dir = obj
+        .get("pdx_user_dir")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or("fold-and-repack manifest modset lacks a nonempty pdx_user_dir")?;
+    match obj.get("user_dir_source").and_then(Value::as_str) {
+        // The only provenances the live resolver emits (locate_user_dir).
+        Some("override") | Some("probed") => {}
+        Some(other) => {
             return Err(format!(
-                "fold-and-repack manifest modset lacks game.{field}"
+                "fold-and-repack manifest modset user_dir_source `{other}` is not a \
+                 provenance the live resolver emits"
             ));
         }
+        None => return Err("fold-and-repack manifest modset lacks user_dir_source".into()),
     }
-    for field in ["pdx_user_dir", "user_dir_source"] {
-        if obj.get(field).and_then(Value::as_str).is_none() {
-            return Err(format!("fold-and-repack manifest modset lacks {field}"));
-        }
+    let mut launch_times = [0i64; 2];
+    for (slot, field) in ["dlc_load_mtime_unix", "process_start_unix"]
+        .into_iter()
+        .enumerate()
+    {
+        launch_times[slot] = obj
+            .get(field)
+            .and_then(Value::as_i64)
+            .ok_or_else(|| format!("fold-and-repack manifest modset lacks {field}"))?;
     }
-    for field in ["dlc_load_mtime_unix", "process_start_unix"] {
-        if obj.get(field).and_then(Value::as_i64).is_none() {
-            return Err(format!("fold-and-repack manifest modset lacks {field}"));
-        }
+    // Fix-round-2 re-gate finding 3: the live resolver fails closed when
+    // dlc_load.json's mtime is at/after process start (full precision) — a
+    // resolved manifest claiming the opposite ordering is fabricated.
+    // Equality stays allowed: serialization floors both times to seconds, so
+    // a legitimate strictly-before mtime can share the start's second.
+    if launch_times[0] > launch_times[1] {
+        return Err(
+            "fold-and-repack manifest modset dlc_load_mtime_unix is after \
+             process_start_unix; the live resolver never resolves launcher \
+             state postdating the running game"
+                .into(),
+        );
+    }
+    // process creation pre-epoch is rejected by the live process-time query,
+    // so a negative start is fabricated. (dlc_load_mtime_unix MAY be negative
+    // — NTFS can carry pre-1970 file times and the live resolver accepts any
+    // mtime strictly before start.)
+    if launch_times[1] < 0 {
+        return Err(
+            "fold-and-repack manifest modset process_start_unix is negative; \
+             the live process-time query rejects pre-epoch creation times"
+                .into(),
+        );
     }
     let mods = obj
         .get("enabled_mods")
         .and_then(Value::as_array)
         .ok_or("fold-and-repack manifest modset lacks the enabled_mods array")?;
     for (index, entry) in mods.iter().enumerate() {
+        let entry_obj = entry.as_object().ok_or_else(|| {
+            format!("fold-and-repack manifest modset enabled_mods[{index}] is not an object")
+        })?;
+        check_keys(
+            entry_obj,
+            &[
+                "descriptor_entry",
+                "descriptor_path",
+                "descriptor_sha256",
+                "name",
+                "version",
+                "remote_file_id",
+                "content_path",
+                "content_sha256",
+                "content_fingerprint",
+            ],
+            "mod entry",
+        )?;
         for field in ["descriptor_sha256", "content_sha256"] {
-            if entry.get(field).and_then(Value::as_str).is_none() {
+            let ok = entry
+                .get(field)
+                .and_then(Value::as_str)
+                .is_some_and(sha256_ok);
+            if !ok {
                 return Err(format!(
-                    "fold-and-repack manifest modset enabled_mods[{index}] lacks {field} \
-                     (incomplete content binding)"
+                    "fold-and-repack manifest modset enabled_mods[{index}].{field} is \
+                     missing or not a sha256 (incomplete/fabricated content binding)"
                 ));
+            }
+        }
+        // Fix-round-2 re-gate finding 2: hashes without identity/provenance
+        // are not a binding. A live resolved report necessarily carries the
+        // descriptor entry+path and the content location (resolution fails
+        // closed without them), so their absence marks a fabricated shape.
+        for field in ["descriptor_entry", "descriptor_path", "content_path"] {
+            if entry
+                .get(field)
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                return Err(format!(
+                    "fold-and-repack manifest modset enabled_mods[{index}].{field} is \
+                     missing/empty (identity-less content binding)"
+                ));
+            }
+        }
+        // Fix-round-4 gate finding 2: descriptor_path is DERIVED live — an
+        // absolute descriptor_entry is used as-is, a relative one joins onto
+        // the user dir (resolve_mod_descriptor). The recorded path must be
+        // exactly that reconstruction; a mismatched pair means the hashes
+        // were bound to a different file than the entry names. Component
+        // comparison (Path eq), because the live join mixes separators.
+        let entry_name = entry
+            .get("descriptor_entry")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let claimed_path = entry
+            .get("descriptor_path")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let expected_path = {
+            let as_path = std::path::Path::new(entry_name);
+            if as_path.is_absolute() {
+                as_path.to_path_buf()
+            } else {
+                std::path::Path::new(pdx_user_dir).join(as_path)
+            }
+        };
+        if std::path::Path::new(claimed_path) != expected_path.as_path() {
+            return Err(format!(
+                "fold-and-repack manifest modset enabled_mods[{index}].descriptor_path \
+                 does not equal the resolver's entry-onto-user-dir derivation \
+                 (mismatched binding provenance)"
+            ));
+        }
+        let fingerprint = entry
+            .get("content_fingerprint")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                format!(
+                    "fold-and-repack manifest modset enabled_mods[{index}] lacks the \
+                     content_fingerprint object"
+                )
+            })?;
+        check_keys(
+            fingerprint,
+            &["files", "bytes", "max_mtime_unix"],
+            "content_fingerprint object",
+        )?;
+        // files in [1, MOD_CONTENT_MAX_FILES] is a live invariant: an empty
+        // content walk fails resolution closed (walk_content_metadata's
+        // files == 0 arm) and the walk refuses trees above the shared cap.
+        if fingerprint
+            .get("files")
+            .and_then(Value::as_u64)
+            .is_none_or(|files| files == 0)
+        {
+            return Err(format!(
+                "fold-and-repack manifest modset enabled_mods[{index}].content_fingerprint.files \
+                 is missing/zero (the live resolver never binds empty content)"
+            ));
+        }
+        if fingerprint
+            .get("files")
+            .and_then(Value::as_u64)
+            .is_some_and(|files| files > recorder_host::modset::MOD_CONTENT_MAX_FILES as u64)
+        {
+            return Err(format!(
+                "fold-and-repack manifest modset enabled_mods[{index}].content_fingerprint.files \
+                 exceeds the live walk bound (the resolver refuses such trees)"
+            ));
+        }
+        if fingerprint.get("bytes").and_then(Value::as_u64).is_none() {
+            return Err(format!(
+                "fold-and-repack manifest modset enabled_mods[{index}].content_fingerprint.bytes \
+                 is missing/mistyped"
+            ));
+        }
+        // Content written at/after process start fails the live resolve
+        // closed (full precision); serialized values are floored seconds, so
+        // equality stays legal and NEGATIVE values stay legal (NTFS can carry
+        // pre-1970 mtimes).
+        let fingerprint_mtime = fingerprint
+            .get("max_mtime_unix")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                format!(
+                    "fold-and-repack manifest modset enabled_mods[{index}].content_fingerprint\
+                     .max_mtime_unix is missing/mistyped"
+                )
+            })?;
+        if fingerprint_mtime > launch_times[1] {
+            return Err(format!(
+                "fold-and-repack manifest modset enabled_mods[{index}].content_fingerprint\
+                 .max_mtime_unix postdates process_start_unix; the live resolver fails \
+                 post-launch content closed"
+            ));
+        }
+        // ModsetReport::as_json always emits these keys (string or null);
+        // their absence marks a shape the recorder never wrote.
+        for field in ["name", "version", "remote_file_id"] {
+            match entry.get(field) {
+                Some(Value::String(_)) | Some(Value::Null) => {}
+                _ => {
+                    return Err(format!(
+                        "fold-and-repack manifest modset enabled_mods[{index}].{field} is \
+                         missing or not string/null (not a recorder-written shape)"
+                    ));
+                }
             }
         }
     }
@@ -2048,12 +2273,104 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
         .get("dlc")
         .and_then(Value::as_object)
         .ok_or("fold-and-repack manifest modset lacks the dlc object")?;
+    check_keys(dlc, &["installed", "enabled", "disabled"], "dlc object")?;
+    let mut dlc_lists: Vec<Vec<&str>> = Vec::new();
     for field in ["installed", "enabled", "disabled"] {
-        if dlc.get(field).and_then(Value::as_array).is_none() {
+        let arr = dlc.get(field).and_then(Value::as_array).ok_or_else(|| {
+            format!("fold-and-repack manifest modset dlc.{field} is not an array")
+        })?;
+        let mut list = Vec::with_capacity(arr.len());
+        for element in arr {
+            let name = element.as_str().filter(|s| !s.is_empty()).ok_or_else(|| {
+                format!(
+                    "fold-and-repack manifest modset dlc.{field} holds a \
+                     non-string/empty entry"
+                )
+            })?;
+            list.push(name);
+        }
+        dlc_lists.push(list);
+    }
+    let (installed, enabled, disabled) =
+        (&dlc_lists[0], &dlc_lists[1], &dlc_lists[2]);
+    if installed.is_empty() {
+        // The live resolver fails an empty installed census closed
+        // (modset.rs empty-census arm) — an empty set here is a
+        // fabricated/legacy shape, not evidence.
+        return Err(
+            "fold-and-repack manifest modset dlc.installed is empty; the live \
+             resolver never resolves an empty DLC census"
+                .into(),
+        );
+    }
+    // Fix-round-3 gate finding 2: the live census is SORTED and its entries
+    // are distinct paths, and enabled preserves that sorted unique order —
+    // set-collapsing here let duplicated/reordered fabrications through.
+    // Vector semantics, not set semantics. `disabled` stays free-form
+    // (launcher input: duplicates/reordering are legitimate live shapes).
+    if !installed.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(
+            "fold-and-repack manifest modset dlc.installed is not strictly \
+             sorted/unique; the live census is"
+                .into(),
+        );
+    }
+    // Fix-round-4 gate finding 1: the live census emits ONLY
+    // `dlc/<dir>/<file>` forward-slash paths where <file> carries a .dlc
+    // extension (ASCII-case-insensitive; census_installed_dlcs) — free-form
+    // names are fabrications. Windows filenames cannot contain slashes, so
+    // exactly-three-components is sound; backslashes cannot appear in real
+    // dir/file names. Disabled/enabled are constrained transitively (subset /
+    // derived-filter checks below).
+    for name in installed {
+        let parts: Vec<&str> = name.split('/').collect();
+        let census_shaped = parts.len() == 3
+            && parts[0] == "dlc"
+            && !parts[1].is_empty()
+            && !parts[1].contains('\\')
+            && !parts[2].contains('\\')
+            && std::path::Path::new(parts[2])
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("dlc"));
+        if !census_shaped {
             return Err(format!(
-                "fold-and-repack manifest modset dlc.{field} is not an array"
+                "fold-and-repack manifest modset dlc.installed entry {name:?} is not a \
+                 census-shaped dlc/<dir>/<name>.dlc path"
             ));
         }
+    }
+    // Fix-round-2 re-gate finding 1: the live resolver requires every
+    // disabled key to EXACTLY match an installed census key (modset.rs G2
+    // finding 6 — format/case drift would silently re-enable a DLC), so a
+    // disabled entry outside installed is a shape the live resolver never
+    // resolves. (Round-2 wrongly inferred "disabled may list uninstalled"
+    // from the enabled derivation alone.)
+    let installed_set: std::collections::BTreeSet<&str> =
+        installed.iter().copied().collect();
+    let disabled_set: std::collections::BTreeSet<&str> =
+        disabled.iter().copied().collect();
+    if !disabled_set.is_subset(&installed_set) {
+        return Err(
+            "fold-and-repack manifest modset dlc.disabled lists entries outside \
+             dlc.installed; the live resolver fails that closed (format drift \
+             silently re-enables a DLC)"
+                .into(),
+        );
+    }
+    // enabled = installed − disabled is how the live resolver derives it,
+    // ORDER PRESERVED (an exact vector, not a set).
+    let expected_enabled: Vec<&str> = installed
+        .iter()
+        .copied()
+        .filter(|rel| !disabled_set.contains(rel))
+        .collect();
+    if *enabled != expected_enabled {
+        return Err(
+            "fold-and-repack manifest modset dlc.enabled is not installed minus \
+             disabled; inconsistent DLC evidence"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -32573,23 +32890,329 @@ mod tests {
                 "dlc_load_mtime_unix": 1i64,
                 "process_start_unix": 2i64,
                 "enabled_mods": mods,
-                "dlc": {"installed": [], "enabled": [], "disabled": []},
+                // Consistent census: enabled = installed − disabled, and
+                // every disabled key exactly matches an installed key (the
+                // live resolver fails a non-matching disabled entry closed —
+                // fix-round-2 re-gate finding 1).
+                "dlc": {
+                    "installed": ["dlc/dlc010_a/dlc010.dlc", "dlc/dlc020_b/dlc020.dlc"],
+                    "enabled": ["dlc/dlc010_a/dlc010.dlc"],
+                    "disabled": ["dlc/dlc020_b/dlc020.dlc"],
+                },
             }})
         };
         let missing_content = full(json!([{"descriptor_sha256": "ab".repeat(32)}]));
         assert!(validate_repack_manifest_modset(&missing_content)
             .unwrap_err()
             .contains("content_sha256"));
-        // The COMPLETE resolved schema passes.
-        let resolved = full(json!([{
-            "descriptor_sha256": "ab".repeat(32),
+        // Fix-round re-gate finding 2: present-but-fabricated evidence must
+        // refuse — a hash field holding a non-hash string...
+        let fake_hash = full(json!([{
+            "descriptor_sha256": "x",
             "content_sha256": "cd".repeat(32),
         }]));
+        assert!(validate_repack_manifest_modset(&fake_hash)
+            .unwrap_err()
+            .contains("not a sha256"));
+        // The COMPLETE resolved schema passes (every field a live resolved
+        // report necessarily carries — see the drift-guard test).
+        let good_mods = json!([{
+            "descriptor_entry": "mod/ugc_1.mod",
+            "descriptor_path": "C:/pdx/mod/ugc_1.mod",
+            "descriptor_sha256": "ab".repeat(32),
+            "name": "Test Mod",
+            "version": null,
+            "remote_file_id": null,
+            "content_path": "C:/workshop/1",
+            "content_fingerprint": {"files": 10u64, "bytes": 2048u64, "max_mtime_unix": 1i64},
+            "content_sha256": "cd".repeat(32),
+        }]);
+        let resolved = full(good_mods.clone());
         assert!(validate_repack_manifest_modset(&resolved).is_ok());
+        // Fix-round-3 gate finding 3: uppercase hex is not a shape the shared
+        // lowercase sha256 encoder ever writes...
+        let mut upper_hash = full(good_mods.clone());
+        upper_hash["modset"]["enabled_mods"][0]["content_sha256"] = json!("CD".repeat(32));
+        assert!(validate_repack_manifest_modset(&upper_hash)
+            .unwrap_err()
+            .contains("not a sha256"));
+        // ...a negative process start is rejected by the live process-time
+        // query (dlc_load mtime MAY be negative: pre-1970 NTFS times)...
+        let mut negative_start = full(good_mods.clone());
+        negative_start["modset"]["process_start_unix"] = json!(-5i64);
+        negative_start["modset"]["dlc_load_mtime_unix"] = json!(-6i64);
+        assert!(validate_repack_manifest_modset(&negative_start)
+            .unwrap_err()
+            .contains("pre-epoch"));
+        // ...and the nullable identity keys must at least be PRESENT
+        // (as_json always writes them, string or null).
+        let mut missing_name = full(good_mods.clone());
+        missing_name["modset"]["enabled_mods"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("name");
+        assert!(validate_repack_manifest_modset(&missing_name)
+            .unwrap_err()
+            .contains("string/null"));
+        // Fix-round-3 gate finding 1: live-impossible fingerprints — a file
+        // count above the shared walk bound...
+        let mut over_cap = full(good_mods.clone());
+        over_cap["modset"]["enabled_mods"][0]["content_fingerprint"]["files"] =
+            json!(recorder_host::modset::MOD_CONTENT_MAX_FILES as u64 + 1);
+        assert!(validate_repack_manifest_modset(&over_cap)
+            .unwrap_err()
+            .contains("exceeds the live walk bound"));
+        // ...and content mtimes postdating process start (equality legal:
+        // serialization floors to seconds).
+        let mut content_after_launch = full(good_mods.clone());
+        content_after_launch["modset"]["enabled_mods"][0]["content_fingerprint"]
+            ["max_mtime_unix"] = json!(3i64);
+        assert!(validate_repack_manifest_modset(&content_after_launch)
+            .unwrap_err()
+            .contains("post-launch content"));
+        let mut content_same_second = full(good_mods.clone());
+        content_same_second["modset"]["enabled_mods"][0]["content_fingerprint"]
+            ["max_mtime_unix"] = json!(2i64);
+        assert!(validate_repack_manifest_modset(&content_same_second).is_ok());
+        // Fix-round-3 gate finding 2: the live census is sorted/unique and
+        // enabled preserves that order — set-collapse hid duplicated and
+        // reordered fabrications.
+        let mut dup_installed = full(good_mods.clone());
+        dup_installed["modset"]["dlc"]["installed"] =
+            json!(["dlc/dlc010_a/dlc010.dlc", "dlc/dlc010_a/dlc010.dlc", "dlc/dlc020_b/dlc020.dlc"]);
+        assert!(validate_repack_manifest_modset(&dup_installed)
+            .unwrap_err()
+            .contains("strictly sorted/unique"));
+        let mut reordered_enabled = full(good_mods.clone());
+        reordered_enabled["modset"]["dlc"] = json!({
+            "installed": ["dlc/dlc010_a/dlc010.dlc", "dlc/dlc020_b/dlc020.dlc"],
+            "enabled": ["dlc/dlc020_b/dlc020.dlc", "dlc/dlc010_a/dlc010.dlc"],
+            "disabled": [],
+        });
+        assert!(validate_repack_manifest_modset(&reordered_enabled)
+            .unwrap_err()
+            .contains("installed minus disabled"));
+        // Duplicated/reordered DISABLED stays legal (raw launcher input).
+        let mut dup_disabled = full(good_mods.clone());
+        dup_disabled["modset"]["dlc"]["disabled"] =
+            json!(["dlc/dlc020_b/dlc020.dlc", "dlc/dlc020_b/dlc020.dlc"]);
+        assert!(validate_repack_manifest_modset(&dup_disabled).is_ok());
+        // ...including a REORDERED multi-item disabled list (fix-round-4 LOW:
+        // the duplication case alone did not pin reordering).
+        let mut reordered_disabled = full(good_mods.clone());
+        reordered_disabled["modset"]["dlc"] = json!({
+            "installed": ["dlc/dlc010_a/dlc010.dlc", "dlc/dlc020_b/dlc020.dlc"],
+            "enabled": [],
+            "disabled": ["dlc/dlc020_b/dlc020.dlc", "dlc/dlc010_a/dlc010.dlc"],
+        });
+        assert!(validate_repack_manifest_modset(&reordered_disabled).is_ok());
+        // Fix-round-4 gate finding 1: free-form DLC names are fabrications —
+        // the live census emits only dlc/<dir>/<name>.dlc paths.
+        let mut freeform_dlc = full(good_mods.clone());
+        freeform_dlc["modset"]["dlc"] =
+            json!({"installed": ["dlc010_a"], "enabled": ["dlc010_a"], "disabled": []});
+        assert!(validate_repack_manifest_modset(&freeform_dlc)
+            .unwrap_err()
+            .contains("census-shaped"));
+        // Fix-round-4 gate finding 2: descriptor_path must be the resolver's
+        // deterministic derivation from descriptor_entry...
+        let mut foreign_path = full(good_mods.clone());
+        foreign_path["modset"]["enabled_mods"][0]["descriptor_path"] = json!("C:/other/b.mod");
+        assert!(validate_repack_manifest_modset(&foreign_path)
+            .unwrap_err()
+            .contains("mismatched binding provenance"));
+        // ...an ABSOLUTE descriptor_entry is used as-is (live rule) and must
+        // pass with a matching path.
+        let mut absolute_entry = full(good_mods.clone());
+        absolute_entry["modset"]["enabled_mods"][0]["descriptor_entry"] =
+            json!("D:/mods/abs.mod");
+        absolute_entry["modset"]["enabled_mods"][0]["descriptor_path"] =
+            json!("D:/mods/abs.mod");
+        assert!(validate_repack_manifest_modset(&absolute_entry).is_ok());
+        // Fix-round-4 gate finding 3: as_json writes CLOSED objects — an
+        // unexpected key at ANY level is not a recorder-written shape.
+        for (level, mutate) in [
+            ("root", (|v: &mut Value| {
+                v["modset"]["partial_evidence"] = json!({});
+            }) as fn(&mut Value)),
+            ("game", |v: &mut Value| {
+                v["modset"]["game"]["exe_build_tag"] = json!("x");
+            }),
+            ("mod entry", |v: &mut Value| {
+                v["modset"]["enabled_mods"][0]["truncated"] = json!(true);
+            }),
+            ("fingerprint", |v: &mut Value| {
+                v["modset"]["enabled_mods"][0]["content_fingerprint"]["legacy"] = json!(1);
+            }),
+            ("dlc", |v: &mut Value| {
+                v["modset"]["dlc"]["pending"] = json!([]);
+            }),
+        ] {
+            let mut extra_key = full(good_mods.clone());
+            mutate(&mut extra_key);
+            assert!(
+                validate_repack_manifest_modset(&extra_key)
+                    .unwrap_err()
+                    .contains("unexpected key"),
+                "extra key at {level} must refuse"
+            );
+        }
+        // Fix-round-4 LOW: pin the ACCEPT side of the boundaries — zero
+        // process start, a fingerprint exactly AT the walk cap, and pre-1970
+        // mtimes are all live-reachable and must pass.
+        let mut boundaries = full(good_mods.clone());
+        boundaries["modset"]["process_start_unix"] = json!(0i64);
+        boundaries["modset"]["dlc_load_mtime_unix"] = json!(-1i64);
+        boundaries["modset"]["enabled_mods"][0]["content_fingerprint"] = json!({
+            "files": recorder_host::modset::MOD_CONTENT_MAX_FILES as u64,
+            "bytes": 0u64,
+            "max_mtime_unix": -10i64,
+        });
+        assert!(validate_repack_manifest_modset(&boundaries).is_ok());
+        // Fix-round-2 re-gate finding 2: hashes WITHOUT identity/provenance
+        // are an identity-less binding — each identity field is required...
+        for field in ["descriptor_entry", "descriptor_path", "content_path"] {
+            let mut identityless = full(good_mods.clone());
+            identityless["modset"]["enabled_mods"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(
+                validate_repack_manifest_modset(&identityless)
+                    .unwrap_err()
+                    .contains(field),
+                "{field} absence must refuse"
+            );
+        }
+        // ...as is a well-typed fingerprint with files >= 1 (the live walk
+        // fails an empty content dir closed).
+        let mut no_fingerprint = full(good_mods.clone());
+        no_fingerprint["modset"]["enabled_mods"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("content_fingerprint");
+        assert!(validate_repack_manifest_modset(&no_fingerprint)
+            .unwrap_err()
+            .contains("content_fingerprint"));
+        let mut zero_files = full(good_mods.clone());
+        zero_files["modset"]["enabled_mods"][0]["content_fingerprint"]["files"] = json!(0u64);
+        assert!(validate_repack_manifest_modset(&zero_files)
+            .unwrap_err()
+            .contains("never binds empty content"));
+        // Fix-round-2 re-gate finding 3: launcher state postdating the game
+        // process is impossible on a live resolve (mtime >= start fails
+        // closed); equality stays legal (times are floored to seconds).
+        let mut config_after_launch = full(good_mods.clone());
+        config_after_launch["modset"]["dlc_load_mtime_unix"] = json!(3i64);
+        assert!(validate_repack_manifest_modset(&config_after_launch)
+            .unwrap_err()
+            .contains("postdating"));
+        let mut config_same_second = full(good_mods.clone());
+        config_same_second["modset"]["dlc_load_mtime_unix"] = json!(2i64);
+        assert!(validate_repack_manifest_modset(&config_same_second).is_ok());
+        // Fix-round-2 re-gate finding 1: a disabled entry outside installed
+        // is a shape the live resolver fails closed (exact-match rule).
+        let mut ghost_disabled = full(good_mods.clone());
+        ghost_disabled["modset"]["dlc"]["disabled"] = json!(["dlc/dlc020_b/dlc020.dlc", "dlc/dlc030_gone/dlc030.dlc"]);
+        assert!(validate_repack_manifest_modset(&ghost_disabled)
+            .unwrap_err()
+            .contains("outside"));
+        // ...an EMPTY installed census (the live resolver fails that closed,
+        // so a resolved manifest carrying one is fabricated/legacy)...
+        let mut empty_census = full(good_mods.clone());
+        empty_census["modset"]["dlc"] =
+            json!({"installed": [], "enabled": [], "disabled": []});
+        assert!(validate_repack_manifest_modset(&empty_census)
+            .unwrap_err()
+            .contains("dlc.installed is empty"));
+        // ...non-string DLC entries...
+        let mut nonstring_dlc = full(good_mods.clone());
+        nonstring_dlc["modset"]["dlc"]["installed"] = json!(["dlc/dlc010_a/dlc010.dlc", 7]);
+        assert!(validate_repack_manifest_modset(&nonstring_dlc)
+            .unwrap_err()
+            .contains("non-string/empty entry"));
+        // ...an enabled list inconsistent with installed − disabled...
+        let mut inconsistent = full(good_mods.clone());
+        inconsistent["modset"]["dlc"]["enabled"] = json!(["dlc/dlc010_a/dlc010.dlc", "dlc/dlc020_b/dlc020.dlc"]);
+        assert!(validate_repack_manifest_modset(&inconsistent)
+            .unwrap_err()
+            .contains("installed minus disabled"));
+        // ...and a provenance string the live resolver never emits.
+        let mut bad_source = full(good_mods);
+        bad_source["modset"]["user_dir_source"] = json!("guessed");
+        assert!(validate_repack_manifest_modset(&bad_source)
+            .unwrap_err()
+            .contains("not a provenance"));
         let unresolved_ok = json!({"modset": {
             "resolved": false, "errors": ["y"], "partial_evidence": {"dlc": {}}
         }});
         assert!(validate_repack_manifest_modset(&unresolved_ok).is_ok());
+    }
+
+    #[test]
+    fn live_resolved_report_json_passes_repack_validation() {
+        // Drift guard (fix-round re-gate finding 2): the repack validator and
+        // the live resolver must agree on the resolved shape. A fully
+        // resolved report, serialized EXACTLY as the recorder writes it
+        // (ModsetReport::as_json), must pass repack validation — if either
+        // side drifts, this test names the divergence. SCOPE (fix-round-4
+        // LOW): this pins SERIALIZER-SHAPE coverage — the report is
+        // hand-constructed to the live invariants, not produced by an actual
+        // live resolve; the invariants themselves are pinned by the live
+        // resolver's own fail-closed arms and their tests.
+        let report = recorder_host::modset::ModsetReport {
+            resolved: true,
+            errors: Vec::new(),
+            exe_path: Some(std::path::PathBuf::from("F:/steam/hoi4.exe")),
+            exe_size_bytes: Some(123_456_789),
+            exe_sha256: Some("ab".repeat(32)),
+            user_dir: Some(std::path::PathBuf::from("C:/Users/Example/Documents/Paradox/HOI4")),
+            user_dir_source: Some("probed"),
+            dlc_load_mtime_unix: Some(1_752_300_000),
+            process_start_unix: Some(1_752_300_100),
+            enabled_mods: vec![
+                recorder_host::modset::ResolvedMod {
+                    descriptor_entry: "mod/ugc_1.mod".to_string(),
+                    descriptor_path: Some(std::path::PathBuf::from(
+                        "C:/Users/Example/Documents/Paradox/HOI4/mod/ugc_1.mod",
+                    )),
+                    descriptor_sha256: Some("12".repeat(32)),
+                    name: Some("Test Mod".to_string()),
+                    version: Some("1.0".to_string()),
+                    remote_file_id: Some("1".to_string()),
+                    content_path: Some("C:/workshop/1".to_string()),
+                    content_fingerprint: Some((10, 2048, 1_752_299_000)),
+                    content_sha256: Some("34".repeat(32)),
+                    content_max_mtime: None,
+                    descriptor_mtime: None,
+                    content_location_conflict: false,
+                },
+                // A descriptor with no name=/version=/remote_file_id= lines
+                // still resolves live; as_json writes those keys as null and
+                // the validator must accept that shape (nullable-string pin).
+                recorder_host::modset::ResolvedMod {
+                    descriptor_entry: "mod/local_2.mod".to_string(),
+                    descriptor_path: Some(std::path::PathBuf::from(
+                        "C:/Users/Example/Documents/Paradox/HOI4/mod/local_2.mod",
+                    )),
+                    descriptor_sha256: Some("56".repeat(32)),
+                    name: None,
+                    version: None,
+                    remote_file_id: None,
+                    content_path: Some("mod/local_2".to_string()),
+                    content_fingerprint: Some((1, 64, 1_752_298_000)),
+                    content_sha256: Some("78".repeat(32)),
+                    content_max_mtime: None,
+                    descriptor_mtime: None,
+                    content_location_conflict: false,
+                },
+            ],
+            installed_dlcs: vec!["dlc/dlc010_a/dlc010.dlc".to_string(), "dlc/dlc020_b/dlc020.dlc".to_string()],
+            disabled_dlcs: vec!["dlc/dlc020_b/dlc020.dlc".to_string()],
+            enabled_dlcs: vec!["dlc/dlc010_a/dlc010.dlc".to_string()],
+        };
+        let manifest = json!({"modset": report.as_json()});
+        validate_repack_manifest_modset(&manifest).unwrap();
     }
 
     #[test]

@@ -75,7 +75,9 @@ type Handle = *mut c_void;
 
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 /// Bounded mod-content walk: enough for any real mod, refuses runaway trees.
-const MOD_CONTENT_MAX_FILES: usize = 200_000;
+/// `pub` because the repack validator mirrors it: a resolved manifest
+/// claiming a fingerprint above this bound is live-impossible.
+pub const MOD_CONTENT_MAX_FILES: usize = 200_000;
 
 extern "system" {
     fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
@@ -805,6 +807,56 @@ fn corroborate_user_dir_live(user_dir: &Path, pid: u32) -> Result<(), String> {
     // this is not the attached process's user dir = fail closed. RM failures
     // fail closed too (never downgrade to the weaker mtime signal).
     let logs = user_dir.join("logs");
+    // Fix-round re-gate finding 1 (junction bypass): `logs` — or a file
+    // inside it — could be a junction/symlink into the REAL user dir's logs.
+    // RM would then truthfully name the attached PID on the TARGET and the
+    // proof would corroborate a WRONG directory holding a copied
+    // dlc_load.json. The ownership invariant is that the corroborated logs
+    // and the dlc_load.json we read live in the SAME physical directory:
+    // canonicalize (resolves every junction/symlink in the chain) and require
+    // logs to still be <canonical user_dir>/logs. A user_dir that is ITSELF
+    // an alias of the real dir still corroborates — both evidence sources
+    // then resolve inside the same physical directory, so the binding is that
+    // directory's either way. Deliberately NOT keyed on the raw
+    // FILE_ATTRIBUTE_REPARSE_POINT: cloud-sync files-on-demand placeholders
+    // (OneDrive, Dropbox, ...) are reparse points, and Documents redirected
+    // into OneDrive — putting the whole user dir under one — is a stock
+    // Windows configuration on end-user machines; those must keep passing.
+    // canonicalize resolves such placeholders to themselves. Bounded
+    // residual (documented): a same-volume HARDLINK to a held log is not a
+    // reparse point and survives canonicalization — creating one needs write
+    // access to the live log and is outside the stale-override/wrong-probe
+    // misconfiguration threat model this check exists for.
+    let canonical_user_dir = fs::canonicalize(user_dir).map_err(|e| {
+        format!(
+            "{} canonicalize failed ({e}); cannot prove the ownership probe \
+             targets this dir",
+            user_dir.display()
+        )
+    })?;
+    let canonical_logs = fs::canonicalize(&logs).map_err(|e| {
+        format!(
+            "{} canonicalize failed ({e}); cannot prove the ownership probe \
+             targets this dir",
+            logs.display()
+        )
+    })?;
+    let expected_logs = canonical_user_dir.join("logs");
+    // Case-insensitive: NTFS is; canonicalize returns on-disk casing which
+    // may differ from the literal "logs" we joined.
+    if !canonical_logs
+        .as_os_str()
+        .eq_ignore_ascii_case(expected_logs.as_os_str())
+    {
+        return Err(format!(
+            "{} resolves to {}, not {} — a junction/symlink redirects the \
+             ownership probe away from this dir; refusing to corroborate \
+             through an alias",
+            logs.display(),
+            canonical_logs.display(),
+            expected_logs.display()
+        ));
+    }
     let entries = fs::read_dir(&logs).map_err(|e| {
         format!(
             "{} unreadable ({e}); cannot prove the attached process owns this dir",
@@ -815,10 +867,19 @@ fn corroborate_user_dir_live(user_dir: &Path, pid: u32) -> Result<(), String> {
     let mut rm_errors: Vec<String> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| format!("{}: {e}", logs.display()))?;
-        let meta = entry
-            .metadata()
+        // `file_type()` does NOT follow links: a symlinked/junction entry is
+        // visible as such and refused (same finding — a symlinked game.log
+        // pointing at the real one would corroborate the wrong dir).
+        let file_type = entry
+            .file_type()
             .map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        if meta.is_dir() {
+        if file_type.is_symlink() {
+            return Err(format!(
+                "{} is a symlink/junction; refusing to corroborate through an alias",
+                entry.path().display()
+            ));
+        }
+        if file_type.is_dir() {
             continue;
         }
         probed += 1;
@@ -1570,6 +1631,50 @@ mod tests {
         drop(held);
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn user_dir_corroboration_refuses_junction_redirected_logs() {
+        // Fix-round re-gate finding 1: a WRONG user dir whose logs/ is a
+        // JUNCTION into the real logs dir must NOT corroborate — Restart
+        // Manager would truthfully report the attached PID holding the
+        // junction TARGET, corroborating a directory whose dlc_load.json the
+        // process never read. Junction creation (mklink /J) needs no
+        // privileges or Developer Mode, unlike file symlinks.
+        let real = temp_dir("junct_real");
+        let fake = temp_dir("junct_fake");
+        let my_pid = std::process::id();
+        let real_logs = real.join("logs");
+        fs::create_dir_all(&real_logs).unwrap();
+        let log = real_logs.join("game.log");
+        fs::write(&log, b"[12:00] boot").unwrap();
+        let held = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        // Sanity: the REAL dir corroborates while we hold the handle.
+        corroborate_user_dir_live(&real, my_pid).unwrap();
+
+        let fake_logs = fake.join("logs");
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&fake_logs)
+            .arg(&real_logs)
+            .status()
+            .expect("spawn cmd mklink /J");
+        assert!(status.success(), "mklink /J failed: {status}");
+        // The junction genuinely reaches the held file — exactly the state
+        // that fooled the pre-fix check...
+        assert!(fake_logs.join("game.log").is_file());
+        // ...but corroboration refuses the alias.
+        let err = corroborate_user_dir_live(&fake, my_pid).unwrap_err();
+        assert!(
+            err.contains("refusing to corroborate through an alias"),
+            "{err}"
+        );
+        drop(held);
+
+        fs::remove_dir_all(&fake).ok();
+        fs::remove_dir_all(&real).ok();
     }
 
     #[test]

@@ -1032,3 +1032,142 @@ parallel flake (pre-existing).
 Attack the fixes for regressions + the deferred/test-debt items. If SHIP, the audit
 blocking list drops to: F5 container/fold/B3 net gate + C0 tooling gate + G4 O8 design
 (next stage). Verdict recorded here on return.
+
+### BATCHED RE-GATE VERDICT: REFUTED (tid 019f551c-1fd4-7f61-8732-9911691d19f3)
+3 findings survived; 12 attack areas failed (d17 offset/mask, d43 retention + no
+CLEAN-empty path, d47/d60 epoch poison incl. same-epoch bump, packed-CAS race-safety +
+63-bit headroom ~292yr, both frame-end drains exactly-once + monotonic sequences,
+unknown-domain parse fail, probe-250 routing parity, probe deletion clean, d45 frame-local
+latch, d54 saturation math, bound-trip outcome preservation, healthy-empty-save no-FP).
+Deferred items ADJUDICATED legitimately deferrable (d48/d65 producers + ledger shape =
+attribution not loss; epoch test debt = debt not defect; politics_window flake unrelated) —
+EXCEPT RM symlink debt which became finding 1. Findings (all code-verified before fixing):
+1. BLOCKER modset corroborate_user_dir_live: logs/ junction (or symlinked entry) into the
+   REAL logs dir corroborates a WRONG user dir — RM truthfully names the PID on the target.
+2. BLOCKER validate_repack_manifest_modset presence-only: non-hash hash strings, arbitrary/
+   EMPTY dlc arrays passed while the live resolver fails an empty census closed.
+3. HIGH d47 work-without-emission sum missed advisor_roster/appointed_advisor/portrait
+   rows — an advisor-only built-then-discarded frame escaped the gate ("covers ALL output
+   families" comment was false).
+
+### FIX ROUND 2 (uncommitted until its own gate SHIPs — user directive: adversarial review
+BEFORE commit)
+1. Canonical containment: canonicalize(user_dir/logs) must equal canonicalize(user_dir)/
+   logs (OsStr case-insensitive) + per-entry file_type().is_symlink() refusal. NOT keyed on
+   raw reparse attribute (cloud-sync files-on-demand placeholders are reparse points and
+   OneDrive-redirected Documents is a stock end-user Windows config — those must pass on
+   ANY user's machine, not just this rig). user_dir-itself-an-alias stays corroborable
+   (dlc_load.json + logs then share
+   one physical dir). Hardlink residual documented out of threat model. New test
+   user_dir_corroboration_refuses_junction_redirected_logs (mklink /J, held handle).
+2. Deep schema: 64-hex per-mod hashes, nonempty exe_path/pdx_user_dir, user_dir_source ∈
+   {override, probed}, dlc arrays = nonempty strings, installed NONEMPTY, set-equality
+   enabled == installed − disabled (disabled may list uninstalled). Drift guard
+   live_resolved_report_json_passes_repack_validation feeds ModsetReport::as_json through
+   the validator. Negative tests: fake hash, empty census, non-string dlc, inconsistent
+   enabled, unknown provenance.
+3. domain47_adapter_output_rows helper sums ALL 8 output families; regression test proves
+   each family alone counts and *_seen/rejection/dead_roots counters don't.
+Suites: recorder 197+199/0, collector 357/0, release build clean. Gate: fixround2_regate
+(prompt ~/.claude/hoi4_gate_prompts/fixround2_regate.txt, reviews the UNCOMMITTED tree).
+Verdict recorded here on return; commit only on SHIP.
+
+### FIX ROUND 2 GATE VERDICT: REFUTED (tid in threads log, fixround2-regate)
+Junction fix + d47 fix SURVIVED all attacks (incl. live check: the actual OneDrive user
+dir canonicalizes to exactly user_dir/logs, 22 entries no symlinks; all 8 d47 families
+confirmed; alias-user_dir argument accepted; hardlink residual accepted under the stated
+threat model). 3 NEW BLOCKERs, all deeper validator gaps — each code-verified:
+1. disabled ⊄ installed passed, but the LIVE resolver requires exact-match disabled keys
+   (modset.rs G2-finding-6 arm at ~554 — round 2 inferred the rule from the enabled
+   derivation alone and even blessed an uninstalled disabled entry in the fixture).
+2. Identity-less mods passed: hashes without descriptor_entry/descriptor_path/
+   content_path/content_fingerprint — all of which a live resolved report necessarily
+   carries (resolution fails closed without them; files==0 walk fails closed too).
+3. dlc_load_mtime_unix > process_start_unix passed, but live fails mtime >= start closed;
+   equality must stay legal (serialization floors to seconds).
+
+### FIX ROUND 3 (direct fixes; final EXTRA gate past the escalation cap — justified:
+lossless-critical modset validation)
+1. disabled.is_subset(installed) required; fixture ghost entry removed; wrong round-2
+   comment corrected in place.
+2. Per-mod: nonempty descriptor_entry/descriptor_path/content_path + content_fingerprint
+   object with files>=1 (live invariant), bytes u64, max_mtime_unix i64. Negative tests
+   for each; drift-guard test already carries all fields.
+3. launch-order: dlc_load_mtime_unix > process_start_unix refuses ("postdating"),
+   equality passes (same-second test). Suites: recorder 197+199/0.
+Gate: fixround3_regate on the uncommitted tree. Commit only on SHIP; if REFUTED again,
+findings + state land here and the round stops for orchestrator/user review (cap logic:
+2 fix rounds + extra gate spent).
+
+### FIX ROUND 3 GATE VERDICT: REFUTED (tid in threads log, fixround3-regate)
+Class narrowed decisively: ZERO false refusals (pre-1970 mtimes, unicode/UNC, single-file
+archives, dup mods, flooring edges all attacked and held), ZERO regressions on the
+junction/d47 fixes, disabled-subset + identity checks confirmed matching live. 3 remaining
+BLOCKERs, all "validator accepts live-impossible values" (verified against live code):
+1. fingerprint.files unbounded above (live walk caps MOD_CONTENT_MAX_FILES=200k) +
+   fingerprint.max_mtime_unix could postdate process start (live fails content mtime >=
+   start closed).
+2. BTreeSet collapse erased order/dup invariants: live installed census is SORTED unique
+   (census .sort(), distinct paths) and enabled preserves that order; disabled is raw
+   launcher input (dups/reorder legal live — must NOT reject).
+3. Uppercase hex accepted (live sha256 encoder is lowercase-only); negative
+   process_start_unix accepted (live query rejects pre-epoch creation); name/version/
+   remote_file_id keys omissible (as_json always writes them, string-or-null).
+
+### FIX ROUND 4 (direct; convergence judgment: findings are strictly narrowing, no
+false-refusal/regression findings 2 rounds running — one more gate rather than stopping
+with a dirty tree; if THAT refutes, stop and surface)
+1. files <= pub MOD_CONTENT_MAX_FILES (constant made pub, shared); fingerprint mtime >
+   process_start refuses, equality + negatives legal.
+2. Vector semantics: installed strictly sorted/unique (windows check), enabled must equal
+   order-preserved installed−disabled vector; disabled stays free-form but subset-checked.
+3. Lowercase-only sha256_ok; process_start_unix >= 0 (dlc_load mtime may be negative —
+   NTFS pre-1970); name/version/remote_file_id must be present string-or-null.
+Tests: 9 new negatives (uppercase, neg start, missing name, over-cap files, content
+postdating + same-second pass, dup installed, reordered enabled, dup disabled PASSES);
+drift guard gains a None-identity mod pinning the null path. recorder 197+199/0.
+Gate: fixround4_regate. Commit on SHIP; on REFUTED stop + surface to user.
+
+### FIX ROUND 4 GATE VERDICT: REFUTED (tid in threads log, fixround4-regate)
+Stop-tripwire evaluated and OVERRIDDEN with cause: finding 3 (closed objects) makes the
+accepted grammar exactly the serializer's output, TERMINATING the looser-than-as_json class
+by construction — round 5 is the structurally last round, not gate fatigue. Gate showed
+judgment (explicitly declined sub-bar findings: filename chars, extreme timestamps).
+Findings (live-verified): 1. free-form DLC names passed (census emits ONLY
+dlc/<dir>/<name>.dlc — my own fixtures used live-impossible names); 2. descriptor_path
+unconstrained vs descriptor_entry (live derives path = absolute-entry-as-is OR
+user_dir.join(entry)); 3. unknown keys accepted at all 5 object levels (as_json is closed);
+4. LOW: accept-side boundaries unpinned (start=0, files=cap, negative mtimes, reordered
+multi-disabled), drift guard mislabeled as live coverage.
+Attacks that failed: census sort/order confirmed, Vec/BTreeSet Ord identical incl unicode,
+200k boundary exact both sides, lowercase exact, Vec rewrite preserved semantics.
+
+### FIX ROUND 5 (terminal by construction — the grammar is now CLOSED)
+1. installed entries must be census-shaped dlc/<dir>/<name .dlc-ext> (3 components,
+   forward slashes, no backslashes, extension ASCII-case-insensitive); disabled/enabled
+   constrained transitively. All fixtures migrated to census-shaped names.
+2. descriptor_path must equal the resolver's derivation (absolute entry as-is, else
+   pdx_user_dir join; Path COMPONENT equality — the live join mixes separators).
+   Negative (foreign path) + positive (absolute entry) tests.
+3. check_keys closure rejects unexpected keys at root/game/mod-entry/fingerprint/dlc;
+   5-level table-driven negative tests; mod entries must be objects.
+4. Accept-side boundary test (start=0 + mtime -1 + files==cap + fingerprint mtime -10),
+   reordered multi-item disabled passes, drift guard relabeled serializer-shape.
+recorder 197+199/0. Gate: fixround5_regate (terminal). Commit on SHIP; on any non-trivial
+REFUTED: hard stop, surface, no further rounds.
+
+### FIX ROUND 5 GATE VERDICT: SHIP (tid in threads log, fixround5-regate) — CHAIN CLOSED
+"No findings above the silent-loss/fabrication bar." Grammar confirmed structurally closed
+at all 5 levels; every as_json key required + type/range checked. The Path::eq false-refusal
+suspect REFUTED against rust-lang source (component iterators, not bytewise OsStr; join
+inserts MAIN_SEPARATOR so the mixed-separator fixture is the real live shape). All
+false-refusal attacks failed: unicode DLC names, uppercase .DLC, dotted dirs, UNC absolute
+entries, trailing-separator user dirs, dup/reordered disabled, files==cap, start==0,
+negative mtimes. Junction containment + d47 8-family sum re-confirmed intact.
+Below-bar notes (accepted residuals, recorded): component-equivalent path spellings accepted
+(same-file binding); unresolved branch's partial_evidence stays open-keyed (cannot
+masquerade as resolved); shape gate ≠ disk authenticity (authenticated evidence is out of
+scope); no non-object mod-entry fixture (rejection branch is direct + compiled).
+FULL CHAIN: fixround regate REFUTED(3) -> r2 fixes -> gate REFUTED(3) -> r3 fixes -> gate
+REFUTED(3) -> r4 fixes -> gate REFUTED(3+LOW) -> r5 fixes -> gate SHIP. Every hunk in the
+committed diff was adversarially reviewed pre-commit (user directive 2026-07-12).
