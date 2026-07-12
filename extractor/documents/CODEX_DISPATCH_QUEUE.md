@@ -1929,3 +1929,17 @@ revalidate offsets). My harvest praise ("great answer") OVERTURNED again — 3rd
 (fold-wave2, d48, re-counterbadge). Consistent: harvest tests+diff != correctness.
 
 SWEEP TALLY: 12 code/tooling FIX-ROUND + 3 doc REVISE + 1 doc REJECT. 0 SHIP.
+
+REVIEW: campaign-id-design = REVISE (1 HIGH + 1 MEDIUM): (1) identity rollover/failure has
+NO implementable wire contract — design permits exactly-one-header-first, but campaign
+A->B in one process can't re-emit CID1 (forbidden duplicate) or reset sequence (breaks
+continuity) without reinjection; failure/rollover records have no wire encoding -> the
+D2/torn-read gates are unfalsifiable (needs a complete stateful protocol: pipe/file
+rotation or logical-stream boundary records + failure records + seq rules + tests); (2 MED)
+"every walker uses the shared parser" FALSE — production manifest summarizer + lane gates
+have local H4CR decoders; a stateless parser can't enforce "first/exactly-one" (audited
+consumer inventory + shared stateful stream validator). AFFIRMED: d68 evidence is 870ebf
+(not stale), absent CSVs genuinely absent. -> doc-revision [O] (COUPLES with campaign-id-
+impl [C] + stitching [B/M] which consume identity).
+
+SWEEP TALLY: 12 code/tooling FIX-ROUND + 4 doc REVISE + 1 doc REJECT. 0 SHIP.
