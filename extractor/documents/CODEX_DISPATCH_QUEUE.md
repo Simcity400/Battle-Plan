@@ -1842,3 +1842,21 @@ loader; e2e test). -> Codex fix lane [H] dlc-meta. 10/10 code lanes FIX-ROUND.
 CROSS-LANE VALIDATOR PATTERN: dlc-meta #1 == campaign-id #2 == a closed-grammar validator
 accepting null/shapes the live producer can't emit. Recurring fail-closed-strictness class
 worth a shared checklist for the fix lanes.
+
+REVIEW: d48-fold-skip = FIX-ROUND (1 CRITICAL + 1 MAJOR + 1 MINOR): (1) CRITICAL — the
+lane's CENTRAL premise is UNSOUND: non-59 reclassified as "proven out-of-domain filter"
+but evidence only proves observed type-59 ARE construction, not the converse; a
+live-mutation (row K removed/reused mid-walk) returns a valid non-59 -> silently filtered
+-> delta emits a DELETION TOMBSTONE (collector:24305) -> fold DELETES a live construction
+row. The lane meant to STOP data loss and introduced a new path TO it. Fix ~= REVERT to
+skip+PARTIAL until non-construction discriminator provenance + a stability witness exist;
+(2 MAJOR) filtered_construction_non_construction_line_rows always-zero at product boundary
+(collector serializes legacy field) -> the dossier's live gate is impossible [CONFIRMS my
+harvest-time SO-mapping reconciliation flag]; (3 MINOR) contract tolerance text still says
+transient skip. -> Codex fix lane [I] d48-fold-skip (revert-leaning + apply collector diff
+atomically). 11/11 code lanes FIX-ROUND (pass2-spans tooling still in review).
+
+ORCHESTRATOR NOTE: at harvest I approved d48's reclassification as "informational filter,
+clears PARTIAL" — the review shows that clearing PARTIAL on an UNCERTAIN read is itself the
+bug (torn read -> tombstone -> deletion). My harvest verification (tests+diff) again missed
+a fail-closed inversion the adversarial gate caught. Consistent lesson across the sweep.
