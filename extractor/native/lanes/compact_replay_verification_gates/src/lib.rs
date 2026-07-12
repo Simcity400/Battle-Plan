@@ -8,6 +8,9 @@ const RECORD_MAGIC: &[u8; 4] = b"H4CR";
 const RECORD_VERSION: u16 = 1;
 const RECORD_HEADER_LEN: usize = 32;
 const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
+/// Reserved instrumentation-probe domain: the recorder excludes its records
+/// from ALL stream accounting; this independent scan must mirror that.
+const RC_PROBE_DOMAIN_ID: u16 = 250;
 const RECORD_TYPE_FRAME_END: u16 = 2;
 const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 const DOMAIN_FRAME: u16 = 1000;
@@ -1262,6 +1265,18 @@ fn scan_compact_stream(raw: &[u8]) -> HeaderScanSummary {
         }
         previous_sequence = Some(sequence);
         let payload = &raw[offset + RECORD_HEADER_LEN..offset + record_len];
+        // Reserved probe domain (250): pure instrumentation records (lane-wall
+        // lw_*, read A/B, bt_* bound trips, so_* status origins). The recorder
+        // routes these BEFORE all record/domain accounting, so this
+        // independent scan must mirror that rule exactly — counting them here
+        // made every probe-carrying stream disagree with its manifest
+        // (record_count / domain_perf_record_count / domains_seen) and the
+        // exact-count comparison could never pass (R2 gate finding 3,
+        // pre-existing). Sequence ordering was already checked above.
+        if record_type == RECORD_TYPE_DOMAIN_PERF && domain_id == RC_PROBE_DOMAIN_ID {
+            offset = offset.saturating_add(record_len);
+            continue;
+        }
         summary.record_count += 1;
         summary.total_payload_bytes = summary
             .total_payload_bytes
@@ -1600,6 +1615,87 @@ mod tests {
         assert_eq!(summary.frame_end_record_count, 2);
         assert_eq!(summary.skipped_hours, 0);
         assert!(compact_domain_coverage_errors(&summary, &[10]).is_empty());
+    }
+
+    #[test]
+    fn probe_domain_records_are_excluded_from_all_stream_accounting() {
+        // R2 gate finding 3 (pre-existing): the recorder manifest excludes
+        // reserved probe-domain (250) records from record/domain accounting,
+        // but this independent scan counted them — every probe-carrying
+        // stream (lane-wall lw_*, bt_*, so_* units ride domain 250) then
+        // disagreed with its manifest and the exact-count comparison could
+        // never pass. The probe record must be invisible to every counter
+        // while sequence ordering still covers it.
+        let mut raw = Vec::new();
+        append_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(&mut raw, 2, 100, 10, RECORD_TYPE_DOMAIN_DATA, &[0; 24]);
+        // The lane-wall probe record (carries bt_*/so_* diagnostic units in
+        // production; the trailer content is irrelevant to accounting).
+        append_record(
+            &mut raw,
+            3,
+            100,
+            RC_PROBE_DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(
+            &mut raw,
+            4,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+
+        let summary = scan_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(summary.ordering_errors.is_empty());
+        assert_eq!(
+            summary.record_count, 3,
+            "probe record must not join record_count"
+        );
+        assert_eq!(
+            summary.domain_perf_record_count, 1,
+            "probe record must not join domain_perf_record_count"
+        );
+        assert!(
+            !summary.domains_seen.contains(&RC_PROBE_DOMAIN_ID),
+            "probe domain must not join domains_seen"
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[10]).is_empty());
+
+        // A probe record with a broken sequence still trips ordering errors.
+        let mut bad = Vec::new();
+        append_record(
+            &mut bad,
+            5,
+            100,
+            RC_PROBE_DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(
+            &mut bad,
+            5,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let summary = scan_compact_stream(&bad);
+        assert!(!summary.ordering_errors.is_empty());
     }
 
     fn d46_domain_manifest(units: Value) -> Value {
