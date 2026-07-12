@@ -53,3 +53,22 @@ a defect or an explicit USER scope decision — never a doc edit to match the ar
 The B-list is release-gating BY DEFAULT: each row ends CLOSED (landed+gated+validated) or
 USER-DEFERRED (explicit decision recorded in this file). d69's populated-restore (active-
 count RE) and d17 native capture join the same discipline via their queue entries.
+
+## E. Status reconciliation — 2026-07-12 (v0 → v1)
+Closures this session (move OUT of any "populate/restore" debt; the B-list rows above are
+UNCHANGED — they are genuine remaining capture scope):
+- **d69 tech-sharing groups: CLOSED (populated + oracle-validated).** The chronic-PARTIAL
+  (fixed-9 OOB walk) is fixed by the [0..size@CGameState+0x3AC) bound (commit eef77a0e7).
+  MELT-ORACLE PASSED on D04_1944 (live 9 groups / 34 members == parse_world melt), and the
+  <9 improvement live-proven (frozen 4 groups CLEAN, was PARTIAL). Only owed: the Codex
+  re-gate formality (blocked by a service outage; auto-fires on recovery). Feeds req-8b
+  research-sharing display.
+- **d47 characters blocker-1: CLOSED.** The latent persistent-ambiguity defect that could
+  zero the whole domain is fixed (quarantine + `ambiguous_root_rows`, commit a4994ab95),
+  live-clean on the frozen save.
+- **P4 pace verdict + P1b:** RESOLVED (not R0 rows, but they were "open experiments").
+The B-list remains the authoritative "nothing-missed" gap list: reqs 3ext/4ext/6ext/8naval/
+9b/13(FoW)/14(events)/15(deep-panel folds) are the real remaining extractor capture scope.
+The largest is #15 (A22–A33 fold wiring) and #13 (per-country FoW, needs RE + capture pairs).
+Mod-robustness of every landed domain is separately gated by R2 (bounds audit) + R3 (cross-
+modset). Nothing here is claimed CLOSED without a live/oracle proof recorded in the queue.
