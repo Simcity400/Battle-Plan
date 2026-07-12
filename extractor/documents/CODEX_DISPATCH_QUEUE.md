@@ -2203,3 +2203,22 @@ already-cracked dig_in/combat-progress + fix fail-closed proposals + revalidate 
 orchestrator verify (citation + selftest for pass2) -> re-gate (doc/citation audit) -> merge.
 Code-fix wave (serialize collector-lib.rs + world_fold.rs owners) + transport-dependent
 [A]/[C-O]/[S] follow. Fix-phase merges so far: d53, duplex, d48.
+
+FIX WAVE w12g (all remaining fix lanes launched per user "launch all remaining agents with their
+own worktree, deal with merge later" — 9 lanes, each own worktree; capacity overrun expected,
+wedged lanes refired as slots free):
+CODE (base = lane code tip): [D]w12g-fold-wave1-fix (cac61710b), [G]w12g-fold-wave2-fix (c1b4e7ccf),
+[H]w12g-dlcmeta-fix (7ac5fa20a), [F]w12g-librs-fix (9a25f986c: speed default-off + Fix P exact-byte),
+[E]w12g-d51-fix (b44881ba5: shared timed-effects container + current-frame roster), [B/M]w12g-
+stitching-fix (18984c266: 3 CRIT + compat gate + determinism, impl+design together).
+TRANSPORT-DEPENDENT (base = code tip + staged duplex control_transport.rs primitive from integration
+62702d353): [A]w12g-autoattach-fix (6414418cd: 4 CRIT single-injection/journal + heartbeat over
+transport + token/session ownership), [C/O]w12g-campaignid-fix (9dd3a93a1: Known-guard + validator
+type/range + rollover wire-contract on transport), [S]w12g-c1stageb-fix (36f297f82: handshake on
+transport + drain-race caveat + G4 gap).
+DEFERRED MERGE PLAN (owner-serialization at merge time): collector/src/lib.rs single-owner ->
+serialize [F]+[E] (+ the committed census/stage-A); recorder_host/src/world_fold.rs -> serialize
+[D]+[G]; recorder_host/src/main.rs -> [H]+[A]+[C/O] touch disjoint regions but reconcile; snapshot/
+-> [B/M] alone. Each lane STILL owes its adversarial re-gate before merge (same loop as d48/duplex).
+Doc wave w12f (6 lanes) also in flight. Total fleet: 6 (w12f) + 9 (w12g) = 15 -> host wedges above
+~6-7; refire wedged on drain.
