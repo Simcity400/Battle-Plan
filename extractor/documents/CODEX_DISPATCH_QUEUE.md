@@ -2173,3 +2173,10 @@ frame is accepted, breaking no-reconnect/no-retry (remove production into_inner 
 accessor; one-shot session/connection capability; reinit-after-poison regression); (2) MINOR
 stale citation line refs (main.rs 5343->5357, lib.rs 46056->45944; [A]/[O]/[S] refs accurate).
 12 transport tests pass. -> Codex fix lane [PREREQ-0-fix] on w12d-duplex-transport.
+
+FIX PHASE: PREREQ-0 duplex transport MERGED (62702d353, re-gate SHIP after 1 fix round; 409
+tests, build clean). Unblocks [A]/[C,O]/[S]. Now launching independent core-data fixes (no
+PREREQ-0 dep), highest severity first: [I] d48 (CRITICAL — torn-read reclassification ->
+tombstone deletion of a live construction row; fix = revert non-59 to skip+PARTIAL + apply
+collector diagnostic diff atomically). Then [D]fold-wave1 [E]d51 [F]librs [G]fold-wave2
+[H]dlc-meta; transport-dependent [A][C/O][S] after; doc revisions [J-R].
