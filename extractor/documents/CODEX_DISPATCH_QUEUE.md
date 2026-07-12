@@ -1805,3 +1805,22 @@ WIRE-CONTRACT COUPLING: speed/pause feature = coordinated fix across collector l
 discriminator + surface event_hour_raw) + world_fold.rs (consume discriminator, preserve
 event_hour, timeline). Fix group [F] speed now spans 3 files + is gated on the live
 multi-value check. 8/8 code lanes FIX-ROUND.
+
+REVIEW: fold-wave2 = FIX-ROUND (2 CRITICAL + 2 MAJOR): (1) d11 production failure/partial
+status IGNORED — partial subset overwrites complete prior production state, no badge
+(reject FAILURE_MASK before mutation, retain prior); (2) CRITICAL REGRESSION — unavailable
+production leaves become MEASURED EMPTY: stockpile=None -> stockpile:{}, total:0, empty
+lines, 0 factories, replay accepts {} as measured; the A25 ARRAY->MAP "fix" I praised at
+harvest TRADED a rejected wrong-type for a silent measured-empty; license-only countries
+hit unconditionally; upstream also `continue`s past unreadable lines with no witness
+(needs per-country leaf presence bits in the WIRE; until then omit zero-row leaves as
+ambiguous); (3) roster_size counts only unit-leader rows, canonical = len(full roster)
+incl non-unit-leaders (40 chars/6 leaders reported as 6); (4) admiral projection drops
+carried attack/defense + writes experience_raw not canonical experience, diverges §3.10
+unbadged. -> Codex fix lane [G] fold-wave2 (needs collector wire presence-bits +
+schema-owner sign-off on admiral shape). 9/9 code lanes FIX-ROUND.
+
+HARVEST-TIME LESSON: my praise of fold-wave2's A25 fix was premature — it fixed one silent
+loss and introduced another (measured-empty). Independent adversarial review caught what
+orchestrator harvest-verification (tests-green + diff-scan) did not. Reinforces: green
+tests + clean diff != fail-closed-correct; the review gate is load-bearing.
