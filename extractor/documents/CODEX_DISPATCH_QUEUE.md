@@ -1427,3 +1427,19 @@ WORKFLOW: Opus agents finish -> Codex adversarially reviews ALL work (wave-12/12
 commits + Opus diffs) post-reset -> all subsequent changes revert to the Codex
 workflow. Post-reset cron updated accordingly (round6e gate + review sweep; NO
 Codex relaunch of the 3 lanes Opus owns).
+
+OPUS WAVE HARVEST 1+2: libr-pairs incidence addendum fe3180ec3 (+ orchestrator
+correction 1ebabcdd2: lane misread its stale base registry; capture WAS the stage-A
+build — d47-unattributable conclusion stands, SO_D47_* exists in no build; d60
+byte-attributed via exact FNV recompute of "capwar_sweep_not_warmed"; d54/d65
+samples decoded = permanent structural gaps). speedpause-scope 07fc80b1d — TWO
+REFUTATIONS, both orchestrator-spot-checked: (1) speed offset CGameState+0x4BC was
+VERIFIED 2026-07-04 (CRACK_LIST_RESULTS row C3, overturns DEFER) and never wired —
+MASTER_EXTRACTION_CONTRACT row 57 + EXTRACTION_ATLAS:1654 are STALE, no new RE
+needed; ship gated on a multi-value live check (cycle speeds 1-5). (2) PRODUCTION
+COVERAGE DEBT: shipped pause path is per-hour last-value (d57 sweeps hourly,
+world_fold.rs:2209) — sub-hour pause flips are silently LOST today, violating the
+cadence law. FIX QUEUED for the lib.rs owner slot: on-change (is_paused,
+speed_index) poll -> timestamped change events -> per-hour change timeline in the
+fold (exact proposed diffs in W12B_SPEEDPAUSE_SCOPE.md); true zero-loss upgrade =
+CSetGameSpeedCommand::DoExecute hook, documented future item.
