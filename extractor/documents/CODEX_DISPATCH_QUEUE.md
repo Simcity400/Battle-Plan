@@ -659,3 +659,21 @@ a real group that fails vtable) + a coherent read on a process where gs+0x3A8 is
 d69 stays fail-closed PARTIAL = CORRECT (zero data loss), just unpopulated, until then. RE
 thread CLOSED for this session — the fix is designed, the offset is identified, the gate is a
 tool step, not a live one.
+
+## 2026-07-12 — d69 MELT ORACLE PASSED (D04_1944, 9/9 groups + 34/34 members) — count field CONFIRMED
+User loaded D04_1944 (paused). Live d69 (d69_d04) vs parse_world.py melt oracle:
+- LIVE: 9 valid groups (valid_slot_mask 0x1ff, fails=NONE, status_flags 0x0 CLEAN), 34 total
+  members. vec header read cleanly this process: d69_vec_size_word = 0x900000009 =>
+  capacity=9, SIZE(+0x3AC)=9.
+- ORACLE (rakaly melt -> parse_world tech_sharing_group): 9 groups, member counts
+  [2,2,10,1,7,2,2,2,6] = 34 total. ids: BUL_axis_research, BUL_italian_research,
+  CHI_technological_cooperation, FIN_joint_r&d, HUN_joint_air, MEX_USA, SOV_soviet_academies,
+  VIC_learn_from_the_enemy, commonwealth_research.
+- MATCH: groups 9==9, members 34==34, size(+0x3AC)==decoded==oracle==9 ON THE SAME FRAME.
+Combined with the count-field tracking on smaller saves (frozen 4, deep 5, frozen 6), the
++0x3AC finding is now ORACLE-CONFIRMED at the top (fully-populated 9/9) AND tracking below.
+The zero-data-loss concern (a real group hidden behind a vtable failure so size>decoded) is
+retired here: decoded==oracle==9, no group missed. GATE CLEARED — implement the populated-sound
+[0..size) walk (fail-closed if size unreadable or size>capacity). On D04 the fix is a NO-OP
+(size=capacity=9, walk [0..9) == current fixed-9); its EFFECT (dropping OOB PARTIAL) shows on
+<9-group saves. Oracle json: scratchpad/d04oracle/world.json.
