@@ -69,7 +69,18 @@ pub const SO_FRAME_CONTROL_INVALID: usize = 26; // lib.rs 14247 (extraction gate
 pub const SO_D43_SOURCE_EMPTY_WARM_KNOWN: usize = 27;
 /// d43 empty contract set with a cold/degraded snapshot (no coverage proof).
 pub const SO_D43_SOURCE_EMPTY_COLD: usize = 28;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 29;
+/// d53 post-build gate: `!report.ok() || payload_failure` introduces
+/// SOURCE|PARTIAL from a DECODE/gate failure of the built payload — a
+/// distinct first-introduction site from the source-unavailable funnel
+/// (stage-A gate finding 1).
+pub const SO_D53_POSTBUILD_GATE: usize = 29;
+/// d48 worker panic introduces WORKER_PANIC|PARTIAL (stage-A finding 1).
+pub const SO_D48_WORKER_PANIC: usize = 30;
+/// d54 dependency SOURCE-unavailable helper (missing army/oob dependency).
+pub const SO_D54_SOURCE_DEPENDENCY: usize = 31;
+/// d54 worker panic.
+pub const SO_D54_WORKER_PANIC: usize = 32;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 33;
 
 /// Unit names, index-aligned with the ids. `<name>` counts introductions
 /// (summed in the recorder); `<name>_sample` (emitted only when a site
@@ -106,6 +117,10 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_frame_control_invalid",
     "so_d43_source_empty_warm_known",
     "so_d43_source_empty_cold",
+    "so_d53_postbuild_gate",
+    "so_d48_worker_panic",
+    "so_d54_source_dependency",
+    "so_d54_worker_panic",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
