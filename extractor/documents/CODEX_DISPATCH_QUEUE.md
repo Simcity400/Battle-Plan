@@ -536,3 +536,27 @@ NET: no build regression; no revert. Two follow-ups, both NON-URGENT:
   which is unusual; the frozen save was clean from frame 1. Save/timing-specific, not reliably
   reproducible. Recommendation: warm the game briefly before a production capture, or accept the
   fail-closed d47 hold (zero-silent-GAP: it's accounted PARTIAL, not silent loss).
+
+## D69 ACTIVE-COUNT RE — HYPOTHESIS LANDED (Codex Mode-A tid 019f53b9, 2026-07-12)
+The CProvince-reuse evidence (0x295af68) proves INLINE pointer slots (not a vector: a vector's
+manager+0x00/+0x08 would be backing-store/end pointers, not recycled objects). Ranked candidates
+for the active-group COUNT (relative to the manager at CGameState+0x3A0, slots inline at +0x00):
+1. **manager+0x48 = explicit active_count** (0x00 + 9*8 = 0x48, right after the inline [9] array).
+   Layout: group_ptr[9] @0x00..0x47, then u32 active_count @0x48 (+ maybe u32 capacity @0x4C),
+   OR u64 count @0x48. STRONGLY FAVORED. Live check: stable-read u32 AND u64 at +0x48; require
+   == active/valid-slot count; capacity (if @0x4C) in [9,256]; refute if neither width matches or
+   it moves independently of live-group count.
+2. manager+0x48 = one-past-active END pointer (require end==manager+N*8). Weaker (awkward overlap).
+3. manager+0x08 = vector end {begin@0x00,end@0x08,cap@0x10}. REFUTED if manager+0x00 is itself a
+   direct group object (the evidence says it is) — but the belt-and-suspenders check is listed.
+4. array-list {data@0x00,size@0x08,cap@0x0C}. Weakened by the recycled-object evidence.
+INVARIANT (all candidates): stable-read metadata; reject misaligned begin/end + count>256; then
+STILL vtable-validate every [0..count) slot; torn/invalid => accounted PARTIAL (never silent).
+VALIDATION NEEDS: a paused deep-war save + the D04 melt oracle (9/9 groups) to correlate the
+field with the count, PLUS a SECOND state (fewer groups) or a create/remove transition to prove
+it's a DYNAMIC count not a constant capacity (the count must change while capacity stays stable).
+NEXT CONCRETE STEP (cheap, no oracle needed for a first pass): add a collector telemetry probe
+that stable-reads u32+u64 at manager+0x48 as a _sample, run one live window, and compare the
+value against the reader's own valid-slot count per frame — if they track, candidate 1 is
+live-supported; then confirm dynamic-vs-capacity with the oracle. This turns the fixed-9 walk
+into a [0..count) walk = populated-AND-sound d69.
