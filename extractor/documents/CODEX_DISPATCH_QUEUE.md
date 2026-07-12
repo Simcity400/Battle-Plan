@@ -1876,3 +1876,18 @@ conflates CCountry (begin+packed count) with CStrategicOperative (begin/cap/size
 accurate, scope clean, fail-closed-blocked -> REVISE not REJECT. -> doc-revision [J]
 fow-re. LESSON: doc reviews ALSO catch overclaims (hypotheses dressed as near-conclusions);
 the RE dossiers are not automatic SHIPs.
+
+REVIEW: pass2-spans = FIX-ROUND (4 MAJOR): (1) status interpretation NOT domain-aware —
+d60 bit16 = documented mandatory accumulator (not unknown failure), d51 11-13/d49 bit11
+lane-local must be masked -> mislabels known statuses, 19/21 counts wrong (needs the
+domain-aware status registry the MAIN census already has); (2) missing PERF coverage
+treated as clean -> DATA-but-no-PERF stream returns RECONCILED even when manifest
+coverage.ok=false (enforce per-hour 1 FRAME_END + 1 PERF/domain, cross-check manifest);
+(3) missing no_clock_observations fabricated as 0 -> malformed/old ledger falsely unblocks
+C0 (require field); (4) valid zero-valued *_sample units rejected (Some(0) is legal,
+contract tests it) — apply zero-prohibition to COUNTERS not samples. High-level conclusion
+(2 pre-stage-A captures unreconciled) survives; classifications/counts + the tool do not.
+-> Codex fix lane [K] pass2-spans (fold into census-tooling hardening; shares the
+domain-aware registry with the census-oracle lane). 12/12 code/tooling lanes FIX-ROUND.
+IRONY: pass2 re-hit the exact classes (domain-aware bits, fail-closed-on-missing, zero-
+value) the pass-1 census tool spent 6 rounds closing — didn't inherit them.
