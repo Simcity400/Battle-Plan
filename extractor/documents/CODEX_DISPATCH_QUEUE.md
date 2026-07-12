@@ -708,3 +708,15 @@ frame PARTIAL (d69 absent from every under-populated replay); the fix walks [0..
 the 4 real groups CLEAN. Together with D04 (9/9 no-op, oracle-matched) this is the full
 before/after: fully-populated saves unchanged, under-populated saves go PARTIAL->CLEAN.
 d69 domain COMPLETE pending only the Codex re-gate formality (retried after the outage).
+
+## 2026-07-12 — Codex RECOVERED; stale G1/G2/G4/G5 queue assessment
+Codex service back (watcher probe 2). The d69 re-gate (CURRENT prompt, built today) auto-fired
+on recovery. The credits-outage gate queue (G1 tid 019f4ebb, G2 e9f21a1c8, G4 tid 019f4f8d,
+G5) pins tree SHAs from BEFORE today's ~15 commits — firing them as-is reviews STALE diffs.
+Moreover today's fresh reviews already adversarially covered the CURRENT versions of the paths
+those gates touched: d47 (019f53fb BLOCKER confirmed+fixed, re-gate SHIP), d69 (019f53e9 +
+019f5454), P4 (019f53e9). So G1 (old d47 dedup + d69 tombstone) is largely SUPERSEDED by the
+blocker-1 rewrite + populated-sound fix. ACTION: do NOT blind-fire the stale prompts; regenerate
+against current HEAD only for the parts NOT already covered (G2 modset resolver, G5 audit
+reconciliation), and treat G1/G4 as superseded pending a spot re-check. Restored-Codex priority
+is the HELD gated code work (R2 bound-trip-samples, C1 stage-A), gated fresh.
