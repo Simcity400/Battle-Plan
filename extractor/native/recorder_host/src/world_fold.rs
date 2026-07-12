@@ -5814,6 +5814,20 @@ impl WorldFold {
     // --- DOMAIN 17 diplomacy_live (full each frame) -----------------------
     fn fold_diplomacy(&mut self, payload: &[u8]) -> Result<(), String> {
         need(payload, 24, "diplomacy header")?;
+        // G1-residue gate finding 3 (2026-07-12): this fold previously never
+        // read its status word, so a d17 record carrying real failure bits
+        // (NO_SCALAR_SOURCE / WORKER_PANIC / PARTIAL_DATA) folded its rows as
+        // authoritative — incomplete diplomacy silently replaced good state.
+        // Gate on the failure mask; the informational WAR_SEGMENT_ABSENT bit
+        // (1<<13, O7) is NOT in the mask and folds normally on its own.
+        let status_flags = read_u32(payload, 16);
+        if compact_status_is_failure(status_flags) {
+            self.note(format!(
+                "diplomacy failure status {:#x}; diplomacy state unchanged this hour",
+                status_flags & COMPACT_STATUS_FAILURE_MASK
+            ));
+            return Ok(());
+        }
         let country_count = read_u32(payload, 8) as usize;
         let relation_count = read_u32(payload, 20) as usize;
         let mut cursor = 24usize;
@@ -11967,20 +11981,20 @@ impl WorldFold {
         if payload.len() < core_end {
             return Err(format!("market trade len {} < {core_end}", payload.len()));
         }
-        let hard_failure_mask = COMPACT_STATUS_FAILURE_MASK & !COMPACT_STATUS_PARTIAL_DATA;
-        if status_flags & hard_failure_mask != 0 {
+        // G1-residue gate finding 1 (2026-07-12): PARTIAL was previously
+        // excluded from this gate and the frame folded "with omissions" — but
+        // this fold is a FULL REPLACEMENT, so folding an admittedly-incomplete
+        // contract set silently DELETES every unobserved live contract (the
+        // collector's first-hold PARTIAL holds cached pointers while new
+        // contracts exist outside the observed set). PARTIAL is unknown:
+        // retain the prior contract state for the hour.
+        if status_flags & COMPACT_STATUS_FAILURE_MASK != 0 {
             self.market_trade_unknown_this_hour = true;
             self.note(format!(
                 "market_trade_live failure status {:#x}; trade contracts unknown this hour",
-                status_flags & hard_failure_mask
+                status_flags & COMPACT_STATUS_FAILURE_MASK
             ));
             return Ok(());
-        }
-        if status_flags & COMPACT_STATUS_PARTIAL_DATA != 0 {
-            self.note(
-                "market_trade_live partial status; folded available trade contracts with omissions"
-                    .to_string(),
-            );
         }
         if scale_raw != FIXED_SCALE as u32 {
             return Err(format!(

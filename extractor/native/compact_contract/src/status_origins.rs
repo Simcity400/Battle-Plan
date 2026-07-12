@@ -55,7 +55,14 @@ pub const SO_D65_SOURCE_EMPTY_NO_WITNESS: usize = 23; // lib.rs 37474
 pub const SO_D65_PARTIAL_DROPPED_AMBIGUOUS: usize = 24; // lib.rs 37480
 pub const SO_D55_TRANSITION_BASELINE_RESET: usize = 25; // lib.rs 25310 (census had misattributed to d51)
 pub const SO_FRAME_CONTROL_INVALID: usize = 26; // lib.rs 14247 (extraction gate, frame-scoped)
-pub const STATUS_ORIGIN_ID_COUNT: usize = 27;
+/// d43 empty contract set while the async sweep snapshot claimed
+/// warm-complete-empty — fails closed (G1-residue finding 2: an async pass is
+/// not a current-frame emptiness witness) but counted separately from cold so
+/// C0 can see the would-be MeasuredEmpty incidence the C1 registry needs.
+pub const SO_D43_SOURCE_EMPTY_WARM_KNOWN: usize = 27;
+/// d43 empty contract set with a cold/degraded snapshot (no coverage proof).
+pub const SO_D43_SOURCE_EMPTY_COLD: usize = 28;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 29;
 
 /// Unit names, index-aligned with the ids. `<name>` counts introductions
 /// (summed in the recorder); `<name>_sample` (emitted only when a site
@@ -90,16 +97,27 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d65_partial_dropped_ambiguous",
     "so_d55_transition_baseline_reset",
     "so_frame_control_invalid",
+    "so_d43_source_empty_warm_known",
+    "so_d43_source_empty_cold",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ATOMIC_ZERO: AtomicU64 = AtomicU64::new(0);
-static ORIGIN_COUNTS: [AtomicU64; STATUS_ORIGIN_ID_COUNT] =
+/// Packed per-id word: low 63 bits = introduction count since last drain,
+/// bit 63 = "a sample was recorded in this batch". Count and sample-flag MUST
+/// live in ONE atomic (R2-gate finding-1 fix round, second iteration): with a
+/// separate flag cell, a drain racing a recorder could consume the flag
+/// against the WRONG count batch — either a count=0 drain stealing a fresh
+/// flag, or a fresh flag being consumed by an older batch's drain, leaving
+/// the next drain to report counted sample-recordings with no sample. A
+/// single swapped word makes (count, flag) inseparable.
+static ORIGIN_PACKED: [AtomicU64; STATUS_ORIGIN_ID_COUNT] =
     [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
 static ORIGIN_SAMPLES: [AtomicU64; STATUS_ORIGIN_ID_COUNT] =
     [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
-static ORIGIN_SAMPLE_SET: [AtomicU64; STATUS_ORIGIN_ID_COUNT] =
-    [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
+
+const SAMPLE_FLAG: u64 = 1 << 63;
+const COUNT_MASK: u64 = SAMPLE_FLAG - 1;
 
 /// Count one introduction of a status bit at site `id`. Out-of-range ids are
 /// ignored (defensive; callers use the constants).
@@ -107,26 +125,34 @@ pub fn record_status_origin(id: usize) {
     if id >= STATUS_ORIGIN_ID_COUNT {
         return;
     }
-    ORIGIN_COUNTS[id].fetch_add(1, Ordering::Release);
+    ORIGIN_PACKED[id].fetch_add(1, Ordering::Release);
 }
 
 /// Count one introduction AND attach this frame's deciding raw word (flags,
 /// reason hash, packed counts). Last value wins within a frame.
 ///
-/// Ordering (R2 gate finding 1, same defect class as bound_trips): the sample
-/// and its set-flag are stored BEFORE the counter is published (Release), and
-/// the drain consumes the counter with Acquire first — so a drain observing
-/// the count also observes the sample that trip stored. The old
-/// count-first order let a drain consume the count while the sample/flag were
-/// still unwritten, emitting the incidence WITHOUT its deciding word and
-/// leaving the flag to a later frame whose count is zero (sample lost).
+/// The sample value is stored BEFORE the packed count+flag publishes
+/// (Release); the drain swaps the packed word with Acquire — so a drain
+/// observing the flagged count also observes a genuine sample value.
 pub fn record_status_origin_sample(id: usize, sample: u64) {
     if id >= STATUS_ORIGIN_ID_COUNT {
         return;
     }
     ORIGIN_SAMPLES[id].store(sample, Ordering::Relaxed);
-    ORIGIN_SAMPLE_SET[id].store(1, Ordering::Release);
-    ORIGIN_COUNTS[id].fetch_add(1, Ordering::Release);
+    // CAS loop: increment the count AND set the flag in one atomic word.
+    let mut current = ORIGIN_PACKED[id].load(Ordering::Relaxed);
+    loop {
+        let next = (current.wrapping_add(1)) | SAMPLE_FLAG;
+        match ORIGIN_PACKED[id].compare_exchange_weak(
+            current,
+            next,
+            Ordering::Release,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 /// Drain this frame's introductions: per id, (count since last drain,
@@ -137,10 +163,12 @@ pub fn drain_frame_origins() -> [(u64, Option<u64>); STATUS_ORIGIN_ID_COUNT] {
     let mut out = [(0u64, None); STATUS_ORIGIN_ID_COUNT];
     for (id, slot) in out.iter_mut().enumerate() {
         // Acquire pairs with the Release publishes in the record fns: a
-        // counted trip's sample + flag stores are visible below.
-        let count = ORIGIN_COUNTS[id].swap(0, Ordering::Acquire);
-        let sample_set = ORIGIN_SAMPLE_SET[id].swap(0, Ordering::Acquire) != 0;
-        let sample = sample_set.then(|| ORIGIN_SAMPLES[id].load(Ordering::Relaxed));
+        // flagged count's sample store is visible below. Swapping ONE word
+        // keeps the count and its sample-flag inseparable.
+        let packed = ORIGIN_PACKED[id].swap(0, Ordering::Acquire);
+        let count = packed & COUNT_MASK;
+        let sample =
+            (packed & SAMPLE_FLAG != 0).then(|| ORIGIN_SAMPLES[id].load(Ordering::Relaxed));
         *slot = (count, sample);
     }
     out

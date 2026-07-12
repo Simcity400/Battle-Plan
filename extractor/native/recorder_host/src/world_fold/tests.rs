@@ -7,7 +7,7 @@ use compact_contract::{
     COMPACT_STATUS_NO_CLOCK, COMPACT_STATUS_NO_SCALAR_SOURCE, COMPACT_STATUS_PARTIAL_DATA,
     COMPACT_STATUS_PROFILE_MISMATCH, COMPACT_STATUS_SOURCE_UNAVAILABLE,
     COMPACT_STATUS_STATE_UNAVAILABLE, COMPACT_STATUS_TRANSITION_BASELINE_RESET,
-    COMPACT_STATUS_WORKER_PANIC,
+    COMPACT_STATUS_WAR_SEGMENT_ABSENT, COMPACT_STATUS_WORKER_PANIC,
 };
 use hub_motorization_live_lane as hub62_lane;
 use session_multiplayer_metadata_live as session57_lane;
@@ -6160,15 +6160,41 @@ fn folds_d43_trade_contracts_world_and_per_country_views() {
 }
 
 #[test]
-fn folds_d43_mtd1_detail_fields_without_discarding_partial_core_rows() {
-    let mut payload = d43_payload(COMPACT_STATUS_PARTIAL_DATA);
-    append_d43_mtd1_detail(&mut payload);
+fn d43_partial_frames_retain_prior_contracts_never_fold_omissions() {
+    // G1-residue gate finding 1 (2026-07-12): the d43 fold is a FULL
+    // REPLACEMENT, so folding a PARTIAL (admittedly incomplete) contract set
+    // silently deletes every unobserved live contract. A PARTIAL frame must
+    // leave the prior contract state untouched. (This test previously pinned
+    // the refuted fold-with-omissions behavior.)
+    let mut partial_payload = d43_payload(COMPACT_STATUS_PARTIAL_DATA);
+    append_d43_mtd1_detail(&mut partial_payload);
 
     let snap = chunk1_one_snapshot(vec![
         (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
-        (43, payload),
+        (43, partial_payload),
     ]);
 
+    assert!(
+        snap["diplomacy_world"]["trade_contracts"][0].is_null(),
+        "a PARTIAL d43 frame must not fold its (incomplete) contract set"
+    );
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("market_trade_live failure status")));
+
+    // The identical payload with a CLEAN status folds fully — proving the
+    // retain above comes from the status gate, not a parse defect.
+    let mut clean_payload = d43_payload(0);
+    append_d43_mtd1_detail(&mut clean_payload);
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, clean_payload),
+    ]);
     let contract = &snap["diplomacy_world"]["trade_contracts"][0];
     assert_eq!(contract["prices"][0]["amount_raw"], json!(7_000_000));
     assert_eq!(contract["delivery_country"], json!("ENG"));
@@ -6180,14 +6206,6 @@ fn folds_d43_mtd1_detail_fields_without_discarding_partial_core_rows() {
         contract["r2_market_trade_live"]["factory_cic_progress_raw"],
         json!(45_000)
     );
-    assert!(snap["provenance"]["notes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|note| note
-            .as_str()
-            .unwrap()
-            .contains("market_trade_live partial status")));
 }
 
 #[test]
@@ -10803,5 +10821,93 @@ fn w6_d69_tech_sharing_groups_partial_data_retains_prior() {
         tsg["count"],
         json!(2),
         "a PARTIAL_DATA frame must retain the prior 2-group set, not shrink to 1"
+    );
+}
+
+
+fn diplomacy_payload(status_flags: u32, rows: &[(u32, i32, u32, i64)]) -> Vec<u8> {
+    // Header: elapsed(u64) country_count(u32) country_count(u32) status(u32)
+    // relation_count(u32); rows: tag(u32) flags(u32) faction(i32)
+    // at_war_count(u32) casualties(i64).
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&5u64.to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for &(tag, faction, at_war_count, casualties) in rows {
+        payload.extend_from_slice(&tag.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&faction.to_le_bytes());
+        payload.extend_from_slice(&at_war_count.to_le_bytes());
+        payload.extend_from_slice(&casualties.to_le_bytes());
+    }
+    payload
+}
+
+#[test]
+fn d17_diplomacy_failure_frames_do_not_mutate_state_but_war_segment_absent_folds() {
+    // G1-residue gate finding 3: fold_diplomacy previously ignored its status
+    // word, so a failing d17 record folded as authoritative. A failure frame
+    // (even combined with the informational WAR_SEGMENT_ABSENT bit) must
+    // leave diplomacy unchanged; WAR_SEGMENT_ABSENT ALONE must fold normally.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for (frame, status, casualties) in [
+        (0i64, 0u32, 100i64), // clean baseline
+        (
+            1,
+            COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+            999,
+        ), // failure -> must NOT fold
+        (2, COMPACT_STATUS_WAR_SEGMENT_ABSENT, 555), // informational alone -> folds
+    ] {
+        let raw = raw_for(16_959_360 + frame);
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(1, "GER")]),
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            17,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &diplomacy_payload(status, &[(1, 7, 2, casualties)]),
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+    }
+
+    let mut fold = WorldFold::new("d17_status_gate");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 3);
+    let frame1 = parse(&snaps[0].2);
+    assert_eq!(frame1["countries"]["GER"]["diplomacy"]["casualties"], json!(100));
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(100),
+        "a failure-status d17 frame must not replace diplomacy state"
+    );
+    let frame3 = parse(&snaps[2].2);
+    assert_eq!(
+        frame3["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(555),
+        "WAR_SEGMENT_ABSENT alone is informational and must fold"
     );
 }
