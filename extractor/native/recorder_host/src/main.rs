@@ -2914,11 +2914,21 @@ fn validate_domain(domain: &str) -> Result<(), String> {
     if !(first.is_ascii_lowercase() || first == '_') {
         return Err(format!("invalid scheduled domain {domain:?}"));
     }
-    if chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
-        Ok(())
-    } else {
-        Err(format!("invalid scheduled domain {domain:?}"))
+    if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        return Err(format!("invalid scheduled domain {domain:?}"));
     }
+    // Exact-domain gate BLOCKER (2026-07-12): syntax alone let a TYPO through
+    // — the collector emitted only the valid names while the coverage gate's
+    // filter_map silently narrowed the EXPECTED set to match, so a capture
+    // missing a whole requested domain could pass its gates. Every explicit
+    // domain name must resolve in the compact-domain registry, fail-closed at
+    // parse time.
+    if compact_domain_registry::id_for_scheduled_name(domain).is_none() {
+        return Err(format!(
+            "unknown scheduled domain {domain:?} (not in the compact-domain registry)"
+        ));
+    }
+    Ok(())
 }
 
 fn read_filter_file(value: Option<&String>, flag: &str) -> Result<String, String> {
@@ -16703,7 +16713,21 @@ fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
     } else {
         scheduled_domains
             .iter()
-            .filter_map(|domain| compact_domain_id(domain))
+            .map(|domain| {
+                // Exact-domain gate BLOCKER: filter_map here silently NARROWED
+                // the expected coverage set when a name failed to resolve —
+                // the coverage gate then verified the typo'd subset and could
+                // pass a capture missing a whole requested domain. Names are
+                // registry-validated at argument parse time; anything
+                // unresolvable reaching this point is a bug and must be loud,
+                // never a silently smaller expectation.
+                compact_domain_id(domain).unwrap_or_else(|| {
+                    panic!(
+                        "scheduled domain {domain:?} did not resolve in the \
+                         compact-domain registry (parse-time validation bypassed?)"
+                    )
+                })
+            })
             .collect::<Vec<_>>()
     };
     ids.sort_unstable();
@@ -28738,6 +28762,54 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn unknown_scheduled_domain_names_are_rejected_at_parse_time() {
+        // Exact-domain gate BLOCKER: a typo'd domain name previously passed
+        // syntax-only validation; the collector emitted the valid subset and
+        // the coverage gate silently narrowed its expected set to match —
+        // a capture missing a whole requested domain could pass its gates.
+        assert!(validate_domain("fuel_live").is_ok());
+        // Typo (transposition), unknown-but-well-formed, and case errors all
+        // fail closed at parse time now.
+        for bad in ["weahter_live", "definitely_not_a_domain", "Fuel_live"] {
+            let err = validate_domain(bad).unwrap_err();
+            assert!(
+                err.contains("unknown scheduled domain") || err.contains("invalid"),
+                "{bad:?} -> {err}"
+            );
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_unknown_domain_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Valid-plus-unknown must fail the WHOLE parse (never a silently
+        // narrower schedule).
+        let err = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--scheduled-domain",
+                "fuel_live",
+                "--scheduled-domain",
+                "weahter_live",
+            ],
+        ))
+        .unwrap_err();
+        assert!(err.contains("unknown scheduled domain"), "{err}");
+        // Expected-coverage derivation cannot silently narrow: resolvable
+        // names map, and the empty-schedule default is unchanged.
+        assert_eq!(
+            compact_expected_domain_ids(&["fuel_live".to_string()]),
+            vec![compact_domain_id("fuel_live").unwrap()]
+        );
+        assert_eq!(
+            compact_expected_domain_ids(&[]),
+            vec![10, 11, 12, 13, 14, 15, 16, 17]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     fn parse_args_scheduled_domains_exact_suppresses_production_union() {
         let dir = std::env::temp_dir().join(format!(
             "battle-plan-recorder_host_exact_domains_{}",
