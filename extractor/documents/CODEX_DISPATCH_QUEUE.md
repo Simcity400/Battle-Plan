@@ -1763,3 +1763,26 @@ MeasuredEmpty directly, never invokes the rooted reader. -> Codex fix lane [E] d
 REVIEW TALLY 6/6 code lanes FIX-ROUND (autoattach 7, stitching 10, campaign-id 5,
 fold-wave1 5, heartbeat-wmi 5, librs-readers2 3). d68-refusal upheld. Fix-lane groups:
 [A]autoattach+heartbeat-wmi [B]stitching [C]campaign-id [D]fold-wave1 [E]d51-bit12.
+
+REVIEW: librs-readers = FIX-ROUND (1 CRITICAL + 3 MAJOR + 1 MINOR + 1 NIT). (1 CRIT)
+speed reader +0x4BC enabled UNCONDITIONALLY despite speed=1-only verification — an
+unrelated 0..=5 value emits as root-validated speed; DEFAULT-DISABLE until the live
+multi-value + independent-disasm gates pass (the ship-gate was dossier-noted but NOT
+enforced in code); (2) GameSpeed rows emitted but host fold drops them (world_fold:11444)
+with no unavailable badge — COUPLES with fold-wave3 (consumer); land together or withhold;
+(3) hourly sample + command_sequence=0, no on-change stream -> sub-hour 2->4->2 invisible
+(needs the W12B on-change poll before speed ships); (4 MAJOR — Fix P RESIDUAL) Fix P
+hashes read#1 then decodes read#2 -> A->B mutation between them stores fingerprint-A/
+token-B; FNV-1a collision-prone -> NOT "changes iff bytes change"; needs ONE
+double-read-stable snapshot + exact-byte identity (not a 64-bit hash) + address-reuse
+regression test [couples with test-debt Fix P authorship]; (5 MINOR) pause_rows_emitted
+now counts TOTAL event rows -> misattribution; (6 NIT) world_tension is A17 not A16.
+world_tension no-code AFFIRMED. -> Codex fix lane [F] librs-readers (speed default-off +
+Fix P strengthen); Fix P couples across test-debt+librs-readers; speed couples with
+fold-wave3.
+
+REVIEW TALLY 7/7 code lanes FIX-ROUND. Even "validated" Fix P (0/600k) had a residual
+between-reads TOCTOU the stress test's per-iteration reconstruction couldn't surface —
+the adversarial reviewer caught what live stress didn't. Fix groups now [A]autoattach+
+heartbeat [B]stitching [C]campaign-id [D]fold-wave1 [E]d51-bit12 [F]librs-readers(speed+
+FixP). Speed emitter(librs)+consumer(fold-wave3) merge-coupled; Fix P spans test-debt+librs.
