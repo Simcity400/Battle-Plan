@@ -864,3 +864,12 @@ tree 727f82c69; ids in compact_contract/src/status_origins.rs):
   SO_FRAME_CONTROL_INVALID (sample = scheduled_domains_valid packed word if cheap).
 Then: cargo test collector+recorder; Codex gate the combined stage-A diff when credits
 return; a Debug live window afterwards closes C0 round-3 items 1-5 from ONE manifest.
+
+## 2026-07-12 — C1 stage A COMPLETE (both chunks shipped, gate owed)
+Chunk 1 (727f82c69) mechanism + chunk 2 (c348504c3) all 27 sites wired (28 call sites; see
+the commit messages for the per-domain map). QUEUED GATE ADDENDUM: the stage-A gate (queued
+item 7) covers BOTH commits as one diff; attack surface = acceptance-behavior identity at
+every wired site (instrumentation must not change any accept/reject outcome), sample packing
+correctness (d54 21-bit fields, d48 gate_ok bit 32, naval reason hashes), drain/emission
+identity with the bt_* pattern, and recorder hour-span aggregation. After the gate: ONE live
+Debug window closes C0 round-3 items 1-5 from compact_stream.status_origins alone.
