@@ -1891,3 +1891,26 @@ contract tests it) — apply zero-prohibition to COUNTERS not samples. High-leve
 domain-aware registry with the census-oracle lane). 12/12 code/tooling lanes FIX-ROUND.
 IRONY: pass2 re-hit the exact classes (domain-aware bits, fail-closed-on-missing, zero-
 value) the pass-1 census tool spent 6 rounds closing — didn't inherit them.
+
+REVIEW: re-war-decisions = REVISE (4 HIGH + 2 MEDIUM): (1) D1 "HIGH decoder" proposes
+def+0x10/target+0x20 — a PROVEN NULL for active_targeted on 870ebf (start from known
+0x27D4F00 class); (2) A21 inventory misses random_item(1144)/decision_to_remove(39),
+"proven-absent catalogue" too strong; (3) capitulation over-closed — A5 derived OK but
+"full formula" has 5 unresolved choices, "wire the column" outruns evidence; (4) W4 root
+HIGH unsupported (save nesting=shape not membership; oracle can't decode wargoal actor);
+(5 MED) event option-array promoted hypothesis->fact; (6 MED) relative offsets mislabeled
+"build-portable" vs build_profile's per-build rule. -> doc-revision [L] (downgrade HIGH->
+HYPOTHESIS, fix the proven-null path, extend oracles).
+
+REVIEW: stitching-design = REVISE (3 HIGH + 1 MEDIUM): (1) cross-session gap 101..109 NOT
+representable by the normative algorithm — CONFIRMS stitching-impl #3 is a DESIGN flaw not
+just impl; fix must correct both; (2) same-hour "last successfully completed" backfills a
+later CaptureFailed (later complete obs must own the hour; if failed -> gap); (3)
+multi-campaign A->B->A process has no coherent raw-source ownership (key raw sources by
+session+digest, map tickets to participation bounds); (4 MED) determinism tuple omits
+created_utc/compression/codec version. Citations all clean. -> doc-revision [M] stitching-
+design (COUPLES with stitching-impl fix [B] — design+impl fixed together).
+
+SWEEP TALLY: 12 code/tooling FIX-ROUND + 3 doc REVISE (fow-re, re-war-decisions, stitching-
+design). 0 SHIP so far; every finding legitimate. Doc REVISEs cluster on overclaim
+(hypothesis-as-fact) + internal spec gaps.
