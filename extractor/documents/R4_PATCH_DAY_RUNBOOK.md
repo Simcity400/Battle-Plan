@@ -19,16 +19,19 @@ already fail-closed (readers refuse an unknown build).
 
 ## Step 1 — RTTI/vtable re-derivation (the structural half — already self-proven)
 ```
-python scripts/rtti_rederive.py --rederive --exe "<new hoi4.exe>" \
-    --out scripts/rtti_vtable_map.json
+# re-derive against the NEW exe: prints the updated constants block + a diff report
+python scripts/rtti_rederive.py --rederive "<new hoi4.exe>"
 ```
-- Re-derives every RTTI-named vtable RVA from the new image. This half is *self-proven*: each
-  vtable is matched by its decorated RTTI name, so a moved-but-present class is re-anchored
-  automatically and a **removed/renamed** class fails the match (fail-closed, named).
-- Diff the new `rtti_vtable_map.json` vs the committed one. Any RVA that moved → its dependent
-  domain's absolute offsets are suspect → Step 2 must re-validate that domain.
-- If a needle vtable is now UNFOUND: that domain fails closed (SOURCE_UNAVAILABLE); do not ship
-  the version as compatible until the class is re-located.
+- Re-derives every RTTI-named vtable RVA from the new image by matching each class's decorated
+  RTTI name (+ COL offset to disambiguate multiple-inheritance vtables). This half is
+  *self-proven*: a moved-but-present class is re-anchored automatically; a **removed/renamed or
+  ambiguous** class is listed **UNRESOLVED, never guessed** (fail-closed, named).
+- The diff report names every RVA that moved → its dependent domain's absolute offsets are
+  suspect → Step 2 must re-validate that domain. (Sanity self-proof against the CURRENT exe is
+  `--verify`, which asserts byte-for-byte equality with `build_profile.rs` and exits 1 on any
+  mismatch — run it first to confirm the baseline before pointing at the new build.)
+- Any UNRESOLVED needle vtable = that domain fails closed (SOURCE_UNAVAILABLE); do not ship the
+  version as compatible until the class is re-located and the manifest updated (`--derive-map`).
 
 ## Step 2 — offset sentinel checks (the field-offset half — needs a save)
 For each domain whose vtable moved (or, for a major patch, ALL domains), run a short live
@@ -84,10 +87,10 @@ a captured-but-unsupported session is safely PARTIAL/SOURCE, never silently wron
 ### One-shot command block (copy/paste for a routine patch)
 ```
 cd extractor/native
-python scripts/rtti_rederive.py --rederive --exe "<new hoi4.exe>" --out scripts/rtti_vtable_map.json
-git diff --stat scripts/rtti_vtable_map.json      # which vtables moved
+python scripts/rtti_rederive.py --verify                       # baseline self-proof on current exe
+python scripts/rtti_rederive.py --rederive "<new hoi4.exe>"    # prints updated block + which vtables moved
 bash ~/.claude/hoi4_gate_prompts/run_one_window.sh patchcheck 120 - --d53-relation-read-mode shadow
-python ../save_oracle/parse_world.py "<save>.hoi4"     # compare vs live d69
+python ../save_oracle/parse_world.py "<save>.hoi4"             # compare vs live d69 (groups/members)
 # review: per-domain status, *_sample sanity, d53 shadow agreement, oracle counts
 ```
 The vtable half is automatic and self-proven; Steps 2–5 are the human-reviewed gate. Budget ~30
