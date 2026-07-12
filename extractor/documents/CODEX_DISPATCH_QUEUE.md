@@ -1997,3 +1997,24 @@ with [J] fow-re (same IntelTex overclaim propagated parent->child; fix once).
 ALL 23 REVIEW TARGETS DISPATCHED. SWEEP TALLY: 12 code/tooling FIX-ROUND + 7 doc REVISE +
 1 doc REJECT + 1 SOUND-WITH-NITS. Awaiting: c1-stageb-design, d51-badges reviews +
 census-oracle (Mode-C fix). FoW revisions [J]+[R] merge into one coordinated fix.
+
+REVIEW: c1-stageb-design = REVISE (3 HIGH): (1) transactional handshake/ack presented as
+EXISTING but doesn't — collector->recorder pipe is INBOUND-ONLY, no reverse ack path
+(specify a bidirectional control transport + framing/timeouts/reconnect/single-injection
+recovery before claiming transactional sealing implementable); (2) Stage-A drain race —
+sample+count in SEPARATE atomics (status_origins.rs:163/190): a writer between drain-swap
+and sample-load attributes the new sample to the OLD batch; fetch_add/wrapping_add silently
+wrap vs the terminal-overflow invariant (make sample+batch-gen inseparable; expose overflow
+as terminal; interleaving tests) — NOTE: diagnostic-precision caveat on the actual stage-A
+_sample code, NOT data loss (count still increments; _sample is last-observed best-effort),
+but the design's "exact per-attempt" CLAIM overreaches; (3) recorder algo checks only
+ExpectedAbsent-referenced declarations, not "every active declaration every attempt" (G4
+gap). -> doc-revision [S] c1-stageb-design.
+
+RECURRING ARCHITECTURAL GAP (across 3 design reviews): NO reverse recorder->collector
+control channel exists. campaign-id ROLLOVER [O], c1-stageb HANDSHAKE [S], heartbeat PROOF
+[A] all assume/need one. CONSOLIDATED PREREQ: a duplex control transport must be designed+
+built FIRST; those three designs depend on it. Flag for the fix-lane sequencing.
+
+SWEEP: 12 code/tooling FIX-ROUND + 8 doc REVISE + 1 REJECT + 1 SOUND-WITH-NITS. 1 review
+left (d51-badges) + census-oracle.
