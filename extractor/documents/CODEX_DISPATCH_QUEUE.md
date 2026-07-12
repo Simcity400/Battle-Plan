@@ -1404,3 +1404,15 @@ new filtered counter as INFORMATIONAL (not a partial cause) in the merge commit,
 the census d48 expectations re-checked. The D04 capture's so_d48 sample=11 likely
 decomposes into non-59 filters (would clear d48 PARTIAL) — verify on the first
 post-merge capture.
+
+WAVE 12/12b HARVEST COMPLETE (2026-07-12 ~22:00): 13/16 lanes landed, each committed
+in its worktree, ALL still owed their adversarial review gate before merge —
+autoattach b42bdb420, campaign-id 4637b6dce, stitching dd85e52bb, c1-stageb 36f297f82,
+d53-badges f40229d7e, events-decisions e07fef384, pass2-spans 08005fe7a, d48-fold-skip
+7f0bb4103 (code), libr-pairs f84b44373, fow-scope f407977a4, dlc-meta 7ac5fa20a (code,
+self-committed, 397/0 independently verified), fold-wave1 cac61710b (code, 396/0
+independently verified), d51-badges 4f684d37e. Dead (queued post-reset with round6e):
+locjoin-verify, speedpause-scope, test-debt. Notable adjudication inputs for the merge
+cycle: d51 bit12 closable from existing build-profile root; d48 SO-mapping
+reconciliation item (above); libr-pairs incidence closure now possible from the
+d04stageA capture's so_* ledger; D56 unit = raw CFixedPoint dominance points.
