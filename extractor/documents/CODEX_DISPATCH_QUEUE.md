@@ -1955,3 +1955,17 @@ player/AI/timeout/repeat-ID controls); (5 LOW) 3 unqualified citation paths. -> 
 
 SWEEP TALLY: 12 code/tooling FIX-ROUND + 5 doc REVISE + 1 doc REJECT. 0 SHIP. Doc pattern:
 overclaim (quick-fold-that-doesn't-exist, hypothesis-as-fact) + stale-build offsets as current.
+
+REVIEW: libr-pairs = REVISE (1 HIGH + 1 MEDIUM — partly corrects MY addendum). (1) d54
+"permanent structural" closure UNSUPPORTED: the sample has omission COUNTS not REASONS
+(type-5 omitted on target_status!=EXACT, path omitted on OVERFLOW/VALIDATION_FAILED — which
+can be live-read churn: torn ptr/bounds/failed read; STATUS_FIXTURE_REQUIRED actually
+RETAINS the row); tolerance text is a static string not a runtime oracle. My addendum
+closed d54 as CLOSED-permanent -> OVERCLAIM; downgrade to STILL-OPEN + add reason-specific
+origin units, validate on advancing frames; (2 MED) my addendum insertion shifted lines ->
+d45/d49/d50/d65 closure-table citations now stale (use stable section anchors). ->
+doc-revision [Q] libr-pairs (fix my d54 overclaim + line refs). ORCHESTRATOR SELF-NOTE: my
+incidence addendum overclaimed d54's permanence — the same overclaim class the reviewer
+caught in the Opus dossiers; I'm not exempt. Honest correction owed.
+
+SWEEP TALLY: 12 code/tooling FIX-ROUND + 6 doc REVISE + 1 doc REJECT. 0 SHIP.
