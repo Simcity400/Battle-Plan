@@ -1599,3 +1599,27 @@ heartbeat/first-frame proof protocol DESIGN reusing existing collector artifacts
 out-of-fence diffs specified). REVIEW PRIORITY: the COM FFI (vtable/VARIANT layout,
 watcher-thread cancellation) gets a focused Mode-A gate before merge — lane
 self-flagged it.
+
+OPUS WAVE O3 SEALED (4/4, all orchestrator-verified): re-counterbadge 2919af399,
+librs-readers2 b44881ba5 (d51 bit12 shipped / d68 pair correctly blocked),
+heartbeat-wmi 6414418cd (real COM-FFI WMI + heartbeat design), fold-wave3
+101a07c6d (GameSpeed change-timeline fold behind dedicated root bit 1<<2 +
+speed_pause_changes timeline omitted-when-empty + fresh-WorldFold-per-segment
+s<ordinal>-prefixed filenames matching the stitch planner; 208+199 verified, +8).
+
+OPUS ERA COMPLETE — 15 lanes over 3 waves, every deliverable committed in its
+worktree and independently verified. CODEX REVIEW QUEUE (all before merge):
+13 wave-12/12b commits + O1: fe3180ec3+1ebabcdd2 / 07fc80b1d / 2ea8bbdad /
+9c1d26c3b / 855723cf1 + O2: d1126db87 / cb035619e / 9dd3a93a1 / 9a25f986c(stack) /
+18984c266 / c1b4e7ccf + O3: 2919af399 / b44881ba5(stack) / 6414418cd / 101a07c6d.
+Priority order: round6e census gate FIRST (unblocks the two stacked reader lanes),
+then code lanes (WMI COM FFI focused pass; stitching v2; campaign-id; folds 1-3;
+d48; dlc-meta; readers stack), then dossier/design lanes. MERGE SEAMS (from the
+harvests): d48 SO-mapping remap; stitching<->campaign-id interface reconcile;
+stitching<->fold-wave3 segment wiring; speed reader<->fold-wave3 root-bit wire-in;
+A33 script_variables schema decision (replay-schema owner); REPLAY_SCHEMA amendment
+notes (speed keys). NEW RE ITEMS: identity-pair offsets, war_score sub-block, CWar,
+wargoal vector, chosen_option_index, FoW fork A/B, dig_in/org_max/bombardment melt
+scans, air-sup index law. USER-GATED LIVE: multi-value speed gate, bit12 live
+confirm, autoattach+WMI live matrix, S/D/M campaign matrix, cross-modset, speed-5
+acceptance, deep-war soak, d69 <9-save confirm.
