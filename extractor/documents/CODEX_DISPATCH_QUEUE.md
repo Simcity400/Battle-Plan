@@ -1914,3 +1914,18 @@ design (COUPLES with stitching-impl fix [B] — design+impl fixed together).
 SWEEP TALLY: 12 code/tooling FIX-ROUND + 3 doc REVISE (fow-re, re-war-decisions, stitching-
 design). 0 SHIP so far; every finding legitimate. Doc REVISEs cluster on overclaim
 (hypothesis-as-fact) + internal spec gaps.
+
+REVIEW: re-counterbadge = REJECT (7 HIGH + 1 MEDIUM — first REJECT). Central triage STALE/
+wrong: (1) old-build 16022851 offsets asserted 870ebf-stable; (2) dig_in classified
+"unlocated" but ALREADY cracked CDivision+0x448/+0x450 on 870ebf; (3) "combat progress has
+no oracle" FALSE — i32@CCombatSide+0x418 exact 40/40; (4) supply_ratio not "just view
+binding" — fold skips +68 max-supply, reads only +72 current; (5) ORDER_UNRESOLVED->
+has_orders=true VIOLATES fail-closed (unresolved = unreadable ptr, not observed unknown —
+make tri-state); (6) air-sup exact overclaimed (d30 carries effective_planes not
+superiority); (7) org-max fallback FABRICATES a denominator (absent-stays-absent) — emit
+None; (8 MED) bombardment count conflates has_flanked_opponent(5). -> doc REDO [N]
+re-counterbadge (reconcile with existing 870ebf cracks + fix fail-closed proposals +
+revalidate offsets). My harvest praise ("great answer") OVERTURNED again — 3rd time
+(fold-wave2, d48, re-counterbadge). Consistent: harvest tests+diff != correctness.
+
+SWEEP TALLY: 12 code/tooling FIX-ROUND + 3 doc REVISE + 1 doc REJECT. 0 SHIP.
