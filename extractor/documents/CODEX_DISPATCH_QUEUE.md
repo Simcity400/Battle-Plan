@@ -1969,3 +1969,17 @@ incidence addendum overclaimed d54's permanence — the same overclaim class the
 caught in the Opus dossiers; I'm not exempt. Honest correction owed.
 
 SWEEP TALLY: 12 code/tooling FIX-ROUND + 6 doc REVISE + 1 doc REJECT. 0 SHIP.
+
+REVIEW: d53-badges = SOUND-WITH-NITS (FIRST near-clean verdict). Load-bearing attribution
+VERIFIED sound: reviewer independently reproduced both SHA-256, 510/287 records, status
+incidences 35/475 + 45/242, 717/717 non-empty builds carry all 4 badges, all 80 0x300
+payloads empty; source-proof/schema/recorder/graph-reader/870ebf citations all check out,
+NO stale-offset or unsupported closure. ONE LOW nit: proposed telemetry counts badges
+BEFORE the failure-return branch -> would count 265 occurrences vs 242 emitted payloads
+(record origins after the failure branch, or name them attempted-report counters + test).
+-> MERGE-ELIGIBLE with a trivial fix-forward note [d53-badges: no fix lane, apply the LOW
+nit when the proposed telemetry lands].
+
+SWEEP TALLY: 12 code/tooling FIX-ROUND + 6 doc REVISE + 1 doc REJECT + 1 doc SOUND-WITH-NITS.
+FIRST mergeable. Notably d53-badges was a CAREFUL evidence-first dossier (all cites verified,
+no overclaim) — the contrast with the REJECT/REVISE dossiers is exactly rigor vs overclaim.
