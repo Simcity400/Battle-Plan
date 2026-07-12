@@ -1688,3 +1688,19 @@ CENSUS ROUND-7 GATE WEDGED (CreateProcessWithLogonW failed:2, zero-progress) —
 concurrent session tipped the host past its ~6-7 sustainable limit; all 5 reviews
 stayed healthy. Refired FRESH (round7b) after a slot freed. CAPACITY LESSON re-confirmed:
 keep gate+reviews <= 5-6 concurrent.
+
+REVIEW: fold-wave1 = FIX-ROUND (3 MAJOR + 2 MINOR, valid): (1) naval combat members
+carried STALE across a failed D50 frame — build_naval_combats ignores the unknown flag,
+emits stale [477] or false []; D49 failure leaves naval_combat_id looking active
+(gate on CURRENT D49/D50 validity); (2) faction reader: unreadable system ptr/header/
+slot -> empty roster with NO status badge -> silent membership removal, refutes the
+dossier's "membership exact" claim (carry measured-empty/unavailable through D53); (3)
+no cross-faction member exclusivity check -> two valid rows sharing a country
+(sequential transfer) -> row-order overwrite (validate global exclusivity, badge on
+conflict); (4-5 MINOR) tests exercise only guarantees branch / singleton dedup.
+
+SYSTEMATIC PATTERN across ALL 4 code lanes reviewed (autoattach/stitching/campaign-id/
+fold-wave1): fail-closed edge gaps where unreadable-or-failed-frame state becomes a
+SILENT empty/stale value without a completeness badge — the core absent-stays-absent-vs-
+measured-empty discipline. Opus scaffolding is shape-correct; the adversarial pass is
+catching the edge-case hardening every time. All -> Codex fix lanes.
