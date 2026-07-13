@@ -2406,3 +2406,33 @@ F1 status: 3.5/4 (stitching fix2 still running for the 5 ownership/parentage/dig
 residuals). Live fleet ~12: stitching-fix2, fow-r2, campaignid-r2[done SHIP], c1stageb-r3,
 autoattach-r2, foldwave2-r2, pass2-r3, dlcmeta-r3, counterbadge, facs-wire, replayloader,
 d57-gate, boundary-auth-resume, bundle-reconstruct, + w15 lanes.
+
+VERDICT BATCH 5 (2026-07-13 ~15:55). F1 COMPLETE (all 9 code fix lanes harvested).
+MERGE-READY grows to 8: [J/R]fow f18c735ef (r2: all 9 prior findings PASS, 45/45 citations;
+1 new MINOR - CTinyUnitCounter/CUnitCounterItem overclaimed as proven UI binding from a
+class-name-inventory cite - orchestrator-relabelled HYPOTHESIS/search lead) and [K]pass2
+ef6ad6689 (r3 SHIP zero findings; gate additionally confirmed the Python validator now
+matches the Rust authority on every boundary rule except the explicitly-owned DATA-length
+item, and is stricter on unexpected types/domains).
+HARVESTED: [B/M]stitching fix2 bd4c79cc5 (all 5 residuals #5/#6/#7/#9/#10 closed; RED-first
+227/5; indep verified 434/0/2 recorder_host + 73/0/1 snapshot; parentage + digest hunks
+read and matched) -> r2 gate wedged (dead sandbox, honest fail-closed REJECT-as-blocked) ->
+REFIRED 120s stagger. i1-boundary-auth a8bb47230 (pass2-r2 CORE MAJOR closed:
+validate_domain_data_payload replays every DATA record through an isolated WorldFold with
+failure/delta short-circuit bits cleared = exact-interior consumption; attributed
+InvalidData w/ domain+offset; RED->GREEN on the exact 260-byte swallow construction; +4
+tests, indep 182/0+193/0/2; content-filter death was tid-resumed successfully) -> gate
+LAUNCHED attacking the status-word-forcing/offset-table/delta-layout risks.
+[H]dlcmeta r3 REVISE 3 MAJOR (legacy-rule contradiction canonical-timeline-presence vs
+three-absence; role-table states invisible to parsed APIs - non-string role->None,
+raw duplicate role members last-wins, unroled case-lookalikes; root-only duplicate visitor
++ vacuous-regression risk) -> orchestrator fix dd043626f (legacy rule stated ONCE:
+canonical timeline = ordinary snapshot index, signals are member/role-inconsistency/
+recorder-role; container-manifest RAW-bytes strictness pass; EVERY-depth recursive
+duplicate rejection; otherwise-valid regressions naming the key) -> r4 gate LAUNCHED.
+i1-replayloader refire fired 5s before the r3 correction landed -> KILLED (post-mortem:
+it was sandbox-wedged anyway, zero files touched) -> prompt amended in lockstep (3rd time)
+-> PARKED until dlcmeta r4 SHIPs. i1-d57-gate wedged again -> refired 240s stagger.
+Counterbadge attempt 8 pending (300s stagger). c1stageb r3 + autoattach + foldwave2-r2 +
+fow... gates in flight. Remaining fix-lane gates owed: none - every harvest has a gate
+launched or returned.
