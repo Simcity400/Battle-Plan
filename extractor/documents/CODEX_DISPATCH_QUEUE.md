@@ -2548,3 +2548,50 @@ MERGE-READY still 9. FIX ROUNDS: autoattach fix2, boundary-auth fix2, c1stageb f
 foldwave2 fix2b, stitching fix3 (refire). GATES: dlcmeta r6, d57 (refire), facs-wire. Owed
 re-gates after fixes land: autoattach r3, boundary-auth r2, c1stageb r4, foldwave2 r3,
 stitching r3.
+
+VERDICT BATCH 10 (2026-07-13 ~17:45).
+- [I1]d57 static gate LANDED (dossier I1_D57_SPEED_EVIDENCE.md, harvested ceac0137b): offset
+  CONFIRMED (CGameState+0x4BC = pacing selector; RTTI Increase/Decrease/SetGameSpeedCommand
+  slot-10s converge on common setter 0x1401EDAD0) but the CURRENT CONTRACT IS REFUTED - the
+  setter clamps to raw 0..=4 (five UI speeds), so DOMAIN57_MAX_GAME_SPEED=5 would ACCEPT a
+  torn/invalid word instead of failing closed. +0x4B8 = normalized tick progress (1.0f
+  threshold); pause = CInGameIdler+0x6C1 idler bypass, speed RETAINED (collector pause-
+  orthogonality assumption confirmed). Reader stays default-off. Orchestrator independently
+  spot-checked from the exe: SHA-256 exact, clamp bytes decode exactly (85d2 7904 33d2 ...
+  8991bc040000), fallback floats {2.0,0.5,0.2,0.1}, 1.0f threshold, GAME_SPEED_SECONDS
+  string, all 3 RTTI TypeDescriptors byte-equal. LAW LANE -> full re-derivation gate
+  regate-d57-r2 launched (tid 019f5a4e-1044-7793-973e-52ac0b563b8c persisted; NOTE: launch
+  briefly violated one-task-per-agent by backgrounding inside the task shell - process
+  survived, tid persisted, watcher attached; do not repeat). Gate told to settle the one
+  suspect: section-4 snippet indexes the speed table with [rax+rcx*4] where rcx holds
+  count-1, likely a transcription slip. OWED AFTER SHIP: wire-contract decision (raw 0..4
+  vs UI 1..5) + code fix of the 0..=5 acceptance + user-gated live speed-cycle (section-7
+  pass criteria).
+- [C]c1stageb fix4 HARVESTED (da06d2268, 2 fenced docs, +333/-50): all six r3 findings
+  claimed closed - reload_quiesce deadline on state entry; drain mutex/CV/join = try-lock
+  loops + timed SleepConditionVariable* + finite WaitForSingleObject (CancelIoEx explicitly
+  rejected for those types); first-frame H4CR overlapped both ends with endpoint-local
+  absolute deadlines heartbeats cannot extend; rollover prerequisites under the one phase
+  deadline (A=FailedPrefix/B=NeverOpened, ack alone insufficient); handshake budget starts
+  before CSPRNG/security/CreateNamedPipeW; 4 concrete connection mutants. Protected seal
+  clauses byte-identical (SHAs cross-match the r3 gate's independent computation).
+  Orchestrator verified scope + read key hunks. -> regate-c1stageb-r4 LAUNCHED.
+- [H]dlcmeta r6 REVISE 2 MAJOR + 1 MINOR (citations now PASS): the gate escalated from
+  byte-buffer TOCTOU to filesystem-NAMESPACE TOCTOU - name validation was bound to an
+  enumeration, not to the object opened (swap timeline.json->Timeline.json between
+  enumerate and open; Windows case-folds to the replacement), and exactly-named
+  junctions/symlinks passed every name rule while binding metadata outside the store; the
+  <game> component itself was unvalidated; new laws had no required regression gates.
+  Fixed DIRECTLY by orchestrator -> d78518954: directory namespace-binding rule - store
+  root anchored once to handle-derived P0; every metadata file opened NO-FOLLOW, read once,
+  then the SAME handle's fully-resolved final path must equal P0+byte-exact components with
+  no reparse attribute before any verdict binds; reparse points strictly beneath the root
+  rejected everywhere; enumeration demoted to policy check; hard-link ambiguity = documented
+  fail-closed residual; 6 deterministic regression gates specified. -> regate-dlcmeta-r7
+  LAUNCHED (told to attack: FAT/exFAT/network-share final-path casing semantics, junction-
+  above-<game> path-string reconstruction, legitimate junction-inside-store over-rejection,
+  gate vacuousness).
+MERGE-READY still 9 (+d57 dossier pending its re-derivation gate). FIX ROUNDS in flight:
+autoattach fix2, boundary-auth fix2, foldwave2 fix2b, stitching fix3 (refire). GATES in
+flight: dlcmeta r7, c1stageb r4, d57 r2, facs-wire. Owed re-gates after fixes land:
+autoattach r3, boundary-auth r2, foldwave2 r3, stitching r3.
