@@ -2934,3 +2934,22 @@ died at the usage wall - it is currently running post-recovery). Scratch branche
 foldwave2 fix3 HARVESTED (r3 REJECT closed: malformed-coverage fail-closed + 5-domain map;
 replay_core 50) -> r4 gate launched. IN FLIGHT: c1stageb r7, integration-adversary, autoattach
 fix2, facs-wire fix2, replay-loader impl, stitching r3, foldwave2 r4.
+
+ALL WAVE-12 FIX LANES HARVESTED (2026-07-14 ~01:30). Every fix lane is committed in its worktree
+with an adversarial re-gate running:
+- foldwave2 fix3 (replay_core 50) -> r4 gate
+- facs-wire fix2 (tri-state through every enforcing consumer; 8 files; collector 357/6, d53 119,
+  recorder 208+199/2, replay_core 46, game_ui 5, map_viewer 8) -> r2 gate
+- stitching fix3 (open re-derives digest/publication/ticket/path; snapshot 80/1, recorder 442/2)
+  -> r3 gate
+- autoattach fix2 (3 sample-then-release TOCTOUs closed via retain-through-action + Job-object
+  poison; recorder 296+205; lane's own reviewer PASSED) -> r3 gate
+- boundary-auth fix3 (panic-on-truncation need()-guards + production-encoder acceptance sweep) -
+  RELAUNCHED fresh (its original launch was the call that first hit the usage wall; never ran;
+  worktree clean at fix2 5646ffbab).
+- c1stageb r6 closed (two-class deadline distinction) -> r7 gate.
+IN FLIGHT (all on healthy 2nd account): c1stageb r7, foldwave2 r4, stitching r3, facs-wire r2,
+autoattach r3, boundary-auth fix3, replay-loader e2e impl, integration-adversary (on fe4be56ea).
+REMAINING TO CLOSE F2: process these 8 verdicts; SHIP-harvests -> the fix-lane worktrees merge onto
+the integration branch (2nd merge wave, same clean scratch-branch method). THEN master merge (gated
+on integration-adversary SHIP). Live-capture items stay user-gated.
