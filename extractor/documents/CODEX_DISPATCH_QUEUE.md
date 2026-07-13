@@ -2317,3 +2317,35 @@ RE-GATE VERDICTS (first substantive batch, 2026-07-13 ~12:40):
 Sandbox-runner ceiling confirmed explicitly this session: 'windows sandbox: timed out after
 15000ms connecting runner pipe-in' - gates wedge while all runner slots are held; refires
 land as sessions finish. 7 gates + 2 I1 lanes cycling on staggered refire.
+
+RE-GATE VERDICT BATCH 2 (2026-07-13 ~13:15) + harvest updates:
+- [C/O] campaignid HARVESTED 9ea9180df (all 7 findings fixed incl. self-refuted manifest-only
+  Known bypass; orchestrator-verified 229/0 lib + 202/0/2 bin, red-first on 6 regressions).
+  7 of 9 code lanes now harvested. Remaining: foldwave2, autoattach (tid-resumed), stitching.
+- [Q] librpairs: SHIP, no findings. MERGE-READY (2nd clean SHIP after librs).
+- [D] foldwave1: REVISE 1 MAJOR = the ACKNOWLEDGED measured-empty/unavailable residual;
+  covered by the running i1-facs-wire lane. No separate fix round. Items 1,3,4,5 CLOSED.
+- [H] dlcmeta: REVISE 1 MAJOR in the dossier finding-4 PROPOSAL (fail-open for
+  referenced-but-missing manifest entry; Leaf::Present doesn't exist -> Leaf::Measured).
+  Code findings 1-3 stay CLOSED. Fix2 launched; i1-replayloader-e2e prompt AMENDED with the
+  fail-closed correction (it implements this proposal).
+- [P] events: REVISE 2 MAJOR + 1 MINOR (copy-ready row contradicts the d60 fold denial;
+  timer cadence asserted from raw int; 4 stale citations). Fix2 launched.
+- [K] pass2: REVISE (2 independent runs agree). HARVEST GAP FIXED: regenerated dossier was
+  uncommitted -> committed 9264b66a6. Remaining: validator fail-open vs canonical boundary
+  contract (accepts non-consecutive seqs, oversized FRAME_END, no open-hour machine) +
+  vacuous zero-PERF fixture. Fix2 launched (stream_fold.rs:93-106,139-146 as authority).
+- [L] rewar: REVISE 1 BLOCKER + 5 MAJOR + 2 MINOR. HARVEST GAP FIXED: lane's later
+  corrections were uncommitted -> committed 7c051be03. Fix2 launched over all 8 findings
+  (verify-already-closed-by-7c051be03 first).
+- [J/R] fow: REVISE 7 MAJOR + 2 MINOR (operational sections contradict corrected openings:
+  IntelTex causal path re-asserted, forced A/B fork, invented acceptance semantics,
+  insufficient Fork-B reconstruction, unguarded extent recipes, CCountry/CStrategicOperative
+  layout conflation; hardcoded Ghidra paths, reversed interval). Fix2 launched; full verdict
+  archived at hoi4_lanes/verdicts/regate-fow-full.txt.
+- STILL CYCLING: counterbadge gate (5x wedged). Still reviewing: none pending harvest gates.
+LESSON RECORDED: harvest must diff worktree vs commit AFTER the lane's final message - two
+lanes had post-commit corrections stranded uncommitted. Also: never queue a second refire
+chain for a lane whose current attempt might return substantive findings - out/jsonl paths
+are per-lane fixed and clobber (rewar's REVISE was recovered from ~/.codex/sessions rollout).
+Verdict archives now copied to hoi4_lanes/verdicts/ on read.
