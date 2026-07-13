@@ -3348,3 +3348,28 @@ untouched. regate-facs-wire-r5 LAUNCHED (attacks any alternate factions-list con
 under non-MeasuredNonEmpty, test fidelity, + full regression of sound witness R3-F1/F2 + R2-F2 +
 map-helper + stream-compat). Expected FINAL round if SHIP.
 IN FLIGHT: autoattach r7 gate, replay-loader r3 gate, facs-wire r5 gate, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 replay-loader r3 gate = REJECT (2 findings) -> fix4
+R2-F1 (file-ID sentinels) CONFIRMED CLOSED (both single-handle FileIdInfo + dir-enum route through
+from_windows_file_id; sentinels can't become ObjectId; inspected handle live across reopen). Strict
+dup-key DECODE confirmed fixed. Regression sweep clean (BoundDir A->B, recursive dup rejection all
+artifacts, Windows namespace primitives, error propagation, canonical keys -> build_session_metadata
+world.rs:2228). Two remain:
+- F1 HIGH: verify->promote TOCTOU. verify_replay_container_streaming opens+CLOSES a handle;
+  finalize_verified_replay (main.rs:4676/4692/5183) promotes via pathname MoveFileExW retaining
+  NEITHER handle NOR file-ID. Post-verify a write-access process swaps an impostor (dup-role
+  manifest) at the same pathname -> recorder promotes the UNVERIFIED object. => R2-F2 not closed
+  END-TO-END (decode fixed, promotion unbound). Same verify-one/use-another family as stitching r2.
+- F2 MED: F4 gate closed over MODULES but open over SITES. Walk covers all .rs but site recognition
+  = substring allowlist; a new module w/ windows-sys PathBuf::push + CreateFile2 = zero classified
+  sites, so classified==60 + empty-violations BOTH pass -> open invisible.
+FIX4 launched (tid threads/i1-replayloader-e2e.tid): F1 = bind promote to verify - hold the verified
+handle open w/ deny-write/delete share THROUGH promotion + rename-by-handle (SetFileInformationBy-
+Handle FileRenameInfo), OR re-query target file-ID identity == verified handle immediately before
+MoveFileExW, fail-closed on mismatch (AUTHORIZES a precise recorder_host/main.rs finalize edit -
+F2 chain isn't closed without it). F2 = default-deny over sites - expand primitive detection
+(CreateFile2/CreateFileW/NtCreateFile/PathBuf-push-open/windows-sys) + replace classified==N with a
+FAIL-CLOSED invariant (a file-access-capable module w/ an unclassified open = FAIL). RED->GREEN for
+post-verify-swap-not-promoted + CreateFile2-module-caught. ONE fix round for r3. ESCALATION: if r4
+still finds a promotion-binding gap, orchestrator fixes F1 directly (bounded Win32 handle-lifetime).
+IN FLIGHT: autoattach r7 gate, facs-wire r5 gate, replay-loader fix4, foldwave2 fix4, stitching r3.
