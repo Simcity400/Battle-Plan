@@ -2877,3 +2877,31 @@ autoattach fix2, facs-wire fix2, stitching fix3, replay-loader impl (continuing 
 NEXT UNBLOCK: round6e census gate (materials: prompts/w12c-census-oracle-r9.txt) - it clears the
 DO-NOT-MERGE hold on d51/librs/d57 (the last 3 merge-ready lanes). Set up + launch once the 7
 resumes are confirmed stable.
+
+VERDICT BATCH (2026-07-14 ~00:00, post-recovery, new account healthy).
+- [C]c1stageb r6 REVISE 2 CRITICAL (recorder Active-frame receive + first-frame->ack + protected
+  SHAs all PASS; convergence from r5's 3): (1) Opening-stage observe_before_attempt had no
+  deadline creation point; (2) attempt_readers expiry self-contradicted the blanket terminal-poison
+  rule + left no finalization budget. FIXED DIRECTLY (e5e141ce8): Opening gets an attempt_observation
+  deadline on Opening-entry (fail->Aborted, no session, no poison) + table row; and a TWO-CLASS
+  deadline distinction - TRANSPORT class (token/table/seal/first-frame/write/rollover/handshake/
+  heartbeat = uncertain wire = poison) vs PRE-EMISSION EVALUATION class (attempt_observation +
+  attempt_readers = local reader work, no wire byte until step 6 = data-quality Failed + quarantine,
+  NOT poison, session continues unless quarantine cannot isolate writable state); finalization
+  de-gated to bounded nonblocking assembly. -> r7 gate launched.
+- [G]foldwave2 r3 REJECT 2 CRITICAL (reconciliation mechanics PASS for conforming input): the
+  recurring signal-must-reach-consumer pattern TWO levels deeper - (1) malformed domain_problems
+  (wrong-type/null/bad-element/missing-problem/out-of-range-id) fails SOFT to empty+unenforced
+  warning -> carried production still Present (round-2 hole one level up); (2) the single 11->
+  Production map leaves 4 OTHER carried typed views breached (26 division equip->division_units,
+  28 fleets, 47 leaders, 53 diplomacy+faction), gate enumerated all 44 domains. -> fix3 launched
+  (malformed coverage = fail-closed the problem-backed views; extend DOMAIN_PROBLEM_VIEW_MAP to
+  26/28/47/53 with right typed status; document all 44 dispositions; RED-first e2e through
+  WorldFrame::from_raw). [[signal-must-reach-consumer]] now ~8 instances.
+- [B/M]stitching fix3 PASS lane-local (all 4 r2 findings closed: F1 digest recompute+preimage,
+  F2 publication-vs-ZIP binding, F3 ticket-order proof, F4 path-alias canonicalization; snapshot
+  80/1 +7, recorder 442/2 +8; 7-file scope). -> HARVESTING (orchestrator verify + commit) then r3
+  adversarial re-gate owed.
+FIX ROUNDS in flight: autoattach fix2, facs-wire fix2, replay-loader impl, foldwave2 fix3.
+GATES in flight: c1stageb r7, integration-adversary-w12. Owed: stitching r3 (post-harvest),
+autoattach r3, facs-wire r2, boundary-auth r3, + round6e census gate (unblocks d51/librs/d57).
