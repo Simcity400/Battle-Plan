@@ -2994,3 +2994,17 @@ not merge-blocking (stage-B impl is future). Deferred for proper structural atte
 MERGE PATH: 6 core lanes merged + d57 reconciled = clean base done. Fix lanes (foldwave2/facs-wire/
 autoattach/stitching/boundary-auth) re-fixing -> when they SHIP, 2nd merge wave -> integration-
 adversary re-run on the full result -> master merge.
+
+boundary-auth r4 (correct commit 40aba846a): F1 HIGH panic-on-truncation = PASS/CLOSED - gate
+audited all 56 arms / 777 fixed-field reads / 38 read_string / 13 direct slices, ZERO unguarded
+sites, 5 truncation cases return Err(InvalidData) not panic. F2 = MEDIUM only: the d69 acceptance
+test drives a source-locked COPY of the collector's private encoder (collector/lib.rs:36686), not
+the real symbol - d51 + all d53 use production encoders; d69 bytes are production-equivalent +
+accepted, so NO correctness defect, just regression-gate completeness. ORCHESTRATOR RULING:
+boundary-auth = MERGE-READY (safety fix verified closed; F2 = documented test-debt RESIDUAL, not
+worth another round esp. given the sandbox split-root wedge on this worktree). FOLLOW-UP task:
+expose the collector d69 encoder via a shared callable module + drive its real bytes through
+drive_fold (drift-prone domain - deserves a real-encoder gate eventually, but non-blocking).
+FIX LANES still in flight: foldwave2 fix4, facs-wire fix3, autoattach fix3, stitching r3,
+replay-loader resume. MERGE-READY fix lanes: boundary-auth (guards). c1stageb r7 = deferred
+(holistic deadline pass).
