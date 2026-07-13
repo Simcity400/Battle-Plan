@@ -3248,3 +3248,18 @@ regate-facs-wire-r4 LAUNCHED (attacks any residual witness-emit under ambiguity,
 identical outer root, member tag-borrow, case-(b) truth via repo-wide production-caller grep, +
 R2-F2 regression after the 343-line world.rs churn).
 IN FLIGHT: autoattach fix5, replay-loader fix3, facs-wire r4 gate, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 autoattach fix5 verified GREEN -> r6 gate launched (default-deny recording proof)
+Structural inversion landed: only d10/d44/d68 are proof-capable, EVERY other scheduled domain keeps
+WAITING (proof.rs:493); DATA record_flags==0 whitelist for all 3 (:524); d10 status@off16 + real
+fuel layout/rows/scale/identities + folded fuel material (:546); d44 status@off16 + counts real row
+KINDS, EXCLUDES badges AND tombstones, requires nonempty folded supply.by_province (:594); d68 real
+status@off12 + rejects delta/failure + production PERF shape + nonzero folded session field (:679).
+Residual re-worded OUT-OF-THREAT-MODEL (in-proc compromise + simultaneous injection), not fail-
+closed (proof.rs:245, main.rs:6959). Lane self-refute caught+closed a d44 badge-relabel + tombstone-
+only edge. ORCHESTRATOR-VERIFIED: recorder_host 314 lib(2 ign)/207 bin(4 ign), 0 failed, RmStart-
+Session flakes did not reproduce; scope 2 files clean. regate-autoattach-r6 LAUNCHED (attacks
+default-deny fallthrough, each of d10/d44/d68 proving from empty/delta/failure/badge/tombstone/
+diagnostic, record_flags semantic-change-yet-0, cross-domain/hour PERF reuse, + regression of
+lease/pipe-auth/journal/authorities/DLL-hash/Drop after the 1454-line churn).
+IN FLIGHT: autoattach r6 gate, replay-loader fix3, facs-wire r4 gate, foldwave2 fix4, stitching r3.
