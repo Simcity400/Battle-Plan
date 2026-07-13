@@ -2832,3 +2832,20 @@ BOARD: merge-ready 10. IN FLIGHT codex: foldwave2 r3 (gate), c1stageb r6 (refire
 integration-adversary-w12 (gate), replay-loader e2e (impl), autoattach fix2, facs-wire fix2,
 stitching fix3, boundary-auth fix3. Owed re-gates after fixes land: autoattach r3, stitching r3,
 facs-wire r2, boundary-auth r3. Blocked: stage-B impl (c1stageb SHIP), cross-modset (user+live).
+
+*** CODEX USAGE-LIMIT WALL (2026-07-13 ~22:30) — HARD STOP, reset Jul 20 2026 05:05 (7 days) ***
+ALL 7 in-flight codex jobs died mid-work with "You've hit your usage limit ... try again at
+Jul 20th 2026 5:05 AM" (turn.failed, turn.completed=0, ok_events 20-85 each - they were WORKING
+then the account walled). NOT a wedge/disk issue. Per standing law: NEVER retry into usage limits
+(fresh launches fail instantly). 24 futile retry processes REAPED (taskkill, 0 remain). All 7
+resume tids captured -> hoi4_lanes/USAGE_LIMIT_RESUME_QUEUE_20260713.txt. Partial uncommitted work
+PRESERVED in worktrees (ground truth): autoattach 7 files, facs-wire 2, stitching 7, replay-loader
+1 - resume with "re-check git status; continue your own uncommitted work, don't redo".
+KILLED (all need resume on reset/next account): foldwave2 r3 gate, c1stageb r6 gate, integration-
+adversary-w12 gate, replay-loader e2e impl, autoattach fix2, facs-wire fix2, stitching fix3.
+USER DECISION REQUIRED (billing/account - orchestrator cannot resolve): (a) wait for Jul 20 reset;
+(b) rotate to another Codex/ChatGPT account if one exists; (c) purchase credits (user-only).
+CODEX-FREE PROGRESS STILL AVAILABLE meanwhile: owner-serialized MERGE of the 6 battery-green
+merge-ready lanes (d51/librs/foldwave1/campaignid/fow/d57) needs NO codex - only caveat is the
+integration-adversary semantic cross-check died at the wall, so only the file-level collision map
+(1 collision: collector/lib.rs d51+librs, disjoint) is confirmed.
