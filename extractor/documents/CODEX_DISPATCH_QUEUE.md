@@ -2259,3 +2259,40 @@ layer) is running its own w15/w15f codex wave on this host concurrently; the ~6-
 capacity is SHARED — keep extractor-side concurrency minimal until their wave drains.
 Watchdog: watch_w12g.sh emits OUT-UPDATED (round finished) / STALLED (jsonl frozen >25min)
 per lane; no new bulk driver until a per-lane in-flight-aware version exists.
+
+REMAINING-WAVES PLAN OF RECORD (2026-07-13, user directive: "prepare and launch all
+remaining waves once this is done, leaving only the things you need me for left").
+Standing ops: max parallelism always (no capacity throttling; wedges/bails = immediate
+refire or tid-resume), one codex exec per background task, every lane re-gated, orchestrator
+independently verifies every harvest before commit.
+
+WAVE F1 (IN FLIGHT): 9 w12g code-fix lanes; 5 harvested+verified (c1stageb 9015431b5,
+d51 77fbd107d, librs 50bdf48b2, dlcmeta 00efe41ec, foldwave1 773d701bc), 4 finishing
+(foldwave2, autoattach[tid-resumed after model-capacity turn.failed], campaignid,
+stitching). 11 adversarial re-gates launched over all harvested work (5 code + 6 docs);
+8 wedged blind on first attempt and were refired; 3 reviewing (c1stageb/d51/librs).
+
+WAVE F2 (auto-launch as F1 completes): re-gates for the 4 remaining fix lanes at harvest
+(+commit pinned then); fix rounds for any REVISE/REJECT re-gate findings (one Codex round
+per finding set, then orchestrator fixes directly per protocol).
+
+MERGE PHASE (orchestrator): owner-serialized reconciliation into master -
+collector/lib.rs: d51 then librs; world_fold.rs: foldwave1 then foldwave2; recorder main.rs:
+dlcmeta/autoattach/campaignid serialized; snapshot/: stitching; docs freely. Full battery
+(nextest pool + acceptance) + census selftest + integration adversary gate on the merged tip.
+
+WAVE I1 (implementation, launch immediately after merge): (a) C1 stage-B IMPLEMENTATION
+(live codecs, timers, Win32 duplex adapter, consumer wiring per C1_STAGEB_REGISTRY_DESIGN.md);
+(b) dlcmeta finding-4: fail-closed replay-loader diff + end-to-end session_metadata test;
+(c) zero-row FACS positive measured-empty wire encoding (collector) + fold consumption
+(closes foldwave1 residual); (d) d57 game-speed verification lane: independent disassembly
+evidence for the 1->5 speed-cycle law -> flip default-on or document permanent opt-in.
+Each lane: own worktree, own re-gate, orchestrator verify, then a second merge+battery pass.
+
+END STATE (agent-side DONE): all lanes merged, batteries green, census SHIP, dispatch queue
+reconciled. Remaining = USER-GATED ONLY: (1) cross-modset capture matrix (task #12, first
+non-vanilla captures); (2) auto-attach live matrix (boot-and-play both orders); (3) campaign
+identity S/D/M live matrix; (4) reload/relaunch stitching live validation; (5) live confirms
+owed: d51 bit-12 classification, fold naval witnesses, d69 <9-save improvement; (6) speed-5
+re-acceptance + deep-war soak; (7) d57 speed-cycle live capture (pairs with I1d). A single
+consolidated live-session runbook will be produced for these when the agent side closes.
