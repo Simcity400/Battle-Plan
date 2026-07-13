@@ -3049,3 +3049,32 @@ other_posix.rs fail-closed unimplemented!() stubs stay. Remaining replay-loader 
 Windows-relevant only: Developer-Mode symlink capability test + real dehydrated OneDrive fixture.
 CLEANUP-LATER (low priority, post-merge): strip dir_store/linux.rs + any Linux-only tests to
 shrink the surface, OR reduce linux.rs to a fail-closed stub matching other_posix.
+
+## 2026-07-14 autoattach r4 gate = REJECT (2 real findings survived fix3) -> fix4 launched
+R3-F1 (universal injection lease) CONFIRMED CLOSED - repo-wide exactly 1 LoadLibraryW / 1
+SetWindowsHookExW / 1 attach_hook; ordinary CLI + auto-attach converge through the unconditional
+lease at main.rs:1403 before pipe+hook, same retained authority; existing-job-membership aborts
+fail-closed. No regressions in rounds 2-3 closures (journal hash-chain, retained authorities, DLL
+hash through LoadLibraryW, ChildWorkerHandle Drop all intact). BUT:
+- F1 CRITICAL: ConnectNamedPipe (main.rs ~6935) accepts first client with NO PID binding to the
+  retained target. The 128-bit pipe token lives in same-user-readable collector_control.json =
+  capability hardening, not process/session binding. A same-user process can connect first once
+  the DLL is resident and REPLAY a prior-session H4CR stream; worker self-generates the challenge
+  heartbeat from only the accepted seqno (~7040); stale stream passes fold/pack = SILENT
+  wrong-session replay data. => data-integrity hole, not just security.
+- F2 HIGH: recording proof (proof.rs ~336) never binds DATA back to PERF. DomainPerfEvidence keeps
+  only header+elapsed; DATA checked only for domain/hour/seq/elapsed/"some nonzero byte", NOT
+  status or counters. Bypasses: (a) scheduled d44 clean PERF + DATA carrying SOURCE_UNAVAILABLE ->
+  WorldFold handles Ok, emits supply w/ null fields, non-provenance diff passes on ZERO data;
+  (b) scheduled d21 clean PERF + EMPTY combat snapshot (changed_rows=1) -> combats:[] accepted as
+  material. Empty/unavailable wrongly = "material world data".
+Gate could not run cargo (read-only sandbox blocked /tmp/aa_r4 create) but enumerated prebuilt
+304 lib/209 bin + ran 15 targeted (proof/job/dll/d21-fold) 0-fail; verdict stands on static
+analysis + targeted. FIX4 launched (workspace-write, builds on uncommitted fix1-3 tree, tid in
+threads/w12g-autoattach-fix.tid): F1 = GetNamedPipeClientProcessId == retained target PID +
+target-originated session nonce, fail-closed; F2 = match DATA status+counters to PERF for the same
+scheduled domain + reject empty/unavailable/unknown as material (require actually-present
+rows/entities from the real WorldFold output). Prompt mandates RED->GREEN tests for all 4 bypasses
++ self-refutation. This is the ONE fix round for review r4; if it doesn't fully close, orchestrator
+fixes directly. NOTE: fix3 CODE is still uncommitted in the worktree (only the RECORD was queued) -
+nothing merged yet; fix4 continues on top, re-gate r5 after.
