@@ -2349,3 +2349,25 @@ lanes had post-commit corrections stranded uncommitted. Also: never queue a seco
 chain for a lane whose current attempt might return substantive findings - out/jsonl paths
 are per-lane fixed and clobber (rewar's REVISE was recovered from ~/.codex/sessions rollout).
 Verdict archives now copied to hoi4_lanes/verdicts/ on read.
+
+VERDICT BATCH 3 (2026-07-13 afternoon). MERGE-READY (5): [F]librs 50bdf48b2, [Q]librpairs
+c5f7c58cf, [L]rewar 7dbea8e62 (r2 PASS + orchestrator residual fix, stride citation
+verified at lib.rs:50800), [P]events fa9bc65a1 (r2 SHIP, 54/54 citations resolved),
+[E]d51 2c9a4159a (r2 SHIP: dual-count fail-closed incl. shrink case, no other path on the
+old bound, regression non-vacuous).
+IN FIX ROUNDS: [G]foldwave2 fix2 running (r1 gate CRITICAL: clean unkeyed all-zero D11
+frame = silent stale production, count-vs-keyed reconciliation demanded); [C/O]campaignid
+fix2 running (r1 gate 2 MAJOR: proof booleans are transferable latches -> digest-bound
+evidence; rollover seal-before-drain; + manifest example fails own validator);
+[S]c1stageb fix3 resumed x2 vs capacity storm (r2 gate: H4CR-side + pipe-connect deadline
+gaps; seal encoding CLOSED); [J/R]fow fix2 cycling (sandbox wedges); [K]pass2 fix3
+launched (2 edge fixtures) - its r2 gate's MAJOR is CORE: the coordinated forged-DATA-length
+construction defeats stream_fold.rs itself (DATA exempt from tighter bounds at :144) ->
+NEW LANE i1-boundary-auth (from master) hardens the Rust authority with exact-consumption
+DATA payload validation, red-first against the exact construction; Python mirror follows.
+[B/M]stitching PARTIAL harvested 749ef1740 (8 of 12 closed + 3 self-refuted extras,
+verified 429/2+68/1; fix2 running for the 5 ownership/parentage/digest residuals).
+[H]dlcmeta 02167921f orchestrator fix (r2 gate 2 MAJOR: timeline-role reconciliation +
+duplicate-JSON-member rejection) - r3 gate owed; i1-replayloader prompt updated in
+lockstep (2nd time). [D]foldwave1 r-gate REVISE = acknowledged residual only (owned by
+i1-facs-wire). [A]autoattach resume still working. Counterbadge gate still wedge-cycling.
