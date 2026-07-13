@@ -3008,3 +3008,34 @@ drive_fold (drift-prone domain - deserves a real-encoder gate eventually, but no
 FIX LANES still in flight: foldwave2 fix4, facs-wire fix3, autoattach fix3, stitching r3,
 replay-loader resume. MERGE-READY fix lanes: boundary-auth (guards). c1stageb r7 = deferred
 (holistic deadline pass).
+
+## 2026-07-14 harvest: autoattach fix3 + replay-loader (both PASS impl gates) -> gates launched
+- autoattach fix3 DONE (tid 019f5d51-33e2-7b51-9e6c-98046870ec5f): R3-F1 CRITICAL closed - the
+  RetainedTargetLease/job poison is now UNCONDITIONAL on every injection entry incl. ordinary
+  --pid/--dll (main.rs ~1395: lease no longer gated on proof_emitter.is_some()), before pipe
+  exposure/hook install. R3-F2 HIGH closed - FirstCompactRecordGate::new(expected scheduled
+  domain ids); Recording proof = ordered PERF->DATA for a SCHEDULED domain + plausible clock +
+  clean status + valid counters + nonzero data + PRODUCTION WorldFold decode + material world
+  diff excl. provenance (proof.rs ~242). Scope clean: exactly main.rs + auto_attach/proof.rs.
+  ORCHESTRATOR VERIFIED: recorder_host 302 lib + 205 bin, 0 failed (lane's 2 RmStartSession
+  modset.rs flakes did not reproduce). Residual: truly simultaneous uncooperative external
+  injection = irreducible, fails closed. Lane could not self-review (app-server access denied) -
+  irrelevant, independent re-gate is ours: regate-autoattach-r4 LAUNCHED (prompt pins both R3
+  claims + regression check of rounds 2-3 closures).
+- replay-loader resume DONE (tid 019f5d52-6d72-7c31-9a6e-07ca96706d21): implementation complete
+  per W12B_DLC_META r9 law set - strict container open (exact immutable buffer, recursive dup-key
+  + non-string-role + ASCII-lookalike rejection in new strict_json.rs), dir_store module
+  (windows.rs relative NtCreateFile + reparse discriminator + identity-bound reopen + volume
+  identity; linux.rs openat + stx_mnt_id + fail-closed openat2 fallback; other_posix fail-closed
+  stubs), r9-F4 zero descendant-pathname opens + static prohibition gate, source.rs three-way
+  routing/reconciliation/bind_or_match (+690), world_timeline e2e (+802). +17 snapshot / +22
+  replay_core tests, 0 removed. ORCHESTRATOR VERIFIED: replay_core 66/0; snapshot green except
+  EXACTLY the documented Dev-Mode symlink capability gate (Win32 1314). Scope clean (snapshot +
+  replay_core + locks only). ENV-GATED residuals (pre-ship, not pre-merge): Windows Developer
+  Mode for the symlink test (USER decision - system setting, orchestrator will not change it);
+  real dehydrated OneDrive fixture (BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE); Linux host run.
+  regate-replayloader LAUNCHED (first full adversarial gate: TOCTOU sweep, Windows namespace
+  attack incl. reparse-class discrimination, strict_json two-decoders-two-truths, source.rs
+  fail-open hunt, signal-reaches-consumer check on world.rs canonical keys, test-fidelity attack
+  on the simulated stand-ins).
+- Still in flight: foldwave2 fix4, facs-wire fix3, stitching r3 (event streams advancing).
