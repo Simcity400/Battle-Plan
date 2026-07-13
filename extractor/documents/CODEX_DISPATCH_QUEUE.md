@@ -3078,3 +3078,35 @@ rows/entities from the real WorldFold output). Prompt mandates RED->GREEN tests 
 + self-refutation. This is the ONE fix round for review r4; if it doesn't fully close, orchestrator
 fixes directly. NOTE: fix3 CODE is still uncommitted in the worktree (only the RECORD was queued) -
 nothing merged yet; fix4 continues on top, re-gate r5 after.
+
+## 2026-07-14 replay-loader gate = REJECT -> fix2 launched; facs-wire fix3 verified -> r3 gate
+REPLAY-LOADER gate REJECT (2 Windows-relevant real findings + 1 gate-completeness; F4 Linux
+IGNORED per Windows-only ruling):
+- F1 CRITICAL: cross-object routing. Descendant handles dropped between logical reads (games ->
+  metadata -> index() -> frames); only ROOT handle persists. Rename game-dir object A->B mid-
+  sequence: each handle-relative open individually valid but A's DLC/language binding injected into
+  B's snapshots, consumed by world.rs. No symlink needed. Same race timeline.json->manifest.
+- F2 HIGH: snapshots still decoded with permissive serde_json::from_slice while manifest/timeline/
+  recorder use strict_json. Duplicate session/active_dlcs keys in flattened Snapshot.rest go
+  last-wins -> ambiguous recording silently reconciles to wrong DLC binding.
+- F3 MEDIUM: r9-F4 static "no descendant pathname reads" gate too narrow (scans 2 files, misses
+  File::open/OpenOptions/container.rs/dir_store; no current escape but wouldn't catch a new one).
+- F4 MEDIUM (Linux mount self-skip): IGNORED - Windows-only, that code is being removed.
+Attack axes: Windows namespace primitives PASS (name-surrogate mask correct, junctions/symlinks
+rejected, placeholder reopen path correct, ADS/DOS-device/case/exact-alias rejected); scope/writer-
+regression PASS. FIX2 launched (tid threads/i1-replayloader-e2e.tid): F1 = retain selected-game dir
+identity (handle or volserial+128-bit fileID) + reuse/revalidate across ENTIRE routing, fail-closed
+on mismatch, no double-independent index read; F2 = decode snapshots through strict_json at every
+nesting level for BOTH stores, duplicate=REJECT; F3 = broaden gate to all loader file-access modules
++ full open-pattern set, fail-closed on unclassifiable. Mandates RED->GREEN for object-swap, parent-
+swap, duplicate-key (both stores), planted-open-gate. ONE fix round for this review.
+FACS-WIRE fix3 DONE + ORCHESTRATOR-VERIFIED GREEN (tid 019...; lane's own self-review was
+sandbox-blocked = irrelevant, independent gate is ours): R2-F1 (outer-oracle single-read) closed -
+witness captures country-table alloc/count/accepted, re-resolves AFTER faction reads, re-reads
+outer root, mismatch suppresses both; R2-F2 (unavailable-d53 not serialized -> MeasuredEmpty) closed
+- failed/malformed/absent-after-present serialize faction_roster_status=unavailable, modern status
+beats legacy; R2-F3 (malformed legacy fail-open) closed - atomic whole-roster fail-closed; R2-F4
+test uses production encode->decode->fold->typed + overlays valid legacy to prove Unavailable wins.
+VERIFIED: diplomacy_intel_operatives_live 121/0, recorder_host 209 lib/199 bin(2 ign), replay_core
+48/0; scope 5 files within the 8-file fence. regate-facs-wire-r3 LAUNCHED.
+IN FLIGHT: autoattach fix4, replay-loader fix2, facs-wire r3 gate, foldwave2 fix4, stitching r3.
