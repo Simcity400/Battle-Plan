@@ -2624,3 +2624,56 @@ MERGE-READY 9 + d57 dossier + 2 harvests pending gates. FIX ROUNDS in flight: au
 fix2, boundary-auth fix2, stitching fix3 (refire). GATES in flight: dlcmeta r7, c1stageb
 r4, d57 r2, facs-wire, foldwave2 r3. Owed after fixes land: autoattach r3, boundary-auth
 r2, stitching r3.
+
+VERDICT BATCH 12 (2026-07-13 ~19:10). Three verdicts processed.
+- [I1]d57 r2 re-derivation gate: REVISE with ONE LOW finding = the exact suspect the gate
+  was pointed at (section-4 excerpt omitted movsxd rcx,eax at 0x1401F0269, making the
+  snippet read as index-by-count-1). THE LAW ITSELF IS FULLY RE-DERIVED: setter clamp path
+  byte-decoded entry-to-store, all 3 RTTI chains walked from PE bytes, pacing reader incl.
+  the omitted instruction, +0x4B8 progress, pause bypass, and a sole-store audit (140
+  +0x4BC operands, 26 writes, only 0x1401EDAED in the CGameState cluster; the rest are
+  remote displacement collisions). Code-side consequence confirmed at collector
+  lib.rs:25794 (0..=DOMAIN57_MAX_GAME_SPEED accepts raw 5) + build_profile.rs:94/98 +
+  round-trip test 65421. Section-7 live criteria falsifiable (raw 1..5 world fails
+  criterion 1). Prescribed one-line insertion APPLIED verbatim (380d6f336) after orchestrator
+  re-verified 48 63 C8 at file 0x1EF669. d57 dossier = MERGE-READY (re-derivation law-lane
+  gate passed in substance; fix was evidence-transcription only). OWED IN I1: code fix
+  DOMAIN57_MAX_GAME_SPEED 5 -> 4 + fail-closed on raw 5; WIRE DECISION (orchestrator, per
+  everything-engine-derived + replay-feeds-engine): emit RAW SLOT 0..=4, translation to UI
+  1..5 is presentation-layer; user-gated live speed-cycle before default-on.
+- [C]c1stageb r4 REVISE 4 CRITICAL + 2 MAJOR (drain sync + handshake now CLOSED; seal
+  clauses SHA-verified byte-identical across rounds): pre-emission observations had NO
+  deadline (Active-frame deadline created only at emission); sweep-generation workers
+  outside the reload quiescence enumeration; first-frame validation handoff had a deadline
+  ASSERTION but no valid mechanism; recorder RolloverPropose receive preceded its own
+  rollover deadline; final-drain table row missing post-read handoffs; mutants (b)/(d)
+  non-deterministic. FIXED DIRECTLY by orchestrator (a058f1eb3, +73/-13): new
+  attempt_observation policy + step 0 in 5.3 (deadline at attempt entry, isolated-worker
+  join-or-quarantine, uncertainty = all Failed / no ExpectedAbsent); 5.4/5.5 quiesce EVERY
+  session-spawned thread incl. sweep workers (quarantine invalidates generation); handoff =
+  inline pure computation OR C1 section-5 bounded contracts (CancelIoEx never claimed);
+  proposal receive under the standing per-receive control deadline, rollover-phase deadline
+  from exact validation; table rows amended; mutants (b1)/(b2)/(d) fully scheduled with
+  named final verdicts. -> regate-c1stageb-r5 LAUNCHED (told to attack: step-4 reader
+  startup coverage, H4CT control-loop/split-reader/durability threads on reload, idle
+  proposal-wait regime, policy-struct consistency).
+- [H]dlcmeta r7 REVISE 3 MAJOR + 1 MINOR: the r7 gate REFUTED the final-path-string
+  binding mechanism (path string is not ancestry proof - root rename + impostor at same
+  P0; blanket reparse rejection would reject OneDrive Files-On-Demand stores, where THIS
+  PRODUCT'S REAL STORES LIVE; POSIX bind mounts + non-NTFS casing unpinned). REDESIGNED
+  DIRECTLY by orchestrator (207427591): handle-relative traversal - root anchored once,
+  every component opened relative to its parent handle (NtCreateFile RootDirectory /
+  openat, no-follow), per-component byte-exact actual-name query (fail closed if fs cannot
+  answer), reparse tags split by the IsReparseTagNameSurrogate BIT (symlink/junction
+  rejected; cloud-placeholder/WOF permitted), device/volume containment vs parent as the
+  portable mount detector; hard-link alias reclassified accepted-same-object; regression
+  gates reworked so every gate proves WHICH check rejected (root-ancestry, binding-non-
+  vacuous, link-class split, mount-crossing, cloud-placeholder positive, linked-root
+  positive). -> regate-dlcmeta-r8 LAUNCHED (told to attack: FileNameInformation casing
+  guarantees on non-NTFS - vacuity risk; OBJ_CASE_INSENSITIVE relative-open folding;
+  btrfs/overlayfs st_dev false rejects; malicious non-surrogate tags; double-simulated
+  gate tightness; Developer-Mode CI feasibility).
+MERGE-READY: 9 + d57 dossier (10). Harvests pending gates: facs-wire, foldwave2 fix2b,
+c1stageb r4-closure, dlcmeta r8. FIX ROUNDS in flight: autoattach fix2, boundary-auth
+fix2, stitching fix3 (refire). GATES in flight: dlcmeta r8, c1stageb r5, facs-wire,
+foldwave2 r3. Owed after fixes land: autoattach r3, boundary-auth r2, stitching r3.
