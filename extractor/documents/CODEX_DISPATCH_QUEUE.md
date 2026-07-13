@@ -2677,3 +2677,44 @@ MERGE-READY: 9 + d57 dossier (10). Harvests pending gates: facs-wire, foldwave2 
 c1stageb r4-closure, dlcmeta r8. FIX ROUNDS in flight: autoattach fix2, boundary-auth
 fix2, stitching fix3 (refire). GATES in flight: dlcmeta r8, c1stageb r5, facs-wire,
 foldwave2 r3. Owed after fixes land: autoattach r3, boundary-auth r2, stitching r3.
+
+VERDICT BATCH 13 (2026-07-13 ~20:15).
+- INFRA: c1stageb r5 gate died honest on a NEW wedge class - DISK FULL (os error 112,
+  windows sandbox helper_log_failed; C: at 95% from concurrent gate builds in /tmp). Gate
+  correctly returned REJECT-as-execution-failure with everything UNVERIFIED, no fabrication.
+  Freed ~10GB (stale w11b cargo target + old cdx dumps), 63G headroom now; r5 REFIRED.
+- [H]dlcmeta r8 REVISE 4 MAJOR + 1 MINOR (handle-relative direction CONFIRMED; rounds 1-6
+  intact): APFS is normalization-insensitive in BOTH variants (composed-UTF-8 request opens
+  decomposed entry - bypasses byte equality without a case difference); st_dev is NOT a
+  mount detector (same-fs bind mount shares it; overlayfs legitimately differs within one
+  fs); FILE_OPEN_REPARSE_POINT BYPASSES the cloud filter so a dehydrated OneDrive
+  placeholder would return placeholder bytes (the very stores this product lives in);
+  battery could pass vacuously (snapshot::Store retains PathBuf + pathname ops at
+  lib.rs:166-338 - concrete!). FIXED DIRECTLY (ac5280856): stored-name recovery via
+  FileNormalizedNameInformation / handle-bound dev+ino-matched enumeration on
+  normalization-insensitive fs; mount-INSTANCE containment (statx.stx_mnt_id, else
+  openat2(RESOLVE_*), else fail closed - never st_dev-only); two-step IDENTITY-BOUND
+  REOPEN for permitted non-surrogate tags (inspect no-follow -> reopen w/o flag via same
+  parent -> file-ID equality -> read from reopen); full-lifecycle root-ancestry gate w/
+  zero-pathname-open assertion; bit-not-enumeration discriminator tests; symlink
+  capability-check-that-FAILS; REAL OneDrive dehydrated-placeholder gate required on this
+  rig pre-ship. -> regate-dlcmeta-r9 LAUNCHED (attack: OneDrive hydration file-ID
+  stability across the two opens; stx_mnt_id bind-mount semantics; FileNormalizedName
+  per-fs support; hard-links-in-same-parent identity ambiguity).
+- [B]boundary-auth fix2 HARVESTED (5646ffbab, stream_fold.rs + world_fold.rs): the r1
+  REJECT redesign landed - structural boundary validation rides the CANONICAL 56-arm
+  fold_domain_data dispatch via validate_domain_data_payload_exact (isolated fold,
+  boundary_validation=true disables failure/baseline short-circuits ONLY there); forced-
+  status offset table DELETED; d12/d14-17/d51/d69 swallow classes all cursor/exact-length
+  rejected; d53 DELTA|PARTIAL false-rejection fixed (structural pass precedes baseline
+  semantics; production folds all have boundary_validation=false). RED-first 4/5-failed on
+  HEAD. 56-domain audit -> 3 enforcement classes. Orchestrator verified 188 lib (+6) +
+  193/2 bin exact, hunks read. Lane-side reviewer couldn't reach network (10013) - the
+  orchestrator r2 gate covers it. -> regate-boundary-auth-r2 LAUNCHED (attack: every
+  boundary_validation behavior delta classified weaker/stronger/wrong; per-arm exact-
+  consumption sampling; unknown-domain fail-closed at stream layer; per-record instance
+  cost; production-encoder-based false-rejection sweep).
+MERGE-READY 10. Harvests pending gates: facs-wire, foldwave2 fix2b, c1stageb r4-closure,
+dlcmeta r9, boundary-auth fix2. FIX ROUNDS in flight: autoattach fix2, stitching fix3
+(refire). GATES in flight: dlcmeta r9, c1stageb r5 (refire), facs-wire, foldwave2 r3,
+boundary-auth r2. Owed after fixes land: autoattach r3, stitching r3.
