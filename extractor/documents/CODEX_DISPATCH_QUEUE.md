@@ -3138,3 +3138,19 @@ test owed" + strongest real typed->UI e2e test - do NOT fake a consumer. Prompt 
 snapshot/src/lib.rs. ONE fix round for review r3; if r4 still rejects the witness => orchestrator
 either fixes directly OR ships with the witness SUPPRESSED (the safe degenerate). escalation noted.
 IN FLIGHT: autoattach fix4, replay-loader fix2, facs-wire fix4, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 autoattach fix4 verified GREEN -> r5 gate launched
+Both r4 findings closed in the diff: F1 = GetNamedPipeClientProcessId == retained target PID
+BEFORE stream writer / any byte read (main.rs:6959,7042), same RetainedProcessAuthority FILETIME/
+liveness-revalidated before+after the PID query (PID-reuse), accepted endpoint must contain THIS
+attempt's token (main.rs:6922), API-fail/PID-mismatch/malformed-token/stale-endpoint abort before
+data; F2 = DomainPerfEvidence retains status + 4 counters (proof.rs:233), DATA must match PERF
+elapsed+status+domain counter semantics or gate keeps WAITING (proof.rs:483), provenance/nulls/
+empty-arrays/empty-objects stripped before material comparison (proof.rs:589,622). Lane self-review
+sandbox-blocked (irrelevant). ORCHESTRATOR-VERIFIED: recorder_host 306 lib(2 ign)/207 bin(4 ign),
+0 failed, RmStartSession flakes did not even reproduce; scope 2 files clean. Residual: in-process
+compromise can originate its own endpoint (in-process threat, not another process as pipe client) -
+irreducible + fail-closed. regate-autoattach-r5 LAUNCHED (attacks PID-reuse window, token
+guessability/staleness, semantically-empty-but-present material, cross-domain/hour counter reuse,
+recursive empty stripping, + regression of universal lease/journal/authorities/DLL-hash).
+IN FLIGHT: autoattach r5 gate, replay-loader fix2, facs-wire fix4, foldwave2 fix4, stitching r3.
