@@ -2504,3 +2504,27 @@ MERGE-READY still 9. FIX ROUNDS in flight: autoattach fix2, boundary-auth fix2, 
 fix4, foldwave2 fix2b. GATES pending: dlcmeta r4, stitching r2 (refire), d57 (refire),
 facs-wire. F2 owed re-gates after fixes: autoattach r3, boundary-auth r2, c1stageb r4,
 foldwave2 r3.
+
+VERDICT BATCH 8 (2026-07-13 ~16:55).
+- [B/M]stitching r2 REVISE 4 HIGH (#6/#7/#9; #5/#10 PASS): the container OPEN path trusts
+  writer-serialized claims instead of independently re-verifying -> a hand-crafted v2
+  container bypasses planner guarantees. #9 stitch_input_digest accepted but never recomputed
+  on open + raw campaign-key preimage withheld; #9 declared publication inputs (created_utc/
+  compression/order) not bound to actual packer/ZIP bytes; #7 v2 open replays array order
+  without proving AppendTicket (play_order) order; #6 source-path alias rejection exact-string
+  only (Windows case/sep/\?\ variants get 2 ledgers). -> fix3 launched: open-time recompute
+  digest + serialize preimage, pack/open equality gate, ticket-order proof, ASCII/sep/UNC path
+  canonicalization; RED-first hand-crafted-container tests for each.
+- [H]dlcmeta r4 REVISE 4 MAJOR + 1 MINOR (routing matrix + rounds1-2 now PASS): fixed DIRECTLY
+  by orchestrator (pure doc spec) -> 9124634ab: NO-TOCTOU (validate the same man_bytes
+  from_bytes uses via a snapshot strict-open, not a loader reread; before any Value decode);
+  ASCII-only eq_ignore_ascii_case folding pinned (byte-equality for canonical identity);
+  directory case-lookalike rule (reject non-byte-exact Timeline.json + multi-variant, timeline
+  AND manifest, filesystem-independent verdict); container-vs-directory fixture recipes split;
+  stale citations corrected (774-812 resolver, 1602-1706/1798-1846 tests). -> r5 gate LAUNCHED.
+NOTE the SAME open-vs-writer-trust theme in stitching #6/#7/#9 and dlcmeta NO-TOCTOU as in
+autoattach/boundary-auth/foldwave2: the enforcing reader must re-derive, never trust the
+serialized claim or write to a channel the reader ignores. [[signal-must-reach-consumer]].
+MERGE-READY still 9. FIX ROUNDS: autoattach fix2, boundary-auth fix2, c1stageb fix4,
+foldwave2 fix2b, stitching fix3. GATES: dlcmeta r5, d57 (refire), facs-wire. Owed re-gates
+after fixes land: autoattach r3, boundary-auth r2, c1stageb r4, foldwave2 r3, stitching r3.
