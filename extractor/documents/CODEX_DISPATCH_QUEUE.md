@@ -3039,3 +3039,13 @@ replay-loader resume. MERGE-READY fix lanes: boundary-auth (guards). c1stageb r7
   fail-open hunt, signal-reaches-consumer check on world.rs canonical keys, test-fidelity attack
   on the simulated stand-ins).
 - Still in flight: foldwave2 fix4, facs-wire fix3, stitching r3 (event streams advancing).
+
+## 2026-07-14 SCOPE RULING: Windows-only (owner confirmed)
+Product ships WINDOWS-ONLY. "Linux host run" is DROPPED from the replay-loader residual list
+(it was reflexively emitted by the lane's portable per-platform dir_store module). dir_store/
+linux.rs is cfg(target_os=linux) so it never enters the Windows build - zero cost, but UNTESTED +
+UNSUPPORTED = dead code eligible for a cleanup-pass removal (NOT merge-blocking, NOT verified).
+other_posix.rs fail-closed unimplemented!() stubs stay. Remaining replay-loader residuals are
+Windows-relevant only: Developer-Mode symlink capability test + real dehydrated OneDrive fixture.
+CLEANUP-LATER (low priority, post-merge): strip dir_store/linux.rs + any Linux-only tests to
+shrink the surface, OR reduce linux.rs to a fail-closed stub matching other_posix.
