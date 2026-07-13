@@ -3334,3 +3334,17 @@ out-of-range/all-zero/wrong-scale d10, ceiling on folded output, nonzero across 
 full regression of d44/d68/default-deny/record_flags/PERF-binding/pipe-auth/lease).
 IN FLIGHT: autoattach r7 gate, replay-loader r3 gate, facs-wire fix5 verify->r5, foldwave2 fix4,
 stitching r3.
+
+## 2026-07-14 facs-wire fix5 verified GREEN -> r5 gate launched (last UI seam)
+F1 closed: binding.rs:481 gates the `factions` LIST on exact MeasuredNonEmpty - all other statuses
+emit Vec::new(). Behavior: Unavailable/absent = available=false + EMPTY; MeasuredEmpty = available=
+true + EMPTY; MeasuredNonEmpty = available=true + genuine rows. Test fixtures (diplomacy_binding.rs
+:170+) now have POPULATED GER/ITA country faction data across all 4 status cases; RED 1/1fail (leaked
+Axis GER,ITA) -> GREEN 2/2; positive case green before+after (no false-negative). Lane self-review
+sandbox-blocked (irrelevant). ORCHESTRATOR-VERIFIED: game_ui 139/0 (incl new tests), replay_core
+48/0, map_viewer 755+/0(1 ign), diplomacy_intel_operatives_live 125/0, recorder_host 207 lib/199
+bin(2 ign) modulo RmStartSession flakes. Scope 9 files within FACS fence, snapshot/src/lib.rs
+untouched. regate-facs-wire-r5 LAUNCHED (attacks any alternate factions-list constructor/mutation
+under non-MeasuredNonEmpty, test fidelity, + full regression of sound witness R3-F1/F2 + R2-F2 +
+map-helper + stream-compat). Expected FINAL round if SHIP.
+IN FLIGHT: autoattach r7 gate, replay-loader r3 gate, facs-wire r5 gate, foldwave2 fix4, stitching r3.
