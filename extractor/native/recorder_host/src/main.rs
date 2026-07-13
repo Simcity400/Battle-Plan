@@ -1093,6 +1093,13 @@ struct CompactSummary {
     lane_wall_prefetch_dist_relation_mixed: bool,
     lane_wall_prefetch_dist_candidates_applied: Option<u64>,
     lane_wall_prefetch_dist_candidates_mixed: bool,
+    // W12C campaign identity: the identity-candidate observation accumulated from
+    // the decoded d68 session_header_live records (last-value-wins witnesses;
+    // game_unique_id/seed stay None until an offset-proven collector sources them
+    // — see recorder_host::campaign_identity). Consumed at manifest-build time to
+    // bind the fail-closed `campaign_identity` object. Default = no rows observed
+    // (unbound). Kept OUT of per_domain / gates.
+    session_header_identity: recorder_host::campaign_identity::SessionHeaderIdentityObservation,
 }
 
 #[derive(Debug, Default)]
@@ -1315,6 +1322,13 @@ fn run() -> Result<(), String> {
                 &coverage_errors,
                 &cfg.scheduled_domains,
             );
+            // W12C: bind the engine-derived campaign identity from the decoded
+            // d68 observation. Fail-closed at this revision (game_unique_id/seed
+            // not yet sourced) -> state `unbound`/`unavailable` with a null
+            // identity and a reason note; never fabricated.
+            let campaign_identity_binding = recorder_host::campaign_identity::to_manifest_json(
+                &recorder_host::campaign_identity::resolve(&summary.session_header_identity),
+            );
             let expected_partial_tolerances_applied =
                 compact_expected_partial_tolerances_applied_json(&summary);
             (
@@ -1354,6 +1368,7 @@ fn run() -> Result<(), String> {
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
                     "compact_stream": compact_stream_manifest,
+                    "campaign_identity": campaign_identity_binding,
                     "first_game_hour_raw": summary.first_hour,
                     "last_game_hour_raw": summary.last_hour,
                     "unique_game_hour_count": summary.unique_hours.len(),
@@ -4740,6 +4755,11 @@ fn read_session_manifest_bytes_validated(manifest_path: &Path) -> Result<Vec<u8>
         .map_err(|e| format!("parse session manifest failed: {e}"))?;
     validate_repack_manifest_modset(&manifest)
         .map_err(|e| format!("session manifest modset invalid at pack time: {e}"))?;
+    // W12C: a present campaign_identity object must satisfy the exact grammar
+    // (drift/mismatch is fatal); an absent one is a legacy identity-unavailable
+    // stream and repacks unchanged.
+    recorder_host::campaign_identity::validate_in_session_manifest(&manifest)
+        .map_err(|e| format!("session manifest campaign_identity invalid at pack time: {e}"))?;
     Ok(bytes)
 }
 
@@ -14419,6 +14439,11 @@ fn decode_compact_session_header_data_payload(
     payload: &[u8],
     summary: &mut CompactSummary,
 ) {
+    summary.session_header_identity.session_header_records_seen = summary
+        .session_header_identity
+        .session_header_records_seen
+        .saturating_add(1);
+    let errors_before = summary.parse_errors.len();
     if payload.len() < COMPACT_SESSION_HEADER_HEADER_LEN {
         summary.parse_errors.push(format!(
             "offset {offset}: session_header payload is {} byte(s), expected at least {}",
@@ -14430,6 +14455,12 @@ fn decode_compact_session_header_data_payload(
     let presence = read_u32_le(payload, 8);
     let status_flags = read_u32_le(payload, 12);
     summary.status_flags_or |= status_flags;
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_SESSION_HEADER_LIVE)
+    {
+        domain.status_flags_or |= status_flags;
+    }
     if presence & !COMPACT_SESSION_HEADER_KNOWN_FLAGS != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: session_header unknown presence flags {presence:#x}"
@@ -14544,11 +14575,24 @@ fn decode_compact_session_header_data_payload(
             payload.len()
         ));
     }
-    if let Some(domain) = summary
-        .per_domain
-        .get_mut(&COMPACT_DOMAIN_SESSION_HEADER_LIVE)
+    // Commit identity witnesses only after the complete payload grammar has
+    // validated and only for an effective-success row. Failure/partial status
+    // mirrors the canonical fold's rejection: it remains badged above but can
+    // never leave stale or partial positive identity evidence behind.
+    if summary.parse_errors.len() != errors_before
+        || compact_contract::compact_status_is_failure(status_flags)
     {
-        domain.status_flags_or |= status_flags;
+        return;
+    }
+    summary.session_header_identity.session_header_rows = summary
+        .session_header_identity
+        .session_header_rows
+        .saturating_add(1);
+    if has_start_date {
+        summary.session_header_identity.witnesses.start_date_raw = Some(start_date_raw);
+    }
+    if has_session {
+        summary.session_header_identity.witnesses.session = Some(session);
     }
     add_compact_domain_data_unit(
         summary,
@@ -34816,6 +34860,80 @@ mod tests {
     }
 
     #[test]
+    fn campaign_identity_binds_unavailable_from_d68_and_validates() {
+        use recorder_host::campaign_identity as cid;
+        // A d68 row carrying start_date + session (no game_unique_* in the wire
+        // schema) must resolve fail-closed to `unavailable` with the scalars as
+        // raw witnesses beside a null identity.
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        let presence = COMPACT_SESSION_HEADER_FLAG_START_DATE | COMPACT_SESSION_HEADER_FLAG_SESSION;
+        p.extend_from_slice(&presence.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+        p.extend_from_slice(&0u32.to_le_bytes()); // player_tag_db_id (absent)
+        p.extend_from_slice(&0u32.to_le_bytes()); // dlcs (absent)
+        p.extend_from_slice(&0x0100_0101u32.to_le_bytes()); // start_date_raw
+        p.extend_from_slice(&0u32.to_le_bytes()); // save_version (absent)
+        p.extend_from_slice(&99u32.to_le_bytes()); // session
+        for _ in 0..3 {
+            p.extend_from_slice(&0u16.to_le_bytes()); // three empty strings
+        }
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_SESSION_HEADER_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+
+        let obs = &summary.session_header_identity;
+        assert!(obs.session_header_rows >= 1, "d68 row must be observed");
+        assert_eq!(obs.witnesses.start_date_raw, Some(0x0100_0101));
+        assert_eq!(obs.witnesses.session, Some(99));
+        assert!(obs.game_unique_id.is_none());
+        assert!(obs.game_unique_seed.is_none());
+
+        let identity = cid::resolve(obs);
+        assert_eq!(identity.state, cid::CampaignIdentityState::Unavailable);
+        assert!(!identity.is_bound());
+        assert!(identity.campaign_id.is_none());
+        assert!(identity.resolution_note.is_some());
+
+        // The bound object must satisfy the exact manifest grammar, and the
+        // wired-in pack/repack validator must accept it as a manifest sibling.
+        let object = cid::to_manifest_json(&identity);
+        let manifest = json!({ "campaign_identity": object });
+        cid::validate_in_session_manifest(&manifest).unwrap();
+
+        // A tampered identity (fabricated campaign_id on a non-known state) must
+        // fail the wired-in validator closed.
+        let mut tampered = manifest.clone();
+        tampered["campaign_identity"]["campaign_id"] = json!("a".repeat(64));
+        assert!(cid::validate_in_session_manifest(&tampered).is_err());
+    }
+
+    #[test]
+    fn campaign_identity_unbound_when_no_d68_row() {
+        use recorder_host::campaign_identity as cid;
+        // A stream with no d68 record at all -> `unbound` (source domain absent).
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE, &{
+            let mut p = Vec::new();
+            p.extend_from_slice(&0u64.to_le_bytes());
+            p.extend_from_slice(&0u32.to_le_bytes()); // count
+            p.extend_from_slice(&0u32.to_le_bytes()); // status
+            p
+        });
+        let summary = summarize_compact_stream(&raw);
+        let identity = cid::resolve(&summary.session_header_identity);
+        assert_eq!(identity.state, cid::CampaignIdentityState::Unbound);
+        assert!(identity.campaign_id.is_none());
+        cid::validate_in_session_manifest(&json!({
+            "campaign_identity": cid::to_manifest_json(&identity)
+        }))
+        .unwrap();
+    }
+
+    #[test]
     fn session_header_decode_rejects_string_without_flag() {
         let mut p = Vec::new();
         p.extend_from_slice(&0u64.to_le_bytes());
@@ -34835,6 +34953,42 @@ mod tests {
             .parse_errors
             .iter()
             .any(|e| e.contains("ideology bytes without flag")));
+    }
+
+    #[test]
+    fn session_header_invalid_or_failed_payload_never_commits_identity_witnesses() {
+        fn payload(status_flags: u32, trailing: bool) -> Vec<u8> {
+            let mut p = Vec::new();
+            p.extend_from_slice(&0u64.to_le_bytes());
+            let presence =
+                COMPACT_SESSION_HEADER_FLAG_START_DATE | COMPACT_SESSION_HEADER_FLAG_SESSION;
+            p.extend_from_slice(&presence.to_le_bytes());
+            p.extend_from_slice(&status_flags.to_le_bytes());
+            p.extend_from_slice(&0u32.to_le_bytes());
+            p.extend_from_slice(&0u32.to_le_bytes());
+            p.extend_from_slice(&0x0100_0101u32.to_le_bytes());
+            p.extend_from_slice(&0u32.to_le_bytes());
+            p.extend_from_slice(&99u32.to_le_bytes());
+            for _ in 0..3 {
+                p.extend_from_slice(&0u16.to_le_bytes());
+            }
+            if trailing {
+                p.push(0xff);
+            }
+            p
+        }
+
+        for (status_flags, trailing) in [(0, true), (COMPACT_STATUS_SOURCE_UNAVAILABLE, false)] {
+            let raw = wrap_single_data_record(
+                COMPACT_DOMAIN_SESSION_HEADER_LIVE,
+                &payload(status_flags, trailing),
+            );
+            let summary = summarize_compact_stream(&raw);
+            let obs = &summary.session_header_identity;
+            assert_eq!(obs.session_header_rows, 0);
+            assert_eq!(obs.witnesses.start_date_raw, None);
+            assert_eq!(obs.witnesses.session, None);
+        }
     }
 
     #[test]

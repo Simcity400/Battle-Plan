@@ -157,6 +157,16 @@ boundary. Timeout/disconnect fails rather than continuing:
 - no `EpochSealAck` → no next epoch opens;
 - bad `EpochTokenEcho` → Stage B stays closed.
 
+#### Campaign rollover data-pipe drain barrier
+
+The control and H4CR data pipes have no cross-pipe ordering. After `RolloverPropose`, the host
+MUST NOT seal the old logical stream or send `RolloverAck` until the data pipe has delivered, and
+the host has validated, every contiguous old-stream H4CR record exactly through the proposal's
+advertised last sequence. The drain has an explicit monotonic deadline. A gap, mismatch,
+validation failure, disconnect, or deadline expiry is terminal failure: retain only a failed
+prefix, never partially seal the old stream, never acknowledge the rollover, and never open the
+new logical stream.
+
 ## 5. Consumer interfaces and exact plug-in points
 
 All consumers bind to the same primitive:
