@@ -2436,3 +2436,38 @@ it was sandbox-wedged anyway, zero files touched) -> prompt amended in lockstep 
 Counterbadge attempt 8 pending (300s stagger). c1stageb r3 + autoattach + foldwave2-r2 +
 fow... gates in flight. Remaining fix-lane gates owed: none - every harvest has a gate
 launched or returned.
+
+VERDICT BATCH 6 (2026-07-13 ~16:15). MERGE-READY grows to 9: [N]counterbadge 50234f2d1
+(gate SHIP zero findings on attempt 8 - dead-sandbox wedge x7 then clean; all 8 findings
+closed: 870ebf-proven offsets retained/old->HYPOTHESIS, dig-in +0x448/+0x450 reused,
+combat-side +0x418, D20-max-or-identity-gated-D44 join, tri-state ORDER_UNRESOLVED, air-sup
+MODEL, org-max prohibited, shore-factor disambiguated).
+TWO DEEP REVISE/REJECT this batch, both redesign-class, both fix rounds launched:
+- [S]c1stageb r3 REVISE 4 CRITICAL + 2 MAJOR: the deadline coverage was still partial -
+  reload 'joined' branch deadline-free before the Active-frame deadline exists; drain
+  mutex/CV/join waits only 'may not be unbounded' (CancelIoEx can't cancel those); the
+  NON-Stage-B first-frame H4CR read deadline-free + 'keep H4CR exactly as it is' unsafe
+  (client handles default non-overlapped); rollover prerequisites (drain/close-A/create-B/
+  durable_stream_ready) wedge before the deadline-bearing ack; server handshake sync ops
+  (CreateNamedPipeW, GetNamedPipeClientProcessId, FILETIME re-read) unbounded; connection
+  mutants not concrete (budget-reset-after-connect, PIPE_BUSY race, quarantined-worker
+  late-handle cleanup, sub-ms WaitNamedPipeW rounding). Seal encoding verified byte-
+  identical (SHA pinned). -> fix4 launched with the gate's own per-op FAIL table as exit
+  criterion. stageb-impl stays PARKED.
+- [i1-boundary-auth] gate REJECT 4 CRITICAL: the isolated-WorldFold validation approach is
+  BOTH unsound and over-strict. Unsound: d12/d14-17 fold_* return Ok without cursor==len so
+  trailing-append swallow survives; d69 status offset wrong (real byte 12 not 16); d51
+  status byte 20 + early return on delta/failure; error-evidence check only reads
+  'domain N fold skipped' notes, ignores domain_problems/generic-failure notes. Over-strict
+  (RELEASE BLOCKER opposite kind): valid d53 DELTA|PARTIAL records are strictly decoded
+  fine then REJECTED because the fresh baseline-free fold emits delta_before_baseline ->
+  every valid delta_partial stream fails offline folding. -> fix2 REDESIGN launched:
+  exact-consumption enforced GENERICALLY (cursor==payload.len() across ALL FOLDED_DOMAIN_IDS
+  incl lane-owned), no fragile forced-status offset table, delta records validated
+  STRUCTURALLY without a baseline, failure-status still bounded; RED swallow tests for
+  d12/d14-17/d51/d69 + a POSITIVE d53 delta accept-and-fold test that must fail on HEAD.
+  NOTE: pass2 stays merge-ready - the DATA-length item was always owned by boundary-auth,
+  not pass2's Python-validator scope.
+GATES STILL IN FLIGHT: autoattach r2, foldwave2 r2, dlcmeta r4, stitching r2 (refire),
+d57 (refire), facs-wire, + the two fix rounds above. F2 owed gates: c1stageb r4,
+boundary-auth r2 after their fixes.
