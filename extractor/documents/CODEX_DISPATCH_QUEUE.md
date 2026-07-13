@@ -2779,3 +2779,17 @@ dead-sandbox wedge; keep C: under ~90%.
 MERGE-READY 10. FIX ROUNDS refired: autoattach fix2, facs-wire fix2, stitching fix3. GATES
 refired: foldwave2 r3, boundary-auth r2, c1stageb r6, dlcmeta r9. Owed after: autoattach r3,
 stitching r3, facs-wire r2.
+
+MERGE PRE-STAGE (2026-07-13, parallel orchestrator work while F2 drains): computed the real
+per-lane collision map for the 6 currently-merge-ready lanes using each lane's OWN tip-commit
+footprint (NOT git diff master...HEAD, which falsely shows ~40 shared files because the lanes
+branch from an integration point far ahead of master). RESULT: exactly ONE code collision in
+the merge-ready set - collector/src/lib.rs (d51 + librs), already serialized by the plan
+(d51 then librs). Disjoint singletons: d57->compact_contract/build_profile.rs,
+campaignid->recorder_host/campaign_identity.rs (new file), foldwave1->world_fold.rs(+tests).
+Docs collide trivially. Merge-ready portion = low risk, one serialization point. Pending-gate
+lanes will ADD collisions when they land: world_fold.rs (foldwave2 + boundary-auth + facs-wire),
+main.rs (dlcmeta + autoattach + campaignid), snapshot/ (stitching) - recompute the map once
+those SHIP before the owner-serialized merge. Launchers hardened: both launch_gate.sh and
+launch_fresh.sh now pass -c windows.sandbox=unelevated (was missing - the root cause of
+today's dead-sandbox wedges; fleet-validated 19/19).
