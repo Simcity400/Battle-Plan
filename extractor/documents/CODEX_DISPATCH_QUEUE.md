@@ -3320,3 +3320,17 @@ reviewer the out-file was stale, review the ACTUAL diff; attacks: every ID path 
 from_windows_file_id incl FileIdExtdDirectoryInfo enumeration, strict manifest = the REAL bytes
 finalization validates, walk truly closed-world + scans past #[cfg(test)], + regressions).
 IN FLIGHT: autoattach fix6, replay-loader r3 gate, facs-wire fix5, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 autoattach fix6 verified GREEN -> r7 gate launched (d10 last seam)
+d10 predicate brought to d44/d68 rigor (proof.rs:550-595,750): every ID 1..=2048 production ceiling
+(:584); production fuel-present row flag + emission bounds current/max 0..=1e9, gain/cost +-1e9 at
+scale 32768 (:587-591); >=1 genuinely NONZERO current/max/gain/cost across d10 rows (:595); folded
+proof needs 4 numeric fuel fields + >=1 nonzero (:750). Preserved status@16/scale/nonzero-row/flags/
+baseline/PERF-binding. Req (4) current-hour identity join NOT added (no current-hour identity set in
+proof context) - accepted, (1)(2)(3) hold. Lane RED 1/3->GREEN 6/0 incl the exact 2049+all-zero
+leak. ORCHESTRATOR-VERIFIED: recorder_host 320 lib(2 ign)/207 bin(4 ign), 0 failed; scope 2 files
+(main.rs in cumulative diff, fix6 touched only proof.rs). regate-autoattach-r7 LAUNCHED (attacks
+out-of-range/all-zero/wrong-scale d10, ceiling on folded output, nonzero across real rows only, +
+full regression of d44/d68/default-deny/record_flags/PERF-binding/pipe-auth/lease).
+IN FLIGHT: autoattach r7 gate, replay-loader r3 gate, facs-wire fix5 verify->r5, foldwave2 fix4,
+stitching r3.
