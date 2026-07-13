@@ -3174,3 +3174,31 @@ regate-replayloader-r2 LAUNCHED (attacks fileID-reuse race on the revalidation r
 handle-held-open requirement, any remaining serde_json::from_slice on snapshot bytes, deep/array-
 element dup keys, gate fail-closed-on-unclassified, signal-through-frame-to-world.rs).
 IN FLIGHT: autoattach r5 gate, replay-loader r2 gate, facs-wire fix4, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 autoattach r5 gate = REVISE (R4-F1 CLOSED, R4-F2 material-proof leaks) -> fix5
+R4-F1 (pipe client PID-binding to retained target) CONFIRMED CLOSED: same Arc<RetainedProcess-
+Authority> for lease+hook+module-proof+pipe-auth; auth at main.rs:7042 BEFORE writer(7072) + first
+ReadFile(7092); API-fail/PID-mismatch close handle accept no data; token CSPRNG-per-attempt (not a
+secret - the PID check IS the auth; racing external proc can only DoS, cannot submit replay bytes);
+PID-reuse closed by liveness/FILETIME check AFTER the PID query. No regressions (lease/journal/
+authorities/DLL-hash/Drop all intact). R4-F2 (material recording proof) NOT closed - 3 findings,
+ONE root cause = GENERIC interpretation of domain-specific DATA defeated per-domain (SAME recurring
+shape as facs-wire witness + c1stageb deadlines: generic check over domain-specific structure):
+- F1 HIGH d68: generic parser misreads presence(2)=row_count, DELTA_DATA status(1024)=changed_rows,
+  playerID=status_flags => DELTA_DATA record passes w/ apparent status 0; fold reads status @off12
+  and doesn't reject DELTA, folds dlcs=0, scalar-zero preserved => delta proves Recording.
+- F2 HIGH d44: 5 MANDATORY computed BADGE rows (nested source/confidence/names/codes) survive
+  empty-pruning even w/ ZERO real province/division/csupply rows => zero real data proves Recording.
+- F3 MED d10: DATA record_flags not validated (PERF whitelisted @381, DATA not) => invalid DATA
+  flag passes.
+FIX5 launched (tid threads/w12g-autoattach-fix.tid): STRUCTURAL INVERSION = default-DENY. A domain
+proves Recording ONLY via an explicit domain-correct real-material predicate; un-predicated domains
+do NOT prove (keep waiting, don't accept, don't reject-as-invalid) => sound by construction, false-
+negative safe. Plus correct predicates for d68 (read real status @off12, reject DELTA/failure,
+require real dlcs), d44 (require real entity rows, exclude badges), d10 (validate DATA record_flags
+like PERF). Plus residual re-word: in-process-compromise + simultaneous-injection = OUT-OF-THREAT-
+MODEL (needs arch trust boundary / OS code-integrity), NOT "fail-closed". Mandates RED->GREEN for
+d68/d44/d10/default-deny/genuine-real-record-still-proves + self-refute "name a domain that still
+proves w/o real rows". ESCALATION: if r6 still finds a domain leak, ship default-deny AS-IS (sound;
+un-predicated domains = "can't yet serve as recording proof" residual, not a defect). ONE fix round.
+IN FLIGHT: autoattach fix5, replay-loader r2 gate, facs-wire fix4, foldwave2 fix4, stitching r3.
