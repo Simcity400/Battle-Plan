@@ -186,7 +186,7 @@ fn sample_inputs(game_hour_raw: i32, sequence_base: u64) -> SessionMetadataInput
             ),
             SessionEventRow {
                 kind: SessionEventKind::GameSpeed,
-                value_i32: 5,
+                value_i32: 4,
                 flags: EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_UI_VISIBLE | EVENT_FLAG_HOST_COMMAND,
                 ..event(
                     SessionEventKind::GameSpeed,

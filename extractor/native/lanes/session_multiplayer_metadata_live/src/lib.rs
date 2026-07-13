@@ -452,9 +452,9 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
         if let Some(kind) = kind {
             *summary.event_kind_counts.entry(kind as u16).or_insert(0) += 1;
             match kind {
-                SessionEventKind::GameSpeed if !(0..=5).contains(&value_i32) => {
+                SessionEventKind::GameSpeed if !(0..=4).contains(&value_i32) => {
                     errors.push(format!(
-                        "event row {row_index}: game speed {value_i32} outside 0..5"
+                        "event row {row_index}: game speed {value_i32} outside 0..4"
                     ));
                 }
                 SessionEventKind::Pause if value_i32 != 0 && value_i32 != 1 => {
@@ -913,7 +913,7 @@ mod tests {
                 sample_event(SessionEventKind::TagSwitch, 0),
                 SessionEventRow {
                     kind: SessionEventKind::GameSpeed,
-                    value_i32: 5,
+                    value_i32: 4,
                     ..sample_event(SessionEventKind::GameSpeed, 0)
                 },
                 SessionEventRow {
