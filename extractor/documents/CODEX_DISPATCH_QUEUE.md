@@ -3282,3 +3282,21 @@ loader->WorldTimeline->production binding, assert empty factions + RED-on-HEAD/G
 positive MeasuredNonEmpty-still-populates case. Scope game_ui/src/binding.rs + tests/diplomacy_
 binding.rs (in fence). ONE fix round for r4; witness itself is DONE.
 IN FLIGHT: autoattach r6 gate, replay-loader fix3, facs-wire fix5, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 autoattach r6 gate = REVISE (structure CONFIRMED, d10 predicate weaker than siblings) -> fix6
+CONVERGENCE not divergence: DEFAULT-DENY HOLDS structurally (only d10/d44/d68 proof-capable, all
+else _=>false); d44 PASSES all attacks; d68 PASSES all attacks; record_flags==0 HOLDS; PERF<->DATA
+binding INTACT; NO regressions (lease/pipe-auth main.rs:7051/journal/authorities/DLL-hash main.rs:
+5956/Drop all confirmed intact). ONE finding:
+- F1 CRITICAL d10: proves w/ ZERO real material. DATA tag_db_id=2049 (ABOVE the production 2048
+  ceiling) + all-zero fuel (current/max/gain/cost=0) passes because d10 checks only nonzero/unique
+  ID + nonnegative current/max, treats object EXISTENCE as material. Production caps IDs at 2048
+  (build_profile.rs:45) + fuel validator rejects above (lib.rs:729) but proof mirrors neither.
+FIX6 launched (tid threads/w12g-autoattach-fix.tid): bring d10 to d44/d68 rigor - (1) apply
+production identity ceiling (reject tag_db_id>2048), (2) require GENUINELY nonzero fuel material
+(all-zero fuel object != material), (3) validate gain/cost per production, (4) join ID to current-
+hour identity if cheap. Keep existing d10 checks (status@off16/scale/nonzero-row/flags==0). RED->
+GREEN for the EXACT 2049+all-zero payload (reject) + positive in-range+real-fuel (still proves).
+Scope proof.rs d10 only. ONE fix round for r6; d10 is the last seam, other two domains + structure
+DONE.
+IN FLIGHT: autoattach fix6, replay-loader fix3, facs-wire fix5, foldwave2 fix4, stitching r3.
