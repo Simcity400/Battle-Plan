@@ -532,25 +532,34 @@ KNOWN_MASK = (1 << 14) - 1
 # capitulation_war_state_live/src/compact.rs).
 LANE_LOCAL = {
     "naval_combat_lifecycle_live": {
-        11: ("LANE:LOCATION_CANDIDATE_UNVALIDATED", True),
+        11: ("LANE:LOCATION_CANDIDATE_UNVALIDATED", True,
+             "Failed/UnvalidatedCandidate"),
     },
     "scripted_state_flags_variables_live": {
-        11: ("LANE:FLAG_NAMES_PARTIAL", True),
-        12: ("LANE:DELAYED_EVENTS_ROOT_UNRESOLVED", True),
-        13: ("LANE:SCRIPTED_GUI_ROOT_UNRESOLVED", True),
+        11: ("LANE:FLAG_NAMES_PARTIAL", True,
+             "CapturedPartial: textual flag names absent; token/date/value retained"),
+        12: ("LANE:DELAYED_EVENTS_ROOT_UNRESOLVED", True,
+             "Failed/UnresolvedRoot: country roster or shared timed-effects members not exhaustively classified"),
+        13: ("LANE:SCRIPTED_GUI_ROOT_UNRESOLVED", True,
+             "Failed/UnresolvedRoot: no measured scripted-GUI root"),
     },
     "diplomacy_intel_operatives_live": {
-        16: ("LANE:OPERATIONS_DETAIL_RESISTED", True),
-        17: ("LANE:INTEL_MAP_RESISTED", True),
-        18: ("LANE:WAR_ROOT_UNVALIDATED", True),
-        19: ("LANE:INCOMING_ACTION_QUEUE_UNVALIDATED", True),
-        20: ("LANE:WAR_LIFECYCLE_DETAIL_UNVALIDATED", True),
-        21: ("LANE:FACTION_GROUP_UNVALIDATED", True),
-        22: ("LANE:INTEL_NETWORK_GRAPH_UNVALIDATED", True),
+        16: ("LANE:OPERATIONS_DETAIL_RESISTED", True, "Failed/Resisted"),
+        17: ("LANE:INTEL_MAP_RESISTED", True, "Failed/Resisted"),
+        18: ("LANE:WAR_ROOT_UNVALIDATED", True, "Failed/UnvalidatedRoot"),
+        19: ("LANE:INCOMING_ACTION_QUEUE_UNVALIDATED", True,
+             "Failed/UnvalidatedRoot"),
+        20: ("LANE:WAR_LIFECYCLE_DETAIL_UNVALIDATED", True,
+             "Failed/UnvalidatedDetail"),
+        21: ("LANE:FACTION_GROUP_UNVALIDATED", True,
+             "Failed/UnvalidatedDetail"),
+        22: ("LANE:INTEL_NETWORK_GRAPH_UNVALIDATED", True,
+             "Failed/UnvalidatedDetail"),
     },
     "capitulation_war_state_live": {
         # MANDATORY semantics badge whenever war rows exist - informational.
-        16: ("LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR", False),
+        16: ("LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR", False,
+             "CapturedSemantic: running accumulator"),
     },
 }
 
@@ -832,8 +841,9 @@ def classify_bits(name, flags, blocking, notes):
         if not flags & (1 << bit):
             continue
         if bit in lane:
-            lane_name, is_blocking = lane[bit]
-            entry = f"{name}: bit{bit} {lane_name} (lane-local)"
+            lane_name, is_blocking, disposition = lane[bit]
+            entry = (f"{name}: bit{bit} {lane_name} (lane-local; "
+                     f"{disposition})")
             (blocking if is_blocking else notes).append(entry + (
                 "" if is_blocking else " (informational)"))
             continue
@@ -1338,6 +1348,19 @@ def selftest():
     cases.append(("d51-lane-bit13", run_m(
         lambda m: pd(m)["scripted_state_flags_variables_live"].update(
             status_flags_or=1 << 13)), 1))
+    d51_all_badges = run_m(
+        lambda m: pd(m)["scripted_state_flags_variables_live"].update(
+            status_flags_or=(1 << 11) | (1 << 12) | (1 << 13)))
+    cases.append(("d51-all-badges-blocking", d51_all_badges, 3))
+    for bit, name, disposition in (
+        (11, "FLAG_NAMES_PARTIAL", "CapturedPartial"),
+        (12, "DELAYED_EVENTS_ROOT_UNRESOLVED", "Failed/UnresolvedRoot"),
+        (13, "SCRIPTED_GUI_ROOT_UNRESOLVED", "Failed/UnresolvedRoot"),
+    ):
+        cases.append((f"d51-bit{bit}-domain-policy",
+                      [finding for finding in d51_all_badges
+                       if f"bit{bit} LANE:{name}" in finding
+                       and disposition in finding], 1))
     cases.append(("d69-regression", run_m(
         lambda m: pd(m)["tech_sharing_groups_live"].update(
             status_flags_or=1 << 9)), 1))

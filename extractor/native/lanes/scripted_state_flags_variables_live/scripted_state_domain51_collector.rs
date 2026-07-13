@@ -519,6 +519,57 @@ mod tests {
     }
 
     #[test]
+    fn positive_empty_rooted_delayed_events_clear_the_unresolved_badge() {
+        // W12C: the rooted per-country vector walk can positively witness "no
+        // pending delayed events" — every guarded country validated and every
+        // vector had count 0. That resolves as `MeasuredEmpty` with zero rows.
+        // Unlike the old heap-sweep resolved-empty path (which was forced to the
+        // fixture-blocked badge, making bit 12 chronic), this must CLEAR the
+        // DELAYED_EVENTS_ROOT_UNRESOLVED bit and emit NO opaque badge row.
+        let frame = collect_domain51_frame(Domain51FrameInput {
+            elapsed_wall_ms: 4,
+            variable_scopes: vec![country_vars(1)],
+            flag_scopes: vec![named_flag(1)],
+            delayed_events: OpaqueRootState::MeasuredEmpty,
+            scripted_gui_open_state: OpaqueRootState::NotRequested,
+            delayed_event_rows: vec![],
+        });
+
+        assert_eq!(
+            frame.status_flags & compact::STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,
+            0,
+            "a positive empty rooted witness must not set the unresolved badge"
+        );
+        assert_eq!(frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert_eq!(frame.status_flags & compact::STATUS_SOURCE_UNAVAILABLE, 0);
+        assert!(!frame.validated_scope_partial_failure);
+        let summary = compact::decode_payload(0, &frame.payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        // No measured delayed-event rows and, crucially, no opaque badge row
+        // (absent-or-zero: the decoder may or may not register a zero key).
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_delayed_event_rows")
+                .copied()
+                .unwrap_or(0),
+            0
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_delayed_event_opaque_rows")
+                .copied()
+                .unwrap_or(0),
+            0
+        );
+    }
+
+    #[test]
     fn repeated_event_id_with_distinct_seed_is_not_a_duplicate() {
         // A country can have the same event delayed more than once; the two
         // rows share (owner, event_id) but differ in scope.random seed. The
