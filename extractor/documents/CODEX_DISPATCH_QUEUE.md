@@ -2965,3 +2965,32 @@ caught by inspecting `git status` (not trusting the bail report) + orchestrator 
 r4, stitching r3, facs-wire r2, autoattach r3, boundary-auth r3, replay-loader impl,
 integration-adversary(fe4be56ea). Next: process these -> SHIP-harvests fold into 2nd merge
 wave -> master merge (gated on integration-adversary). Live-capture items stay user-gated. ===
+
+RESUME-ALL BATCH (2026-07-14 ~03:00, user "codex limit fixed, resume all"). 8 gate verdicts
+processed:
+- integration-adversary CONFLICTS-FOUND: 1 BLOCKER (d57 code 0..=5 vs dossier 0..=4 contradiction);
+  everything else BENIGN (d51+librs collector/lib.rs disjoint CONFIRMED, world_fold only fold1,
+  FactionRosterStatus local enum, control_transport byte-identical, etc.). -> d57 OWNER
+  RECONCILIATION committed afcc6b805 (const/assert/validator/2 fixtures/comments/dossier all
+  5->4; collector 369/6 + compact_contract 30 + session lane 5 green). MERGE BLOCKER CLEARED.
+- boundary-auth r3 reviewed the WRONG commit (prompt pinned old fix2 5646ffbab; fix3 is 40aba846a)
+  -> regate-boundary-auth-r4 relaunched against the correct HEAD.
+- foldwave2 r4 REJECT (2 CRITICAL: malformed provenance/collector ENVELOPE fails open one level
+  above the strict leaf; D45 residual breach - carried focus metrics projected while focus_status
+  stays Present) -> fix4 launched.
+- facs-wire r2 REJECT (2 CRITICAL + HIGH: witness depends on single-read OUTER game-state/country
+  oracle; unavailable-d53 status NOT serialized -> typed replay falls to legacy-absent = MeasuredEmpty;
+  malformed legacy JSON fails open) -> fix3 launched.
+- autoattach r3 REJECT (CRITICAL: ordinary non-auto injector path skips the lease/job poison ->
+  single-injection not universal; HIGH: DOMAIN_PERF header-only still not a real-recording proof;
+  F2/F3/F5 CLOSED) -> fix3 launched.
+- stitching r3 died (turn.failed) -> relaunched.
+- replay-loader BLOCKED (runner deadlocked after final refactor; builds passed, replay_core 62 +
+  world_timeline 24, snapshot 68/1 = the expected Dev-Mode symlink-provisioning gate) -> resumed
+  to finish verification.
+OWED ORCHESTRATOR: c1stageb r7 REVISE (5 CRITICAL) - 7 rounds of deadline-model patching keep
+surfacing new coverage gaps; needs a HOLISTIC deadline-class pass, not a 6th one-off. Design doc,
+not merge-blocking (stage-B impl is future). Deferred for proper structural attention.
+MERGE PATH: 6 core lanes merged + d57 reconciled = clean base done. Fix lanes (foldwave2/facs-wire/
+autoattach/stitching/boundary-auth) re-fixing -> when they SHIP, 2nd merge wave -> integration-
+adversary re-run on the full result -> master merge.
