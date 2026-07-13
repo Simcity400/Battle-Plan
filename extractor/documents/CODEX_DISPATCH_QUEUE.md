@@ -3300,3 +3300,23 @@ GREEN for the EXACT 2049+all-zero payload (reject) + positive in-range+real-fuel
 Scope proof.rs d10 only. ONE fix round for r6; d10 is the last seam, other two domains + structure
 DONE.
 IN FLIGHT: autoattach fix6, replay-loader fix3, facs-wire fix5, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 replay-loader fix3 verified GREEN (stale out-file caught!) -> r3 gate launched
+OPS NOTE: the lane's -o out-file was STALE (echoed the fix2 summary verbatim). The CODE had
+fully landed - caught by verifying the worktree directly instead of trusting the report
+(verify-codex-work law paying off). Confirmed present by direct read:
+- F1 sentinel IDs: ObjectId::from_windows_file_id (dir_store/mod.rs:194) REJECTS all-zero AND
+  all-ones at construction; windows_file_id_is_unavailable (:213) + validate_reopen_identity
+  (:270) reject sentinel on inspected OR reopened side; test
+  windows_unavailable_file_id_sentinels_cannot_bind_a_reopen (:415). Fail-closed at BOTH layers.
+- F2 streaming verify: stream_verify.rs:122 parses the manifest via crate::strict_json::from_slice
+  BEFORE trusting digest/entry hashes; dup manifest entry rejected (:175); recorder finalization
+  caller (main.rs:4678) inherits w/o recorder_host edits.
+- F3 closed-world gate: fn walk + fs::read_dir discovery (source.rs:1097-1160) over the source
+  dirs; classified_root_or_handle_site/classified_non_loader_site; fails on unclassified.
+ORCHESTRATOR-VERIFIED: snapshot 72/0 (only accepted Dev-Mode symlink excluded), replay_core 70/0,
+recorder_host BUILDS clean (RH_BUILD_EXIT=0). regate-replayloader-r3 LAUNCHED (prompt warns the
+reviewer the out-file was stale, review the ACTUAL diff; attacks: every ID path routed through
+from_windows_file_id incl FileIdExtdDirectoryInfo enumeration, strict manifest = the REAL bytes
+finalization validates, walk truly closed-world + scans past #[cfg(test)], + regressions).
+IN FLIGHT: autoattach fix6, replay-loader r3 gate, facs-wire fix5, foldwave2 fix4, stitching r3.
