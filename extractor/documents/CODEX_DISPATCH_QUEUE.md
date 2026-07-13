@@ -2296,3 +2296,24 @@ identity S/D/M live matrix; (4) reload/relaunch stitching live validation; (5) l
 owed: d51 bit-12 classification, fold naval witnesses, d69 <9-save improvement; (6) speed-5
 re-acceptance + deep-war soak; (7) d57 speed-cycle live capture (pairs with I1d). A single
 consolidated live-session runbook will be produced for these when the agent side closes.
+
+RE-GATE VERDICTS (first substantive batch, 2026-07-13 ~12:40):
+- [F] librs 50bdf48b2: SHIP, no findings, all 3 original findings CLOSED with file:line
+  proof. MERGE-READY.
+- [E] d51 77fbd107d: REJECT - 1 BLOCKER: two-pass roster traversal bounded by
+  country_database.active_count, not the table's CGAMESTATE_COUNTRY_COUNT (CGameState+0x31C);
+  table-grows-past-header transition silently omits the new country's slot (vars/flags/
+  delayed events) and can clear bit 12; lane's roster regression was bound-blind. Fix round
+  2 LAUNCHED (w12g-d51-fix2.txt): dual-count double-read-stable compare, disagree -> fail
+  family closed with attributed reason, new red-first regression for the transition.
+  Original findings 1+3 CLOSED, 2 PARTIAL (this blocker is the gap).
+- [S] c1stageb 9015431b5: REVISE - 2 MAJOR design holes: (1) deadlines only on recv, blocking
+  send_all can hang a session on a stalled peer forever - needs concrete timed/cancellable
+  write mechanism + terminal poisoning; (2) EpochSealRecord last_attempt_id: None is
+  unencodable in EpochSealReady's untagged u64 - needs tagged presence encoding. Fix round 2
+  LAUNCHED (w12g-c1stageb-fix2.txt). The i1-stageb-impl lane was launched then KILLED
+  minutes later when this verdict landed (implementing the flawed spec would bake both holes
+  in); it relaunches after the corrected design re-gates clean.
+Sandbox-runner ceiling confirmed explicitly this session: 'windows sandbox: timed out after
+15000ms connecting runner pipe-in' - gates wedge while all runner slots are held; refires
+land as sessions finish. 7 gates + 2 I1 lanes cycling on staggered refire.
