@@ -2718,3 +2718,33 @@ MERGE-READY 10. Harvests pending gates: facs-wire, foldwave2 fix2b, c1stageb r4-
 dlcmeta r9, boundary-auth fix2. FIX ROUNDS in flight: autoattach fix2, stitching fix3
 (refire). GATES in flight: dlcmeta r9, c1stageb r5 (refire), facs-wire, foldwave2 r3,
 boundary-auth r2. Owed after fixes land: autoattach r3, stitching r3.
+
+VERDICT BATCH 14 (2026-07-13 ~20:45).
+- [I1]facs-wire r1 gate REVISE 2 CRITICAL + 1 HIGH + 1 MEDIUM (wire/parser + encoder/
+  capacity PASS; official old encoder provably never emitted v1 zero-row, so the new v1
+  zero-row decode error cannot break a repository-produced capture):
+  (1) CRITICAL witness covers TOPOLOGY not VALUES - second stability pass re-reads slot/
+  id/type/count/base/member-slot ptrs but NOT member tag values, vtables, leader inputs,
+  or faction-name bytes (read_msvc_string is one-pass) -> a torn member tag or name gets
+  POSITIVELY witnessed (the exact value-vs-topology gap the gate was pointed at);
+  (2) CRITICAL same-hour tolerated-PARTIAL merge upserts rows but never clears - a later
+  witnessed-EMPTY record yields Measured{empty} + STALE resident rows (JSON emits
+  measured_empty AND faction_rows; country projection consumes the stale rows);
+  (3) HIGH the signal STOPS at recorder JSON - DiplomacyView has no roster status,
+  build_diplomacy reads a legacy path, game_ui binding reports available:true+empty for
+  BOTH states, mapmode_factions defaults unmeasured membership to positive NonMember.
+  SIXTH instance of [[signal-must-reach-consumer]] this wave, one layer further down;
+  (4) MEDIUM missing adversarial transitions (member-value tear, same-hour nonempty->
+  empty, v1->fold regression, typed e2e).
+  -> fix2 LAUNCHED (Mode C, cross-cutting into replay_core/game_ui/map_viewer like
+  foldwave2 fix2b): double-read EVERY serialized value else suppress roster+witness;
+  witnessed roster REPLACES resident rows atomically with status (no-witness = unmeasured,
+  not revocation); typed tri-state through DiplomacyView -> binding -> mapmode (unmeasured
+  = unknown, never NonMember); 6 RED-first regressions via production encode->decode->fold.
+  Gate infra note: read-only sandbox denied cargo target writes (os error 5) - gate fell
+  back to fresh prebuilt harnesses (all four suites' totals represented; 54 test failures
+  were all Access-is-denied sandbox artifacts, incl. matching new-FACS passes). Acceptable
+  fallback; noted for future code-gate prompts.
+MERGE-READY 10. FIX ROUNDS in flight: autoattach fix2, stitching fix3 (refire), facs-wire
+fix2. GATES in flight: dlcmeta r9, c1stageb r5 (refire), foldwave2 r3, boundary-auth r2.
+Owed after fixes: autoattach r3, stitching r3, facs-wire r2.
