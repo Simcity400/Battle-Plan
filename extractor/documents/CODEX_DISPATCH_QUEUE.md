@@ -2864,3 +2864,16 @@ Merged-tree battery GREEN: recorder_host 237 lib + 202/2 bin, collector 358/6, c
 CAVEAT: integration-adversary semantic cross-check died at the wall - this rests on the file-level
 collision map + the hand-resolved doc conflict, NOT a full semantic pass; re-run the integration
 adversary on 7e80c4f92 when Codex is back, before any master merge. HELD for round6e: d51, librs, d57.
+
+CODEX RECOVERED on new account (2026-07-13 ~23:20). Probe PROBE-OK (usage_limit=0, clean
+turn.completed). All 7 walled jobs RELAUNCHED FRESH (not tid-resume: tids are account-scoped
+server-side, cross-account resume unreliable; worktrees are ground truth + hold partial work).
+Fix/impl lanes got a "-resume" prompt prepend: "git status/diff FIRST, continue your partial
+uncommitted work, don't redo/discard". Relaunched: foldwave2 r3, c1stageb r6, integration-
+adversary-w12 (all fresh tids, healthy item events, ZERO real type=error events - an early
+health scan false-flagged usage_limit by phrase-grepping the resume-note PROSE; corrected: match
+"type":"error" structured events only, per [[codex-cli-ops-gotchas]] RETRY-OVERWRITE lesson);
+autoattach fix2, facs-wire fix2, stitching fix3, replay-loader impl (continuing partial work).
+NEXT UNBLOCK: round6e census gate (materials: prompts/w12c-census-oracle-r9.txt) - it clears the
+DO-NOT-MERGE hold on d51/librs/d57 (the last 3 merge-ready lanes). Set up + launch once the 7
+resumes are confirmed stable.
