@@ -2528,3 +2528,23 @@ serialized claim or write to a channel the reader ignores. [[signal-must-reach-c
 MERGE-READY still 9. FIX ROUNDS: autoattach fix2, boundary-auth fix2, c1stageb fix4,
 foldwave2 fix2b, stitching fix3. GATES: dlcmeta r5, d57 (refire), facs-wire. Owed re-gates
 after fixes land: autoattach r3, boundary-auth r2, c1stageb r4, foldwave2 r3, stitching r3.
+
+VERDICT BATCH 9 (2026-07-13 ~17:20).
+- [H]dlcmeta r5 REVISE 2 MAJOR + 1 MINOR (container NO-TOCTOU, ASCII folding, fixture split,
+  rounds 1-4 all PASS): the r4 same-buffer law stopped at the container manifest. Fixed
+  DIRECTLY by orchestrator (pure doc spec) -> af16fac9b: (1) directory NO-TOCTOU - timeline
+  + recorder manifest each read ONCE into an immutable buffer; strict validation AND the
+  semantic decode that binds/classifies (legacy-vs-recorder) consume that exact buffer, no
+  path reread may supply the binding (validate-A-then-classify-B reread design explicitly
+  REJECTED); (2) per-component nested-path validation - walk every component of the multi-
+  segment recorder-manifest reference from <game> with byte-exact entry matching, rejecting
+  eq_ignore_ascii_case lookalikes + multi-variants AT EACH LEVEL (recorder/ vs Recorder/
+  intermediate dir must fail closed identically on Windows and case-sensitive hosts);
+  (3) resolver citation extended to modset.rs:774-817 and the stale "single-read" claim
+  replaced with the double-read stability contract (691-693). -> r6 gate LAUNCHED on
+  af16fac9b. Same reader-must-re-derive theme, now at the filesystem layer: Windows path
+  resolution itself is a "consumer" that silently case-folds what the validator checked.
+MERGE-READY still 9. FIX ROUNDS: autoattach fix2, boundary-auth fix2, c1stageb fix4,
+foldwave2 fix2b, stitching fix3 (refire). GATES: dlcmeta r6, d57 (refire), facs-wire. Owed
+re-gates after fixes land: autoattach r3, boundary-auth r2, c1stageb r4, foldwave2 r3,
+stitching r3.
