@@ -3110,3 +3110,31 @@ test uses production encode->decode->fold->typed + overlays valid legacy to prov
 VERIFIED: diplomacy_intel_operatives_live 121/0, recorder_host 209 lib/199 bin(2 ign), replay_core
 48/0; scope 5 files within the 8-file fence. regate-facs-wire-r3 LAUNCHED.
 IN FLIGHT: autoattach fix4, replay-loader fix2, facs-wire r3 gate, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 facs-wire r3 gate = REJECT (witness still leaks) -> fix4 launched
+R2-F2 (unavailable never downgraded) CONFIRMED CLOSED. But the POSITIVE COMPLETENESS WITNESS took
+a 2nd round of holes (c1stageb-style piecemeal-check smell):
+- F1 CRITICAL: country oracle SKIPS ambiguous/duplicate-tag/unreadable slots (extractor.rs:1621) +
+  validates members by tag-SET not accepted-POINTER (:1487). Slots A(X)+B(X): both passes accept A
+  skip B; member->B passes on tag X => positive witness on an ambiguous table.
+- F2 CRITICAL: final validation binds only OUTER game-state root (:1413), NOT the inner country
+  table; table can move while root identical after oracle_after(:1408) => stale roster witnessed.
+- F3 CRITICAL/wiring: signal-reaches-consumer, LAST hop. UI binding preserves enum (binding.rs:483)
+  + map helper rejects Unavailable (mapmode_factions.rs:136) BUT country_faction_memberships called
+  ONLY from #[cfg(test)] (:217); production just re-exports => map enforcement proven only in tests.
+- F4 HIGH: raw duplicate legacy JSON keys collapse last-wins in serde_json::Map (snapshot/src/
+  lib.rs:65,291) BEFORE the atomic parser (world.rs:3367). => NOT facs-wire's: SAME root cause +
+  SAME FILE as replay-loader gate F2, already being fixed in the replay-loader/snapshot lane via
+  strict_json snapshot decode. Fix ONCE there, do NOT double-patch. (memory: raw-bytes-before-Map
+  law added to signal-must-reach-consumer.)
+FIX4 launched (tid threads/i1-facs-wire.tid): F1 = account for ALL slots incl rejected, DUPLICATE
+TAGS poison the witness, validate members by accepted POINTER not tag-set; F2 = fingerprint WHOLE
+table once + re-fingerprint as a unit bound THROUGH the final approval alongside outer-root reread;
+FAIL-CLOSED FALLBACK explicit - the positive witness is an OPTIMIZATION, if any ambiguity remains
+SUPPRESS it (roster = not-proven-complete, always safe, loses no data); F3 = resolve HONESTLY -
+investigate whether a production faction-mapmode consumer exists; if yes wire+integration-test, if
+no (map render UI not built yet) document "consumer not yet built, signal preserved, helper ready,
+test owed" + strongest real typed->UI e2e test - do NOT fake a consumer. Prompt EXCLUDES
+snapshot/src/lib.rs. ONE fix round for review r3; if r4 still rejects the witness => orchestrator
+either fixes directly OR ships with the witness SUPPRESSED (the safe degenerate). escalation noted.
+IN FLIGHT: autoattach fix4, replay-loader fix2, facs-wire fix4, foldwave2 fix4, stitching r3.
