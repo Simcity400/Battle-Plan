@@ -2242,3 +2242,20 @@ unified wave once the 9 code/transport lanes land (avoids capacity contention wi
 driver). Code lanes ([D][G][H][F][E][A][C/O][S][B/M]) cycling via refire_fixwaves.sh; harvest
 Monitor armed. Then: unified adversarial re-gate (doc-citation audits + code fix re-gates) ->
 reconciliation merge with owner-serialization.
+
+REFIRE DRIVER INCIDENT (2026-07-13 ~10:20, resolved): FOUR concurrent driver instances were
+found running (the driver has no per-lane in-flight tracking, so each sweep could refire a
+lane whose previous session was still working; nohup restarts stacked instead of replacing).
+Consequence: fold-wave1 briefly had TWO codex sessions editing the SAME worktree (launched
+08:46 + 08:48, overlapped ~1.5h) and both interleaved into the same .jsonl (tid file for that
+round is suspect — recover tid from the jsonl if resume is needed). ACTION TAKEN: all 4
+drivers killed; the younger duplicate fold-wave1 session killed; the elder + 6 other live
+sessions (librs/d51/autoattach/campaignid/dlcmeta/c1stageb — jsonl streams all actively
+growing) left to finish. HARVEST CAUTION: fold-wave1's worktree saw dual-writer overlap;
+gate its harvest on a full build+test pass and a line-by-line diff read, not just presence
+of edits. fold-wave2 + stitching are DEAD this round (bailed, no live session) — manual
+one-at-a-time refire when a completion frees capacity. NOTE: a second Claude session (replay
+layer) is running its own w15/w15f codex wave on this host concurrently; the ~6-7 session
+capacity is SHARED — keep extractor-side concurrency minimal until their wave drains.
+Watchdog: watch_w12g.sh emits OUT-UPDATED (round finished) / STALLED (jsonl frozen >25min)
+per lane; no new bulk driver until a per-lane in-flight-aware version exists.
