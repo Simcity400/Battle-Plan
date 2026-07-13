@@ -2595,3 +2595,32 @@ MERGE-READY still 9 (+d57 dossier pending its re-derivation gate). FIX ROUNDS in
 autoattach fix2, boundary-auth fix2, foldwave2 fix2b, stitching fix3 (refire). GATES in
 flight: dlcmeta r7, c1stageb r4, d57 r2, facs-wire. Owed re-gates after fixes land:
 autoattach r3, boundary-auth r2, foldwave2 r3, stitching r3.
+
+VERDICT BATCH 11 (2026-07-13 ~18:20). Two fix-lane harvests, both independently verified.
+- [I1]facs-wire HARVESTED (2bc392872, 5 fenced code files + lane report): d53 FACS
+  tri-state SHIPPED offline - extractor grants the roster witness only after double-read-
+  stable topology (system/array/count + per-row slot/id/member_count/members_base); wire
+  FACS v2 = explicit completeness witness incl. row_count 0 (v1 decode-compatible, v1
+  zero-row = explicit decode error); fold maps witness+0/witness+N/no-witness ->
+  measured_empty/measured_nonempty/Unavailable. This CLOSES the foldwave2 dossier's
+  measured-empty residual (owner delivered). RED-first. Orchestrator ran all four suites:
+  recorder_host 401/2 (202+199), collector 357/6, compact_contract 29, d53 direct 117 -
+  exact match to lane claims; wire+extractor+fold diffs read. -> regate-facs-wire LAUNCHED
+  (attack: witness soundness incl. value-vs-topology double-read gap - member VALUES not
+  re-read?; any consumer still keying on row count; v1 zero-row compat vs history; capacity
+  under-estimate; test vacuity). Live FACS v2 injected-capture validation = user-gated.
+- [G]foldwave2 fix2b HARVESTED (0d5b23fe4, world.rs + dossier + mechanical Cargo.lock
+  refresh): the r2 REJECT is closed IN THE TYPED CONSUMER - replay_core parses collector
+  domain_problems into ChannelCoverage.problems, DOMAIN_PROBLEM_VIEW_MAP (11->Production),
+  post-build reconcile downgrades Present->DomainUnavailable (raw preserved in raw());
+  recorder needed no change (numeric domain_id already serialized). Dossier de-overclaimed
+  (measured-empty residual -> i1-facs-wire, now delivered by that lane). RED-first typed
+  e2e test. Orchestrator: replay_core 48 (+3) verified, hunks read, lock delta =
+  snapshot->compact_stream reflection only. -> regate-foldwave2-r3 LAUNCHED (attack: the
+  SAME pattern one level up - malformed domain_problems fail-SOFT to warnings that no
+  typed consumer enforces = Present again; single-domain map coverage vs every
+  record_domain_problem site; per-frame vs cumulative downgrade semantics).
+MERGE-READY 9 + d57 dossier + 2 harvests pending gates. FIX ROUNDS in flight: autoattach
+fix2, boundary-auth fix2, stitching fix3 (refire). GATES in flight: dlcmeta r7, c1stageb
+r4, d57 r2, facs-wire, foldwave2 r3. Owed after fixes land: autoattach r3, boundary-auth
+r2, stitching r3.
