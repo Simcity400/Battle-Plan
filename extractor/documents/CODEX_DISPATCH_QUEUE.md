@@ -3227,3 +3227,24 @@ closed-world-gate; RED->GREEN for zero/all-ones reopen reject, dup-manifest-thro
 verify reject, planted-open-in-new-module + post-test-block open both caught. Scope snapshot/* +
 replay_core/*, do NOT edit recorder_host logic (caller inherits F2 fix). ONE fix round for r2.
 IN FLIGHT: autoattach fix5, replay-loader fix3, facs-wire fix4, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 facs-wire fix4 verified GREEN -> r4 gate launched (SOUND witness, not suppressed)
+Achieved a SOUND positive witness (NOT the suppress fallback): F1 = ordered fingerprint over EVERY
+counted slot incl vacant/unreadable/rejected/accepted/duplicate-tag (extractor.rs:444); positive
+completeness REQUIRES full bulk-alloc capture + stable header + ZERO rejected/ambiguous + ZERO
+duplicate tags (:475); duplicate tags POISON colliding slots, none enters accepted pointer set
+(:1749); members must resolve to EXACT accepted CCountry* + matching live tag (:1538); clean null
+slots stay measured-vacant NOT unavailable. F2 = outer root reread FIRST then COMPLETE inner-table
+oracle recaptured as final nested obs, must match EXACTLY (:1450); fingerprint=base+alloc+count+
+ordered identities+accepted+ambiguity (:1645); header 2nd read, short/changed fail-closed (:1791).
+F3 = CASE (b) - NO production factions-map consumer exists in-tree (all country_faction_memberships
+calls under #[cfg(test)], production only re-exports); documented owed residual (mapmode_factions.
+rs:41), helper still rejects Unavailable (:148), strengthened REAL recording->typed->game-UI binding
+test across all 3 states incl empty-under-Unavailable (diplomacy_binding.rs:171). F4 (dup JSON keys)
+correctly NOT touched (fixed in replay-loader/snapshot lane). ORCHESTRATOR-VERIFIED: diplomacy_
+intel_operatives_live 125/0, recorder_host 209 lib/199 bin(2 ign), replay_core 48/0, game_ui all
+green, map_viewer 755+/0(1 ign); scope 7 files + Cargo.lock within the 8-file FACS fence.
+regate-facs-wire-r4 LAUNCHED (attacks any residual witness-emit under ambiguity, inner-table-move w/
+identical outer root, member tag-borrow, case-(b) truth via repo-wide production-caller grep, +
+R2-F2 regression after the 343-line world.rs churn).
+IN FLIGHT: autoattach fix5, replay-loader fix3, facs-wire r4 gate, foldwave2 fix4, stitching r3.
