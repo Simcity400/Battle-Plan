@@ -2814,3 +2814,21 @@ NEW parallel streams spun out (all genuinely unblocked; dependency-blocked items
 STILL CORRECTLY BLOCKED (not launched): stage-B impl (needs c1stageb SHIP - r6 pending real verdict);
 autoattach r3 / stitching r3 / facs-wire r2 re-gates (need their fix rounds to commit); cross-modset
 matrix (needs user + live non-vanilla game). Everything else launchable is now launched.
+
+VERDICT (2026-07-13 ~22:20): boundary-auth r2 REVISE 1 HIGH + 1 MEDIUM (core redesign PASSED:
+flag soundness all 12 use-sites classified, state isolation, exact 56/56 dispatch + residue
+enforcement, false-rejection tracing all legal shapes accepted, production-unchanged all
+constructors flag-false). HIGH = d12/d14/d15 + read_u32(15847) read fixed fields WITHOUT a
+pre-read bounds check under boundary_validation, so a complete-but-malformed payload (28B d12
+count=1; 40B d14 one-row) PANICS before the final-cursor InvalidData return - loud not silent,
+but the boundary API promises fail-closed Err. MEDIUM = production-encoder boundary sweep
+incomplete (only d53 DELTA|PARTIAL production-encoded through the boundary; d51/d69 hand-built;
+plain d53 DELTA/PARTIAL/failure/FACS-v1-absent not each driven through the stream boundary).
+-> fix3 LAUNCHED: need()-guard every unchecked read across ALL 56 arms (not just the 4 named)
+returning attributed InvalidData; complete the production-encoder acceptance matrix; RED-first
+no-panic driver tests + acceptance tests. This is the last owed re-gate closure for boundary-
+auth (r1 REJECT->fix2 harvested->r2 REVISE->fix3).
+BOARD: merge-ready 10. IN FLIGHT codex: foldwave2 r3 (gate), c1stageb r6 (refire),
+integration-adversary-w12 (gate), replay-loader e2e (impl), autoattach fix2, facs-wire fix2,
+stitching fix3, boundary-auth fix3. Owed re-gates after fixes land: autoattach r3, stitching r3,
+facs-wire r2, boundary-auth r3. Blocked: stage-B impl (c1stageb SHIP), cross-modset (user+live).
