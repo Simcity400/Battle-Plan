@@ -2849,3 +2849,18 @@ CODEX-FREE PROGRESS STILL AVAILABLE meanwhile: owner-serialized MERGE of the 6 b
 merge-ready lanes (d51/librs/foldwave1/campaignid/fow/d57) needs NO codex - only caveat is the
 integration-adversary semantic cross-check died at the wall, so only the file-level collision map
 (1 collision: collector/lib.rs d51+librs, disjoint) is confirmed.
+
+CODEX-FREE PARTIAL MERGE LANDED (2026-07-13 ~23:00, during the usage wall). Recon corrected the
+"6 merge-ready" set to 3 SAFE: d51/librs/d57 carry an explicit DO-NOT-MERGE marker (804f2ecd7
+"PENDING-GATE BASELINE ... awaiting round6e census gate") NOT on the branch + round6e never
+shipped -> HELD (they'd drag ungated census v3.3 + stage-A). The 3 clear-of-hold lanes merged on
+scratch branch merge-w12-clean3, verified green, fast-forwarded onto claude/replay-engine-
+extraction-18b40f @ 7e80c4f92:
+- fold1 (773d701bc): clean, world_fold naval/faction + FactionRosterStatus.
+- campaignid (4ad2f0da5): 1 additive doc conflict (campaign rollover drain-barrier subsection vs
+  branch duplex doc) resolved keep-both; campaign_identity.rs + control_transport mod landed.
+- fow (f18c735ef): clean, 2 FoW dossiers (its code was already on-branch via the duplex/d48 merges).
+Merged-tree battery GREEN: recorder_host 237 lib + 202/2 bin, collector 358/6, compact_contract 30.
+CAVEAT: integration-adversary semantic cross-check died at the wall - this rests on the file-level
+collision map + the hand-resolved doc conflict, NOT a full semantic pass; re-run the integration
+adversary on 7e80c4f92 when Codex is back, before any master merge. HELD for round6e: d51, librs, d57.
