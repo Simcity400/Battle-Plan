@@ -3154,3 +3154,23 @@ irreducible + fail-closed. regate-autoattach-r5 LAUNCHED (attacks PID-reuse wind
 guessability/staleness, semantically-empty-but-present material, cross-domain/hour counter reuse,
 recursive empty stripping, + regression of universal lease/journal/authorities/DLL-hash).
 IN FLIGHT: autoattach r5 gate, replay-loader fix2, facs-wire fix4, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 replay-loader fix2 verified GREEN -> r2 gate launched
+All 3 findings closed in the diff: F1 cross-object routing = retained BoundDir + volume-serial +
+128-bit fileID + first index.json buffer (lib.rs:180, dir_store/mod.rs:59); games() establishes
+retained objects, metadata/cached-index/snapshots REUSE them (lib.rs:309); every later read
+identity-revalidates the same-name dir (mismatch REJECTS) but reads bytes relative to the RETAINED
+handle (windows.rs:66); index.json read once never reopened (lib.rs:337); errors propagate
+Store::load_file -> ReplaySource::frame. F2 duplicate snapshot keys = one strict recursive decode
+builds duplicate-free Value then derives typed view from that tree (lib.rs:44), used by BOTH dir
+snapshots (lib.rs:422) + container index/representative/lazy loads (container.rs:417); dup session
++ nested dup active_dlcs reject in both backends. F3 = static gate scans 8 loader/read modules,
+inventories fs/aliases/File/OpenOptions/.open/.join/CreateFileW/NtCreateFile, 14 classified/0
+unclassified, planted opens detected (source.rs:1014/1099/1127). NOTE: F2 fix here ALSO closes
+facs-wire r3 F4 (same file/root cause - the dedup). Lane self-review network-blocked (irrelevant).
+ORCHESTRATOR-VERIFIED: replay_core 69/0(1 ign); snapshot 70/0 with ONLY the accepted Dev-Mode
+symlink test excluded; scope clean (snapshot + replay_core + new dir_store/ + strict_json.rs).
+regate-replayloader-r2 LAUNCHED (attacks fileID-reuse race on the revalidation reopen, retained-
+handle-held-open requirement, any remaining serde_json::from_slice on snapshot bytes, deep/array-
+element dup keys, gate fail-closed-on-unclassified, signal-through-frame-to-world.rs).
+IN FLIGHT: autoattach r5 gate, replay-loader r2 gate, facs-wire fix4, foldwave2 fix4, stitching r3.
