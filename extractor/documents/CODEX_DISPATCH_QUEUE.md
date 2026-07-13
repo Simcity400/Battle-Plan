@@ -2748,3 +2748,34 @@ VERDICT BATCH 14 (2026-07-13 ~20:45).
 MERGE-READY 10. FIX ROUNDS in flight: autoattach fix2, stitching fix3 (refire), facs-wire
 fix2. GATES in flight: dlcmeta r9, c1stageb r5 (refire), foldwave2 r3, boundary-auth r2.
 Owed after fixes: autoattach r3, stitching r3, facs-wire r2.
+
+VERDICT BATCH 15 (2026-07-13 ~21:30).
+- [H]dlcmeta r9 gate: dead-at-creation sandbox (PowerShell hung on no-file probes; local
+  runtime timeout) -> honest REJECT-as-execution-failure, everything UNVERIFIED, no
+  fabrication. REFIRED with 180s stagger.
+- [C]c1stageb r5 REVISE 3 CRITICAL, CONVERGING (reload quiescence, RolloverPropose
+  receive, final-drain row, all mutants now PASS; seals recomputed byte-identical):
+  (1) stable-attempt steps 4-5 readers had NO deadline (reload contract only fires on
+  reload entry; a stalled reader during a stable attempt wedges the driver before any
+  transition); (2) recorder-side Active-frame RECEIVE never defined its deadline creation
+  point (and frame absence must not poison an idle session); (3) ack CONSTRUCTION between
+  validation and send escaped the bounded contract. FIXED DIRECTLY (e6db3bf30, +46/-8):
+  attempt_readers deadline on step-4 entry (per-reader finite wait + join-or-quarantine
+  during the stable attempt; expiry =
+
+INFRA INCIDENT (2026-07-13 ~21:30): DISK-FULL wave-of-127s. C: hit ~100% (37 lane
+worktrees x multi-GB cargo target/ + main-repo 38G targets + 19G /tmp scratch). EVERY
+concurrent launch in flight died EXIT=127 at once (foldwave2 r3, boundary-auth r2, c1stageb
+r6, dlcmeta r9 gates + autoattach fix2 + facs-wire fix2) - the -o file could not be created
+(os error 112). NONE produced a real verdict; the nonzero-OUTSIZE ones held STALE prior
+content (not processed as fresh). User asked for a storage sweep in the same window - timely.
+RECLAIM (~150G freed, 63G -> 208G free / 91%->79% used, all pure rebuildable cargo cache +
+stale scratch, ZERO commit/source loss): 7 inactive w12g lane extractor targets (~13G),
+main-repo extractor+replay_interface targets (38G), ALL w15 lane replay_interface targets
+(~62G), /tmp stale targets + wave-10-13 capture dumps (~24G). Preserved corpus untouched.
+All 6 dead launches + stitching fix3 REFIRED staggered on the recovered disk. Gotcha
+recorded in memory [[codex-cli-ops-gotchas]]: 127+stale-out-file is a distinct class from the
+dead-sandbox wedge; keep C: under ~90%.
+MERGE-READY 10. FIX ROUNDS refired: autoattach fix2, facs-wire fix2, stitching fix3. GATES
+refired: foldwave2 r3, boundary-auth r2, c1stageb r6, dlcmeta r9. Owed after: autoattach r3,
+stitching r3, facs-wire r2.
