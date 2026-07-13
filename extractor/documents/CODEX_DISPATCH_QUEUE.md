@@ -2371,3 +2371,38 @@ verified 429/2+68/1; fix2 running for the 5 ownership/parentage/digest residuals
 duplicate-JSON-member rejection) - r3 gate owed; i1-replayloader prompt updated in
 lockstep (2nd time). [D]foldwave1 r-gate REVISE = acknowledged residual only (owned by
 i1-facs-wire). [A]autoattach resume still working. Counterbadge gate still wedge-cycling.
+
+VERDICT BATCH 4 (2026-07-13 ~15:30). MERGE-READY grows to 6: [C/O]campaignid 4ad2f0da5
+r2 SHIP ZERO findings (digest covers state/campaign/UUID/seed/source/profile/hour/header
+hash/witnesses/note/exact CID1 bytes; mutation regression proven red under HEAD^; rollover
+drain-before-seal normative in both docs; private sealer production-dead pending CID1
+decoder = acknowledged future gate).
+HARVESTED this batch (all independently verified before commit):
+- [K]pass2 fix3 ef6ad6689 (u64 wrap + 31-byte FRAME_END fixtures, selftest 27/27 indep,
+  RED-mutation-proofs) -> r3 gate LAUNCHED (regate-pass2-r3).
+- [A]autoattach 68c3d07d9 (all 7 findings: singleton mutex, sync_data'd Injecting intent,
+  PID-reuse re-probe, fail-closed journal, Toolhelp witness, coordinator-owned correlation,
+  H4CT hello + FirstCompactRecordGate production proof; +27 lib tests, indep 288/0/1 +
+  199/0/2; 5 self-refutation fixes in lane report; lane's own external review blocked by
+  sandbox 10013) -> FIRST independent gate LAUNCHED (regate-autoattach).
+- [G]foldwave2 fix2 e17fb1aee (r1 CRITICAL closed: declared country_count vs keyed
+  coverage reconciliation, production_count_uncovered + evidence note, was explicit
+  discard; RED-first 1/2->3/0; indep 205/0 + 199/0/2) -> r2 gate LAUNCHED
+  (regate-foldwave2-r2).
+- [S]c1stageb fix3 88f6cf544 (r2 gaps closed: absolute monotonic deadlines + Win32
+  cancellation on EVERY H4CR/drain/durability op -> shared poison_attempt; overlapped
+  ConnectNamedPipe/CancelIoEx + bounded client worker, 30s budget incl hello; doc-only,
+  seal encoding unchanged) -> r3 gate LAUNCHED (regate-c1stageb-r3); i1-stageb-impl stays
+  PARKED until that gate SHIPs.
+- [H]dlcmeta r3 gate LAUNCHED over 02167921f (timeline-role reconciliation +
+  duplicate-JSON-member rejection).
+WEDGE SWEEP: i1-facs-wire, i1-replayloader-e2e, i1-d57-gate, counterbadge gate all found
+dead-at-creation (sandbox runner pipe-in / helper exit -1073741502 / shell hang even on
+Get-Location) -> ALL REFIRED fresh per wedge law. i1-boundary-auth died to the SAME
+content-filter false-flag as pass2 fix3 (its todo shows RED swallowed-record regression
+written + proven, fix unimplemented) -> tid-resumed (019f59bb-a12c...) with neutral
+data-integrity phrasing per the established playbook.
+F1 status: 3.5/4 (stitching fix2 still running for the 5 ownership/parentage/digest
+residuals). Live fleet ~12: stitching-fix2, fow-r2, campaignid-r2[done SHIP], c1stageb-r3,
+autoattach-r2, foldwave2-r2, pass2-r3, dlcmeta-r3, counterbadge, facs-wire, replayloader,
+d57-gate, boundary-auth-resume, bundle-reconstruct, + w15 lanes.
