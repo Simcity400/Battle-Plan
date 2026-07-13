@@ -3373,3 +3373,19 @@ FAIL-CLOSED invariant (a file-access-capable module w/ an unclassified open = FA
 post-verify-swap-not-promoted + CreateFile2-module-caught. ONE fix round for r3. ESCALATION: if r4
 still finds a promotion-binding gap, orchestrator fixes F1 directly (bounded Win32 handle-lifetime).
 IN FLIGHT: autoattach r7 gate, facs-wire r5 gate, replay-loader fix4, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 *** autoattach r7 = SHIP *** (FIRST hard lane closed; 6 adversarial rounds r2->r7)
+VERDICT SHIP, zero findings. R6-F1 CLOSED (d10: ID 1..=2048 ceiling @proof.rs:583, scale==32768,
+row-flag==1, current/max 0..=1e9*32768, gain/cost +-1e9*32768, material bit set ONLY after full
+validation from the 4 fuel magnitudes, all-zero rejected, folded check through production WorldFold
+@720 requires 4 numeric fields + >=1 nonzero @750, genuine in-range nonzero still proves). ALL
+regressions PASS: d44, d68, default-deny (_=>false both dispatches), record_flags==0, PERF<->DATA
+binding, pipe PID/session auth, retained lease, journal/authorities, DLL mapped-image hash,
+ChildWorkerHandle Drop. Residuals = only the acknowledged OUT-OF-THREAT-MODEL (in-proc compromise/
+simultaneous injection) + user-gated live multi-domain capture. Gate couldn't run cargo (read-only
+fence) but I INDEPENDENTLY VERIFIED fix6 green (320 lib/207 bin, 0 failed) before launching = full
+standard met (my verify + independent adversarial SHIP). PRESERVED: committed fix1-6 on the lane
+branch @15a817f3e (was 1590-line uncommitted diff). => autoattach is MERGE-READY, joins the 2nd
+merge wave (with boundary-auth).
+MERGE-READY now: boundary-auth (guards), autoattach (SHIP @15a817f3e).
+IN FLIGHT: facs-wire r5 gate, replay-loader fix4, foldwave2 fix4, stitching r3.
