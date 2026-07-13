@@ -2905,3 +2905,15 @@ VERDICT BATCH (2026-07-14 ~00:00, post-recovery, new account healthy).
 FIX ROUNDS in flight: autoattach fix2, facs-wire fix2, replay-loader impl, foldwave2 fix3.
 GATES in flight: c1stageb r7, integration-adversary-w12. Owed: stitching r3 (post-harvest),
 autoattach r3, facs-wire r2, boundary-auth r3, + round6e census gate (unblocks d51/librs/d57).
+
+ROUND6E HOLD RESOLVED (2026-07-14 ~00:30) - the census gate the d51/librs/d57 DO-NOT-MERGE marker
+(804f2ecd7) waited on ALREADY SHIPPED: 5fe47da1d "C1 stage A: census v3.3 + stage-A batch (SHIP
+after 11-round adversarial gate chain)" is ON the integration branch, and 80570da13 closed the
+oracle r9 feature-unification+provenance findings (selftest 78/78). The lanes' 804f2ecd7 is a
+verbatim COPY of that now-shipped census; the hold's purpose is satisfied. d51/librs/d57 are
+therefore UNBLOCKED for merge (careful scratch-branch trial: collector/lib.rs d51+librs collision
++ census-file overlap vs the shipped 5fe47da1d to reconcile). The census-oracle worktree itself
+was pruned (r9 launch FATAL no-worktree) - its work is already committed, so no relaunch needed.
+FLEET HEALTH (new account): all 7 in-flight jobs real_errors=0, fresh 019f5b* tids, active events -
+c1stageb r7, integration-adversary, autoattach fix2, facs-wire fix2, replay-loader impl, foldwave2
+fix3, stitching r3. NEXT: merge d51/librs/d57 (now unblocked); then process the 7 in-flight verdicts.
