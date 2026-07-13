@@ -2793,3 +2793,24 @@ main.rs (dlcmeta + autoattach + campaignid), snapshot/ (stitching) - recompute t
 those SHIP before the owner-serialized merge. Launchers hardened: both launch_gate.sh and
 launch_fresh.sh now pass -c windows.sandbox=unelevated (was missing - the root cause of
 today's dead-sandbox wedges; fleet-validated 19/19).
+
+WIDEN-OUT WAVE (2026-07-13 ~22:00, user: "widen all remaining work not bottlenecked, dw wedge risk").
+Launchers first hardened with -c windows.sandbox=unelevated (root cause of the day's wedges).
+NEW parallel streams spun out (all genuinely unblocked; dependency-blocked items NOT faked):
+- dlcmeta r9 REVISE (0 CRITICAL, 4 MAJOR mostly non-Windows-platform + 1 real Windows finding
+  F4 std::fs bypass at source.rs:233 + 1 real spec self-contradiction F2 hard-link) -> ORCHESTRATOR
+  SHIP RESOLUTION 71920e5c1 breaking the r4-r9 loop: F2+F4 fixed, F1(APFS readdir race)+F3(other-
+  POSIX mount) scoped as deferred fail-closed residuals (Windows/NTFS+OneDrive & Linux fully closed
+  = ship target; macOS/other-POSIX = unimplemented!() stubs). SPEC SHIP.
+- replay-loader e2e IMPL lane LAUNCHED (i1-replayloader-e2e, unblocked by the SHIP) - implements
+  the whole handle-relative loader verbatim from the shipped dossier. THE big new work item.
+- integration-adversary-w12 gate LAUNCHED (read-only) - cross-lane semantic conflict analysis of
+  the 6 merge-ready tips; verifies the collector/lib.rs d51+librs collision is disjoint + hunts
+  contract/enum/module-registration collisions the file-level map can't see.
+- 6 clean pre-merge batteries RAN GREEN from clean (d51/librs/fold1/fow/d57 199/2, campaignid
+  202/2, all EXIT=0) - confirms the ~150G target-dir cleanup broke nothing + all merge-ready tips
+  still green. Local cargo, zero codex-fleet cost.
+- c1stageb r6 refired on the hardened launcher (kept wedging pre-fix; no real r6 verdict yet).
+STILL CORRECTLY BLOCKED (not launched): stage-B impl (needs c1stageb SHIP - r6 pending real verdict);
+autoattach r3 / stitching r3 / facs-wire r2 re-gates (need their fix rounds to commit); cross-modset
+matrix (needs user + live non-vanilla game). Everything else launchable is now launched.
