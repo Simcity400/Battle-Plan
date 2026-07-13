@@ -762,6 +762,20 @@ fn domain53_validated_payload_with_war() -> Vec<u8> {
     let mut rows = diplomacy53::extractor::proof_fixture_rows();
     rows.operation_anchors.clear();
     rows.intel_map.clear();
+    rows.relation_flags.extend([
+        diplomacy53::compact::RelationFlagRow {
+            src_tag_db_id: 1,
+            target_tag_db_id: 2,
+            flag_kind: diplomacy53::compact::REL_KIND_NON_AGGRESSION_PACT,
+            directed: true,
+        },
+        diplomacy53::compact::RelationFlagRow {
+            src_tag_db_id: 1,
+            target_tag_db_id: 9,
+            flag_kind: diplomacy53::compact::REL_KIND_EMBARGO,
+            directed: true,
+        },
+    ]);
     rows.wars.push(diplomacy53::compact::WarRelationRow {
         first_tag_db_id: 1,
         second_tag_db_id: 3,
@@ -809,6 +823,9 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
         ger["diplomacy"][DOMAIN53_EXTRA_KEY]["relation_flags"][0]["flag_name"],
         json!("guarantee")
     );
+    assert_eq!(ger["diplomacy"]["guarantees"], json!(["POL"]));
+    assert_eq!(ger["diplomacy"]["non_aggression"], json!(["ENG"]));
+    assert_eq!(ger["diplomacy"]["embargoes"], json!(["CZE"]));
     assert_eq!(
         ger["intel"][DOMAIN53_EXTRA_KEY]["agency_scalars"]["upgrade_progress_raw"],
         json!(2_400_000)
@@ -921,12 +938,176 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
     assert_eq!(factions[0]["member_count"], json!(3));
     assert_eq!(factions[0]["member_tag_db_ids"], json!([1, 3, 22]));
     assert_eq!(factions[0]["members"], json!(["GER", "POL", "BUL"]));
+    assert!(snapshot["countries"]["GER"]["politics"]["faction"]
+        .get("name")
+        .is_none());
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["faction"]["leader"],
+        json!("GER")
+    );
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["faction"]["is_leader"],
+        json!(true)
+    );
+    assert_eq!(
+        snapshot["countries"]["POL"]["politics"]["faction"]["is_leader"],
+        json!(false)
+    );
 
     assert!(snapshot["provenance"]["collector"]["domains"]
         .as_array()
         .unwrap()
         .iter()
         .any(|value| value == "diplomacy_intel_operatives_live"));
+}
+
+#[test]
+fn chunk3_partial_d53_relations_emit_only_positively_observed_lists() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.relation_flags = vec![diplomacy53::compact::RelationFlagRow {
+        src_tag_db_id: 1,
+        target_tag_db_id: 2,
+        flag_kind: diplomacy53::compact::REL_KIND_NON_AGGRESSION_PACT,
+        directed: true,
+    }];
+    let report = diplomacy53::extractor::build_domain53_payload_with_status(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ENG")])),
+        (53, report.payload),
+    ]);
+    let diplomacy = snapshot["countries"]["GER"]["diplomacy"]
+        .as_object()
+        .unwrap();
+    assert_eq!(diplomacy["non_aggression"], json!(["ENG"]));
+    assert!(!diplomacy.contains_key("guarantees"));
+    assert!(!diplomacy.contains_key("embargoes"));
+}
+
+#[test]
+fn chunk3_unavailable_faction_roster_is_badged_not_measured_empty() {
+    let mut available_rows = diplomacy53::extractor::proof_fixture_rows();
+    available_rows.operation_anchors.clear();
+    available_rows.intel_map.clear();
+    let available = diplomacy53::extractor::build_domain53_payload(
+        available_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(available.ok(), "{:?}", available.errors);
+
+    let mut unavailable_rows = diplomacy53::extractor::proof_fixture_rows();
+    unavailable_rows.operation_anchors.clear();
+    unavailable_rows.intel_map.clear();
+    unavailable_rows.factions.clear();
+    let unavailable = diplomacy53::extractor::build_domain53_payload(
+        unavailable_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+            & !diplomacy53::extractor::SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+    );
+    assert!(unavailable.ok(), "{:?}", unavailable.errors);
+
+    let snapshots = chunk1_snapshots(vec![
+        vec![
+            (
+                18,
+                country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+            ),
+            (53, available.payload),
+        ],
+        vec![
+            (
+                18,
+                country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+            ),
+            (53, unavailable.payload),
+        ],
+    ]);
+
+    assert_eq!(
+        snapshots[0]["countries"]["POL"]["politics"]["faction"]["leader"],
+        json!("GER")
+    );
+    assert!(snapshots[1]["countries"]["POL"]["politics"]
+        .get("faction")
+        .is_none());
+    assert!(snapshots[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("faction_roster_unavailable")));
+}
+
+#[test]
+fn chunk3_cross_faction_member_conflict_is_omitted_and_badged() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.factions.push(diplomacy53::compact::FactionRow {
+        faction_id: 2,
+        faction_type: 88,
+        name_hash: 0x1234_5678,
+        leader_tag_db_id: 16,
+        member_tag_db_ids: vec![3, 16],
+    });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
+        ),
+        (53, report.payload),
+    ]);
+
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["faction"]["leader"],
+        json!("GER")
+    );
+    assert_eq!(
+        snapshot["countries"]["ITA"]["politics"]["faction"]["leader"],
+        json!("ITA")
+    );
+    assert!(snapshot["countries"]["POL"]["politics"]
+        .get("faction")
+        .is_none());
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("faction_member_conflict")));
+    let world_extra = snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        world_extra["faction_roster_status"],
+        json!("ambiguous_member_exclusivity")
+    );
+    assert_eq!(
+        world_extra["faction_member_conflict_tag_db_ids"],
+        json!([3])
+    );
+    assert!(!world_extra.contains_key("faction_rows"));
 }
 
 #[test]
@@ -2792,6 +2973,52 @@ fn naval_combat_domains_fold_into_naval_combats_section() {
                 combat_id: 240_580,
                 generation: 1,
                 deleted: false,
+                side: naval4950::CombatSide::Attacker,
+                group_index: 0,
+                member_index: 2,
+                unit_type_tag: 51,
+                ship_instance_id: Some(4433),
+                cship_join_validated: true,
+                is_convoy: false,
+                owner_tag_db_id: Some(17),
+                designed_max_strength_raw: Some(10_000_000),
+                battle_slot_index_raw: 5,
+                state_bitmask: Some(1),
+                engagement_weight_raw: Some(1_000),
+                task_force_id: Some(12),
+                fleet_id: Some(88),
+                strength_raw: Some(10_000_000),
+                organisation_raw: Some(9_000_000),
+                experience_raw: Some(100_000),
+                sunk_convoys: Some(0),
+            },
+            naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
+                side: naval4950::CombatSide::Attacker,
+                group_index: 0,
+                member_index: 1,
+                unit_type_tag: 51,
+                ship_instance_id: Some(4432),
+                cship_join_validated: true,
+                is_convoy: false,
+                owner_tag_db_id: Some(17),
+                designed_max_strength_raw: Some(10_000_000),
+                battle_slot_index_raw: 4,
+                state_bitmask: Some(1),
+                engagement_weight_raw: Some(1_000),
+                task_force_id: Some(477),
+                fleet_id: Some(88),
+                strength_raw: Some(10_000_000),
+                organisation_raw: Some(9_000_000),
+                experience_raw: Some(100_000),
+                sunk_convoys: Some(0),
+            },
+            naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
                 side: naval4950::CombatSide::Defender,
                 group_index: 0,
                 member_index: 0,
@@ -2890,11 +3117,12 @@ fn naval_combat_domains_fold_into_naval_combats_section() {
 
     let s0 = parse(&snaps[0].2);
     let battle = &s0["naval_combats"]["240580:1"];
+    assert_eq!(battle["naval_combat_id"], json!(240_580));
     assert_eq!(battle["location_province"], json!(6434));
     assert_eq!(battle["region_id"], json!(18));
     assert_eq!(battle["kind"], json!("naval"));
     let members_json = battle["members"].as_array().unwrap();
-    assert_eq!(members_json.len(), 2);
+    assert_eq!(members_json.len(), 4);
     assert!(members_json.iter().any(|m| m["side"] == json!("attacker")
         && m["ship_instance_id"] == json!(4431)
         && m["cship_join_validated"] == json!(true)
@@ -2902,6 +3130,10 @@ fn naval_combat_domains_fold_into_naval_combats_section() {
     assert!(members_json
         .iter()
         .any(|m| m["side"] == json!("defender") && m["is_convoy"] == json!(true)));
+    assert_eq!(battle["attacker_task_force_ids"], json!([12, 477]));
+    assert_eq!(battle["defender_task_force_ids"], json!([]));
+    assert!(battle.get("result_type").is_none());
+    assert!(battle.get("progress").is_none());
 
     // Both domains fold: neither appears in provenance.unfolded_domains.
     let unfolded = s0["provenance"]["collector"]["unfolded_domains"]
@@ -2914,6 +3146,179 @@ fn naval_combat_domains_fold_into_naval_combats_section() {
     // Teardown hour: the battle is gone, section is an empty object (not null).
     let s1 = parse(&snaps[1].2);
     assert_eq!(s1["naval_combats"], json!({}));
+}
+
+#[test]
+fn naval_combat_current_frame_validity_masks_stale_battles_and_members() {
+    use naval_combat_live_lane as naval4950;
+    let lifecycle = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 1,
+            body_ptr: 0,
+            deleted: false,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(0),
+            attacker_positioning_milli: Some(812),
+            defender_positioning_milli: Some(765),
+        }],
+    );
+    let members = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::MemberRow {
+            combat_id: 240_580,
+            generation: 1,
+            deleted: false,
+            side: naval4950::CombatSide::Attacker,
+            group_index: 0,
+            member_index: 0,
+            unit_type_tag: 51,
+            ship_instance_id: Some(4431),
+            cship_join_validated: true,
+            is_convoy: false,
+            owner_tag_db_id: Some(17),
+            designed_max_strength_raw: Some(10_000_000),
+            battle_slot_index_raw: 3,
+            state_bitmask: Some(1),
+            engagement_weight_raw: Some(1_000),
+            task_force_id: Some(477),
+            fleet_id: Some(88),
+            strength_raw: Some(10_000_000),
+            organisation_raw: Some(9_000_000),
+            experience_raw: Some(100_000),
+            sunk_convoys: Some(0),
+        }],
+    );
+    let lifecycle_valid_empty =
+        naval4950::encode_lifecycle_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let members_valid_empty =
+        naval4950::encode_member_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let lifecycle_failed = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        &[],
+    );
+    let members_failed = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        &[],
+    );
+    let orphan_members = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::MemberRow {
+            combat_id: 999_999,
+            generation: 1,
+            deleted: false,
+            side: naval4950::CombatSide::Attacker,
+            group_index: 0,
+            member_index: 0,
+            unit_type_tag: 51,
+            ship_instance_id: Some(9001),
+            cship_join_validated: true,
+            is_convoy: false,
+            owner_tag_db_id: Some(17),
+            designed_max_strength_raw: Some(10_000_000),
+            battle_slot_index_raw: 0,
+            state_bitmask: Some(1),
+            engagement_weight_raw: Some(1_000),
+            task_force_id: Some(999),
+            fleet_id: Some(99),
+            strength_raw: Some(10_000_000),
+            organisation_raw: Some(9_000_000),
+            experience_raw: Some(100_000),
+            sunk_convoys: Some(0),
+        }],
+    );
+
+    let snapshots = chunk1_snapshots(vec![
+        vec![(49, lifecycle), (50, members)],
+        vec![
+            (49, lifecycle_valid_empty.clone()),
+            (50, members_failed.clone()),
+        ],
+        vec![
+            (49, lifecycle_failed.clone()),
+            (50, members_valid_empty.clone()),
+        ],
+        vec![(50, members_valid_empty.clone())],
+        vec![(49, lifecycle_valid_empty.clone())],
+        vec![
+            (49, lifecycle_valid_empty.clone()),
+            (50, members_valid_empty.clone()),
+            (50, members_failed),
+        ],
+        vec![
+            (49, lifecycle_valid_empty),
+            (49, lifecycle_failed),
+            (50, members_valid_empty.clone()),
+        ],
+        vec![
+            (
+                49,
+                naval4950::encode_lifecycle_payload(5, naval4950::STATUS_DELTA_DATA, &[]),
+            ),
+            (50, orphan_members),
+        ],
+    ]);
+
+    assert_eq!(
+        snapshots[0]["naval_combats"]["240580:1"]["attacker_task_force_ids"],
+        json!([477])
+    );
+
+    let d50_failed_battle = &snapshots[1]["naval_combats"]["240580:1"];
+    assert_eq!(d50_failed_battle["naval_combat_id"], json!(240_580));
+    assert!(d50_failed_battle.get("members").is_none());
+    assert!(d50_failed_battle.get("attacker_task_force_ids").is_none());
+    assert!(d50_failed_battle.get("defender_task_force_ids").is_none());
+
+    assert_eq!(snapshots[2]["naval_combats"], Value::Null);
+    assert!(snapshots[2]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(49)
+            && problem["problem"] == json!("compact_status_failure")));
+
+    assert_eq!(snapshots[3]["naval_combats"], Value::Null);
+    assert!(snapshots[3]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(49)
+            && problem["problem"] == json!("domain_missing_current_hour")));
+
+    let d50_missing_battle = &snapshots[4]["naval_combats"]["240580:1"];
+    assert_eq!(d50_missing_battle["naval_combat_id"], json!(240_580));
+    assert!(d50_missing_battle.get("members").is_none());
+    assert!(d50_missing_battle.get("attacker_task_force_ids").is_none());
+    assert!(snapshots[4]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(50)
+            && problem["problem"] == json!("domain_missing_current_hour")));
+
+    let d50_latest_failed = &snapshots[5]["naval_combats"]["240580:1"];
+    assert_eq!(d50_latest_failed["naval_combat_id"], json!(240_580));
+    assert!(d50_latest_failed.get("members").is_none());
+    assert!(d50_latest_failed.get("attacker_task_force_ids").is_none());
+    assert_eq!(snapshots[6]["naval_combats"], Value::Null);
+    let orphan_d50_battle = &snapshots[7]["naval_combats"]["240580:1"];
+    assert_eq!(orphan_d50_battle["naval_combat_id"], json!(240_580));
+    assert!(orphan_d50_battle.get("members").is_none());
+    assert!(snapshots[7]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(50)
+            && problem["problem"] == json!("orphan_member_reference")));
 }
 
 #[test]
@@ -7284,11 +7689,14 @@ fn chunk2_folds_d56_naval_status_under_oob_extra_without_owning_entities() {
     assert_eq!(row["task_force_id"], json!(201));
     assert_eq!(row["fleet_id"], json!(200));
     assert_eq!(row["owner"], json!("GER"));
+    assert_eq!(row["owner_tag"], json!("GER"));
     assert_eq!(row["owner_tag_db_id"], json!(1));
     assert_eq!(row["location_province_id"], json!(12345));
+    assert_eq!(row["location_province"], json!(12345));
     assert_eq!(row["strategic_region_id"], Value::Null);
     assert_eq!(row["ship_count"], Value::Null);
     assert_eq!(row["dominant_hull_class"], Value::Null);
+    assert!(row.get("task_force_name").is_none());
     assert_eq!(row["mission_enum"], Value::Null);
     assert_eq!(row["home_base_province_id"], Value::Null);
     assert_eq!(row["repair_base_province_id"], Value::Null);
@@ -10824,7 +11232,6 @@ fn w6_d69_tech_sharing_groups_partial_data_retains_prior() {
     );
 }
 
-
 fn diplomacy_payload(status_flags: u32, rows: &[(u32, i32, u32, i64)]) -> Vec<u8> {
     // Header: elapsed(u64) country_count(u32) country_count(u32) status(u32)
     // relation_count(u32); rows: tag(u32) flags(u32) faction(i32)
@@ -10897,7 +11304,10 @@ fn d17_diplomacy_failure_frames_do_not_mutate_state_but_war_segment_absent_folds
     let snaps = fold.finish();
     assert_eq!(snaps.len(), 3);
     let frame1 = parse(&snaps[0].2);
-    assert_eq!(frame1["countries"]["GER"]["diplomacy"]["casualties"], json!(100));
+    assert_eq!(
+        frame1["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(100)
+    );
     let frame2 = parse(&snaps[1].2);
     assert_eq!(
         frame2["countries"]["GER"]["diplomacy"]["casualties"],

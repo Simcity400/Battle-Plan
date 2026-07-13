@@ -838,13 +838,17 @@ impl SnapshotEmitPipeline {
                     }
                     match serialize_write_hash_snapshot(&job.path, &job.snapshot) {
                         Ok((byte_len, sha256)) => {
-                            worker_results.lock().unwrap().files.push(FoldedSnapshotFile {
-                                hour_index: job.hour_index,
-                                date: job.date,
-                                path: job.path,
-                                byte_len,
-                                sha256: Some(sha256),
-                            });
+                            worker_results
+                                .lock()
+                                .unwrap()
+                                .files
+                                .push(FoldedSnapshotFile {
+                                    hour_index: job.hour_index,
+                                    date: job.date,
+                                    path: job.path,
+                                    byte_len,
+                                    sha256: Some(sha256),
+                                });
                         }
                         Err(err) => {
                             let mut guard = worker_results.lock().unwrap();
@@ -1073,8 +1077,13 @@ pub struct WorldFold {
     /// generation). Cumulative delta state carried across hours; emitted under
     /// the top-level `naval_combats` snapshot section.
     naval_combats: BTreeMap<(u32, u64), NavalCombatFoldState>,
-    naval_combat_lifecycle_unknown_this_hour: bool,
-    naval_combat_members_unknown_this_hour: bool,
+    /// True only after a successful D49 record in the current hour. The
+    /// cumulative accumulator survives failures/missing frames for later
+    /// deltas, but battle existence is not current truth without this witness.
+    naval_combat_lifecycle_known_this_hour: bool,
+    /// True only after a successful D50 record in the current hour. Member rows
+    /// and task-force-id arrays are omitted without this witness.
+    naval_combat_members_known_this_hour: bool,
     /// D56 R2-projected naval task-force status annotations. D28 owns OOB
     /// existence; D56 only annotates validated task-force status under
     /// `order_of_battle.extra.naval_missions_status_live`.
@@ -1250,6 +1259,29 @@ struct Domain53WorldOverlay {
     incoming_actions: Vec<diplomacy53::compact::IncomingActionQueueRow>,
     intel_network_graphs: Vec<diplomacy53::compact::IntelNetworkGraphRow>,
     factions: Vec<diplomacy53::compact::FactionRow>,
+    faction_roster_status: FactionRosterStatus,
+}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+enum FactionRosterStatus {
+    /// No FACS trailer/completeness witness. This includes the current
+    /// collector's unreadable-system/header/slot path, which emits no trailer.
+    #[default]
+    Unavailable,
+    /// A roster with an explicit completeness witness. The current wire can
+    /// produce only a non-empty value; a future zero-row FACS witness can use
+    /// the same state without conflating it with Unavailable.
+    Measured { is_empty: bool },
+}
+
+impl FactionRosterStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Measured { is_empty: true } => "measured_empty",
+            Self::Measured { is_empty: false } => "measured_nonempty",
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -1356,8 +1388,8 @@ impl WorldFold {
             oob_commands: BTreeMap::new(),
             ships: BTreeMap::new(),
             naval_combats: BTreeMap::new(),
-            naval_combat_lifecycle_unknown_this_hour: false,
-            naval_combat_members_unknown_this_hour: false,
+            naval_combat_lifecycle_known_this_hour: false,
+            naval_combat_members_known_this_hour: false,
             naval_missions_status: BTreeMap::new(),
             naval_supremacy: Vec::new(),
             session_multiplayer_metadata_this_hour: None,
@@ -1709,8 +1741,8 @@ impl WorldFold {
         self.army_battleplans_depth_unknown_this_hour = false;
         self.army_battleplans_depth_omitted_non_exact_this_hour = 0;
         self.army_battleplans_depth_path_omitted_this_hour = 0;
-        self.naval_combat_lifecycle_unknown_this_hour = false;
-        self.naval_combat_members_unknown_this_hour = false;
+        self.naval_combat_lifecycle_known_this_hour = false;
+        self.naval_combat_members_known_this_hour = false;
         self.air_aces_fresh_this_hour = false;
     }
 
@@ -2522,6 +2554,7 @@ impl WorldFold {
         }
         if self.domain53_known_this_hour {
             self.project_domain53_country_overlays(&mut countries, &mut unresolved);
+            self.project_domain53_faction_memberships(&mut countries, &mut unresolved);
         }
         // D60 capitulation attaches from its persistent map (last proven frame
         // wins), creating country objects for capitulated minors if needed.
@@ -2752,7 +2785,7 @@ impl WorldFold {
             ));
         }
 
-        let domain_problems: Vec<Value> = self
+        let mut domain_problems: Vec<Value> = self
             .domain_problems_this_hour
             .iter()
             .map(|problem| {
@@ -2763,6 +2796,56 @@ impl WorldFold {
                 })
             })
             .collect();
+        let mut push_problem = |domain_id: u16, problem: &'static str| {
+            if !domain_problems.iter().any(|entry| {
+                entry["domain_id"] == json!(domain_id) && entry["problem"] == json!(problem)
+            }) {
+                domain_problems.push(json!({
+                    "domain_id": domain_id,
+                    "domain": domain_name(domain_id),
+                    "problem": problem,
+                }));
+            }
+        };
+        if self.domain53_known_this_hour {
+            if self.domain53_world_overlay_this_hour.faction_roster_status
+                == FactionRosterStatus::Unavailable
+            {
+                push_problem(
+                    DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+                    "faction_roster_unavailable",
+                );
+            }
+            if !self.domain53_faction_member_conflicts().is_empty() {
+                push_problem(
+                    DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+                    "faction_member_conflict",
+                );
+            }
+        }
+        if !self.naval_combat_lifecycle_known_this_hour
+            && self.fold_domain_seen(NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID)
+            && !self
+                .domains_this_hour
+                .contains(&NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID)
+        {
+            push_problem(
+                NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID,
+                "domain_missing_current_hour",
+            );
+        }
+        if self.naval_combat_lifecycle_known_this_hour
+            && !self.naval_combats.is_empty()
+            && !self.naval_combat_members_known_this_hour
+            && !self
+                .domains_this_hour
+                .contains(&NAVAL_COMBAT_MEMBERS_DOMAIN_ID)
+        {
+            push_problem(
+                NAVAL_COMBAT_MEMBERS_DOMAIN_ID,
+                "domain_missing_current_hour",
+            );
+        }
         let unfolded_domains: Vec<Value> = self
             .unfolded_domains_this_hour
             .iter()
@@ -3121,6 +3204,28 @@ impl WorldFold {
                     DOMAIN53_EXTRA_KEY.into(),
                     Value::Object(self.domain53_diplomacy_extra(overlay, unresolved)),
                 );
+                // Promote the relation kinds that already have canonical schema
+                // homes. Only positively observed rows are emitted: a tolerated
+                // partial D53 frame may omit rows, so an absent list must never be
+                // fabricated as a measured empty list.
+                for (flag_kind, schema_key) in [
+                    (diplomacy53::compact::REL_KIND_GUARANTEE, "guarantees"),
+                    (
+                        diplomacy53::compact::REL_KIND_NON_AGGRESSION_PACT,
+                        "non_aggression",
+                    ),
+                    (diplomacy53::compact::REL_KIND_EMBARGO, "embargoes"),
+                ] {
+                    let targets = overlay
+                        .relation_flags
+                        .iter()
+                        .filter(|row| row.flag_kind == flag_kind)
+                        .map(|row| self.country_ref_json(row.target_tag_db_id, unresolved))
+                        .collect::<Vec<_>>();
+                    if !targets.is_empty() {
+                        diplomacy.insert(schema_key.into(), Value::Array(targets));
+                    }
+                }
             }
             if overlay.agency.is_some()
                 || overlay.agency_capacity.is_some()
@@ -3141,6 +3246,65 @@ impl WorldFold {
                 );
             }
         }
+    }
+
+    fn project_domain53_faction_memberships(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        if self.domain53_world_overlay_this_hour.faction_roster_status
+            == FactionRosterStatus::Unavailable
+        {
+            return;
+        }
+        let conflicts = self.domain53_faction_member_conflicts();
+        for faction in &self.domain53_world_overlay_this_hour.factions {
+            let leader = self.country_ref_json(faction.leader_tag_db_id, unresolved);
+            for member_tag_db_id in &faction.member_tag_db_ids {
+                if conflicts.contains(member_tag_db_id) {
+                    continue;
+                }
+                let key = self.resolve_country_key(&member_tag_db_id.to_string(), unresolved);
+                let country = countries
+                    .entry(key)
+                    .or_insert_with(|| Value::Object(Map::new()));
+                let Some(country) = country.as_object_mut() else {
+                    continue;
+                };
+                let politics = ensure_json_object_mut(country, "politics");
+                politics.insert(
+                    "faction".into(),
+                    json!({
+                        // D53 carries only name_hash. A hash is not faction_name,
+                        // so the name leaf stays absent until the wire carries text.
+                        "leader": leader.clone(),
+                        "is_leader": *member_tag_db_id == faction.leader_tag_db_id,
+                    }),
+                );
+            }
+        }
+    }
+
+    fn domain53_faction_member_conflicts(&self) -> BTreeSet<u32> {
+        if self.domain53_world_overlay_this_hour.faction_roster_status
+            == FactionRosterStatus::Unavailable
+        {
+            return BTreeSet::new();
+        }
+        let mut faction_by_member = BTreeMap::new();
+        let mut conflicts = BTreeSet::new();
+        for faction in &self.domain53_world_overlay_this_hour.factions {
+            for member_tag_db_id in &faction.member_tag_db_ids {
+                if faction_by_member
+                    .insert(*member_tag_db_id, faction.faction_id)
+                    .is_some_and(|prior_faction_id| prior_faction_id != faction.faction_id)
+                {
+                    conflicts.insert(*member_tag_db_id);
+                }
+            }
+        }
+        conflicts
     }
 
     fn domain53_diplomacy_extra(
@@ -3386,7 +3550,33 @@ impl WorldFold {
                 ),
             );
         }
-        if !self.domain53_world_overlay_this_hour.factions.is_empty() {
+        let faction_member_conflicts = self.domain53_faction_member_conflicts();
+        extra.insert(
+            "faction_roster_status".into(),
+            json!(if faction_member_conflicts.is_empty() {
+                self.domain53_world_overlay_this_hour
+                    .faction_roster_status
+                    .as_str()
+            } else {
+                "ambiguous_member_exclusivity"
+            }),
+        );
+        if !faction_member_conflicts.is_empty() {
+            extra.insert(
+                "faction_member_conflict_tag_db_ids".into(),
+                Value::Array(
+                    faction_member_conflicts
+                        .iter()
+                        .copied()
+                        .map(Value::from)
+                        .collect(),
+                ),
+            );
+        }
+        if self.domain53_world_overlay_this_hour.faction_roster_status
+            != FactionRosterStatus::Unavailable
+            && faction_member_conflicts.is_empty()
+        {
             extra.insert(
                 "faction_rows".into(),
                 Value::Array(
@@ -3897,8 +4087,10 @@ impl WorldFold {
                 "task_force_id": row.task_force_id,
                 "fleet_id": row.fleet_id,
                 "owner": self.country_ref_json(row.owner_tag_db_id, unresolved),
+                "owner_tag": self.country_ref_json(row.owner_tag_db_id, unresolved),
                 "owner_tag_db_id": row.owner_tag_db_id,
                 "location_province_id": option_u32_json(row.location_province_id),
+                "location_province": option_u32_json(row.location_province_id),
                 "strategic_region_id": option_u32_json(row.strategic_region_id),
                 "ship_count": ship_count,
                 "dominant_hull_class": dominant_hull_class,
@@ -4182,10 +4374,14 @@ impl WorldFold {
     // /region, side counts + positioning, and validated member roster. Carried
     // cumulative state; emitted every hour (empty object once all battles end).
     fn build_naval_combats(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        if !self.naval_combat_lifecycle_known_this_hour {
+            return Value::Null;
+        }
         let mut battles = Map::new();
         for combat in self.naval_combats.values() {
             let mut obj = Map::new();
             obj.insert("combat_id".into(), json!(combat.combat_id));
+            obj.insert("naval_combat_id".into(), json!(combat.combat_id));
             obj.insert("generation".into(), json!(combat.generation));
             obj.insert("kind".into(), json!("naval"));
             obj.insert(
@@ -4215,34 +4411,67 @@ impl WorldFold {
                     .map(|milli| json!(f64::from(milli) / 1000.0))
                     .unwrap_or(Value::Null),
             );
-            let members = combat
-                .members
-                .values()
-                .map(|member| {
-                    if let Some(owner) = member.owner_tag_db_id {
-                        // Record the owner id for tag-resolution accounting; the
-                        // ref itself is emitted numeric (no country re-key here).
-                        let _ = self.country_ref_json(owner, unresolved);
-                    }
-                    json!({
-                        "side": member.side.name(),
-                        "group_index": member.group_index,
-                        "member_index": member.member_index,
-                        "is_convoy": member.is_convoy,
-                        "ship_instance_id": option_u32_json(member.ship_instance_id),
-                        "cship_join_validated": member.cship_join_validated,
-                        "owner_tag_db_id": option_u32_json(member.owner_tag_db_id),
-                        "task_force_id": option_u32_json(member.task_force_id),
-                        "fleet_id": option_u32_json(member.fleet_id),
-                        "battle_slot_index": member.battle_slot_index_raw,
-                        "state_bitmask": option_u32_json(member.state_bitmask),
-                        "strength": member.strength_raw.map(|v| f64::from(v) / FIXED_SCALE).map(|v| json!(v)).unwrap_or(Value::Null),
-                        "organisation": member.organisation_raw.map(|v| f64::from(v) / FIXED_SCALE).map(|v| json!(v)).unwrap_or(Value::Null),
-                        "sunk_convoys": option_u32_json(member.sunk_convoys),
+            if self.naval_combat_members_known_this_hour {
+                let mut attacker_task_force_ids = BTreeSet::new();
+                let mut defender_task_force_ids = BTreeSet::new();
+                let members = combat
+                    .members
+                    .values()
+                    .map(|member| {
+                        if let Some(task_force_id) = member.task_force_id {
+                            match member.side.name() {
+                                "attacker" => {
+                                    attacker_task_force_ids.insert(task_force_id);
+                                }
+                                "defender" => {
+                                    defender_task_force_ids.insert(task_force_id);
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Some(owner) = member.owner_tag_db_id {
+                            // Record the owner id for tag-resolution accounting; the
+                            // ref itself is emitted numeric (no country re-key here).
+                            let _ = self.country_ref_json(owner, unresolved);
+                        }
+                        json!({
+                            "side": member.side.name(),
+                            "group_index": member.group_index,
+                            "member_index": member.member_index,
+                            "is_convoy": member.is_convoy,
+                            "ship_instance_id": option_u32_json(member.ship_instance_id),
+                            "cship_join_validated": member.cship_join_validated,
+                            "owner_tag_db_id": option_u32_json(member.owner_tag_db_id),
+                            "task_force_id": option_u32_json(member.task_force_id),
+                            "fleet_id": option_u32_json(member.fleet_id),
+                            "battle_slot_index": member.battle_slot_index_raw,
+                            "state_bitmask": option_u32_json(member.state_bitmask),
+                            "strength": member.strength_raw.map(|v| f64::from(v) / FIXED_SCALE).map(|v| json!(v)).unwrap_or(Value::Null),
+                            "organisation": member.organisation_raw.map(|v| f64::from(v) / FIXED_SCALE).map(|v| json!(v)).unwrap_or(Value::Null),
+                            "sunk_convoys": option_u32_json(member.sunk_convoys),
+                        })
                     })
-                })
-                .collect::<Vec<_>>();
-            obj.insert("members".into(), Value::Array(members));
+                    .collect::<Vec<_>>();
+                obj.insert(
+                    "attacker_task_force_ids".into(),
+                    Value::Array(
+                        attacker_task_force_ids
+                            .into_iter()
+                            .map(Value::from)
+                            .collect(),
+                    ),
+                );
+                obj.insert(
+                    "defender_task_force_ids".into(),
+                    Value::Array(
+                        defender_task_force_ids
+                            .into_iter()
+                            .map(Value::from)
+                            .collect(),
+                    ),
+                );
+                obj.insert("members".into(), Value::Array(members));
+            }
             battles.insert(
                 format!("{}:{}", combat.combat_id, combat.generation),
                 Value::Object(obj),
@@ -4325,6 +4554,11 @@ impl WorldFold {
         }
     }
 
+    /// D56 dominance values are CFixedPoint (`raw / 100_000`) naval-dominance
+    /// points, not a normalized 0..1 fraction. The reader's live rows decode to
+    /// values such as 679.628, and the FILE define
+    /// `NAVAL_REGION_TRANSPARENCY_RANGE = 2000.0` consumes those point units.
+    /// Only `individual_ratio` is a normalized ratio.
     fn insert_naval_supremacy(&self, out: &mut Map<String, Value>, unresolved: &mut BTreeSet<u32>) {
         if self.fold_domain_unknown(NAVAL_MISSIONS_STATUS_DOMAIN_ID) {
             out.insert("_r2_naval_supremacy".into(), Value::Null);
@@ -10419,18 +10653,21 @@ impl WorldFold {
 
     // --- DOMAIN 49 naval combat lifecycle (cumulative delta) --------------
     fn fold_naval_combat_lifecycle(&mut self, payload: &[u8]) -> Result<(), String> {
+        // A later failed/undecodable record in the same hour overrides an
+        // earlier success as the current-frame witness without clearing state.
+        self.naval_combat_lifecycle_known_this_hour = false;
         let (status_flags, rows) =
             naval4950::decode_lifecycle_rows(payload).map_err(|errors| errors.join("; "))?;
         // handle_compact_failure strips domain 49's lane-local bit 11 before the
         // failure-mask check, so the location-candidate badge is never confused
         // with COMPACT_STATUS_TRANSITION_BASELINE_RESET. On a real failure the
-        // rows are empty; retain the carried state and emit last-known.
+        // rows are empty; retain the carried state for later deltas, but do not
+        // emit it as current battle existence.
         if self.handle_compact_failure(
             NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID,
             "naval_combat_lifecycle_live",
             status_flags,
         ) {
-            self.naval_combat_lifecycle_unknown_this_hour = true;
             return Ok(());
         }
         // Cumulative delta: the collector emits every active row on the first
@@ -10463,12 +10700,16 @@ impl WorldFold {
             entry.attacker_positioning_milli = row.attacker_positioning_milli;
             entry.defender_positioning_milli = row.defender_positioning_milli;
         }
+        self.naval_combat_lifecycle_known_this_hour = true;
         self.mark_fold_domain_success(NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID);
         Ok(())
     }
 
     // --- DOMAIN 50 naval combat members (cumulative delta) ----------------
     fn fold_naval_combat_members(&mut self, payload: &[u8]) -> Result<(), String> {
+        // A later failed/undecodable record in the same hour overrides an
+        // earlier success as the current-frame witness without clearing state.
+        self.naval_combat_members_known_this_hour = false;
         let (status_flags, rows) =
             naval4950::decode_member_rows(payload).map_err(|errors| errors.join("; "))?;
         if self.handle_compact_failure(
@@ -10476,7 +10717,23 @@ impl WorldFold {
             "naval_combat_members_live",
             status_flags,
         ) {
-            self.naval_combat_members_unknown_this_hour = true;
+            return Ok(());
+        }
+        // Validate the whole current D50 delta before mutating any member
+        // accumulator. A live row without a current/carried D49 parent is a
+        // torn ordering, not a partial roster that may be published. Deletes
+        // for already-removed combats remain valid idempotent no-ops.
+        if rows.iter().any(|row| {
+            !row.deleted
+                && !self
+                    .naval_combats
+                    .contains_key(&(row.combat_id, row.generation))
+        }) {
+            self.mark_fold_domain_unknown(
+                NAVAL_COMBAT_MEMBERS_DOMAIN_ID,
+                "orphan_member_reference",
+                "naval_combat_members_live referenced an unknown active combat; member leaves unknown this hour and accumulator retained",
+            );
             return Ok(());
         }
         for row in rows {
@@ -10495,6 +10752,7 @@ impl WorldFold {
                 combat.members.insert(member_key, row);
             }
         }
+        self.naval_combat_members_known_this_hour = true;
         self.mark_fold_domain_success(NAVAL_COMBAT_MEMBERS_DOMAIN_ID);
         Ok(())
     }
@@ -10797,6 +11055,14 @@ impl WorldFold {
             }
         };
         let status_flags = decoded.status_flags;
+        // FACS is emitted only when the producer has a complete non-empty
+        // roster. With the current wire contract, no FACS rows therefore means
+        // unavailable, never measured-empty.
+        let faction_roster_status = if decoded.factions.is_empty() {
+            FactionRosterStatus::Unavailable
+        } else {
+            FactionRosterStatus::Measured { is_empty: false }
+        };
         // Layer-2 (D53_LAYER2_SPEC.md): a tolerated-PARTIAL d53 frame carries
         // valid rows plus known per-row omissions. SPARSE-MERGE it into the hour
         // (retain rows it omits) instead of clearing; a CLEAN frame is
@@ -10899,6 +11165,8 @@ impl WorldFold {
                 .intel_network_graphs
                 .clear();
             self.domain53_world_overlay_this_hour.factions.clear();
+            self.domain53_world_overlay_this_hour.faction_roster_status =
+                FactionRosterStatus::Unavailable;
             // A DELTA|PARTIAL frame (lane/d53-partial-delta) is still a partial
             // read: record the same non-fatal partial-data problem the legacy
             // full-emit partial frame records, so the folded snapshot's
@@ -11071,6 +11339,7 @@ impl WorldFold {
             // hour's accumulator (retain any this frame omits); update the status.
             let world = &mut self.domain53_world_overlay_this_hour;
             world.status_flags = domain53_projected_status_flags(status_flags);
+            world.faction_roster_status = faction_roster_status;
             for row in decoded.wars {
                 let key =
                     domain53_war_key(domain53_row_key(row.first_tag_db_id), row.second_tag_db_id);
@@ -11129,6 +11398,7 @@ impl WorldFold {
                 incoming_actions: decoded.incoming_actions,
                 intel_network_graphs: decoded.intel_network_graphs,
                 factions: decoded.factions,
+                faction_roster_status,
             };
         }
         self.domain53_country_overlays_this_hour
