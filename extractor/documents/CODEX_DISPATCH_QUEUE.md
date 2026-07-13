@@ -2953,3 +2953,15 @@ autoattach r3, boundary-auth fix3, replay-loader e2e impl, integration-adversary
 REMAINING TO CLOSE F2: process these 8 verdicts; SHIP-harvests -> the fix-lane worktrees merge onto
 the integration branch (2nd merge wave, same clean scratch-branch method). THEN master merge (gated
 on integration-adversary SHIP). Live-capture items stay user-gated.
+
+boundary-auth fix3 CLOSED (2026-07-14 ~02:00) - LAST fix lane. F1 panic-on-truncation:
+82 need() bounds-guards before every fixed-field read (d12/d14/d15 + read_u32 sites);
+F2 production-encoder acceptance sweep. GOTCHA: the workspace-write lane hit the unelevated-
+sandbox "split writable root" refusal on this git worktree 4x and bailed reporting "no files
+changed" - BUT an overlapping/prior attempt had already left the COMPLETE correct edits;
+caught by inspecting `git status` (not trusting the bail report) + orchestrator build+test
+(recorder_host 197 lib +9 / 193/2 bin, 0 failed). Harvested + r3 gate launched.
+=== F2 STATUS: all wave-12 fix lanes harvested + re-gating. In flight: c1stageb r7, foldwave2
+r4, stitching r3, facs-wire r2, autoattach r3, boundary-auth r3, replay-loader impl,
+integration-adversary(fe4be56ea). Next: process these -> SHIP-harvests fold into 2nd merge
+wave -> master merge (gated on integration-adversary). Live-capture items stay user-gated. ===
