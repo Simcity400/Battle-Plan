@@ -3263,3 +3263,22 @@ default-deny fallthrough, each of d10/d44/d68 proving from empty/delta/failure/b
 diagnostic, record_flags semantic-change-yet-0, cross-domain/hour PERF reuse, + regression of
 lease/pipe-auth/journal/authorities/DLL-hash/Drop after the 1454-line churn).
 IN FLIGHT: autoattach r6 gate, replay-loader fix3, facs-wire r4 gate, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 facs-wire r4 gate = REJECT (witness SOUND, one last UI-seam leak) -> fix5
+GOOD PROGRESS: R3-F1 (sound witness: fingerprint-all-slots + dup-tag-poison + pointer-validation)
+CLOSED; R3-F2 (inner-table bound through final approval) CLOSED; R2-F2 (unavailable never->measured-
+empty) regression CLOSED; case-(b) confirmed (0 production callers of country_faction_memberships,
+8 test-only). ONE finding left:
+- F1 CRITICAL: game_ui binding builds the `factions` LIST solely from countries.*.politics.faction
+  (binding.rs:414) and emits it REGARDLESS of FactionRosterStatus (:483). Snapshot w/ modern status
+  = unavailable + retained country politics.faction => returns Unavailable + factions_available=false
+  but NONEMPTY factions list. Consumer reading the LIST (not the FLAG) gets stale positive data.
+  signal-reaches-consumer at the SIBLING-FIELD level: tri-state reached the flag, not the list. Test
+  (diplomacy_binding.rs:234) can't catch it - fixture has "countries":{} (:207) so nothing to leak.
+FIX5 launched (tid threads/i1-facs-wire.tid): gate the `factions` LIST on status so flag+list can't
+disagree - Unavailable/absent => EMPTY list, only MeasuredNonEmpty => nonempty; strengthen test w/
+a fixture having BOTH unavailable status AND populated countries.*.politics.faction, drive REAL
+loader->WorldTimeline->production binding, assert empty factions + RED-on-HEAD/GREEN-after, plus a
+positive MeasuredNonEmpty-still-populates case. Scope game_ui/src/binding.rs + tests/diplomacy_
+binding.rs (in fence). ONE fix round for r4; witness itself is DONE.
+IN FLIGHT: autoattach r6 gate, replay-loader fix3, facs-wire fix5, foldwave2 fix4, stitching r3.
