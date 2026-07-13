@@ -2917,3 +2917,20 @@ was pruned (r9 launch FATAL no-worktree) - its work is already committed, so no 
 FLEET HEALTH (new account): all 7 in-flight jobs real_errors=0, fresh 019f5b* tids, active events -
 c1stageb r7, integration-adversary, autoattach fix2, facs-wire fix2, replay-loader impl, foldwave2
 fix3, stitching r3. NEXT: merge d51/librs/d57 (now unblocked); then process the 7 in-flight verdicts.
+
+*** WAVE-12 MERGE COMPLETE (2026-07-14 ~01:00) *** All 6 merge-ready lanes now on the integration
+branch claude/replay-engine-extraction-18b40f @ fe4be56ea:
+- CLEAN-3 (earlier): fold1 + campaignid + fow -> 7e80c4f92 (battery green).
+- HELD-3 (round6e hold resolved: census v3.3 already shipped as 5fe47da1d on branch): d51 + librs
+  + d57 -> fe4be56ea. Merge specifics: d51 census-script conflict resolved (git checkout --ours
+  the shipped r9 base 80570da13-equivalent + git apply --3way the d51 badge-bits delta;
+  reconciled selftest 84/84); librs collector/lib.rs auto-merged DISJOINT with d51 (collision map
+  confirmed - no manual reconcile); d57 clean (evidence dossier only, reader came via librs).
+- Held-set battery GREEN: recorder_host 369 lib + 237 + 202/2 bin, collector 369/6,
+  compact_contract 30, EXIT=0.
+OWED before master merge: re-run integration-adversary on fe4be56ea (semantic cross-check that
+died at the usage wall - it is currently running post-recovery). Scratch branches merge-w12-clean3
++ merge-w12-heldset retained as anchors.
+foldwave2 fix3 HARVESTED (r3 REJECT closed: malformed-coverage fail-closed + 5-domain map;
+replay_core 50) -> r4 gate launched. IN FLIGHT: c1stageb r7, integration-adversary, autoattach
+fix2, facs-wire fix2, replay-loader impl, stitching r3, foldwave2 r4.
