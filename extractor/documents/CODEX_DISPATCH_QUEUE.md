@@ -2471,3 +2471,36 @@ TWO DEEP REVISE/REJECT this batch, both redesign-class, both fix rounds launched
 GATES STILL IN FLIGHT: autoattach r2, foldwave2 r2, dlcmeta r4, stitching r2 (refire),
 d57 (refire), facs-wire, + the two fix rounds above. F2 owed gates: c1stageb r4,
 boundary-auth r2 after their fixes.
+
+VERDICT BATCH 7 (2026-07-13 ~16:35). Two more deep REJECTs, both the SAME class:
+"a fix wrote its signal into a channel the real CONSUMER does not read" = still silent loss.
+- [A]autoattach r2 REJECT 3 CRITICAL + 2 HIGH: all three CRITICALs are sample-then-release
+  TOCTOU - journal poison erasable by valid-prefix rollback/whitespace-rewrite (no
+  authenticated chain/external anchor); process handle CLOSED before attach_hook so PID
+  reuse can retarget the hook; DLL hash read+released before LoadLibraryW + proof emits the
+  CACHED hash not the loaded image. Plus F4 header-only/unknown-type H4CR envelope
+  (type=0,len=0) proves Recording; F5 ChildWorkerHandle has no Drop so a coordinator error
+  orphans a live injector. Singleton/liveness/correlation PASS; WMI ABI + collector
+  unchanged confirmed. -> fix2 launched: retain handles THROUGH the action, hash-chain +
+  live-module corroboration for journal, closed-set+min-payload first-record gate, Drop-stop
+  on the worker; irreducible live races -> explicit fail-closed aborts + documented residual.
+- [G]foldwave2 r2 REJECT 1 CRITICAL + 1 MAJOR: the fix badged under-covered D11 into
+  collector.domain_problems, but replay_core's TYPED consumer DROPS that field -
+  build_provenance reads only captured/domains, build_production returns Present on JSON
+  presence -> carried stale production shown as clean current measurement. Same shape as the
+  boundary-auth "error-evidence too narrow" finding (validator wrote to notes the consumer
+  ignored). country_count<keyed asymmetry PASS under collector contract; regressions
+  non-vacuous; scope clean. -> fix2b launched CROSS-CUTTING (recorder world_fold.rs +
+  replay_core/src/world.rs + dossier): parse domain_problems into ChannelCoverage, domain-id
+  ->view table, reconcile typed ViewStatus off Present for any flagged domain, end-to-end
+  typed RED-first test that fails on HEAD; + dossier names i1-facs-wire owner of the
+  measured-empty residual and stops overclaiming closure.
+RECURRING LESSON (now 3x this wave - boundary-auth error-evidence, foldwave2 typed-consumer,
+and the autoattach cached-hash proof): a fix that emits its safety signal into a field/note/
+channel the ACTUAL downstream consumer does not read is NOT a fix - verify the signal
+reaches the consumer that enforces the invariant, end to end. Gate prompts now must name the
+consumer and require an end-to-end test through it.
+MERGE-READY still 9. FIX ROUNDS in flight: autoattach fix2, boundary-auth fix2, c1stageb
+fix4, foldwave2 fix2b. GATES pending: dlcmeta r4, stitching r2 (refire), d57 (refire),
+facs-wire. F2 owed re-gates after fixes: autoattach r3, boundary-auth r2, c1stageb r4,
+foldwave2 r3.
