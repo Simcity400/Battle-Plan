@@ -3202,3 +3202,28 @@ d68/d44/d10/default-deny/genuine-real-record-still-proves + self-refute "name a 
 proves w/o real rows". ESCALATION: if r6 still finds a domain leak, ship default-deny AS-IS (sound;
 un-predicated domains = "can't yet serve as recording proof" residual, not a defect). ONE fix round.
 IN FLIGHT: autoattach fix5, replay-loader r2 gate, facs-wire fix4, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 replay-loader r2 gate = REJECT (3 deeper Windows findings) -> fix3
+R1-F2 (loader snapshot dup keys) CLOSED for snapshot read paths; R1-F1 valid-ID reuse + A->B
+routing CLOSED. Error chain Store::load_file->ReplaySource::frame->WorldTimeline->world.rs correct,
+canonical keys consumed by real build_session_metadata. NEW findings (genuine adversarial
+deepening, not a recurring leak):
+- F1 HIGH: Windows 128-bit file-ID SENTINELS accepted as valid identity (windows.rs:145,248,
+  mod.rs:244). MS: all-ZERO = file IDs unsupported, all-ONES = uniqueness unestablishable; both
+  must be IGNORED. Attack: placeholder reopen returns same sentinel for a swapped impostor ->
+  validate_reopen_identity accepts it. FIX: zero/all-ones ID => identity UNAVAILABLE, fail closed.
+- F2 HIGH: STREAMING verifier verify_replay_container_streaming (stream_verify.rs:121) still
+  permissive serde_json::from_slice; recorder finalization (main.rs:4678) promotes on its result.
+  Dup-role manifest (dup inserted after digest) decodes last-wins -> digest+hashes pass -> false-
+  safe promotion. SAME dup-key root cause but a THIRD consumer (finalization) the strict signal
+  didn't reach. FIX: route manifest through strict streaming parser IN stream_verify.rs so the
+  recorder caller inherits it w/o editing recorder_host.
+- F3 MED: F4 static gate open-world/bypassable (source.rs:1071,1127) - 8 hand-listed files (new
+  module escapes) + discards everything after first #[cfg(test)] (production code after a test block
+  escapes). FIX: closed-world module discovery (walk snapshot/src/** + replay_core/src/** prod
+  files, fail if discovery incomplete) + scan past test blocks + fail-closed on unclassified.
+FIX3 launched (tid threads/i1-replayloader-e2e.tid): sentinel-reject + strict-streaming-verify +
+closed-world-gate; RED->GREEN for zero/all-ones reopen reject, dup-manifest-through-real-streaming-
+verify reject, planted-open-in-new-module + post-test-block open both caught. Scope snapshot/* +
+replay_core/*, do NOT edit recorder_host logic (caller inherits F2 fix). ONE fix round for r2.
+IN FLIGHT: autoattach fix5, replay-loader fix3, facs-wire fix4, foldwave2 fix4, stitching r3.
