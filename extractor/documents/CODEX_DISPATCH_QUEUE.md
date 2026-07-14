@@ -583,3 +583,25 @@ manifest-swap. CONVERGENT not divergent - the correct pattern already exists in 
 this applies it to the 2 lagging finalizers. NOT a threat-model escalation (same class, known fix).
 IN FLIGHT: replay-loader fix6, foldwave2 fix4, stitching r3, + 2 DOC-AUDIT lanes (docaudit-refs,
 docaudit-design). MERGE-READY: boundary-auth, autoattach (SHIP @15a817f3e), facs-wire (SHIP @1da8812b8).
+
+## 2026-07-14 replay-loader fix6 = FAILED ITS OWN TESTS (stale out-file caught again) -> HELD for user scope call
+fix6 out-file was STALE (echoed fix5 summary). Direct verification: the 3 fix6 tests
+(in_memory_finalizer_reparse_ancestor_rebind..., file_backed_..., swapped_valid_manifest_is_
+rejected_by_every_finalizer) all FAIL. The lane wrote the CORRECT tests (they encode the right
+invariant) but the impl does NOT satisfy them - F1 (reparse-ancestor verify/promote binding) + F2
+(manifest single-object) NOT closed. Left in the worktree (uncommitted, not merge-ready).
+KEY CONTEXT for the decision: the PRODUCTION recorder path uses write_native_replay_container_
+STREAMING (call sites main.rs:1554/1609/2647), which is ALREADY hardened + R4-F1-closed (verifies
+tmp_file through the retained handle @4729). The two vulnerable finalizers are write_native_replay_
+container (in-memory; one production-fallback caller @1634) + write_native_replay_container_file_
+backed (explicitly "Superseded on the production path... retained as reference + test" @4359).
+=> the residual is a same-user-attacker reparse-ancestor-rebind + concurrent-manifest-swap TOCTOU
+on NON-PRIMARY finalizers. HELD for user: (a) invest orchestrator effort to fix directly (intricate
+verify-through-handle across reparse ancestors), (b) accept as documented residual (production path
+hardened; threat = hostile same-user process w/ write access to the output dir on a single-user
+local tool), or (c) cheap defensive fail-closed: reject ANY output-path ancestor reparse point in
+the 2 non-streaming finalizers. This is replay-loader's 6th round; production path is done; NOT
+grinding a 7th without the scope call (flagged at r4/r5). LAST GREEN state = fix5 (snapshot 72/
+recorder 200+202/replay_core 72; r5 = REVISE on exactly these 2 HIGH).
+IN FLIGHT: foldwave2 fix4, stitching r3, + doc-audit lanes. MERGE-READY: boundary-auth, autoattach
+(SHIP @15a817f3e), facs-wire (SHIP @1da8812b8). replay-loader HELD at fix5 pending user scope call.
