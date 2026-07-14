@@ -968,6 +968,10 @@ struct SnapshotFileSink {
 /// captured on FRAME_END and returned by [`WorldFold::finish`].
 pub struct WorldFold {
     game_id: String,
+    /// Structural-only decoder mode used by stream-boundary validation. It
+    /// makes status/baseline retain paths continue through the same payload
+    /// grammar without changing normal fold semantics or output.
+    boundary_validation: bool,
     /// countries keyed by stringified tag_db_id (see module note on TAG resolution)
     countries: BTreeMap<String, Map<String, Value>>,
     /// states keyed by state-id string
@@ -1354,6 +1358,7 @@ impl WorldFold {
     pub fn new(game_id: impl Into<String>) -> Self {
         WorldFold {
             game_id: game_id.into(),
+            boundary_validation: false,
             countries: BTreeMap::new(),
             states: BTreeMap::new(),
             provinces: BTreeMap::new(),
@@ -1632,6 +1637,9 @@ impl WorldFold {
         domain_name: &'static str,
         status_flags: u32,
     ) -> bool {
+        if self.boundary_validation {
+            return false;
+        }
         let failure_flags =
             compact_failure_flags_after_expected_partial_tolerance(domain_id, status_flags);
         if failure_flags != 0 {
@@ -1661,6 +1669,9 @@ impl WorldFold {
         domain_name: &'static str,
         status_flags: u32,
     ) -> bool {
+        if self.boundary_validation {
+            return false;
+        }
         if (status_flags & COMPACT_STATUS_DELTA_DATA) != 0
             && !self.delta_baselines_seen.contains(&domain_id)
         {
@@ -2331,7 +2342,28 @@ impl WorldFold {
         }))
     }
 
-    fn apply_domain_data(&mut self, domain_id: u16, payload: &[u8], record_flags: u32) {
+    /// Run the canonical domain decoder in structural-only mode and return its
+    /// result directly. Status/failure and missing-baseline semantics cannot
+    /// short-circuit this pass, so success means the decoder consumed exactly
+    /// one complete payload under the same grammar used by the live fold.
+    pub(crate) fn validate_domain_data_payload_exact(
+        domain_id: u16,
+        payload: &[u8],
+        record_flags: u32,
+    ) -> Result<(), String> {
+        let mut validation = Self::new("__stream_boundary_validation__");
+        validation.boundary_validation = true;
+        validation
+            .fold_domain_data(domain_id, payload, record_flags)
+            .ok_or_else(|| format!("domain {domain_id} has no exact structural decoder"))?
+    }
+
+    fn fold_domain_data(
+        &mut self,
+        domain_id: u16,
+        payload: &[u8],
+        record_flags: u32,
+    ) -> Option<Result<(), String>> {
         let result = match domain_id {
             10 => self.fold_fuel(payload),
             11 => self.fold_production(payload),
@@ -2389,10 +2421,15 @@ impl WorldFold {
             68 => self.fold_session_header(payload),
             69 => self.fold_tech_sharing_groups(payload),
             60 => self.fold_capitulation_war_state(payload),
-            _ => {
-                self.unfolded_domains_this_hour.insert(domain_id);
-                return;
-            }
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn apply_domain_data(&mut self, domain_id: u16, payload: &[u8], record_flags: u32) {
+        let Some(result) = self.fold_domain_data(domain_id, payload, record_flags) else {
+            self.unfolded_domains_this_hour.insert(domain_id);
+            return;
         };
         match result {
             Ok(()) => self.mark_domain(domain_id),
@@ -5859,6 +5896,7 @@ impl WorldFold {
         // after country rows), so read countries then completed tokens.
         let mut per_tag: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
         for _ in 0..country_count {
+            need(payload, cursor + 16, "focus country row")?;
             let tag = read_u32(payload, cursor);
             let flags = read_u32(payload, cursor + 4);
             let completed_count = read_u32(payload, cursor + 8);
@@ -5892,6 +5930,7 @@ impl WorldFold {
             per_tag.insert(tag, obj);
         }
         for _ in 0..completed_token_count {
+            need(payload, cursor + 4, "focus completed token tag")?;
             let tag = read_u32(payload, cursor);
             cursor += 4;
             let token = read_string(payload, &mut cursor, "focus completed token")?;
@@ -5900,6 +5939,12 @@ impl WorldFold {
                     list.push(json!(token));
                 }
             }
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "focus trailing bytes: consumed {cursor} of {}",
+                payload.len()
+            ));
         }
         for (tag, obj) in per_tag {
             self.country_mut(tag)
@@ -5990,9 +6035,11 @@ impl WorldFold {
             per_tag.insert(tag, obj);
         }
         for _ in 0..popularity_count {
+            need(payload, cursor + 4, "politics popularity tag")?;
             let tag = read_u32(payload, cursor);
             cursor += 4;
             let ideology = read_string(payload, &mut cursor, "popularity ideology")?;
+            need(payload, cursor + 4, "politics popularity value")?;
             let value = read_i32(payload, cursor) as f64 / FIXED_SCALE;
             cursor += 4;
             if let Some(obj) = per_tag.get_mut(&tag) {
@@ -6002,6 +6049,7 @@ impl WorldFold {
             }
         }
         for _ in 0..law_count {
+            need(payload, cursor + 4, "politics law tag")?;
             let tag = read_u32(payload, cursor);
             cursor += 4;
             let group = read_string(payload, &mut cursor, "law group")?;
@@ -6013,6 +6061,7 @@ impl WorldFold {
             }
         }
         for _ in 0..advisor_count {
+            need(payload, cursor + 4, "politics advisor tag")?;
             let tag = read_u32(payload, cursor);
             cursor += 4;
             let _group = read_string(payload, &mut cursor, "advisor group")?;
@@ -6024,6 +6073,7 @@ impl WorldFold {
             }
         }
         for _ in 0..spirit_count {
+            need(payload, cursor + 4, "politics spirit tag")?;
             let tag = read_u32(payload, cursor);
             cursor += 4;
             let token = read_string(payload, &mut cursor, "spirit token")?;
@@ -6032,6 +6082,12 @@ impl WorldFold {
                     list.push(json!(token));
                 }
             }
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "politics trailing bytes: consumed {cursor} of {}",
+                payload.len()
+            ));
         }
         for (tag, obj) in per_tag {
             merge_into(self.country_mut(tag), "politics", obj);
@@ -6060,6 +6116,7 @@ impl WorldFold {
             per_tag.insert(tag, obj);
         }
         for _ in 0..advisor_detail_count {
+            need(payload, cursor + 4, "politics residuals advisor-detail tag")?;
             let tag = read_u32(payload, cursor);
             cursor += 4;
             let idea_token = read_string(payload, &mut cursor, "advisor idea_token")?;
@@ -6077,6 +6134,12 @@ impl WorldFold {
                     list.push(detail);
                 }
             }
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "politics_residuals trailing bytes: consumed {cursor} of {}",
+                payload.len()
+            ));
         }
         for (tag, obj) in per_tag {
             merge_into(self.country_mut(tag), "politics", obj);
@@ -6124,6 +6187,12 @@ impl WorldFold {
                     list.push(row);
                 }
             }
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "decisions trailing bytes: consumed {cursor} of {}",
+                payload.len()
+            ));
         }
         for (tag, obj) in per_tag {
             self.country_mut(tag)
@@ -6180,6 +6249,12 @@ impl WorldFold {
                 }
             }
         }
+        if cursor != payload.len() {
+            return Err(format!(
+                "diplomacy trailing bytes: consumed {cursor} of {}",
+                payload.len()
+            ));
+        }
         for (tag, obj) in per_tag {
             self.country_mut(tag)
                 .insert("diplomacy".into(), Value::Object(obj));
@@ -6194,7 +6269,7 @@ impl WorldFold {
         need(payload, 20, "country_identity header")?;
         let row_count = read_u32(payload, 8) as usize;
         let status_flags = read_u32(payload, 16);
-        if compact_status_is_failure(status_flags) {
+        if !self.boundary_validation && compact_status_is_failure(status_flags) {
             self.note(format!(
                 "country_identity failure status {:#x}; tag_db_id map unchanged this hour",
                 status_flags & COMPACT_STATUS_FAILURE_MASK
@@ -8825,7 +8900,7 @@ impl WorldFold {
             compact_expected_partial_tolerance_applies(DIVISION_EQUIPMENT_DOMAIN_ID, status_flags);
         let sparse_partial = row_count > 0
             && (failure_flags_after_tolerance == COMPACT_STATUS_PARTIAL_DATA || tolerance_applies);
-        if row_count == 0 && tolerance_applies {
+        if !self.boundary_validation && row_count == 0 && tolerance_applies {
             self.mark_fold_domain_unknown(
                 DIVISION_EQUIPMENT_DOMAIN_ID,
                 "partial_data_rowless",
@@ -9096,7 +9171,9 @@ impl WorldFold {
         {
             return Ok(());
         }
-        if compact_expected_partial_tolerance_applies(SPECIAL_PROJECTS_DOMAIN_ID, status_flags) {
+        if !self.boundary_validation
+            && compact_expected_partial_tolerance_applies(SPECIAL_PROJECTS_DOMAIN_ID, status_flags)
+        {
             // D41 partial conditions are not row-complete:
             // - read_compact_projects marks partial for invalid program/facility/project-pool
             //   roots, so facilities/projects and derived project_states may omit live rows.
@@ -9752,7 +9829,7 @@ impl WorldFold {
             != 0
             || (status_flags & (COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA))
                 != 0;
-        if hard_failure {
+        if !self.boundary_validation && hard_failure {
             self.mark_fold_domain_unknown(
                 SCRIPTED_STATE_DOMAIN_ID,
                 "compact_status_failure",
@@ -11180,6 +11257,9 @@ impl WorldFold {
                 return Err(err);
             }
         };
+        if self.boundary_validation {
+            return Ok(());
+        }
         let status_flags = decoded.status_flags;
         // The trailer witness, not row count, distinguishes positive absence
         // from unavailability. Legacy FACS v1 decodes witnessed only when it
@@ -11577,6 +11657,9 @@ impl WorldFold {
         // mandatory war running-accumulator badge are all enforced inside.
         let decoded = capwar60::compact::decode_snapshot_payload(0, payload)
             .map_err(|errors| errors.join("; "))?;
+        if self.boundary_validation {
+            return Ok(());
+        }
         let status_flags = decoded.status_flags;
         self.capitulation_war_state_known_this_hour = false;
         self.war_state_wars_this_hour.clear();
@@ -11715,6 +11798,10 @@ impl WorldFold {
         let decoded_summary = battleplans54::decode_depth_payload(0, payload);
         if !decoded_summary.parse_errors.is_empty() {
             return Err(decoded_summary.parse_errors.join("; "));
+        }
+        if self.boundary_validation {
+            decode_army_battleplans_depth_payload(payload)?;
+            return Ok(());
         }
         let status_flags = decoded_summary.totals.status_flags_or;
         let hard_failure_mask = COMPACT_STATUS_FAILURE_MASK & !COMPACT_STATUS_PARTIAL_DATA;
@@ -12389,8 +12476,11 @@ impl WorldFold {
         // contract set silently DELETES every unobserved live contract (the
         // collector's first-hold PARTIAL holds cached pointers while new
         // contracts exist outside the observed set). PARTIAL is unknown:
-        // retain the prior contract state for the hour.
-        if status_flags & COMPACT_STATUS_FAILURE_MASK != 0 {
+        // retain the prior contract state for the hour. The full
+        // COMPACT_STATUS_FAILURE_MASK (which includes PARTIAL) drives this in
+        // production; the boundary-validation isolated pass skips the
+        // short-circuit so the canonical decoder runs to completion.
+        if !self.boundary_validation && status_flags & COMPACT_STATUS_FAILURE_MASK != 0 {
             self.market_trade_unknown_this_hour = true;
             self.note(format!(
                 "market_trade_live failure status {:#x}; trade contracts unknown this hour",

@@ -302,8 +302,8 @@ pub fn fold_compact_stream_file_parallel(
                     scope.spawn(
                         move || -> io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)> {
                             let reader = compact_stream::open(stream_path)?;
-                            let compressed = reader.compression()
-                                == compact_stream::StreamCompression::Zstd;
+                            let compressed =
+                                reader.compression() == compact_stream::StreamCompression::Zstd;
                             let total_len = if compressed { 0 } else { reader.encoded_len() };
                             let mut fold = WorldFold::new_file_backed_strided(
                                 game_id,
@@ -439,6 +439,19 @@ fn sha256_file(path: &Path) -> io::Result<String> {
     Ok(to_hex(&hasher.finalize()))
 }
 
+/// Validate one DOMAIN_DATA payload through the canonical per-domain decoder's
+/// structural-only entrypoint. The record header's declared payload length is
+/// not trusted: exact consumption by the domain grammar is the independent
+/// delimiter. No payload bytes or status bits are modified, and missing fold
+/// baselines are deliberately irrelevant to this boundary verdict.
+fn validate_domain_data_payload(
+    domain_id: u16,
+    payload: &[u8],
+    record_flags: u32,
+) -> Result<(), String> {
+    WorldFold::validate_domain_data_payload_exact(domain_id, payload, record_flags)
+}
+
 /// Drive the production fold over a record stream with a bounded carry buffer.
 /// Every `DOMAIN_DATA`/`FRAME_END` record is handed to [`WorldFold::ingest_record`]
 /// exactly as `WorldFold::ingest_stream` would; `DOMAIN_PERF`/probe records carry
@@ -524,6 +537,20 @@ pub fn drive_fold_compressed<R: Read>(
             }
             let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
 
+            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                validate_domain_data_payload(header.domain_id, payload, header.record_flags)
+                    .map_err(|reason| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "invalid DOMAIN_DATA payload for domain {} at byte {}: {reason}",
+                                header.domain_id,
+                                processed + off as u64
+                            ),
+                        )
+                    })?;
+            }
+
             stats.records_total += 1;
             match header.record_type {
                 COMPACT_RECORD_TYPE_DOMAIN_DATA => stats.data_records += 1,
@@ -602,7 +629,8 @@ mod tests {
     use compact_contract::calendar::DATE_EPOCH_CONST;
     use compact_contract::{
         COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
-        COMPACT_RECORD_VERSION,
+        COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_PARTIAL_DATA,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
     };
     use snapshot::sha256::{to_hex, Sha256};
     use std::io::Cursor;
@@ -670,9 +698,338 @@ mod tests {
         p
     }
 
+    fn append_complete_domain_record(payload: &mut Vec<u8>, hour: i32) {
+        let mut swallowed = Vec::new();
+        push_record(
+            &mut swallowed,
+            99,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(48, "FRA")]),
+        );
+        payload.extend_from_slice(&swallowed);
+    }
+
+    fn expect_domain_boundary_rejection(domain: u16, payload: &[u8]) {
+        let hour = raw_for(HOUR_A);
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            payload,
+        );
+        push_record(
+            &mut stream,
+            2,
+            hour,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; 32],
+        );
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect_err("a DATA payload that swallows a complete record must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "domain {domain}");
+    }
+
+    fn expect_malformed_domain_invalid_data(domain: u16, payload: &[u8]) {
+        let hour = raw_for(HOUR_A);
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            payload,
+        );
+        let mut fold = WorldFold::new("malformed_boundary");
+        let result = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold);
+        let err = result.expect_err("a malformed DATA payload must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "domain {domain}");
+        assert!(
+            err.to_string().contains(&format!(
+                "invalid DOMAIN_DATA payload for domain {domain} at byte 0"
+            )),
+            "unexpected boundary attribution: {err}"
+        );
+    }
+
+    fn expect_domain_boundary_acceptance(domain: u16, payload: &[u8]) {
+        let hour = raw_for(HOUR_A);
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            payload,
+        );
+        push_record(
+            &mut stream,
+            2,
+            hour,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; 32],
+        );
+        let mut fold = WorldFold::new("production_boundary_acceptance");
+        let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .unwrap_or_else(|err| panic!("valid production d{domain} payload was rejected: {err}"));
+        assert_eq!(stats.data_records, 1, "domain {domain}");
+        assert_eq!(stats.bytes_folded, stream.len() as u64, "domain {domain}");
+        assert!(stats.stop_reason.is_none(), "domain {domain}");
+    }
+
     const HOUR_A: i64 = 16_959_360;
     const HOUR_B: i64 = 16_959_361;
     const HOUR_C: i64 = 16_959_362;
+
+    #[test]
+    fn d12_truncated_country_row_returns_invalid_data_not_panic() {
+        let mut payload = vec![0u8; 28];
+        payload[8..12].copy_from_slice(&1u32.to_le_bytes());
+        expect_malformed_domain_invalid_data(12, &payload);
+    }
+
+    #[test]
+    fn d14_truncated_popularity_row_returns_invalid_data_not_panic() {
+        let mut payload = vec![0u8; 40];
+        payload[24..28].copy_from_slice(&1u32.to_le_bytes());
+        expect_malformed_domain_invalid_data(14, &payload);
+    }
+
+    #[test]
+    fn d15_truncated_advisor_detail_returns_invalid_data_not_panic() {
+        let mut payload = vec![0u8; 24];
+        payload[20..24].copy_from_slice(&1u32.to_le_bytes());
+        expect_malformed_domain_invalid_data(15, &payload);
+    }
+
+    #[test]
+    fn d12_truncated_completed_tag_read_u32_returns_invalid_data_not_panic() {
+        let mut payload = vec![0u8; 31];
+        payload[24..28].copy_from_slice(&1u32.to_le_bytes());
+        expect_malformed_domain_invalid_data(12, &payload);
+    }
+
+    #[test]
+    fn d14_truncated_popularity_value_returns_invalid_data_not_panic() {
+        let mut payload = vec![0u8; 40];
+        payload[24..28].copy_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        expect_malformed_domain_invalid_data(14, &payload);
+    }
+
+    #[test]
+    fn d14_full_popularity_row_remains_boundary_valid() {
+        let mut payload = vec![0u8; 40];
+        payload[8..12].copy_from_slice(&1u32.to_le_bytes());
+        payload[24..28].copy_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 24]);
+        for _ in 0..4 {
+            payload.extend_from_slice(&0u16.to_le_bytes());
+        }
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.push(b'd');
+        payload.extend_from_slice(&50_000i32.to_le_bytes());
+        expect_domain_boundary_acceptance(14, &payload);
+    }
+
+    #[test]
+    fn d12_zero_row_payload_cannot_swallow_complete_record() {
+        let mut payload = vec![0u8; 28];
+        append_complete_domain_record(&mut payload, raw_for(HOUR_A));
+        expect_domain_boundary_rejection(12, &payload);
+    }
+
+    #[test]
+    fn d14_through_d17_trailing_record_residue_is_rejected() {
+        for (domain, header_len) in [(14u16, 40usize), (15, 24), (16, 24), (17, 24)] {
+            let mut payload = vec![0u8; header_len];
+            append_complete_domain_record(&mut payload, raw_for(HOUR_A));
+            expect_domain_boundary_rejection(domain, &payload);
+        }
+    }
+
+    #[test]
+    fn d51_delta_and_failure_status_cannot_skip_boundary_validation() {
+        for status in [COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_SOURCE_UNAVAILABLE] {
+            let mut payload = vec![0u8; 64];
+            payload[20..24].copy_from_slice(&status.to_le_bytes());
+            payload[48..52].copy_from_slice(&100_000u32.to_le_bytes());
+            payload[52..56].copy_from_slice(&2u32.to_le_bytes());
+            append_complete_domain_record(&mut payload, raw_for(HOUR_A));
+            expect_domain_boundary_rejection(51, &payload);
+        }
+    }
+
+    #[test]
+    fn d69_failure_status_at_byte_12_cannot_skip_boundary_validation() {
+        let mut payload = vec![0u8; 16];
+        payload[12..16].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+        append_complete_domain_record(&mut payload, raw_for(HOUR_A));
+        expect_domain_boundary_rejection(69, &payload);
+
+        // Refutation attempt: make the swallowed neighbor exactly 64 bytes so
+        // d69's member-blob remainder is u32-aligned. Zero group windows still
+        // cannot cover those orphan u32s, so exact coverage must reject it.
+        let mut aligned_payload = vec![0u8; 16];
+        aligned_payload[12..16].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+        push_record(
+            &mut aligned_payload,
+            99,
+            raw_for(HOUR_A),
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; 32],
+        );
+        expect_domain_boundary_rejection(69, &aligned_payload);
+    }
+
+    #[test]
+    fn d51_and_d69_production_failure_payloads_pass_stream_boundary() {
+        use scripted_state_flags_variables_live_lane::scripted_state_domain51_gate::compact as d51c;
+
+        let d51 = d51c::encode_payload(
+            &d51c::ScriptedStateHeader {
+                elapsed_wall_ms: 1,
+                status_flags: d51c::STATUS_SOURCE_UNAVAILABLE,
+                changed_rows: 0,
+                observed_scopes: 0,
+                measured_scopes: 0,
+                rejected_scopes: 0,
+            },
+            &[],
+        );
+        expect_domain_boundary_acceptance(51, &d51);
+
+        let d69 = compact_contract::tech_sharing_groups::encode_payload(
+            &[],
+            1,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        );
+        expect_domain_boundary_acceptance(69, &d69);
+    }
+
+    #[test]
+    fn d53_plain_delta_production_payload_passes_stream_boundary() {
+        use diplomacy_intel_operatives_live::compact as d53c;
+
+        let payload = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_DELTA_DATA,
+            opinions: vec![d53c::OpinionRow {
+                src_tag_db_id: 1,
+                target_tag_db_id: 2,
+                opinion: 5,
+            }],
+            ..Default::default()
+        });
+        expect_domain_boundary_acceptance(53, &payload);
+    }
+
+    #[test]
+    fn d53_plain_partial_production_payload_passes_stream_boundary() {
+        use diplomacy_intel_operatives_live::compact as d53c;
+
+        let payload = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_PARTIAL_DATA,
+            ..Default::default()
+        });
+        expect_domain_boundary_acceptance(53, &payload);
+    }
+
+    #[test]
+    fn d53_facs_v1_absent_production_payload_passes_stream_boundary() {
+        use diplomacy_intel_operatives_live::compact as d53c;
+
+        let payload = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
+            opinions: vec![d53c::OpinionRow {
+                src_tag_db_id: 1,
+                target_tag_db_id: 2,
+                opinion: 5,
+            }],
+            factions: Vec::new(),
+            ..Default::default()
+        });
+        assert!(
+            !payload.windows(4).any(|window| window == b"FACS"),
+            "the production encoder must omit FACS v1 for an absent faction set"
+        );
+        expect_domain_boundary_acceptance(53, &payload);
+    }
+
+    #[test]
+    fn d53_delta_partial_passes_boundary_validation_and_normal_fold() {
+        use diplomacy_intel_operatives_live::compact as d53c;
+
+        // This is the real recorder's empty-first-frame sequence: a tolerated
+        // partial full frame seeds an empty baseline, then the next partial read
+        // emits a DELTA|PARTIAL diff against that baseline.
+        let baseline = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_PARTIAL_DATA,
+            ..Default::default()
+        });
+        let delta = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA,
+            opinions: vec![d53c::OpinionRow {
+                src_tag_db_id: 1,
+                target_tag_db_id: 2,
+                opinion: 5,
+            }],
+            ..Default::default()
+        });
+
+        validate_domain_data_payload(53, &delta, 0)
+            .expect("a structurally valid d53 DELTA|PARTIAL must pass boundary validation");
+
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            raw_for(HOUR_A),
+            53,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &baseline,
+        );
+        push_record(
+            &mut stream,
+            2,
+            raw_for(HOUR_A),
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; 32],
+        );
+        push_record(
+            &mut stream,
+            3,
+            raw_for(HOUR_B),
+            53,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &delta,
+        );
+        push_record(
+            &mut stream,
+            4,
+            raw_for(HOUR_B),
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; 32],
+        );
+
+        let mut fold = WorldFold::new("gid");
+        let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect("the normal pipeline must fold a valid d53 DELTA|PARTIAL after its baseline");
+        assert_eq!(stats.hours_emitted, 2);
+    }
 
     fn three_hour_stream() -> Vec<u8> {
         let mut s = Vec::new();
@@ -702,6 +1059,153 @@ mod tests {
             seq += 1;
         }
         s
+    }
+
+    /// Reproduce the audited boundary construction exactly: after the forged
+    /// DATA length consumes a complete adjacent record, the only visible H4CR
+    /// headers remain PERF/DATA/FRAME_END with consecutive sequence numbers.
+    /// Coverage counts and the stream hash are intentionally derived from the
+    /// already-corrupt bytes, so neither can reveal the swallowed record.
+    #[test]
+    fn data_payload_cannot_swallow_complete_adjacent_record() {
+        let hour = raw_for(HOUR_A);
+        let mut swallowed = Vec::new();
+        push_record(
+            &mut swallowed,
+            3,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(48, "FRA")]),
+        );
+
+        let mut forged_payload = country_identity_payload(&[(47, "GER")]);
+        forged_payload.extend_from_slice(&swallowed);
+
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &[0u8; 40],
+        );
+        push_record(
+            &mut stream,
+            2,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &forged_payload,
+        );
+        push_record(
+            &mut stream,
+            3,
+            hour,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; 32],
+        );
+
+        let regenerated_manifest_hash = Sha256::digest(&stream);
+        assert_eq!(Sha256::digest(&stream), regenerated_manifest_hash);
+
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect_err("a DATA payload that swallows a complete H4CR record must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("invalid DOMAIN_DATA payload"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn well_formed_domain_data_payload_passes_boundary_validation() {
+        let hour = raw_for(HOUR_A);
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &[0u8; 40],
+        );
+        push_record(
+            &mut stream,
+            2,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        push_record(
+            &mut stream,
+            3,
+            hour,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; 32],
+        );
+
+        let mut fold = WorldFold::new("gid");
+        let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect("well-formed DOMAIN_DATA must remain accepted");
+        assert_eq!(stats.stream_bytes, stream.len() as u64);
+        assert_eq!(stats.bytes_folded, stream.len() as u64);
+        assert_eq!(stats.records_total, 3);
+        assert_eq!(stats.perf_records, 1);
+        assert_eq!(stats.data_records, 1);
+        assert_eq!(stats.frame_end_records, 1);
+        assert_eq!(stats.hours_emitted, 1);
+        assert_eq!(stats.truncated_tail_bytes, 0);
+        assert!(stats.stop_reason.is_none());
+    }
+
+    fn one_data_hour(payload: &[u8]) -> Vec<u8> {
+        let hour = raw_for(HOUR_A);
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            payload,
+        );
+        push_record(
+            &mut stream,
+            2,
+            hour,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; 32],
+        );
+        stream
+    }
+
+    #[test]
+    fn domain_data_payload_residue_fails_closed() {
+        let mut payload = country_identity_payload(&[(47, "GER")]);
+        payload.push(0xA5);
+        let stream = one_data_hour(&payload);
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect_err("unconsumed DATA residue must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn domain_data_payload_declared_row_overrun_fails_closed() {
+        let mut payload = country_identity_payload(&[(47, "GER")]);
+        payload[8..12].copy_from_slice(&2u32.to_le_bytes());
+        let stream = one_data_hour(&payload);
+        let mut fold = WorldFold::new("gid");
+        let err = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect_err("DATA internal row overrun must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     /// The streaming fold spills one snapshot file per hour and produces bytes
@@ -984,7 +1488,8 @@ mod tests {
         };
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(
-            err.to_string().contains("framing stopped before physical EOF"),
+            err.to_string()
+                .contains("framing stopped before physical EOF"),
             "unexpected error: {err}"
         );
 
@@ -992,7 +1497,10 @@ mod tests {
         // corruption sits before hour A's FRAME_END, so no hour completes).
         let (files, stats) =
             fold_compact_stream_file(&raw_path, "gid", &dir.0.join("raws")).unwrap();
-        assert!(files.is_empty(), "corruption before the first FRAME_END emits no hours");
+        assert!(
+            files.is_empty(),
+            "corruption before the first FRAME_END emits no hours"
+        );
         assert!(stats.stop_reason.is_some(), "raw stop keeps its diagnostic");
     }
 
@@ -1034,7 +1542,10 @@ mod tests {
         let reader = ScriptedReader {
             prefix: one_record_then_garbage(),
             served: false,
-            tail_error: Some((io::ErrorKind::InvalidData, "simulated zstd checksum mismatch")),
+            tail_error: Some((
+                io::ErrorKind::InvalidData,
+                "simulated zstd checksum mismatch",
+            )),
         };
         let mut fold = WorldFold::new("gid");
         let err = drive_fold_compressed(reader, 0, &mut fold, true)
@@ -1056,7 +1567,8 @@ mod tests {
         let err = drive_fold_compressed(reader, 0, &mut fold, true)
             .expect_err("compressed framing stop must not end cleanly");
         assert!(
-            err.to_string().contains("framing stopped before physical EOF"),
+            err.to_string()
+                .contains("framing stopped before physical EOF"),
             "unexpected error: {err}"
         );
     }
@@ -1076,17 +1588,14 @@ mod tests {
         std::fs::write(&src, &corrupted).unwrap();
         compact_stream::encode_file(&src, &zstd_path, compact_stream::StreamCompression::Zstd)
             .unwrap();
-        let err = match fold_compact_stream_file_parallel(
-            &zstd_path,
-            "gid",
-            &dir.0.join("snaps"),
-            2,
-        ) {
-            Ok(_) => panic!("parallel fold must reject compressed header corruption"),
-            Err(err) => err,
-        };
+        let err =
+            match fold_compact_stream_file_parallel(&zstd_path, "gid", &dir.0.join("snaps"), 2) {
+                Ok(_) => panic!("parallel fold must reject compressed header corruption"),
+                Err(err) => err,
+            };
         assert!(
-            err.to_string().contains("framing stopped before physical EOF"),
+            err.to_string()
+                .contains("framing stopped before physical EOF"),
             "unexpected error: {err}"
         );
     }
