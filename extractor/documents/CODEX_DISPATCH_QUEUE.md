@@ -561,3 +561,25 @@ mutation window incl CreateFileMapping-needs-write, canonical-path normalization
 serde_json on embedded manifest, + full regression). F4 = accept documented lint limitation.
 IN FLIGHT: replay-loader r5 gate, foldwave2 fix4, stitching r3. MERGE-READY: boundary-auth,
 autoattach (SHIP @15a817f3e), facs-wire (SHIP @1da8812b8).
+
+## 2026-07-14 replay-loader r5 gate = REVISE (converging: R4-F2/F3/F4 CLOSED) -> fix6
+R4-F2 (canonical-entry hash), R4-F3 (strict manifest decode), R4-F4 (lint) all CLOSED. No
+regressions. The STREAMING finalizer is ALREADY CORRECT (verifies tmp_file directly through the
+retained handle, main.rs:4729) = reference pattern. 2 HIGH left, same "verify/decision must bind to
+the promoted object" class in the TWO OTHER finalizers:
+- F1 HIGH: in-memory (4344) + file-backed (4536) finalizers retain the handle but VERIFY BY PATHNAME
+  reopen. Writable reparse-ANCESTOR (junction J) rebind after packing => verifier inspects a decoy
+  under a different dir while finalize promotes the original. FILE_SHARE_READ blocks leaf swaps +
+  open-descendant blocks ancestor RENAME, but a reparse-point ancestor is unpinned. Streaming path
+  immune (verifies handle directly).
+- F2 HIGH: pack-time strict manifest bytes not bound to the decision manifest. Decisions from object
+  A (game_id/config/capture/dest/static-artifacts) but embeds a REREAD disk manifest B (4271/4457/
+  4635); nothing proves B==A => a concurrent valid-B swap yields a SEALED MIXED-SESSION container.
+FIX6 launched (tid threads/i1-replayloader-e2e.tid): F1 = make the 2 non-streaming finalizers verify
+THROUGH the retained creation handle (match streaming @4729) OR pin/reject ancestor reparse points,
+fail-closed on identity mismatch; F2 = read the manifest ONCE, use that one object for BOTH decisions
+AND embedding (or identity-bind the reread to A). RED->GREEN for reparse-ancestor-rebind + concurrent-
+manifest-swap. CONVERGENT not divergent - the correct pattern already exists in the streaming path;
+this applies it to the 2 lagging finalizers. NOT a threat-model escalation (same class, known fix).
+IN FLIGHT: replay-loader fix6, foldwave2 fix4, stitching r3, + 2 DOC-AUDIT lanes (docaudit-refs,
+docaudit-design). MERGE-READY: boundary-auth, autoattach (SHIP @15a817f3e), facs-wire (SHIP @1da8812b8).
