@@ -98,6 +98,7 @@ fixture, but hard); **C** derived → replay layer, not a DLL crack; **D** commi
 - [ ] A19. Delayed-event `+0xC4` decrement-over-time + originator-vs-scope-country separation (D6 static done) (d51)
 - [ ] A20. Weather region-phenomenon-flags drift confirmation (rain_heavy/arctic_water 305/305 now) — unpaused drift (d24)
 - [ ] A21. Finest per-entity combat killer label (per-convoy / per-sunk-event / per-wing) — one controlled combat (combat)
+- [ ] A22. Per-country CUMULATIVE air-loss statistic (melt `history{}` stat id 23; distinct from d42 per-wing deltas) (d61) — root chain PROVEN + data layer landed (`lanes/air_loss_stats_live/INTEGRATION_PACKET.md`, `runs/cracklist_c1_air_stats/`), but the packet is UNCOMMITTED (working-tree, "orchestrator review") and production scheduling is fixture-gated (needs a live session with air losses to verify). Roll-up of a lane-packet item that was not previously surfaced here.
 
 ### B. DEEP-CRACK FOLLOW-UP — no fixture, but needs another RE pass (genuinely uncracked)
 - [ ] B1. Market stockpile OWNER chain — crack the global `CInternationalMarket` singleton + per-country keying (D7 proved it is NOT off CCountry; task #28)
