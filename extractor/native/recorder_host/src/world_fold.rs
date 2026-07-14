@@ -1571,6 +1571,48 @@ impl WorldFold {
         }
     }
 
+    /// Per-domain degrade for a DOMAIN_DATA record whose payload failed the
+    /// stream-boundary exact-consumption check
+    /// ([`validate_domain_data_payload_exact`]). Zero-data-loss ruling
+    /// (owner 2026-07-14): one structurally-malformed domain payload must not
+    /// fail the whole recording. The domain's accumulator is left untouched (its
+    /// prior leaf is carried, unchanged, for diagnostics), the domain is flagged
+    /// unknown, and a `malformed_payload` problem is recorded so the typed
+    /// consumer reads it DomainUnavailable this hour. The malformed bytes are
+    /// never applied, so they cannot smuggle into any domain.
+    pub fn record_malformed_domain_payload(
+        &mut self,
+        game_hour_raw: i32,
+        domain_id: u16,
+        reason: &str,
+    ) {
+        if self.record_is_for_finalized_hour(game_hour_raw) {
+            // A closed hour cannot be re-marked; account it as a dropped late
+            // record exactly like ingest_record would.
+            self.record_late_domain_data(game_hour_raw);
+            return;
+        }
+        // d53 carries a modern-stream safety signal: once ANY d53 record has
+        // appeared, later absent/failed hours must serialize an explicit
+        // `unavailable` roster status rather than measured-emptiness. A malformed
+        // d53 record is still proof the stream is modern-d53. (This is the ONLY
+        // domain with this "seen-in-stream ⇒ unavailable-on-absence" pattern; it
+        // is set inside `fold_diplomacy_intel_operatives`, which we do NOT call on
+        // the degrade path, so set it explicitly here.)
+        if domain_id == DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID {
+            self.domain53_seen_in_stream = true;
+            self.domain53_known_this_hour = false;
+        }
+        self.mark_fold_domain_unknown(
+            domain_id,
+            "malformed_payload",
+            format!(
+                "domain {domain_id} payload rejected by stream-boundary validation \
+                 ({reason}); leaf unknown this hour, accumulator retained"
+            ),
+        );
+    }
+
     /// Drain the finished in-memory snapshots accumulated so far, transferring
     /// ownership to the caller (in-memory fold only). This lets a streaming
     /// consumer hash each hour as its `FRAME_END` closes and then release the
@@ -2602,7 +2644,16 @@ impl WorldFold {
             }
             countries.insert(key, Value::Object(out));
         }
-        if !self.fold_domain_unknown(FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID) {
+        let d45_malformed_payload = self.domain_problems_this_hour.iter().any(|problem| {
+            problem.domain_id == FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID
+                && problem.problem == "malformed_payload"
+        });
+        if !self.fold_domain_unknown(FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID)
+            || d45_malformed_payload
+        {
+            // A malformed D45 payload leaves the accumulator untouched. Keep its
+            // prior raw projection for diagnostics; the collector problem still
+            // makes typed consumers report DomainUnavailable for this hour.
             self.project_frd_annotations(&mut countries, &mut unresolved);
         }
         if self.domain53_known_this_hour {

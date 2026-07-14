@@ -37,20 +37,33 @@ hardening fix pipeline is complete and integrated.**
   gate prompts (input-validation/correctness framing instead of adversarial/exploit language) — every
   gate since produced a real verdict with zero refusals. See [[codex-cyber-refusal-blocker]].
 - **Battery at merge:** extractor side green (modulo the accepted Dev-Mode symlink capability test
-  Win32 1314 + 2 RmStartSession live flakes); `replay_core` 81/0 (2 parked below + 1 pre-existing
-  OneDrive-dehydrated ignore). Integration-adversary gate: 7/8 items PASS, the 8th (a fixture
-  error-string propagation) fixed and closed.
-- **⚠ OWNER DECISION OWED — malformed-payload semantics (fail-closed vs per-domain-degrade):** the
-  merge surfaced an emergent conflict neither lane's isolated gate saw. **boundary-auth** validates
-  every DOMAIN_DATA payload at production-fold ingest and **fails the whole fold closed** on a
-  structurally-malformed/truncated payload (its tests assert `drive_fold` → `InvalidData`).
-  **foldwave2 + facs-wire** expect a malformed single-domain payload to **degrade that domain**
-  (mark it Unavailable) and keep folding — the zero-data-loss pattern. Both were independently gated
-  + shipped. The merged code keeps **boundary-auth's fail-closed**; the two lane degradation tests
-  (`folded_malformed_d45_without_d12...` in `world.rs`, `production_encode_decode_fold_typed_
-  unavailable...` in `world_timeline.rs`) are **parked `#[ignore]`** with a documented note pending
-  the owner's ruling. If per-domain-degrade is chosen: rework boundary-auth's ingest gate to record a
-  domain-problem + continue (not fail), fix ~7 boundary-auth tests, un-park the 2 tests, re-gate.
+  Win32 1314 + 2 RmStartSession live flakes); `replay_core` 81/0 at merge (the 2 then-parked
+  degradation tests are now un-parked + passing per the resolved owner decision below → 83/0, +1
+  pre-existing OneDrive-dehydrated ignore). Integration-adversary gate: 7/8 items PASS, the 8th (a
+  fixture error-string propagation) fixed and closed.
+- **✔ OWNER DECISION RESOLVED 2026-07-14 — malformed-payload semantics = PER-DOMAIN DEGRADE (zero
+  data loss).** Owner ruled zero data loss. A structurally-malformed/truncated DOMAIN_DATA payload
+  now degrades **only its own domain** — the stream-boundary ingest gate (`stream_fold.rs`
+  `drive_fold`) records a `malformed_payload` domain problem, marks the domain unknown, keeps the
+  prior carried leaf for diagnostics, and **never applies the untrusted bytes** (so nothing can be
+  smuggled into another domain) — while every other domain and hour keeps folding. **Framing / magic
+  / version / header-length / payload-bound / storage-checksum / zstd corruption still fails closed**
+  (it cannot be localized to one domain). New `WorldFold::record_malformed_domain_payload` routes
+  through the existing `mark_fold_domain_unknown` machinery (+ sets d53's `seen_in_stream`/`known`
+  safety signal, the only domain with the "modern-stream ⇒ unavailable-on-absence" pattern); new
+  `FoldStreamStats.malformed_payload_records` counter; the 5 DOMAIN_DATA-payload boundary tests now
+  assert per-domain degrade; the 2 acceptance oracles (`folded_malformed_d45_without_d12...` in
+  `world.rs`, `production_encode_decode_fold_typed_unavailable...` in `world_timeline.rs`) are
+  **un-parked and passing**. Consumer side unchanged — `reconcile_domain_problem_statuses`
+  (DOMAIN_PROBLEM_VIEW_MAP 45→Focus, 53→Diplomacy) already downgrades any recorded domain problem.
+  Lane `w12h-malformed-degrade`. Independent gate run: `recorder_host --lib` 421/0/2, `stream_fold`
+  suite 34/34, `replay_core` 83/0 (+1 pre-existing ignore), both oracles pass. NOTE: the independent
+  Codex adversarial gate could not emit a verdict — the Windows sandbox helper
+  (`codex-windows-sandbox-setup.exe`) broke mid-session (`program not found`, 3 attempts incl. Codex's
+  own review); substituted by orchestrator adversarial review (anti-injection proven by construction:
+  the degrade branch advances by the full framed `record_len` and `continue`s before any apply, so an
+  embedded record is never framed/counted/applied — the flipped swallow tests pin `data_records == 1`).
+  Resumable review tid saved under `hoi4_lanes/_tids/` for a re-run once the helper is restored.
 
 **Remaining engineering acceptance gate (unchanged, USER-GATED):** a fresh speed-5 end-to-end
 capture proving every scheduled domain emits at <100ms/frame with zero skipped hours. All validation

@@ -44,6 +44,10 @@ pub struct FoldStreamStats {
     pub truncated_tail_bytes: u64,
     pub records_total: u64,
     pub data_records: u64,
+    /// DOMAIN_DATA records whose payload failed stream-boundary exact-consumption
+    /// validation and were degraded per-domain (owner zero-data-loss ruling) rather
+    /// than failing the whole fold. The record is framed-valid; only its payload is bad.
+    pub malformed_payload_records: u64,
     pub frame_end_records: u64,
     pub perf_records: u64,
     pub other_records: u64,
@@ -538,17 +542,26 @@ pub fn drive_fold_compressed<R: Read>(
             let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
 
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                validate_domain_data_payload(header.domain_id, payload, header.record_flags)
-                    .map_err(|reason| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "invalid DOMAIN_DATA payload for domain {} at byte {}: {reason}",
-                                header.domain_id,
-                                processed + off as u64
-                            ),
-                        )
-                    })?;
+                if let Err(reason) =
+                    validate_domain_data_payload(header.domain_id, payload, header.record_flags)
+                {
+                    // Zero-data-loss ruling (owner 2026-07-14): a structurally-malformed
+                    // DOMAIN_DATA payload degrades ONLY its own domain — never the whole
+                    // recording. Frame accounting still counts this well-framed record;
+                    // the untrusted payload is not applied. Framing/version/checksum
+                    // corruption remains fail-closed below.
+                    stats.records_total += 1;
+                    stats.data_records += 1;
+                    stats.malformed_payload_records += 1;
+                    tracker.observe(&header, processed + off as u64);
+                    fold.record_malformed_domain_payload(
+                        header.game_hour_raw,
+                        header.domain_id,
+                        &reason,
+                    );
+                    off += record_len;
+                    continue;
+                }
             }
 
             stats.records_total += 1;
@@ -711,7 +724,7 @@ mod tests {
         payload.extend_from_slice(&swallowed);
     }
 
-    fn expect_domain_boundary_rejection(domain: u16, payload: &[u8]) {
+    fn expect_domain_boundary_degrades(domain: u16, payload: &[u8]) {
         let hour = raw_for(HOUR_A);
         let mut stream = Vec::new();
         push_record(
@@ -731,12 +744,16 @@ mod tests {
             &[0u8; 32],
         );
         let mut fold = WorldFold::new("gid");
-        let err = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
-            .expect_err("a DATA payload that swallows a complete record must fail closed");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "domain {domain}");
+        let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect("a swallow payload must degrade, not fail the fold");
+        assert_eq!(stats.malformed_payload_records, 1, "domain {domain}");
+        assert_eq!(
+            stats.data_records, 1,
+            "domain {domain}: the swallowed record must NOT be counted as a second framed record"
+        );
     }
 
-    fn expect_malformed_domain_invalid_data(domain: u16, payload: &[u8]) {
+    fn expect_malformed_domain_degrades(domain: u16, payload: &[u8]) {
         let hour = raw_for(HOUR_A);
         let mut stream = Vec::new();
         push_record(
@@ -748,15 +765,10 @@ mod tests {
             payload,
         );
         let mut fold = WorldFold::new("malformed_boundary");
-        let result = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold);
-        let err = result.expect_err("a malformed DATA payload must fail closed");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "domain {domain}");
-        assert!(
-            err.to_string().contains(&format!(
-                "invalid DOMAIN_DATA payload for domain {domain} at byte 0"
-            )),
-            "unexpected boundary attribution: {err}"
-        );
+        let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect("a malformed DATA payload must degrade its domain, not fail the fold");
+        assert_eq!(stats.malformed_payload_records, 1, "domain {domain}");
+        assert_eq!(stats.data_records, 1, "domain {domain}");
     }
 
     fn expect_domain_boundary_acceptance(domain: u16, payload: &[u8]) {
@@ -794,28 +806,28 @@ mod tests {
     fn d12_truncated_country_row_returns_invalid_data_not_panic() {
         let mut payload = vec![0u8; 28];
         payload[8..12].copy_from_slice(&1u32.to_le_bytes());
-        expect_malformed_domain_invalid_data(12, &payload);
+        expect_malformed_domain_degrades(12, &payload);
     }
 
     #[test]
     fn d14_truncated_popularity_row_returns_invalid_data_not_panic() {
         let mut payload = vec![0u8; 40];
         payload[24..28].copy_from_slice(&1u32.to_le_bytes());
-        expect_malformed_domain_invalid_data(14, &payload);
+        expect_malformed_domain_degrades(14, &payload);
     }
 
     #[test]
     fn d15_truncated_advisor_detail_returns_invalid_data_not_panic() {
         let mut payload = vec![0u8; 24];
         payload[20..24].copy_from_slice(&1u32.to_le_bytes());
-        expect_malformed_domain_invalid_data(15, &payload);
+        expect_malformed_domain_degrades(15, &payload);
     }
 
     #[test]
     fn d12_truncated_completed_tag_read_u32_returns_invalid_data_not_panic() {
         let mut payload = vec![0u8; 31];
         payload[24..28].copy_from_slice(&1u32.to_le_bytes());
-        expect_malformed_domain_invalid_data(12, &payload);
+        expect_malformed_domain_degrades(12, &payload);
     }
 
     #[test]
@@ -824,7 +836,7 @@ mod tests {
         payload[24..28].copy_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u16.to_le_bytes());
-        expect_malformed_domain_invalid_data(14, &payload);
+        expect_malformed_domain_degrades(14, &payload);
     }
 
     #[test]
@@ -848,7 +860,7 @@ mod tests {
     fn d12_zero_row_payload_cannot_swallow_complete_record() {
         let mut payload = vec![0u8; 28];
         append_complete_domain_record(&mut payload, raw_for(HOUR_A));
-        expect_domain_boundary_rejection(12, &payload);
+        expect_domain_boundary_degrades(12, &payload);
     }
 
     #[test]
@@ -856,7 +868,7 @@ mod tests {
         for (domain, header_len) in [(14u16, 40usize), (15, 24), (16, 24), (17, 24)] {
             let mut payload = vec![0u8; header_len];
             append_complete_domain_record(&mut payload, raw_for(HOUR_A));
-            expect_domain_boundary_rejection(domain, &payload);
+            expect_domain_boundary_degrades(domain, &payload);
         }
     }
 
@@ -868,7 +880,7 @@ mod tests {
             payload[48..52].copy_from_slice(&100_000u32.to_le_bytes());
             payload[52..56].copy_from_slice(&2u32.to_le_bytes());
             append_complete_domain_record(&mut payload, raw_for(HOUR_A));
-            expect_domain_boundary_rejection(51, &payload);
+            expect_domain_boundary_degrades(51, &payload);
         }
     }
 
@@ -877,7 +889,7 @@ mod tests {
         let mut payload = vec![0u8; 16];
         payload[12..16].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
         append_complete_domain_record(&mut payload, raw_for(HOUR_A));
-        expect_domain_boundary_rejection(69, &payload);
+        expect_domain_boundary_degrades(69, &payload);
 
         // Refutation attempt: make the swallowed neighbor exactly 64 bytes so
         // d69's member-blob remainder is u32-aligned. Zero group windows still
@@ -892,7 +904,7 @@ mod tests {
             COMPACT_RECORD_TYPE_FRAME_END,
             &[0u8; 32],
         );
-        expect_domain_boundary_rejection(69, &aligned_payload);
+        expect_domain_boundary_degrades(69, &aligned_payload);
     }
 
     #[test]
@@ -1112,12 +1124,12 @@ mod tests {
         assert_eq!(Sha256::digest(&stream), regenerated_manifest_hash);
 
         let mut fold = WorldFold::new("gid");
-        let err = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
-            .expect_err("a DATA payload that swallows a complete H4CR record must fail closed");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(
-            err.to_string().contains("invalid DOMAIN_DATA payload"),
-            "unexpected error: {err}"
+        let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect("swallow degrades, not fails");
+        assert_eq!(stats.malformed_payload_records, 1);
+        assert_eq!(
+            stats.data_records, 1,
+            "the swallowed record must not be independently framed/applied"
         );
     }
 
@@ -1158,6 +1170,7 @@ mod tests {
         assert_eq!(stats.records_total, 3);
         assert_eq!(stats.perf_records, 1);
         assert_eq!(stats.data_records, 1);
+        assert_eq!(stats.malformed_payload_records, 0);
         assert_eq!(stats.frame_end_records, 1);
         assert_eq!(stats.hours_emitted, 1);
         assert_eq!(stats.truncated_tail_bytes, 0);
@@ -1187,25 +1200,25 @@ mod tests {
     }
 
     #[test]
-    fn domain_data_payload_residue_fails_closed() {
+    fn domain_data_payload_residue_degrades() {
         let mut payload = country_identity_payload(&[(47, "GER")]);
         payload.push(0xA5);
         let stream = one_data_hour(&payload);
         let mut fold = WorldFold::new("gid");
-        let err = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
-            .expect_err("unconsumed DATA residue must fail closed");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect("unconsumed DATA residue must degrade its domain");
+        assert_eq!(stats.malformed_payload_records, 1);
     }
 
     #[test]
-    fn domain_data_payload_declared_row_overrun_fails_closed() {
+    fn domain_data_payload_declared_row_overrun_degrades() {
         let mut payload = country_identity_payload(&[(47, "GER")]);
         payload[8..12].copy_from_slice(&2u32.to_le_bytes());
         let stream = one_data_hour(&payload);
         let mut fold = WorldFold::new("gid");
-        let err = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
-            .expect_err("DATA internal row overrun must fail closed");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+            .expect("DATA internal row overrun must degrade its domain");
+        assert_eq!(stats.malformed_payload_records, 1);
     }
 
     /// The streaming fold spills one snapshot file per hour and produces bytes
