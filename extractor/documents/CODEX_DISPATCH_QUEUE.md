@@ -3431,3 +3431,21 @@ share race window, rename collision/ReplaceIfExists, other finalization paths, u
 CreateFileTransacted/mmap/tokio/alias, file-access-capable detection holes, + full regression).
 IN FLIGHT: replay-loader r4 gate, facs-wire fix6, foldwave2 fix4, stitching r3. MERGE-READY:
 boundary-auth, autoattach (SHIP @15a817f3e).
+
+## 2026-07-14 facs-wire fix6 verified GREEN -> r6 gate launched (single-source, expected FINAL)
+Structural fix: binding.rs:418 - ONE exhaustive match on view.faction_members produces BOTH status
+AND rows: measured-empty map => MeasuredEmpty + [] (:420); nonempty => MeasuredNonEmpty + one row per
+roster entry (:443); Unobtained/Absent => Unavailable + [] (:445). binding.rs:489 builds
+factions_available + status + list from that single result - BOTH disagreement directions
+structurally impossible. Country politics can only DECORATE an existing member's leader (cannot
+create/suppress/reassign). Test (diplomacy_binding.rs:265,416) uses REAL d53 encoder + production
+stream_fold -> open_recording -> WorldTimeline -> diplomacy_panel_from_frame; proves roster {1,3,22}
+with ALL politics names ABSENT renders nonempty rows via authoritative roster identity "1"; RED
+(MeasuredNonEmpty + []) -> GREEN. Residual (honest): no certified name_hash->display-name resolver
+so binding shows numeric faction identity - COSMETIC (membership content preserved), not loss.
+ORCHESTRATOR-VERIFIED: game_ui 139/0 (incl new tests), replay_core 48/0, plus prior map_viewer 779+/
+d53 125/recorder 207+199. regate-facs-wire-r6 LAUNCHED (attacks any residual politics.faction.name
+read that adds/removes a row, alternate constructor, numeric-residual = cosmetic-only check, test
+fidelity, + full regression witness/R2-F2/map-helper/MeasuredEmpty-vs-Unavailable). Expected FINAL.
+IN FLIGHT: facs-wire r6 gate, replay-loader r4 gate, foldwave2 fix4, stitching r3. MERGE-READY:
+boundary-auth, autoattach (SHIP @15a817f3e).
