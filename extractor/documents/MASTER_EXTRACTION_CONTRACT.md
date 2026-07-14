@@ -145,8 +145,9 @@ is **never** a pre-ship residual; a cleanup task to strip/stub it is filed. Do n
 - **autoattach:** the recording-proof residual is explicitly **out-of-threat-model**, not
   fail-closed — an in-process compromise or a truly-simultaneous equal-rights external injection is
   irreducible without an OS-level trust boundary.
-- **c1stageb** (duplex control transport, `C1_STAGEB_REGISTRY_DESIGN.md`): a holistic deadline-model
-  pass is deferred as a design task (stage-B implementation is future; not merge-blocking).
+- **c1stageb** (duplex control transport; envelope/registry spec in `DUPLEX_CONTROL_TRANSPORT.md`):
+  a holistic deadline-model pass is deferred as a design task (stage-B implementation is future; not
+  merge-blocking).
 
 **Largest unbuilt product pillars (`PRODUCT_SESSION_SEMANTICS.md`):** boot-and-play **auto-attach**
 (both launch orders), **save/campaign identity** binding, and **reload/relaunch stitching** (rollback
