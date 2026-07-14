@@ -17,7 +17,6 @@ use crate::zip::{ZipArchive, ZipEntry, MAX_CONTAINER_ENTRY_BYTES, ZIP_METHOD_STO
 use crate::{Index, SegmentGraph, Snapshot};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
