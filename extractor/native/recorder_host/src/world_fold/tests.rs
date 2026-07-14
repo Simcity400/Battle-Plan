@@ -992,20 +992,33 @@ fn chunk3_partial_d53_relations_emit_only_positively_observed_lists() {
 }
 
 #[test]
-fn chunk3_unavailable_faction_roster_is_badged_not_measured_empty() {
+fn chunk3_faction_roster_three_states_are_distinguishable_end_to_end() {
     let mut available_rows = diplomacy53::extractor::proof_fixture_rows();
     available_rows.operation_anchors.clear();
     available_rows.intel_map.clear();
+    available_rows.faction_roster_complete = true;
     let available = diplomacy53::extractor::build_domain53_payload(
         available_rows,
         diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
     );
     assert!(available.ok(), "{:?}", available.errors);
 
+    let mut measured_empty_rows = diplomacy53::extractor::proof_fixture_rows();
+    measured_empty_rows.operation_anchors.clear();
+    measured_empty_rows.intel_map.clear();
+    measured_empty_rows.factions.clear();
+    measured_empty_rows.faction_roster_complete = true;
+    let measured_empty = diplomacy53::extractor::build_domain53_payload(
+        measured_empty_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(measured_empty.ok(), "{:?}", measured_empty.errors);
+
     let mut unavailable_rows = diplomacy53::extractor::proof_fixture_rows();
     unavailable_rows.operation_anchors.clear();
     unavailable_rows.intel_map.clear();
     unavailable_rows.factions.clear();
+    unavailable_rows.faction_roster_complete = false;
     let unavailable = diplomacy53::extractor::build_domain53_payload(
         unavailable_rows,
         diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
@@ -1026,6 +1039,13 @@ fn chunk3_unavailable_faction_roster_is_badged_not_measured_empty() {
                 18,
                 country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
             ),
+            (53, measured_empty.payload),
+        ],
+        vec![
+            (
+                18,
+                country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+            ),
             (53, unavailable.payload),
         ],
     ]);
@@ -1034,10 +1054,330 @@ fn chunk3_unavailable_faction_roster_is_badged_not_measured_empty() {
         snapshots[0]["countries"]["POL"]["politics"]["faction"]["leader"],
         json!("GER")
     );
+    assert_eq!(
+        snapshots[0]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_nonempty")
+    );
+    assert_eq!(
+        snapshots[1]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_empty")
+    );
+    assert_eq!(
+        snapshots[1]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"],
+        json!([])
+    );
     assert!(snapshots[1]["countries"]["POL"]["politics"]
         .get("faction")
         .is_none());
-    assert!(snapshots[1]["provenance"]["collector"]["domain_problems"]
+    assert!(!snapshots[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("faction_roster_unavailable")));
+    assert_eq!(
+        snapshots[2]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(snapshots[2]["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+        .get("faction_rows")
+        .is_none());
+    assert!(snapshots[2]["countries"]["POL"]["politics"]
+        .get("faction")
+        .is_none());
+    assert!(snapshots[2]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("faction_roster_unavailable")));
+}
+
+#[test]
+fn chunk3_same_hour_witnessed_nonempty_then_partial_witnessed_empty_replaces_roster() {
+    let mut nonempty_rows = diplomacy53::extractor::proof_fixture_rows();
+    nonempty_rows.operation_anchors.clear();
+    nonempty_rows.intel_map.clear();
+    nonempty_rows.faction_roster_complete = true;
+    let nonempty = diplomacy53::extractor::build_domain53_payload(
+        nonempty_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(nonempty.ok(), "{:?}", nonempty.errors);
+
+    let mut empty_rows = diplomacy53::extractor::proof_fixture_rows();
+    empty_rows.operation_anchors.clear();
+    empty_rows.intel_map.clear();
+    empty_rows.factions.clear();
+    empty_rows.faction_roster_complete = true;
+    let empty = diplomacy53::extractor::build_domain53_payload_with_status(
+        empty_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(empty.ok(), "{:?}", empty.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+        ),
+        (53, nonempty.payload),
+        (53, empty.payload),
+    ]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_empty")
+    );
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"],
+        json!([])
+    );
+    assert!(snapshot["countries"]["POL"]["politics"]
+        .get("faction")
+        .is_none());
+}
+
+#[test]
+fn chunk3_same_hour_witnessed_roster_removal_drops_superseded_faction() {
+    let mut two_factions = diplomacy53::extractor::proof_fixture_rows();
+    two_factions.operation_anchors.clear();
+    two_factions.intel_map.clear();
+    two_factions
+        .factions
+        .push(diplomacy53::compact::FactionRow {
+            faction_id: 2,
+            faction_type: 88,
+            name_hash: 0x1234_5678,
+            leader_tag_db_id: 16,
+            member_tag_db_ids: vec![16],
+        });
+    two_factions.faction_roster_complete = true;
+    let two = diplomacy53::extractor::build_domain53_payload(
+        two_factions,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(two.ok(), "{:?}", two.errors);
+
+    let mut one_faction = diplomacy53::extractor::proof_fixture_rows();
+    one_faction.operation_anchors.clear();
+    one_faction.intel_map.clear();
+    one_faction.faction_roster_complete = true;
+    let one = diplomacy53::extractor::build_domain53_payload_with_status(
+        one_faction,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(one.ok(), "{:?}", one.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (3, "POL"), (16, "ITA"), (22, "BUL")]),
+        ),
+        (53, two.payload),
+        (53, one.payload),
+    ]);
+    let rows = snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["faction_id"], json!(1));
+    assert!(snapshot["countries"]["ITA"]["politics"]
+        .get("faction")
+        .is_none());
+}
+
+#[test]
+fn chunk3_legacy_v1_nonempty_faction_roster_folds_as_measured_nonempty() {
+    let mut legacy = diplomacy53::compact::DiplomacyIntelSnapshot::default();
+    legacy.factions.push(diplomacy53::compact::FactionRow {
+        faction_id: 7,
+        faction_type: 88,
+        name_hash: 0x89ab_cdef,
+        leader_tag_db_id: 1,
+        member_tag_db_ids: vec![1, 3],
+    });
+    assert!(!legacy.faction_roster_complete);
+    let payload = diplomacy53::compact::encode_payload(&legacy);
+    let decoded = diplomacy53::compact::decode_snapshot_payload(0, &payload).unwrap();
+    assert!(
+        decoded.faction_roster_complete,
+        "FACS v1 nonzero is witnessed"
+    );
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (3, "POL")])),
+        (53, payload),
+    ]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_nonempty")
+    );
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"][0]["faction_id"],
+        json!(7)
+    );
+}
+
+#[test]
+fn chunk3_witnessed_empty_then_unwitnessed_partial_keeps_measured_empty_atomically() {
+    let mut empty_rows = diplomacy53::extractor::proof_fixture_rows();
+    empty_rows.operation_anchors.clear();
+    empty_rows.intel_map.clear();
+    empty_rows.factions.clear();
+    empty_rows.faction_roster_complete = true;
+    let empty = diplomacy53::extractor::build_domain53_payload(
+        empty_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(empty.ok(), "{:?}", empty.errors);
+
+    let mut unavailable_rows = diplomacy53::extractor::proof_fixture_rows();
+    unavailable_rows.operation_anchors.clear();
+    unavailable_rows.intel_map.clear();
+    unavailable_rows.factions.clear();
+    unavailable_rows.faction_roster_complete = false;
+    let unavailable = diplomacy53::extractor::build_domain53_payload_with_status(
+        unavailable_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+            & !diplomacy53::extractor::SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(unavailable.ok(), "{:?}", unavailable.errors);
+
+    let snapshot =
+        snapshot_for_domain_records(vec![(53, empty.payload), (53, unavailable.payload)]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_empty")
+    );
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"],
+        json!([])
+    );
+}
+
+#[test]
+fn chunk3_witnessed_nonempty_then_unwitnessed_clean_keeps_measured_roster_atomically() {
+    let mut measured_rows = diplomacy53::extractor::proof_fixture_rows();
+    measured_rows.operation_anchors.clear();
+    measured_rows.intel_map.clear();
+    measured_rows.faction_roster_complete = true;
+    let measured = diplomacy53::extractor::build_domain53_payload(
+        measured_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(measured.ok(), "{:?}", measured.errors);
+
+    let mut unavailable_rows = diplomacy53::extractor::proof_fixture_rows();
+    unavailable_rows.operation_anchors.clear();
+    unavailable_rows.intel_map.clear();
+    unavailable_rows.factions.clear();
+    unavailable_rows.faction_roster_complete = false;
+    let unavailable = diplomacy53::extractor::build_domain53_payload(
+        unavailable_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+            & !diplomacy53::extractor::SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+    );
+    assert!(unavailable.ok(), "{:?}", unavailable.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+        ),
+        (53, measured.payload),
+        (53, unavailable.payload),
+    ]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_nonempty")
+    );
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        snapshot["countries"]["POL"]["politics"]["faction"]["leader"],
+        json!("GER")
+    );
+}
+
+#[test]
+fn chunk3_witnessed_replacement_then_unwitnessed_delta_keeps_current_roster() {
+    let mut two_factions = diplomacy53::extractor::proof_fixture_rows();
+    two_factions.operation_anchors.clear();
+    two_factions.intel_map.clear();
+    two_factions
+        .factions
+        .push(diplomacy53::compact::FactionRow {
+            faction_id: 2,
+            faction_type: 88,
+            name_hash: 0x1234_5678,
+            leader_tag_db_id: 16,
+            member_tag_db_ids: vec![16],
+        });
+    two_factions.faction_roster_complete = true;
+    let baseline = diplomacy53::extractor::build_domain53_payload(
+        two_factions,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(baseline.ok(), "{:?}", baseline.errors);
+
+    let mut one_faction = diplomacy53::extractor::proof_fixture_rows();
+    one_faction.operation_anchors.clear();
+    one_faction.intel_map.clear();
+    one_faction.faction_roster_complete = true;
+    let replacement = diplomacy53::extractor::build_domain53_payload_with_status(
+        one_faction,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(replacement.ok(), "{:?}", replacement.errors);
+
+    let no_witness_delta =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_DELTA_DATA,
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (3, "POL"), (16, "ITA"), (22, "BUL")]),
+        ),
+        (53, baseline.payload),
+        (53, replacement.payload),
+        (53, no_witness_delta),
+    ]);
+    let rows = snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["faction_id"], json!(1));
+    assert!(snapshot["countries"]["ITA"]["politics"]
+        .get("faction")
+        .is_none());
+}
+
+#[test]
+fn chunk3_old_format_without_faction_witness_stays_unavailable() {
+    let legacy_payload = diplomacy53::compact::encode_payload(
+        &diplomacy53::compact::DiplomacyIntelSnapshot::default(),
+    );
+    assert!(!legacy_payload.windows(4).any(|window| window == b"FACS"));
+    let decoded = diplomacy53::compact::decode_snapshot_payload(0, &legacy_payload).unwrap();
+    assert!(!decoded.faction_roster_complete);
+
+    let snapshot = snapshot_for_domain_records(vec![(53, legacy_payload)]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
         .as_array()
         .unwrap()
         .iter()
@@ -1119,6 +1459,10 @@ fn chunk3_d53_failure_delta_before_baseline_and_delta_after_baseline() {
         });
     let failure = snapshot_for_domain_records(vec![(53, failure_payload)]);
     assert!(failure["countries"].as_object().unwrap().is_empty());
+    assert_eq!(
+        failure["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
     assert!(failure["provenance"]["collector"]["domain_problems"]
         .as_array()
         .unwrap()
@@ -1372,6 +1716,10 @@ fn chunk3_d53_failure_after_success_same_hour_hides_all_rows() {
         .get("diplomacy")
         .and_then(|d| d.get(DOMAIN53_EXTRA_KEY))
         .is_none());
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
     // ...and the failure is recorded as a problem. (The earlier partial frame did
     // fold successfully, so d53 legitimately remains in the success `domains`
     // list — the fix hides the DATA via known=false, it does not un-record the
@@ -1412,12 +1760,51 @@ fn chunk3_d53_decode_failure_after_success_same_hour_hides_all_rows() {
         .get("diplomacy")
         .and_then(|d| d.get(DOMAIN53_EXTRA_KEY))
         .is_none());
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
     assert!(snapshot["provenance"]["collector"]["domain_problems"]
         .as_array()
         .unwrap()
         .iter()
         .any(|problem| problem["domain_id"] == json!(53)
             && problem["problem"] == json!("decode_failed")));
+}
+
+#[test]
+fn chunk3_missing_d53_after_measured_hour_serializes_unavailable_roster_status() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    let measured = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(measured.ok(), "{:?}", measured.errors);
+
+    let snapshots = chunk1_snapshots(vec![
+        vec![(53, measured.payload)],
+        vec![(18, country_identity_payload(&[(1, "GER")]))],
+    ]);
+    assert_eq!(
+        snapshots[0]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_nonempty")
+    );
+    assert_eq!(
+        snapshots[1]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable"),
+        "a missing current-hour d53 record must not serialize as an absent status"
+    );
+
+    let failed_then_absent = chunk1_snapshots(vec![vec![(53, vec![0x00, 0x01, 0x02])], vec![]]);
+    for (index, snapshot) in failed_then_absent.iter().enumerate() {
+        assert_eq!(
+            snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+            json!("unavailable"),
+            "first-failed d53 stream hour {index} must keep serializing unavailable"
+        );
+    }
 }
 
 fn chunk3_division_payload(rows: &[(u32, u32, u32)]) -> Vec<u8> {

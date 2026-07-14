@@ -10,7 +10,7 @@
 use crate::source::{RawFrame, ReplaySource, SourceError};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 /// Default frames kept hot for scrubbing (see [`TimelineConfig`]). Small on
@@ -109,6 +109,23 @@ pub enum ViewStatus {
     DomainAbsent,
     DomainUnavailable,
     Present,
+}
+
+/// Completeness of the d53 faction roster. Unlike a generic view status,
+/// measured-empty is positive knowledge: only a FACS completeness witness (or
+/// the explicit legacy fallback for pre-d53 recordings) may produce it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FactionRosterStatus {
+    #[default]
+    Unavailable,
+    MeasuredEmpty,
+    MeasuredNonEmpty,
+}
+
+impl FactionRosterStatus {
+    pub fn is_measured(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
 }
 
 /// One division row (REPLAY_SCHEMA.md §6).
@@ -406,9 +423,9 @@ pub struct DiplomacyView {
     /// Live war-relation rows from `diplomacy_live.war_relations`
     /// (`Absent` when the key never appears, `Unobtained` when explicit-null).
     pub war_relations: Leaf<Vec<WarRelationRow>>,
-    /// Live faction membership from `diplomacy_live.faction_members`, keyed by
-    /// the recording's faction id string → member TAG list. `Absent`/
-    /// `Unobtained` preserve the trichotomy of the source key.
+    /// Faction membership from witnessed d53 rows, falling back to the
+    /// recording's `diplomacy_live` faction id → member TAG map when the d53
+    /// status predates the recording. Source absence/null remains distinct.
     pub faction_members: Leaf<BTreeMap<String, Vec<String>>>,
     /// Per-owner relation-flag arrays from
     /// `countries.<owner>.diplomacy.relation_flags` (`{other_tag: [flag,...]}`).
@@ -417,6 +434,20 @@ pub struct DiplomacyView {
     /// object, `Unobtained` for explicit-null; an owner with no relation_flags
     /// key is simply absent from the map.
     pub relation_flags: BTreeMap<String, Leaf<BTreeMap<String, Vec<String>>>>,
+}
+
+impl DiplomacyView {
+    /// Recorder d53 faction-roster completeness. The existing faction_members
+    /// Leaf is the atomic carrier: `Unobtained` is unavailable, while a
+    /// measured map distinguishes empty from nonempty. Absence is never a
+    /// completeness witness and therefore fails closed.
+    pub fn faction_roster_status(&self) -> FactionRosterStatus {
+        match &self.faction_members {
+            Leaf::Measured(rows) if rows.is_empty() => FactionRosterStatus::MeasuredEmpty,
+            Leaf::Measured(_) => FactionRosterStatus::MeasuredNonEmpty,
+            Leaf::Unobtained | Leaf::Absent => FactionRosterStatus::Unavailable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3027,11 +3058,19 @@ fn build_diplomacy(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Dip
         }
     }
 
-    // Live diplomacy surfaces (requirements item 8b): `diplomacy_live` carries
-    // the live war-relation casualties and faction membership. These are
-    // separate typed surfaces (NOT folded into the certified boolean matrix).
+    // War casualties retain the diplomacy_live path. Factions prefer the
+    // recorder's witnessed d53 roster, with diplomacy_live used only when the
+    // d53 status is absent.
     let (war_relations, war_rel_status) = read_war_relations(rest, warnings);
-    let (faction_members, faction_status) = read_faction_members(rest, warnings);
+    let (faction_members, faction_status) = match read_domain53_faction_roster(rest, warnings) {
+        Some((_, modern_members, modern_status)) => (modern_members, modern_status),
+        None => match read_faction_members(rest, warnings) {
+            // No modern witness plus no legacy value is unavailable, not
+            // positive knowledge of an empty roster.
+            (Leaf::Absent, _) => (Leaf::Unobtained, ViewStatus::DomainUnavailable),
+            legacy => legacy,
+        },
+    };
     status = combine_status(combine_status(status, war_rel_status), faction_status);
 
     DiplomacyView {
@@ -3144,6 +3183,210 @@ fn read_war_relations(
 
 /// Read `diplomacy_live.faction_members` (`{faction_id: [TAG,…]}`). Returns the
 /// typed leaf plus the domain status contribution.
+fn unavailable_faction_roster() -> (
+    FactionRosterStatus,
+    Leaf<BTreeMap<String, Vec<String>>>,
+    ViewStatus,
+) {
+    (
+        FactionRosterStatus::Unavailable,
+        Leaf::Unobtained,
+        ViewStatus::DomainUnavailable,
+    )
+}
+
+fn parse_domain53_faction_rows(
+    extra: &Map<String, Value>,
+    expect_nonempty: bool,
+    warnings: &mut Vec<String>,
+) -> Option<BTreeMap<String, Vec<String>>> {
+    let rows = match extra.get("faction_rows") {
+        Some(Value::Array(rows)) => rows,
+        Some(other) => {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra.faction_rows: expected array, found {}; roster treated as unavailable",
+                json_type_name(other)
+            ));
+            return None;
+        }
+        None => {
+            warnings.push(
+                "diplomacy_world.domain53_extra.faction_rows: missing beside measured status; roster treated as unavailable"
+                    .to_string(),
+            );
+            return None;
+        }
+    };
+    if rows.is_empty() == expect_nonempty {
+        warnings.push(
+            "diplomacy_world.domain53_extra: faction status disagrees with faction_rows emptiness; roster treated as unavailable"
+                .to_string(),
+        );
+        return None;
+    }
+
+    let mut by_faction = BTreeMap::new();
+    let mut faction_by_member = BTreeMap::<String, String>::new();
+    for (index, value) in rows.iter().enumerate() {
+        let Value::Object(row) = value else {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra.faction_rows[{index}]: expected object; roster treated as unavailable"
+            ));
+            return None;
+        };
+        let faction_id = match row.get("faction_id").and_then(Value::as_u64) {
+            Some(value) if value > 0 && value <= u32::MAX as u64 => value.to_string(),
+            _ => {
+                warnings.push(format!(
+                    "diplomacy_world.domain53_extra.faction_rows[{index}].faction_id: invalid; roster treated as unavailable"
+                ));
+                return None;
+            }
+        };
+        let members = match row.get("members") {
+            Some(Value::Array(items)) if !items.is_empty() => {
+                let mut members = Vec::with_capacity(items.len());
+                for (member_index, item) in items.iter().enumerate() {
+                    let Some(member) = item.as_str().filter(|member| !member.is_empty()) else {
+                        warnings.push(format!(
+                            "diplomacy_world.domain53_extra.faction_rows[{index}].members[{member_index}]: invalid TAG; roster treated as unavailable"
+                        ));
+                        return None;
+                    };
+                    if members.iter().any(|prior| prior == member) {
+                        warnings.push(format!(
+                            "diplomacy_world.domain53_extra.faction_rows[{index}].members: duplicate TAG {member}; roster treated as unavailable"
+                        ));
+                        return None;
+                    }
+                    members.push(member.to_string());
+                }
+                members
+            }
+            _ => {
+                warnings.push(format!(
+                    "diplomacy_world.domain53_extra.faction_rows[{index}].members: expected nonempty TAG array; roster treated as unavailable"
+                ));
+                return None;
+            }
+        };
+        if row.get("member_count").and_then(Value::as_u64) != Some(members.len() as u64) {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra.faction_rows[{index}].member_count: disagrees with members; roster treated as unavailable"
+            ));
+            return None;
+        }
+        let Some(leader) = row.get("leader").and_then(Value::as_str) else {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra.faction_rows[{index}].leader: invalid; roster treated as unavailable"
+            ));
+            return None;
+        };
+        if !members.iter().any(|member| member == leader) {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra.faction_rows[{index}].leader: not present in members; roster treated as unavailable"
+            ));
+            return None;
+        }
+        for member in &members {
+            if let Some(prior_faction) =
+                faction_by_member.insert(member.clone(), faction_id.clone())
+            {
+                if prior_faction != faction_id {
+                    warnings.push(format!(
+                        "diplomacy_world.domain53_extra.faction_rows: member {member} appears in multiple factions; roster treated as unavailable"
+                    ));
+                    return None;
+                }
+            }
+        }
+        if by_faction.insert(faction_id, members).is_some() {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra.faction_rows[{index}].faction_id: duplicate; roster treated as unavailable"
+            ));
+            return None;
+        }
+    }
+    Some(by_faction)
+}
+
+/// Prefer the recorder d53 completeness witness when present. Returning None
+/// means this recording predates the field and activates the legacy fallback;
+/// any malformed or ambiguous present value instead returns Unavailable.
+fn read_domain53_faction_roster(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> Option<(
+    FactionRosterStatus,
+    Leaf<BTreeMap<String, Vec<String>>>,
+    ViewStatus,
+)> {
+    let world = match rest.get("diplomacy_world") {
+        Some(Value::Object(world)) => world,
+        None | Some(Value::Null) => return None,
+        Some(other) => {
+            warnings.push(format!(
+                "diplomacy_world: expected object, found {}; faction roster treated as unavailable",
+                json_type_name(other)
+            ));
+            return Some(unavailable_faction_roster());
+        }
+    };
+    let extra = match world.get("domain53_extra") {
+        Some(Value::Object(extra)) => extra,
+        None => return None,
+        Some(other) => {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra: expected object, found {}; faction roster treated as unavailable",
+                json_type_name(other)
+            ));
+            return Some(unavailable_faction_roster());
+        }
+    };
+    let status = match extra.get("faction_roster_status") {
+        Some(Value::String(status)) => status.as_str(),
+        None => return None,
+        Some(other) => {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra.faction_roster_status: expected string, found {}; roster treated as unavailable",
+                json_type_name(other)
+            ));
+            return Some(unavailable_faction_roster());
+        }
+    };
+    match status {
+        "unavailable" => Some(unavailable_faction_roster()),
+        "measured_empty" | "measured_nonempty" => {
+            let expect_nonempty = status == "measured_nonempty";
+            match parse_domain53_faction_rows(extra, expect_nonempty, warnings) {
+                Some(rows) => Some((
+                    if expect_nonempty {
+                        FactionRosterStatus::MeasuredNonEmpty
+                    } else {
+                        FactionRosterStatus::MeasuredEmpty
+                    },
+                    Leaf::Measured(rows),
+                    ViewStatus::Present,
+                )),
+                None => Some(unavailable_faction_roster()),
+            }
+        }
+        "ambiguous_member_exclusivity" => {
+            warnings.push(
+                "diplomacy_world.domain53_extra.faction_roster_status: ambiguous member exclusivity; roster treated as unavailable"
+                    .to_string(),
+            );
+            Some(unavailable_faction_roster())
+        }
+        other => {
+            warnings.push(format!(
+                "diplomacy_world.domain53_extra.faction_roster_status: unknown value {other}; roster treated as unavailable"
+            ));
+            Some(unavailable_faction_roster())
+        }
+    }
+}
+
 fn read_faction_members(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
@@ -3157,34 +3400,63 @@ fn read_faction_members(
         Leaf::Absent => (Leaf::Absent, ViewStatus::DomainAbsent),
         Leaf::Unobtained => (Leaf::Unobtained, ViewStatus::DomainUnavailable),
         Leaf::Measured(Value::Object(map)) => {
+            if map.is_empty() {
+                warnings.push(
+                    "diplomacy_live.faction_members: empty legacy object has no completeness witness; treated as unobtained"
+                        .to_string(),
+                );
+                return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+            }
             let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            let mut faction_by_member: BTreeMap<String, String> = BTreeMap::new();
             for (faction_id, members) in map {
-                match members {
-                    Value::Array(items) => {
-                        let mut list = Vec::with_capacity(items.len());
-                        let mut ok = true;
-                        for (i, item) in items.iter().enumerate() {
-                            match item.as_str() {
-                                Some(s) => list.push(s.to_string()),
-                                None => {
-                                    warnings.push(format!(
-                                        "diplomacy_live.faction_members.{faction_id}[{i}]: expected TAG string, found {}; entry treated as unobtained",
-                                        json_type_name(item)
-                                    ));
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if ok {
-                            out.insert(faction_id.clone(), list);
-                        }
-                    }
-                    other => warnings.push(format!(
-                        "diplomacy_live.faction_members.{faction_id}: expected array of TAG strings, found {}; entry skipped",
-                        json_type_name(other)
-                    )),
+                if faction_id.is_empty() {
+                    warnings.push(
+                        "diplomacy_live.faction_members: empty faction id; whole roster treated as unobtained"
+                            .to_string(),
+                    );
+                    return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
                 }
+                let Value::Array(items) = members else {
+                    warnings.push(format!(
+                        "diplomacy_live.faction_members.{faction_id}: expected array of TAG strings, found {}; whole roster treated as unobtained",
+                        json_type_name(members)
+                    ));
+                    return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+                };
+                if items.is_empty() {
+                    warnings.push(format!(
+                        "diplomacy_live.faction_members.{faction_id}: empty member array has no valid v1 roster row; whole roster treated as unobtained"
+                    ));
+                    return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+                }
+                let mut list = Vec::with_capacity(items.len());
+                let mut seen_members = BTreeSet::new();
+                for (i, item) in items.iter().enumerate() {
+                    let Some(member) = item.as_str().filter(|member| !member.is_empty()) else {
+                        warnings.push(format!(
+                            "diplomacy_live.faction_members.{faction_id}[{i}]: expected nonempty TAG string, found {}; whole roster treated as unobtained",
+                            json_type_name(item)
+                        ));
+                        return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+                    };
+                    if !seen_members.insert(member) {
+                        warnings.push(format!(
+                            "diplomacy_live.faction_members.{faction_id}: duplicate member {member}; whole roster treated as unobtained"
+                        ));
+                        return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+                    }
+                    if let Some(prior_faction) =
+                        faction_by_member.insert(member.to_string(), faction_id.clone())
+                    {
+                        warnings.push(format!(
+                            "diplomacy_live.faction_members: member {member} appears in factions {prior_faction} and {faction_id}; whole roster treated as unobtained"
+                        ));
+                        return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+                    }
+                    list.push(member.to_string());
+                }
+                out.insert(faction_id.clone(), list);
             }
             (Leaf::Measured(out), ViewStatus::Present)
         }

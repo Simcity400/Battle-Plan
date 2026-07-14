@@ -35,11 +35,24 @@
 //!
 //! [`FactionInput`] mirrors `replay_core::world::DiplomacyView` faction data
 //! (`faction_members` id→TAGs plus the per-country `faction_is_leader` /
-//! `diplomacy_world.factions.leader`). This module does **not** depend on
-//! `replay_core`; the live wiring belongs at the `replay_app` integration seam.
+//! `diplomacy_world.factions.leader`). The typed roster status is required at
+//! this seam so an unwitnessed roster stays unknown.
+//!
+//! ## Production dispatch status
+//!
+//! The factions map render consumer is not built in-tree yet. Production
+//! `map_viewer` currently re-exports this classifier/fill seam but has no live
+//! factions-mode dispatch or draw call; all calls to
+//! [`country_faction_memberships`] are tests. The tri-state is preserved through
+//! typed replay and the game-UI binding, and this helper is ready. When the live
+//! render consumer lands it MUST consume that typed status through this helper
+//! (so `Unavailable` produces no classification/fill), with an integration test
+//! that drives the real production dispatch. That renderer test is explicitly
+//! owed; a test-only helper call is not evidence of production enforcement.
 
 use crate::mod_resolver::GameFileResolver;
 use crate::Result;
+use replay_core::world::FactionRosterStatus;
 use std::collections::BTreeMap;
 
 /// `00_graphics.lua` — source of the factions map-mode FILE colours below.
@@ -114,6 +127,9 @@ pub struct FactionInput {
 /// A country's faction membership in the factions map mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FactionMembership {
+    /// No completeness witness: membership is unknown and must not receive the
+    /// positive non-member grey.
+    Unknown,
     /// In a faction; painted with `leader`'s country colour (`None` leader ⇒
     /// fail-closed to no member colour at fill time).
     Member {
@@ -124,37 +140,54 @@ pub enum FactionMembership {
     NonMember,
 }
 
-/// Build the TAG → membership map from the faction rosters. A country listed in
-/// more than one faction takes the **first** roster it appears in (rosters are
-/// visited in input order; vanilla membership is exclusive so this never fires,
-/// but it keeps the fold deterministic and total). Countries in no roster are
-/// simply absent — [`membership_for`] treats absence as
+/// Build the TAG → membership map from a witnessed faction roster. Any
+/// unavailable or contradictory status/row shape fails closed to `None`, and a
+/// duplicate member makes the entire roster unknown. Only a measured roster
+/// may classify a country omitted from all rows as
 /// [`FactionMembership::NonMember`].
 pub fn country_faction_memberships(
+    roster_status: FactionRosterStatus,
     factions: &[FactionInput],
-) -> BTreeMap<String, FactionMembership> {
+) -> Option<BTreeMap<String, FactionMembership>> {
+    let shape_valid = match roster_status {
+        FactionRosterStatus::Unavailable => factions.is_empty(),
+        FactionRosterStatus::MeasuredEmpty => factions.is_empty(),
+        FactionRosterStatus::MeasuredNonEmpty => !factions.is_empty(),
+    };
+    if !shape_valid || roster_status == FactionRosterStatus::Unavailable {
+        return None;
+    }
     let mut out: BTreeMap<String, FactionMembership> = BTreeMap::new();
     for faction in factions {
+        if faction.faction_id.is_empty() || faction.members.is_empty() {
+            return None;
+        }
         for member in &faction.members {
-            if member.is_empty() {
-                continue;
+            if member.is_empty() || out.contains_key(member) {
+                return None;
             }
-            out.entry(member.clone())
-                .or_insert_with(|| FactionMembership::Member {
+            out.insert(
+                member.clone(),
+                FactionMembership::Member {
                     faction_id: faction.faction_id.clone(),
                     leader: faction.leader.clone(),
-                });
+                },
+            );
         }
     }
-    out
+    Some(out)
 }
 
-/// Look up a country's membership, defaulting to [`FactionMembership::NonMember`]
-/// when it is in no faction.
+/// Look up a country's membership. An unavailable roster yields
+/// [`FactionMembership::Unknown`]; only a measured roster can establish
+/// [`FactionMembership::NonMember`].
 pub fn membership_for(
     tag: &str,
-    memberships: &BTreeMap<String, FactionMembership>,
+    memberships: &Option<BTreeMap<String, FactionMembership>>,
 ) -> FactionMembership {
+    let Some(memberships) = memberships else {
+        return FactionMembership::Unknown;
+    };
     memberships
         .get(tag)
         .cloned()
@@ -178,6 +211,7 @@ pub fn faction_fill(
     defines: &FactionsDefines,
 ) -> Option<[f32; 4]> {
     match membership {
+        FactionMembership::Unknown => None,
         FactionMembership::NonMember => Some(defines.not_member_color),
         FactionMembership::Member { leader, .. } => {
             let leader = leader.as_deref().filter(|t| !t.is_empty())?;
@@ -195,6 +229,9 @@ pub fn faction_fill(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay_core::{open_recording, WorldTimeline};
+    use serde_json::json;
+    use std::fs;
 
     const GRAPHICS_SNIPPET: &str = r#"
 NDefines = {
@@ -289,11 +326,20 @@ NDefines = {
         }
     }
 
+    fn fixture_roster_status(tick: usize) -> FactionRosterStatus {
+        if tick < 3 {
+            FactionRosterStatus::MeasuredEmpty
+        } else {
+            FactionRosterStatus::MeasuredNonEmpty
+        }
+    }
+
     #[test]
     fn fx_war_faction_matrix_membership_flips_at_tick_3() {
         // Pre-faction: all three are non-members.
         for tick in 0..3 {
-            let m = country_faction_memberships(&fixture_factions(tick));
+            let m =
+                country_faction_memberships(fixture_roster_status(tick), &fixture_factions(tick));
             for tag in ["GER", "ITA", "ENG"] {
                 assert_eq!(
                     membership_for(tag, &m),
@@ -304,7 +350,8 @@ NDefines = {
         }
         // Post-faction: GER+ITA -> Axis (leader GER); ENG -> Allies (leader ENG).
         for tick in 3..12 {
-            let m = country_faction_memberships(&fixture_factions(tick));
+            let m =
+                country_faction_memberships(fixture_roster_status(tick), &fixture_factions(tick));
             assert_eq!(
                 membership_for("GER", &m),
                 FactionMembership::Member {
@@ -331,8 +378,14 @@ NDefines = {
             );
         }
         // The flip itself: ITA non-member at tick 2, member at tick 3.
-        let before = membership_for("ITA", &country_faction_memberships(&fixture_factions(2)));
-        let after = membership_for("ITA", &country_faction_memberships(&fixture_factions(3)));
+        let before = membership_for(
+            "ITA",
+            &country_faction_memberships(fixture_roster_status(2), &fixture_factions(2)),
+        );
+        let after = membership_for(
+            "ITA",
+            &country_faction_memberships(fixture_roster_status(3), &fixture_factions(3)),
+        );
         assert_ne!(before, after);
     }
 
@@ -351,7 +404,7 @@ NDefines = {
         let gray = [0.7, 0.7, 0.7, 0.7];
 
         // Tick 2: all grey.
-        let m2 = country_faction_memberships(&fixture_factions(2));
+        let m2 = country_faction_memberships(fixture_roster_status(2), &fixture_factions(2));
         for tag in ["GER", "ITA", "ENG"] {
             assert_eq!(
                 faction_fill(&membership_for(tag, &m2), &colors, &d),
@@ -360,7 +413,7 @@ NDefines = {
             );
         }
         // Tick 3: Axis members (GER, ITA) both take GER (leader) colour; ENG takes ENG.
-        let m3 = country_faction_memberships(&fixture_factions(3));
+        let m3 = country_faction_memberships(fixture_roster_status(3), &fixture_factions(3));
         assert_eq!(
             faction_fill(&membership_for("GER", &m3), &colors, &d),
             Some(ger)
@@ -391,5 +444,76 @@ NDefines = {
         let resolver = GameFileResolver::vanilla(game_dir).expect("resolver");
         let defines = factions_defines_from_resolver(&resolver).expect("factions defines");
         assert_eq!(defines, VANILLA_FACTIONS_DEFINES);
+    }
+
+    #[test]
+    fn open_typed_status_makes_unmeasured_unknown_and_measured_empty_nonmember() {
+        let root = std::env::temp_dir().join(format!(
+            "mapmode_factions_status_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let game = "mapmode_faction_status";
+        let dir = root.join(game);
+        fs::create_dir_all(&dir).unwrap();
+        let mut index_rows = Vec::new();
+        for (hour, status) in [(40, "unavailable"), (41, "measured_empty")] {
+            let mut extra = json!({ "faction_roster_status": status });
+            if status == "measured_empty" {
+                extra["faction_rows"] = json!([]);
+            }
+            let snapshot = json!({
+                "schema_version": "1",
+                "game_id": game,
+                "date": format!("1936.1.1.{}", hour - 40),
+                "hour_index": hour,
+                "countries": {},
+                "diplomacy_world": { "domain53_extra": extra }
+            });
+            let file = format!("{hour:012}.snapshot.json");
+            fs::write(dir.join(&file), serde_json::to_vec(&snapshot).unwrap()).unwrap();
+            index_rows.push(json!({
+                "hour_index": hour,
+                "date": format!("1936.1.1.{}", hour - 40),
+                "file": file
+            }));
+        }
+        fs::write(
+            dir.join("index.json"),
+            serde_json::to_vec(&json!({
+                "game_id": game,
+                "schema_version": "1",
+                "snapshots": index_rows
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let timeline = WorldTimeline::open(open_recording(&root).unwrap()).unwrap();
+
+        let unknown = country_faction_memberships(
+            timeline
+                .frame(40)
+                .unwrap()
+                .diplomacy()
+                .faction_roster_status(),
+            &[],
+        );
+        assert_eq!(membership_for("GER", &unknown), FactionMembership::Unknown);
+
+        let measured_empty = country_faction_memberships(
+            timeline
+                .frame(41)
+                .unwrap()
+                .diplomacy()
+                .faction_roster_status(),
+            &[],
+        );
+        assert_eq!(
+            membership_for("GER", &measured_empty),
+            FactionMembership::NonMember
+        );
     }
 }

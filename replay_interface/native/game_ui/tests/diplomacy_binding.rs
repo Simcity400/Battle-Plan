@@ -10,8 +10,8 @@
 //! Expected values are transcribed from the fixture GENERATOR SOURCE
 //! (`replay_fixture_gen::fx_war_faction_matrix`), never from the code under
 //! test:
-//!   * tick >= 3: GER=Axis(leader), ITA=Axis, ENG=Allies(leader) — the
-//!     `politics.faction` name/leader the diplomacy view reads.
+//!   * tick >= 3: roster 101=[GER(leader), ITA], roster 202=[ENG(leader)] —
+//!     the authoritative diplomacy_live.faction_members identities/members.
 //!   * tick >= 7: `GER.diplomacy.wars=[against ENG]`,
 //!     `ENG.diplomacy.wars=[against GER, against ITA]` — the `wars`/`against`
 //!     lists the view folds into directional `at_war` pairs. (ITA carries no
@@ -20,8 +20,13 @@
 //! Countries present at every tick: ENG, FRA, GER, ITA, SOV.
 
 use game_ui::binding::{diplomacy_panel_from_frame, FactionRow, RelationRow};
-use replay_core::{open_recording, WorldTimeline};
-use std::path::PathBuf;
+use replay_core::world::FactionRosterStatus;
+use replay_core::{open_recording, Leaf, WorldTimeline};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn fixture(name: &str) -> WorldTimeline {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -47,6 +52,44 @@ fn rel<'a>(rows: &'a [RelationRow], other: &str) -> &'a RelationRow {
         .unwrap_or_else(|| panic!("no relation row for {other}"))
 }
 
+fn run_extractor_cargo(extractor_native: &Path, temp_dir: &Path, args: &[&str]) {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .current_dir(extractor_native)
+        .env("TEMP", temp_dir)
+        .env("TMP", temp_dir)
+        .args(args)
+        .output()
+        .expect("launch extractor cargo command");
+    assert!(
+        output.status.success(),
+        "extractor cargo command failed: {} stdout={} stderr={}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn push_h4cr_record(
+    out: &mut Vec<u8>,
+    template: &[u8],
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    payload: &[u8],
+) {
+    assert!(template.len() >= 32);
+    out.extend_from_slice(&template[..8]);
+    out.extend_from_slice(&sequence.to_le_bytes());
+    out.extend_from_slice(&game_hour_raw.to_le_bytes());
+    out.extend_from_slice(&domain_id.to_le_bytes());
+    out.extend_from_slice(&record_type.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(payload);
+}
+
 /// GATE 2a — faction membership matrix appears exactly at the tick-3 change and
 /// holds after; it is empty before. The change hour flips exactly the faction
 /// rows (nothing before, both factions after).
@@ -61,13 +104,13 @@ fn faction_matrix_flips_at_change_hour() {
     assert!(before.available);
     assert!(before.factions.is_empty(), "no factions before tick 3");
 
-    // Change hour (tick 3): both factions materialize, sorted by name.
+    // Change hour (tick 3): both roster identities materialize, sorted by id.
     let after = diplomacy_panel_from_frame(&tl.frame(hours[3]).unwrap(), "GER");
     assert_eq!(
         after.factions,
         vec![
-            faction("Allies", "ENG", &["ENG"]),
-            faction("Axis", "GER", &["GER", "ITA"]),
+            faction("101", "GER", &["GER", "ITA"]),
+            faction("202", "ENG", &["ENG"]),
         ]
     );
 
@@ -76,8 +119,8 @@ fn faction_matrix_flips_at_change_hour() {
     assert_eq!(
         last.factions,
         vec![
-            faction("Allies", "ENG", &["ENG"]),
-            faction("Axis", "GER", &["GER", "ITA"]),
+            faction("101", "GER", &["GER", "ITA"]),
+            faction("202", "ENG", &["ENG"]),
         ],
         "faction matrix is POV-independent and stable"
     );
@@ -161,4 +204,254 @@ fn absent_pov_renders_fail_closed_panel() {
     assert_eq!(others, vec!["ENG", "FRA", "GER", "ITA", "SOV"]);
     assert!(usa.relations.iter().all(|r| r.at_war.is_none()));
     assert!(usa.wars.is_empty());
+}
+
+fn faction_roster_binding_timeline() -> (PathBuf, WorldTimeline) {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "game_ui_faction_status_{}_{}_{}",
+        std::process::id(),
+        n,
+        nanos
+    ));
+    let game = "faction_status";
+    let dir = root.join(game);
+    fs::create_dir_all(&dir).unwrap();
+    let states = [
+        (30, Some("unavailable"), None),
+        (31, Some("measured_empty"), Some("[]")),
+        (33, None, None),
+    ];
+    let countries = r#"{"GER":{"politics":{"faction":{"name":"Axis","is_leader":true}}},"ITA":{"politics":{"faction":{"name":"Axis","is_leader":false}}}}"#;
+    let mut index_rows = Vec::new();
+    for (hour, status, rows) in states {
+        let extra = match (status, rows) {
+            (Some(status), Some(rows)) => {
+                format!(r#"{{"faction_roster_status":"{status}","faction_rows":{rows}}}"#)
+            }
+            (Some(status), None) => format!(r#"{{"faction_roster_status":"{status}"}}"#),
+            (None, None) => "{}".to_string(),
+            (None, Some(_)) => unreachable!("faction rows require a roster status"),
+        };
+        let snapshot = format!(
+            r#"{{"schema_version":"1","game_id":"{game}","date":"1936.1.1.{}","hour_index":{hour},"countries":{countries},"diplomacy_world":{{"domain53_extra":{extra}}}}}"#,
+            hour - 30
+        );
+        let file = format!("{hour:012}.snapshot.json");
+        fs::write(dir.join(&file), snapshot).unwrap();
+        index_rows.push(format!(
+            r#"{{"hour_index":{hour},"date":"1936.1.1.{}","file":"{file}"}}"#,
+            hour - 30
+        ));
+    }
+    let index = format!(
+        r#"{{"game_id":"{game}","schema_version":"1","snapshots":[{}]}}"#,
+        index_rows.join(",")
+    );
+    fs::write(dir.join("index.json"), index).unwrap();
+    let timeline = WorldTimeline::open(open_recording(&root).unwrap()).unwrap();
+    (root, timeline)
+}
+
+/// Build the positive binding fixture through the production d53 encoder and
+/// recorder fold. The fold deliberately projects only `leader`/`is_leader` to
+/// `countries.*.politics.faction`; it does not fabricate the faction name that
+/// d53 carries only as a hash.
+fn production_faction_roster_binding_timeline() -> (PathBuf, WorldTimeline, i64) {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "game_ui_faction_fold_{}_{}_{}",
+        std::process::id(),
+        n,
+        nanos
+    ));
+    fs::create_dir_all(&root).unwrap();
+
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .unwrap();
+    let extractor_native = repo_root.join("extractor/native");
+    let extractor_temp = root.join("extractor_tmp");
+    fs::create_dir_all(&extractor_temp).unwrap();
+
+    let proof_record = root.join("d53.compact.bin");
+    let proof_report = root.join("d53.proof.json");
+    let proof_manifest = root.join("d53.manifest.json");
+    let proof_replay = root.join("d53.battleplan");
+    run_extractor_cargo(
+        &extractor_native,
+        &extractor_temp,
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "-p",
+            "diplomacy_intel_operatives_live",
+            "--bin",
+            "domain53_proof",
+            "--",
+            "--out-record",
+            proof_record.to_str().unwrap(),
+            "--out-report",
+            proof_report.to_str().unwrap(),
+            "--out-manifest",
+            proof_manifest.to_str().unwrap(),
+            "--out-replay",
+            proof_replay.to_str().unwrap(),
+        ],
+    );
+
+    let mut encoded = fs::read(&proof_record).unwrap();
+    assert_eq!(&encoded[..4], b"H4CR");
+    assert_eq!(u16::from_le_bytes(encoded[20..22].try_into().unwrap()), 53);
+    let raw_hour = 43_799_999i32 + (1936 * 365 * 24);
+    encoded[16..20].copy_from_slice(&raw_hour.to_le_bytes());
+    let mut stream = encoded.clone();
+    push_h4cr_record(&mut stream, &encoded, 2, raw_hour, 1000, 2, &[0u8; 28]);
+    let stream_path = root.join("collector_stream.bin");
+    fs::write(&stream_path, stream).unwrap();
+
+    let game = "faction_roster_production_fold";
+    let store_root = root.join("store");
+    let game_dir = store_root.join(game);
+    fs::create_dir_all(&game_dir).unwrap();
+    run_extractor_cargo(
+        &extractor_native,
+        &extractor_temp,
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "-p",
+            "recorder_host",
+            "--bin",
+            "stream_fold",
+            "--",
+            stream_path.to_str().unwrap(),
+            game_dir.to_str().unwrap(),
+            "--game-id",
+            game,
+            "--workers",
+            "1",
+        ],
+    );
+
+    let snapshots = fs::read_dir(&game_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".snapshot.json"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "the one-hour fold must emit one snapshot"
+    );
+    let snapshot_path = &snapshots[0];
+    let file = snapshot_path.file_name().unwrap().to_str().unwrap();
+    let hour = file
+        .strip_suffix(".snapshot.json")
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    fs::write(
+        game_dir.join("index.json"),
+        format!(
+            r#"{{"game_id":"{game}","schema_version":"1","snapshots":[{{"hour_index":{hour},"file":"{file}"}}]}}"#
+        ),
+    )
+    .unwrap();
+
+    let timeline = WorldTimeline::open(open_recording(&store_root).unwrap()).unwrap();
+    (root, timeline, hour)
+}
+
+#[test]
+fn non_nonempty_roster_status_suppresses_country_faction_rows() {
+    let (root, timeline) = faction_roster_binding_timeline();
+    let cases = [
+        (30, FactionRosterStatus::Unavailable, false, "unavailable"),
+        (
+            31,
+            FactionRosterStatus::MeasuredEmpty,
+            true,
+            "measured-empty",
+        ),
+        (33, FactionRosterStatus::Unavailable, false, "absent status"),
+    ];
+
+    for (hour, expected_status, expected_available, label) in cases {
+        let panel = diplomacy_panel_from_frame(&timeline.frame(hour).unwrap(), "GER");
+        assert!(panel.available, "other diplomacy leaves remain available");
+        assert_eq!(panel.faction_roster_status, expected_status, "{label}");
+        assert_eq!(panel.factions_available, expected_available, "{label}");
+        assert!(
+            panel.factions.is_empty(),
+            "{label} roster leaked country politics faction rows: {:?}",
+            panel.factions
+        );
+    }
+
+    drop(timeline);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn measured_nonempty_real_fold_without_country_names_keeps_d53_roster() {
+    let (root, timeline, hour) = production_faction_roster_binding_timeline();
+    let frame = timeline.frame(hour).unwrap();
+    assert!(
+        !frame.diplomacy().countries.is_empty(),
+        "the production fold must project the roster member countries"
+    );
+    assert!(
+        frame
+            .diplomacy()
+            .countries
+            .values()
+            .all(|country| matches!(&country.faction_name, Leaf::Absent)),
+        "the real d53 fold must not fabricate countries.*.politics.faction.name"
+    );
+    assert_eq!(
+        frame
+            .diplomacy()
+            .faction_members
+            .measured()
+            .unwrap()
+            .get("1"),
+        Some(&vec!["1".to_string(), "3".to_string(), "22".to_string()]),
+        "the typed view must retain the actual folded d53 member identities"
+    );
+
+    let nonempty = diplomacy_panel_from_frame(&frame, "1");
+    assert!(nonempty.factions_available);
+    assert_eq!(
+        nonempty.faction_roster_status,
+        FactionRosterStatus::MeasuredNonEmpty
+    );
+    assert_eq!(
+        nonempty.factions,
+        vec![faction("1", "1", &["1", "22", "3"])],
+        "the binding must render the authoritative d53 roster even though every country faction name is absent"
+    );
+
+    drop(frame);
+    drop(timeline);
+    fs::remove_dir_all(root).unwrap();
 }

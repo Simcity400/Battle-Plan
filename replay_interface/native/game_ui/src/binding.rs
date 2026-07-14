@@ -26,10 +26,8 @@ use crate::loc::Localisation;
 use crate::topbar::{
     flag_candidates_for_size, month_name_english, FactoryCounts, FlagSizeFolder, TopbarBinding,
 };
-use replay_core::{
-    CountryIdentity, DiplomacyView, Leaf, TopbarScalars, ViewStatus, WorldFrame,
-};
-use std::collections::BTreeMap;
+use replay_core::world::FactionRosterStatus;
+use replay_core::{CountryIdentity, DiplomacyView, Leaf, TopbarScalars, ViewStatus, WorldFrame};
 
 /// Render an `f64` leaf as its raw shortest round-trip decimal, or `None`
 /// (the fail-closed absent form) when the value was never measured.
@@ -354,15 +352,17 @@ pub fn outliner_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> Outline
 //     the view exposes only per-pair `at_war` booleans, so a war's belligerent
 //     grouping is reconstructed from directional pairs, not read as an object.
 //   * `diplomacy_live.war_relations` casualties — not surfaced.
-//   * `diplomacy.relation_flags` / `diplomacy_live.faction_members` — the view
-//     derives the same facts from the per-country lists, so these are redundant
-//     and unread.
-// This lane is READ-ONLY on `replay_core`; closing these gaps is a replay_core
-// change, not a binding change.
+//   * `diplomacy.relation_flags` — the view derives the same facts from the
+//     per-country lists, so this is redundant and unread.
+// Faction roster completeness is surfaced independently below; unavailable is
+// never represented as an available empty roster.
 
 /// One faction and its membership (D4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FactionRow {
+    /// Authoritative roster identity. Legacy recordings may carry a display
+    /// name; current d53 rows carry their numeric faction id while name_hash
+    /// has no certified localisation resolver.
     pub faction_name: String,
     /// The member flagged `is_leader`, when the recording marks one.
     pub leader: Option<String>,
@@ -391,7 +391,12 @@ pub struct DiplomacyPanelBinding {
     pub pov_tag: String,
     /// `true` only when the underlying `DiplomacyView` status is `Present`.
     pub available: bool,
-    /// Global faction-membership matrix, sorted by faction name.
+    /// Independent roster availability. Overall diplomacy can be available
+    /// while d53 faction membership is unavailable for this hour.
+    pub factions_available: bool,
+    /// Preserves unavailable vs measured-empty vs measured-nonempty for the UI.
+    pub faction_roster_status: FactionRosterStatus,
+    /// Global faction-membership matrix, sorted by roster identity.
     pub factions: Vec<FactionRow>,
     /// `pov_tag → other` relation rows, one per other country, sorted by tag.
     pub relations: Vec<RelationRow>,
@@ -406,32 +411,39 @@ fn bool_opt(leaf: &Leaf<bool>) -> Option<bool> {
     }
 }
 
-/// The global faction-membership matrix from a [`DiplomacyView`], grouped by
-/// measured `faction_name` and sorted (name, then member tags).
-fn faction_rows(view: &DiplomacyView) -> Vec<FactionRow> {
-    // (members, leader) accumulated per faction name; BTreeMap keeps names
-    // sorted and country iteration is already sorted (BTreeMap keys).
-    let mut by_name: BTreeMap<String, (Vec<String>, Option<String>)> = BTreeMap::new();
-    for (tag, country) in &view.countries {
-        if let Leaf::Measured(name) = &country.faction_name {
-            let entry = by_name.entry(name.clone()).or_default();
-            entry.0.push(tag.clone());
-            if matches!(country.faction_is_leader, Leaf::Measured(true)) {
-                entry.1 = Some(tag.clone());
-            }
+/// Co-derive roster status and rows from the one typed d53/legacy roster leaf.
+/// Country politics cannot create, suppress, or assign membership rows;
+/// faction_is_leader only decorates a member already in that roster.
+fn faction_rows(view: &DiplomacyView) -> (FactionRosterStatus, Vec<FactionRow>) {
+    match &view.faction_members {
+        Leaf::Measured(by_faction) if by_faction.is_empty() => {
+            (FactionRosterStatus::MeasuredEmpty, Vec::new())
         }
+        Leaf::Measured(by_faction) => {
+            let rows = by_faction
+                .iter()
+                .map(|(faction_identity, roster_members)| {
+                    let leader = roster_members
+                        .iter()
+                        .find(|member| {
+                            view.countries.get(*member).is_some_and(|country| {
+                                matches!(country.faction_is_leader, Leaf::Measured(true))
+                            })
+                        })
+                        .cloned();
+                    let mut members = roster_members.clone();
+                    members.sort();
+                    FactionRow {
+                        faction_name: faction_identity.clone(),
+                        leader,
+                        members,
+                    }
+                })
+                .collect();
+            (FactionRosterStatus::MeasuredNonEmpty, rows)
+        }
+        Leaf::Unobtained | Leaf::Absent => (FactionRosterStatus::Unavailable, Vec::new()),
     }
-    by_name
-        .into_iter()
-        .map(|(faction_name, (mut members, leader))| {
-            members.sort();
-            FactionRow {
-                faction_name,
-                leader,
-                members,
-            }
-        })
-        .collect()
 }
 
 /// `pov_tag → other` relation rows (one per other country in the view).
@@ -474,10 +486,13 @@ pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> Diplomac
         .filter(|r| r.at_war == Some(true))
         .map(|r| r.other_tag.clone())
         .collect();
+    let (faction_roster_status, factions) = faction_rows(view);
     DiplomacyPanelBinding {
         pov_tag: pov_tag.to_string(),
         available: true,
-        factions: faction_rows(view),
+        factions_available: faction_roster_status.is_measured(),
+        faction_roster_status,
+        factions,
         relations,
         wars,
     }

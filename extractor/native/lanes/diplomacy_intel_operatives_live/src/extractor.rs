@@ -153,6 +153,9 @@ pub struct ExtractedDomain53Rows {
     pub intel_network_graphs: Vec<IntelNetworkGraphRow>,
     /// CFactionSystem roster (carried in the FACS trailer).
     pub factions: Vec<FactionRow>,
+    /// Positive runtime completeness witness for `factions`. False means the
+    /// roster was unavailable or unstable, never that it was measured empty.
+    pub faction_roster_complete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -433,6 +436,57 @@ struct CountryRoot {
     country_ptr: u64,
 }
 
+/// The complete country-table decision surface used to accept faction member
+/// tags. A faction completeness witness is valid only while this whole oracle
+/// (table base, ordered allocation slots, slot count, accepted pointer/tag rows,
+/// and rejected/ambiguous counts) is stable and unambiguous.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CountryTableSlotFingerprint {
+    /// The slot itself could not be read. This is ambiguity, never absence.
+    Unreadable,
+    /// A clean null slot inside the counted allocation. This is measured vacant,
+    /// not unavailable, and does not by itself poison completeness.
+    Vacant,
+    /// A readable non-null slot that did not resolve to an accepted CCountry.
+    Rejected { country_ptr: u64 },
+    /// A unique, fully validated slot. Vector position preserves the table index.
+    Accepted { country_ptr: u64, tag_db_id: u32 },
+    /// A fully readable country whose tag occurs in more than one table slot.
+    /// Every colliding slot is ambiguous; none is accepted for pointer identity.
+    AmbiguousDuplicateTag { country_ptr: u64, tag_db_id: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CountryAcceptanceOracle {
+    country_table: u64,
+    country_allocation: u32,
+    country_count: u32,
+    header_capture_stable: bool,
+    allocation_capture_complete: bool,
+    /// Ordered, allocation-wide fingerprint: exactly one entry per counted slot.
+    slot_allocation: Vec<CountryTableSlotFingerprint>,
+    accepted_countries: Vec<CountryRoot>,
+    vacant_slot_count: u32,
+    ambiguous_or_rejected_count: u32,
+    duplicate_tag_slot_count: u32,
+}
+
+impl CountryAcceptanceOracle {
+    fn supports_positive_faction_witness(&self) -> bool {
+        self.slot_allocation.len() == self.country_count as usize
+            && self.allocation_capture_complete
+            && self.header_capture_stable
+            && self.country_count <= self.country_allocation
+            && self.ambiguous_or_rejected_count == 0
+            && self.duplicate_tag_slot_count == 0
+            && self
+                .accepted_countries
+                .len()
+                .saturating_add(self.vacant_slot_count as usize)
+                == self.country_count as usize
+    }
+}
+
 /// d53 relation-flag CONTAINER diagnostic (perf_rearch_20260706, RELATION_CONTAINER_RE).
 /// Per-`flag_kind` COUNT of relation sub-objects found in each pair's
 /// `pdx::vector<CRelation*>` (`rel+0xD0`/count `rel+0xDC`), accumulated across the
@@ -530,10 +584,11 @@ struct Domain53FrameRoots {
     game_state: u64,
     current_game_hour: u32,
     countries: Vec<CountryRoot>,
+    country_acceptance_oracle: CountryAcceptanceOracle,
     /// W1.1 instrument (perf_rearch_20260706): wall micros spent inside
     /// [`resolve_domain53_frame_roots`] — global-root reads + build-identity
     /// verify + the full country-table walk/validation
-    /// ([`resolve_country_roots`]). Measured at the SINGLE resolve site so all
+    /// ([`resolve_country_acceptance_oracle`]). Measured at the SINGLE resolve site so all
     /// three `extract_rows_from_current_roots*` entry points inherit it, then
     /// copied verbatim into `Domain53PhaseTimes::roots_us` at the top of
     /// [`extract_rows_from_resolved_roots_with_discovery`]. Observational only:
@@ -784,7 +839,9 @@ fn resolve_domain53_frame_roots<M: Domain53Memory>(
     }
     verify_domain53_build_identity(mem, module_base)?;
 
-    let countries = resolve_country_roots(mem, module_base, game_state)?;
+    let country_acceptance_oracle =
+        resolve_country_acceptance_oracle(mem, module_base, game_state)?;
+    let countries = country_acceptance_oracle.accepted_countries.clone();
     if countries.is_empty() {
         return Err(ExtractError::InvalidRoot(
             "domain53_country_roots_empty_implausible",
@@ -799,6 +856,7 @@ fn resolve_domain53_frame_roots<M: Domain53Memory>(
         game_state,
         current_game_hour,
         countries,
+        country_acceptance_oracle,
         roots_resolve_us: duration_micros_u64_saturating(roots_started.elapsed()),
     })
 }
@@ -821,6 +879,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     // BEFORE this call) into the phase accumulator. Observational only.
     let roots_resolve_us = roots.roots_resolve_us;
     let countries = roots.countries;
+    let country_acceptance_oracle = roots.country_acceptance_oracle;
     let mut acc = RowAccumulator::default();
     let mut source_proofs = SOURCE_PROOF_BUILD_SHA_870EBF | SOURCE_PROOF_COUNTRY_ROOTS_870EBF;
     let mut family_counts = Domain53FamilyCounts {
@@ -953,11 +1012,13 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     // structurally-invalid faction system leaves the roster empty (no proof),
     // never fails the whole frame.
     let faction_roster_started = Instant::now();
-    let faction_rows = read_faction_rows(mem, module_base, game_state, &countries)?;
+    let faction_roster =
+        read_faction_rows(mem, module_base, game_state, &country_acceptance_oracle)?;
     phase_times.faction_roster_us =
         duration_micros_u64_saturating(faction_roster_started.elapsed());
-    if !faction_rows.is_empty() {
+    if let Some(faction_rows) = faction_roster {
         acc.rows.factions = faction_rows;
+        acc.rows.faction_roster_complete = true;
         source_proofs |= SOURCE_PROOF_FACTION_SYSTEM_870EBF;
     }
 
@@ -1289,10 +1350,22 @@ fn read_faction_rows<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
     game_state: u64,
-    countries: &[CountryRoot],
-) -> Result<Vec<FactionRow>, ExtractError> {
-    let valid_country_tags: BTreeSet<u32> =
-        countries.iter().map(|country| country.tag_db_id).collect();
+    country_acceptance_oracle: &CountryAcceptanceOracle,
+) -> Result<Option<Vec<FactionRow>>, ExtractError> {
+    // Completeness is an optimization. Any table ambiguity (including a
+    // duplicate tag or an unreadable/rejected counted slot) withholds the whole
+    // roster and its positive witness for this hour.
+    if !country_acceptance_oracle.supports_positive_faction_witness() {
+        return Ok(None);
+    }
+    let accepted_country_by_ptr: BTreeMap<u64, u32> = country_acceptance_oracle
+        .accepted_countries
+        .iter()
+        .map(|country| (country.country_ptr, country.tag_db_id))
+        .collect();
+    if accepted_country_by_ptr.len() != country_acceptance_oracle.accepted_countries.len() {
+        return Ok(None);
+    }
 
     let faction_system = match mem.read_u64(add_addr(
         game_state,
@@ -1300,32 +1373,33 @@ fn read_faction_rows<M: Domain53Memory>(
     )?) {
         Ok(value) if is_heap_ptr(value) => value,
         // No faction system resident — not an error; emit no roster.
-        Ok(_) => return Ok(Vec::new()),
-        Err(_) => return Ok(Vec::new()),
+        Ok(_) => return Ok(None),
+        Err(_) => return Ok(None),
     };
 
     let array_base = match mem.read_u64(add_addr(faction_system, profile::DOMAIN53_FACTION_ARRAY)?)
     {
-        Ok(value) if is_heap_ptr(value) => value,
-        _ => return Ok(Vec::new()),
+        Ok(value) => value,
+        _ => return Ok(None),
     };
     // +0x28 packs {size: u32, capacity: u32}.
     let packed_count =
         match mem.read_u64(add_addr(faction_system, profile::DOMAIN53_FACTION_COUNT)?) {
             Ok(value) => value,
-            Err(_) => return Ok(Vec::new()),
+            Err(_) => return Ok(None),
         };
     let size = (packed_count & 0xFFFF_FFFF) as u32;
     let capacity = ((packed_count >> 32) & 0xFFFF_FFFF) as u32;
-    if size == 0
-        || size > capacity
+    if size > capacity
         || compact_contract::bound_trips::bound_exceeded_u32(
             capacity,
             profile::DOMAIN53_FACTION_MAX_SLOTS,
             compact_contract::bound_trips::BOUND_TRIP_FACTION_SLOTS,
         )
+        || (capacity != 0 && !is_heap_ptr(array_base))
+        || (capacity == 0 && array_base != 0 && !is_heap_ptr(array_base))
     {
-        return Ok(Vec::new());
+        return Ok(None);
     }
 
     let expected_country_vtable = add_addr(module_base, profile::DOMAIN53_COUNTRY_VTABLE_RVA)?;
@@ -1345,16 +1419,57 @@ fn read_faction_rows<M: Domain53Memory>(
             mem,
             slot_addr,
             expected_country_vtable,
-            &valid_country_tags,
+            &accepted_country_by_ptr,
             &mut seen_ids,
         )? {
             Some(row) => rows.push(row),
             // A single malformed faction in the counted range means the roster
             // read is torn — abandon the whole roster (fail closed).
-            None => return Ok(Vec::new()),
+            None => return Ok(None),
         }
     }
-    Ok(rows)
+    let faction_system_after = mem
+        .read_u64(add_addr(
+            game_state,
+            profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM,
+        )?)
+        .ok();
+    let array_base_after = mem
+        .read_u64(add_addr(faction_system, profile::DOMAIN53_FACTION_ARRAY)?)
+        .ok();
+    let packed_count_after = mem
+        .read_u64(add_addr(faction_system, profile::DOMAIN53_FACTION_COUNT)?)
+        .ok();
+    if faction_system_after != Some(faction_system)
+        || array_base_after != Some(array_base)
+        || packed_count_after != Some(packed_count)
+    {
+        return Ok(None);
+    }
+
+    // The row-local second reads above prove only that this CFaction allocation
+    // stayed stable. Completeness vouches for the whole accepted country world.
+    // First bind the still-current outer allocation; then recapture the complete
+    // inner table fingerprint as the LAST nested memory observation before
+    // approval. This ordering prevents a country-table change during the old
+    // oracle-after -> outer-root window from blessing a stale roster.
+    let game_state_after = mem
+        .read_u64(add_addr(module_base, profile::CG_STATE_DATE_OFFSET)?)
+        .ok();
+    if game_state_after != Some(game_state) {
+        return Ok(None);
+    }
+    let country_acceptance_oracle_after =
+        match resolve_country_acceptance_oracle(mem, module_base, game_state) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+    if country_acceptance_oracle_after != *country_acceptance_oracle
+        || !country_acceptance_oracle_after.supports_positive_faction_witness()
+    {
+        return Ok(None);
+    }
+    Ok(Some(rows))
 }
 
 /// Read one CFaction from `slot_addr` (a `CFaction*` array slot). Returns
@@ -1364,7 +1479,7 @@ fn read_faction_row<M: Domain53Memory>(
     mem: &M,
     slot_addr: u64,
     expected_country_vtable: u64,
-    valid_country_tags: &BTreeSet<u32>,
+    accepted_country_by_ptr: &BTreeMap<u64, u32>,
     seen_ids: &mut BTreeSet<u32>,
 ) -> Result<Option<FactionRow>, ExtractError> {
     let faction_ptr = match mem.read_u64(slot_addr) {
@@ -1411,6 +1526,7 @@ fn read_faction_row<M: Domain53Memory>(
 
     let mut leader_tag_db_id = 0u32;
     let mut member_tag_db_ids = Vec::with_capacity(member_count as usize);
+    let mut member_values = Vec::with_capacity(member_count as usize);
     for member_slot in 0..member_count {
         let member_slot_addr = members_base.checked_add(u64::from(member_slot) * 8).ok_or(
             ExtractError::InvalidRoot("domain53_faction_member_overflow"),
@@ -1419,14 +1535,19 @@ fn read_faction_row<M: Domain53Memory>(
             Ok(value) if is_heap_ptr(value) => value,
             _ => return Ok(None),
         };
-        // Echo-check: the member must be a validated CCountry.
+        // Identity check: the member must be the exact accepted CCountry pointer
+        // from the complete table fingerprint. A skipped/ambiguous country may
+        // not borrow another country's colliding tag.
+        let Some(&accepted_tag) = accepted_country_by_ptr.get(&member_ptr) else {
+            return Ok(None);
+        };
         match mem.read_u64(member_ptr) {
             Ok(vtable) if vtable == expected_country_vtable => {}
             _ => return Ok(None),
         }
         let member_tag = match mem.read_u32(add_addr(member_ptr, profile::DOMAIN53_OBJ_TAG_DB_ID)?)
         {
-            Ok(value) if valid_tag_db_id(value) && valid_country_tags.contains(&value) => value,
+            Ok(value) if valid_tag_db_id(value) && value == accepted_tag => value,
             _ => return Ok(None),
         };
         // Leader is members[0] in engine order (captured BEFORE sorting the
@@ -1434,6 +1555,7 @@ fn read_faction_row<M: Domain53Memory>(
         if member_slot == 0 {
             leader_tag_db_id = member_tag;
         }
+        member_values.push((member_ptr, member_tag));
         member_tag_db_ids.push(member_tag);
     }
     if leader_tag_db_id == 0 {
@@ -1443,14 +1565,9 @@ fn read_faction_row<M: Domain53Memory>(
     // Name is a display string; hash it (DIAQ/INGR string convention). A
     // missing/invalid name hashes a stable sentinel so downstream never sees a
     // fabricated value.
-    let name_hash = match read_msvc_string(
-        mem,
-        add_addr(faction_ptr, profile::DOMAIN53_FACTION_NAME)?,
-        128,
-    ) {
-        StringRead::Value(value) => crate::compact::stable_hash32(&value),
-        StringRead::Missing => crate::compact::stable_hash32("faction_name_unknown"),
-        StringRead::Invalid => crate::compact::stable_hash32("faction_name_invalid_utf8"),
+    let name_addr = add_addr(faction_ptr, profile::DOMAIN53_FACTION_NAME)?;
+    let Some(name_before) = read_msvc_string_snapshot(mem, name_addr, 128) else {
+        return Ok(None);
     };
 
     // Emit the member list sorted+deduped (the FACS trailer decoder requires
@@ -1465,6 +1582,57 @@ fn read_faction_row<M: Domain53Memory>(
         return Ok(None);
     }
 
+    // A completeness witness is allowed only when the row topology is stable
+    // across the whole materialization. Any failed or changed second read makes
+    // the caller suppress the entire roster and its witness.
+    if mem.read_u64(slot_addr).ok() != Some(faction_ptr)
+        || mem
+            .read_u64(add_addr(faction_ptr, profile::DOMAIN53_FACTION_ID)?)
+            .ok()
+            != Some(raw_id)
+        || mem
+            .read_u32(add_addr(
+                faction_ptr,
+                profile::DOMAIN53_FACTION_MEMBERS_SIZE,
+            )?)
+            .ok()
+            != Some(member_count)
+        || mem
+            .read_u64(add_addr(faction_ptr, profile::DOMAIN53_FACTION_MEMBERS)?)
+            .ok()
+            != Some(members_base)
+    {
+        return Ok(None);
+    }
+    for (member_slot, (expected_ptr, expected_tag)) in member_values.into_iter().enumerate() {
+        let member_slot_addr =
+            members_base
+                .checked_add((member_slot as u64) * 8)
+                .ok_or(ExtractError::InvalidRoot(
+                    "domain53_faction_member_overflow",
+                ))?;
+        if mem.read_u64(member_slot_addr).ok() != Some(expected_ptr)
+            || mem.read_u64(expected_ptr).ok() != Some(expected_country_vtable)
+            || mem
+                .read_u32(add_addr(expected_ptr, profile::DOMAIN53_OBJ_TAG_DB_ID)?)
+                .ok()
+                != Some(expected_tag)
+        {
+            return Ok(None);
+        }
+    }
+    let Some(name_after) = read_msvc_string_snapshot(mem, name_addr, 128) else {
+        return Ok(None);
+    };
+    if name_after != name_before {
+        return Ok(None);
+    }
+    let name_hash = match name_before.value {
+        StringRead::Value(value) => crate::compact::stable_hash32(&value),
+        StringRead::Missing => crate::compact::stable_hash32("faction_name_unknown"),
+        StringRead::Invalid => crate::compact::stable_hash32("faction_name_invalid_utf8"),
+    };
+
     Ok(Some(FactionRow {
         faction_id,
         faction_type,
@@ -1474,23 +1642,38 @@ fn read_faction_row<M: Domain53Memory>(
     }))
 }
 
-fn resolve_country_roots<M: Domain53Memory>(
+fn resolve_country_acceptance_oracle<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
     game_state: u64,
-) -> Result<Vec<CountryRoot>, ExtractError> {
-    let country_table = mem.read_u64(add_addr(
-        game_state,
-        profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE,
-    )?)?;
-    let country_count = mem.read_u32(add_addr(
-        game_state,
-        profile::DOMAIN53_CGAMESTATE_COUNTRY_COUNT,
-    )?)?;
+) -> Result<CountryAcceptanceOracle, ExtractError> {
+    // The country table is a compact {base:u64, allocation:u32, count:u32}
+    // header. Capture all three fields in one read so a positive witness binds
+    // the allocation generation as well as the live count.
+    const COUNTRY_TABLE_HEADER_LEN: usize = 16;
+    let country_header_addr = add_addr(game_state, profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE)?;
+    let country_header = mem.read_bytes(country_header_addr, COUNTRY_TABLE_HEADER_LEN)?;
+    if country_header.len() != COUNTRY_TABLE_HEADER_LEN {
+        return Err(ExtractError::MemoryRead {
+            address: country_header_addr,
+            len: COUNTRY_TABLE_HEADER_LEN,
+        });
+    }
+    let country_table = u64::from_le_bytes(country_header[0..8].try_into().unwrap());
+    let country_allocation = u32::from_le_bytes(country_header[8..12].try_into().unwrap());
+    let country_count = u32::from_le_bytes(country_header[12..16].try_into().unwrap());
     if country_count == 0 || country_count > profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS {
         return Err(ExtractError::InvalidCount {
             name: "domain53_country_count",
             value: country_count,
+        });
+    }
+    if country_allocation < country_count
+        || country_allocation > profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS
+    {
+        return Err(ExtractError::InvalidCount {
+            name: stringify!(domain53_country_allocation),
+            value: country_allocation,
         });
     }
     if !is_heap_ptr(country_table) {
@@ -1500,40 +1683,139 @@ fn resolve_country_roots<M: Domain53Memory>(
     }
 
     let expected_vtable = add_addr(module_base, profile::DOMAIN53_COUNTRY_VTABLE_RVA)?;
-    let mut roots = Vec::new();
-    let mut seen = BTreeSet::new();
+    let allocation_len =
+        (country_count as usize)
+            .checked_mul(8)
+            .ok_or(ExtractError::InvalidRoot(stringify!(
+                domain53_country_table_overflow
+            )))?;
+    let allocation_bytes = mem
+        .read_bytes(country_table, allocation_len)
+        .ok()
+        .filter(|bytes| bytes.len() == allocation_len);
+    let allocation_capture_complete = allocation_bytes.is_some();
+    let mut slot_allocation = Vec::with_capacity(country_count as usize);
+    let mut tag_slot_counts = BTreeMap::<u32, u32>::new();
     for slot in 0..country_count {
         let slot_addr = country_table
             .checked_add(u64::from(slot) * 8)
             .ok_or(ExtractError::InvalidRoot("domain53_country_table_overflow"))?;
-        let Ok(country_ptr) = mem.read_u64(slot_addr) else {
-            continue;
+        let unit_pointer = allocation_bytes.as_ref().map(|bytes| {
+            let offset = slot as usize * 8;
+            u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+        });
+        let country_ptr = match unit_pointer
+            .map(Ok)
+            .unwrap_or_else(|| mem.read_u64(slot_addr))
+        {
+            Ok(value) => value,
+            Err(_) => {
+                slot_allocation.push(CountryTableSlotFingerprint::Unreadable);
+                continue;
+            }
         };
         if country_ptr == 0 {
+            slot_allocation.push(CountryTableSlotFingerprint::Vacant);
             continue;
         }
         if !is_heap_ptr(country_ptr) {
+            slot_allocation.push(CountryTableSlotFingerprint::Rejected { country_ptr });
             continue;
         }
         let Ok(vtable) = mem.read_u64(country_ptr) else {
+            slot_allocation.push(CountryTableSlotFingerprint::Rejected { country_ptr });
             continue;
         };
         if vtable != expected_vtable {
+            slot_allocation.push(CountryTableSlotFingerprint::Rejected { country_ptr });
             continue;
         }
         let Ok(tag_db_id) = mem.read_u32(add_addr(country_ptr, profile::DOMAIN53_OBJ_TAG_DB_ID)?)
         else {
+            slot_allocation.push(CountryTableSlotFingerprint::Rejected { country_ptr });
             continue;
         };
-        if !valid_tag_db_id(tag_db_id) || !seen.insert(tag_db_id) {
+        if !valid_tag_db_id(tag_db_id) {
+            slot_allocation.push(CountryTableSlotFingerprint::Rejected { country_ptr });
             continue;
         }
-        roots.push(CountryRoot {
-            tag_db_id,
+        let count = tag_slot_counts.entry(tag_db_id).or_default();
+        *count = count.saturating_add(1);
+        slot_allocation.push(CountryTableSlotFingerprint::Accepted {
             country_ptr,
+            tag_db_id,
         });
     }
-    Ok(roots)
+    // Resolve duplicates only after every counted slot has been observed. All
+    // occurrences of a colliding tag are ambiguous and are excluded from the
+    // accepted pointer set; accepting the first would make tag identity unsound.
+    let mut roots = Vec::new();
+    let mut vacant_slot_count = 0u32;
+    // A failed bulk allocation read is itself one ambiguity fact. Individual
+    // slot reads below preserve other d53 data, but can never earn completeness.
+    let mut ambiguous_or_rejected_count = u32::from(!allocation_capture_complete);
+    let mut duplicate_tag_slot_count = 0u32;
+    for slot in &mut slot_allocation {
+        match slot.clone() {
+            CountryTableSlotFingerprint::Unreadable
+            | CountryTableSlotFingerprint::Rejected { .. } => {
+                ambiguous_or_rejected_count = ambiguous_or_rejected_count.saturating_add(1);
+            }
+            CountryTableSlotFingerprint::Vacant => {
+                vacant_slot_count = vacant_slot_count.saturating_add(1);
+            }
+            CountryTableSlotFingerprint::Accepted {
+                country_ptr,
+                tag_db_id,
+            } => {
+                if tag_slot_counts.get(&tag_db_id).copied().unwrap_or(0) > 1 {
+                    *slot = CountryTableSlotFingerprint::AmbiguousDuplicateTag {
+                        country_ptr,
+                        tag_db_id,
+                    };
+                    ambiguous_or_rejected_count = ambiguous_or_rejected_count.saturating_add(1);
+                    duplicate_tag_slot_count = duplicate_tag_slot_count.saturating_add(1);
+                } else {
+                    roots.push(CountryRoot {
+                        tag_db_id,
+                        country_ptr,
+                    });
+                }
+            }
+            CountryTableSlotFingerprint::AmbiguousDuplicateTag { .. } => unreachable!(),
+        }
+    }
+    // Close the unit capture by re-reading the contiguous header after the
+    // allocation and all accepted-row identities. A header change/unreadability
+    // preserves the accepted rows for other d53 families but poisons completeness.
+    let header_capture_stable = mem
+        .read_bytes(country_header_addr, COUNTRY_TABLE_HEADER_LEN)
+        .ok()
+        .is_some_and(|after| after == country_header);
+    if !header_capture_stable {
+        ambiguous_or_rejected_count = ambiguous_or_rejected_count.saturating_add(1);
+    }
+    Ok(CountryAcceptanceOracle {
+        country_table,
+        country_allocation,
+        country_count,
+        header_capture_stable,
+        allocation_capture_complete,
+        slot_allocation,
+        accepted_countries: roots,
+        vacant_slot_count,
+        ambiguous_or_rejected_count,
+        duplicate_tag_slot_count,
+    })
+}
+
+#[cfg(test)]
+fn resolve_country_roots<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    game_state: u64,
+) -> Result<Vec<CountryRoot>, ExtractError> {
+    Ok(resolve_country_acceptance_oracle(mem, module_base, game_state)?.accepted_countries)
 }
 
 /// Read one relation-table slot pointer (`u64[relation_table + tag_db_id*8]`),
@@ -1680,8 +1962,7 @@ pub fn effective_prefetch_dist_candidates() -> usize {
 /// behavior. Called once per frame (the loop hoists the result), so the extra
 /// atomic load is not on the per-pair path.
 fn prefetch_dist_relation() -> usize {
-    let overridden =
-        PREFETCH_DIST_RELATION_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    let overridden = PREFETCH_DIST_RELATION_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
     if overridden != PREFETCH_OVERRIDE_UNSET {
         return overridden;
     }
@@ -1703,8 +1984,7 @@ fn prefetch_dist_relation() -> usize {
 /// prefetch for those loops (the caller skips the lookahead block). Hint-only;
 /// the un-overridden default is identical to the pre-override behavior.
 fn prefetch_dist_candidates() -> usize {
-    let overridden =
-        PREFETCH_DIST_CANDIDATES_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    let overridden = PREFETCH_DIST_CANDIDATES_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
     if overridden != PREFETCH_OVERRIDE_UNSET {
         return overridden;
     }
@@ -4012,6 +4292,82 @@ enum StringRead {
     Invalid,
 }
 
+/// One exact observation of the MSVC string source. The faction-roster
+/// completeness witness compares two of these, not merely the decoded string:
+/// size/capacity, heap pointer (when present), and the NUL-terminated bytes all
+/// have to match. A read failure yields None, so an unreadable second pass
+/// suppresses the entire roster and its positive witness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MsvcStringSnapshot {
+    size: u64,
+    capacity: u64,
+    chars_addr: Option<u64>,
+    bytes: Vec<u8>,
+    value: StringRead,
+}
+
+fn read_msvc_string_snapshot<M: Domain53Memory>(
+    mem: &M,
+    address: u64,
+    max_len: usize,
+) -> Option<MsvcStringSnapshot> {
+    let size_raw = mem.read_u64(add_addr(address, 0x10).ok()?).ok()?;
+    let capacity_raw = mem.read_u64(add_addr(address, 0x18).ok()?).ok()?;
+    let size = size_raw as usize;
+    let capacity = capacity_raw as usize;
+    if size == 0 {
+        return Some(MsvcStringSnapshot {
+            size: size_raw,
+            capacity: capacity_raw,
+            chars_addr: None,
+            bytes: Vec::new(),
+            value: StringRead::Missing,
+        });
+    }
+    if size > max_len || capacity < size || capacity > (1 << 20) {
+        return Some(MsvcStringSnapshot {
+            size: size_raw,
+            capacity: capacity_raw,
+            chars_addr: None,
+            bytes: Vec::new(),
+            value: StringRead::Invalid,
+        });
+    }
+    let chars_addr = if capacity < 16 {
+        address
+    } else {
+        let ptr = mem.read_u64(address).ok()?;
+        if !is_heap_ptr(ptr) {
+            return Some(MsvcStringSnapshot {
+                size: size_raw,
+                capacity: capacity_raw,
+                chars_addr: Some(ptr),
+                bytes: Vec::new(),
+                value: StringRead::Invalid,
+            });
+        }
+        ptr
+    };
+    let bytes = mem.read_bytes(chars_addr, size + 1).ok()?;
+    let value = if bytes.get(size).copied() != Some(0) {
+        StringRead::Invalid
+    } else {
+        match std::str::from_utf8(&bytes[..size]) {
+            Ok(value) if !value.chars().any(char::is_control) => {
+                StringRead::Value(value.to_string())
+            }
+            _ => StringRead::Invalid,
+        }
+    };
+    Some(MsvcStringSnapshot {
+        size: size_raw,
+        capacity: capacity_raw,
+        chars_addr: Some(chars_addr),
+        bytes,
+        value,
+    })
+}
+
 fn read_msvc_string<M: Domain53Memory>(mem: &M, address: u64, max_len: usize) -> StringRead {
     let Ok(size) = mem.read_u64(add_addr(address, 0x10).unwrap_or(address)) else {
         return StringRead::Missing;
@@ -4330,6 +4686,7 @@ fn build_domain53_payload_sampled(
         incoming_actions: rows.incoming_actions,
         intel_network_graphs: rows.intel_network_graphs,
         factions: rows.factions,
+        faction_roster_complete: rows.faction_roster_complete,
     };
     let snapshot_us = duration_micros_u64_saturating(snapshot_started.elapsed());
 
@@ -4406,11 +4763,14 @@ fn build_domain53_payload_sampled(
         "intel-network graph rows require SOURCE_PROOF_INTEL_NETWORK_GRAPH_870EBF",
         &mut errors,
     );
+    if !snapshot.factions.is_empty() && !snapshot.faction_roster_complete {
+        errors.push("faction roster rows require a completeness witness".to_string());
+    }
     require_rows(
-        !snapshot.factions.is_empty(),
+        snapshot.faction_roster_complete,
         source_proofs,
         SOURCE_PROOF_FACTION_SYSTEM_870EBF,
-        "faction roster rows require SOURCE_PROOF_FACTION_SYSTEM_870EBF",
+        "faction roster completeness witness requires SOURCE_PROOF_FACTION_SYSTEM_870EBF",
         &mut errors,
     );
     require_rows(
@@ -4760,6 +5120,7 @@ pub fn proof_fixture_rows() -> ExtractedDomain53Rows {
             leader_tag_db_id: 1,
             member_tag_db_ids: vec![1, 3, 22],
         }],
+        faction_roster_complete: true,
     }
 }
 
@@ -5121,6 +5482,138 @@ mod tests {
         }
     }
 
+    struct TornFactionHeaderMemory {
+        inner: FakeMemory,
+        faction_count_addr: u64,
+        faction_count_reads: std::cell::Cell<u32>,
+    }
+
+    impl Domain53Memory for TornFactionHeaderMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            if address == self.faction_count_addr && len == 8 {
+                let reads = self.faction_count_reads.get();
+                self.faction_count_reads.set(reads.saturating_add(1));
+                if reads != 0 {
+                    // Stable capacity, changed size: the second header read must
+                    // suppress the witness rather than publish either view.
+                    return Ok((1u64 << 32).to_le_bytes().to_vec());
+                }
+            }
+            self.inner.read_bytes(address, len)
+        }
+
+        fn readable_ranges(&self, lo: u64, hi: u64) -> Vec<(u64, usize)> {
+            self.inner.readable_ranges(lo, hi)
+        }
+    }
+
+    struct TornFactionValueMemory {
+        inner: FakeMemory,
+        address: u64,
+        len: usize,
+        replacement: Vec<u8>,
+        reads: std::cell::Cell<u32>,
+    }
+
+    impl Domain53Memory for TornFactionValueMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            let request_end = address.checked_add(len as u64);
+            let replacement_end = self.address.checked_add(self.len as u64);
+            if address <= self.address
+                && replacement_end.is_some_and(|end| request_end.is_some_and(|limit| end <= limit))
+            {
+                let reads = self.reads.get();
+                self.reads.set(reads.saturating_add(1));
+                if reads != 0 {
+                    let mut bytes = self.inner.read_bytes(address, len)?;
+                    let offset = (self.address - address) as usize;
+                    bytes[offset..offset + self.len].copy_from_slice(&self.replacement);
+                    return Ok(bytes);
+                }
+            }
+            self.inner.read_bytes(address, len)
+        }
+
+        fn readable_ranges(&self, lo: u64, hi: u64) -> Vec<(u64, usize)> {
+            self.inner.readable_ranges(lo, hi)
+        }
+    }
+
+    /// Simulates the finding-2 interleaving: the outer game-state root remains
+    /// byte-identical, but reading it for final validation is immediately
+    /// followed by a changed slot in the same country-table allocation.
+    struct CountryTableAllocationChangesAfterOuterValidationMemory {
+        inner: FakeMemory,
+        outer_root_addr: u64,
+        country_table: u64,
+        allocation_len: usize,
+        changed_slot_offset: usize,
+        replacement: Vec<u8>,
+        outer_root_reads: std::cell::Cell<u32>,
+        allocation_changed: std::cell::Cell<bool>,
+    }
+
+    impl Domain53Memory for CountryTableAllocationChangesAfterOuterValidationMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            if address == self.outer_root_addr && len == 8 {
+                let reads = self.outer_root_reads.get();
+                self.outer_root_reads.set(reads.saturating_add(1));
+                if reads != 0 {
+                    self.allocation_changed.set(true);
+                }
+            }
+            if address == self.country_table
+                && len == self.allocation_len
+                && self.allocation_changed.get()
+            {
+                let mut bytes = self.inner.read_bytes(address, len)?;
+                bytes[self.changed_slot_offset..self.changed_slot_offset + 8]
+                    .copy_from_slice(&self.replacement);
+                return Ok(bytes);
+            }
+            self.inner.read_bytes(address, len)
+        }
+
+        fn readable_ranges(&self, lo: u64, hi: u64) -> Vec<(u64, usize)> {
+            self.inner.readable_ranges(lo, hi)
+        }
+    }
+
+    struct CountryTableBulkReadFailsMemory {
+        inner: FakeMemory,
+        country_table: u64,
+        allocation_len: usize,
+    }
+
+    impl Domain53Memory for CountryTableBulkReadFailsMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            if address == self.country_table && len == self.allocation_len {
+                return Err(ExtractError::MemoryRead { address, len });
+            }
+            self.inner.read_bytes(address, len)
+        }
+
+        fn readable_ranges(&self, lo: u64, hi: u64) -> Vec<(u64, usize)> {
+            self.inner.readable_ranges(lo, hi)
+        }
+    }
+
     fn fake_country_addr(heap: u64, tag: u32) -> u64 {
         heap + 0x20_0000 + u64::from(tag) * 0x2000
     }
@@ -5235,6 +5728,10 @@ mod tests {
         mem.write_u64(
             game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64,
             country_table,
+        );
+        mem.write_u32(
+            game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64 + 8,
+            FAKE_COUNTRY_ROWS + 1,
         );
         mem.write_u32(
             game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_COUNT as u64,
@@ -5683,6 +6180,11 @@ mod tests {
         assert_eq!(extracted.rows.factions[0].faction_type, 88);
         assert_eq!(extracted.rows.factions[0].leader_tag_db_id, 1);
         assert_eq!(extracted.rows.factions[0].member_tag_db_ids, vec![1, 2]);
+        assert!(extracted.rows.faction_roster_complete);
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+            0
+        );
         assert_eq!(extracted.rows.agencies.len(), 1);
         assert_eq!(extracted.rows.agency_capacity_clusters.len(), 1);
         assert_eq!(extracted.rows.cryptology.len(), 1);
@@ -5751,6 +6253,250 @@ mod tests {
         );
         assert_eq!(
             report.gate_summary.status_flags_or & STATUS_FACTION_GROUP_UNVALIDATED,
+            0
+        );
+    }
+
+    #[test]
+    fn reader_witnesses_stable_empty_faction_roster() {
+        let mut mem = fake_domain53_memory(true, true);
+        let roots = resolve_domain53_frame_roots(&mem).expect("resolve fake roots");
+        let faction_system = mem
+            .read_u64(roots.game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64)
+            .unwrap();
+        mem.write_u64(faction_system + profile::DOMAIN53_FACTION_ARRAY as u64, 0);
+        mem.write_u64(faction_system + profile::DOMAIN53_FACTION_COUNT as u64, 0);
+
+        let extracted = extract_rows_from_current_roots(&mem).expect("stable empty roster");
+        assert!(extracted.rows.factions.is_empty());
+        assert!(extracted.rows.faction_roster_complete);
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+            0
+        );
+        let report = build_domain53_payload(extracted.rows, extracted.source_proofs);
+        assert!(report.ok(), "{:?}", report.errors);
+        let decoded = crate::compact::decode_snapshot_payload(0, &report.payload).unwrap();
+        assert!(decoded.factions.is_empty());
+        assert!(decoded.faction_roster_complete);
+    }
+
+    #[test]
+    fn reader_suppresses_faction_witness_on_torn_header() {
+        let mem = fake_domain53_memory(true, true);
+        let roots = resolve_domain53_frame_roots(&mem).expect("resolve fake roots");
+        let faction_system = mem
+            .read_u64(roots.game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64)
+            .unwrap();
+        let torn = TornFactionHeaderMemory {
+            inner: mem,
+            faction_count_addr: faction_system + profile::DOMAIN53_FACTION_COUNT as u64,
+            faction_count_reads: std::cell::Cell::new(0),
+        };
+
+        let extracted = extract_rows_from_current_roots(&torn).expect("torn roster is non-fatal");
+        assert!(extracted.rows.factions.is_empty());
+        assert!(!extracted.rows.faction_roster_complete);
+        assert_eq!(
+            extracted.source_proofs & SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+            0
+        );
+    }
+
+    #[test]
+    fn reader_suppresses_faction_witness_on_torn_member_tag_value() {
+        let mem = fake_domain53_memory(true, true);
+        let roots = resolve_domain53_frame_roots(&mem).expect("resolve fake roots");
+        let faction_system = mem
+            .read_u64(roots.game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64)
+            .unwrap();
+        let faction_array = mem
+            .read_u64(faction_system + profile::DOMAIN53_FACTION_ARRAY as u64)
+            .unwrap();
+        let faction = mem.read_u64(faction_array).unwrap();
+        let members = mem
+            .read_u64(faction + profile::DOMAIN53_FACTION_MEMBERS as u64)
+            .unwrap();
+        let first_member = mem.read_u64(members).unwrap();
+        let torn = TornFactionValueMemory {
+            inner: mem,
+            address: first_member + profile::DOMAIN53_OBJ_TAG_DB_ID as u64,
+            len: 4,
+            // Tag 3 is valid and belongs to a resolved country. Topology stays
+            // unchanged; only the serialized member/leader value tears.
+            replacement: 3u32.to_le_bytes().to_vec(),
+            reads: std::cell::Cell::new(0),
+        };
+
+        let roster = read_faction_rows(
+            &torn,
+            roots.module_base,
+            roots.game_state,
+            &roots.country_acceptance_oracle,
+        )
+        .expect("torn member value is non-fatal");
+        assert!(roster.is_none(), "a value tear must suppress the witness");
+    }
+
+    #[test]
+    fn reader_suppresses_faction_witness_on_torn_name_bytes() {
+        let mem = fake_domain53_memory(true, true);
+        let roots = resolve_domain53_frame_roots(&mem).expect("resolve fake roots");
+        let faction_system = mem
+            .read_u64(roots.game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64)
+            .unwrap();
+        let faction_array = mem
+            .read_u64(faction_system + profile::DOMAIN53_FACTION_ARRAY as u64)
+            .unwrap();
+        let faction = mem.read_u64(faction_array).unwrap();
+        let name_addr = faction + profile::DOMAIN53_FACTION_NAME as u64;
+        let name_len = mem.read_u64(name_addr + 0x10).unwrap() as usize;
+        let torn = TornFactionValueMemory {
+            inner: mem,
+            address: name_addr,
+            len: name_len + 1,
+            replacement: b"Axiz\0".to_vec(),
+            reads: std::cell::Cell::new(0),
+        };
+
+        let roster = read_faction_rows(
+            &torn,
+            roots.module_base,
+            roots.game_state,
+            &roots.country_acceptance_oracle,
+        )
+        .expect("torn faction name is non-fatal");
+        assert!(roster.is_none(), "a name tear must suppress the witness");
+    }
+
+    #[test]
+    fn reader_suppresses_faction_witness_on_changed_outer_game_state_root() {
+        let mem = fake_domain53_memory(true, true);
+        let game_state_root_addr = mem.module_base + profile::CG_STATE_DATE_OFFSET as u64;
+        let original_game_state = mem.read_u64(game_state_root_addr).unwrap();
+        let torn = TornFactionValueMemory {
+            inner: mem,
+            address: game_state_root_addr,
+            len: 8,
+            replacement: (original_game_state + 0x8000).to_le_bytes().to_vec(),
+            reads: std::cell::Cell::new(0),
+        };
+
+        let extracted =
+            extract_rows_from_current_roots(&torn).expect("outer-root tear is non-fatal to d53");
+        assert!(extracted.rows.factions.is_empty());
+        assert!(
+            !extracted.rows.faction_roster_complete,
+            "a witness must bind to the still-current outer game-state root"
+        );
+        assert_eq!(
+            extracted.source_proofs & SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+            0
+        );
+    }
+
+    #[test]
+    fn reader_suppresses_faction_witness_on_changed_country_acceptance_oracle() {
+        let mut mem = fake_domain53_memory(true, true);
+        let game_state = mem
+            .read_u64(mem.module_base + profile::CG_STATE_DATE_OFFSET as u64)
+            .unwrap();
+        let country_table_addr = game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64;
+        let country_table = mem.read_u64(country_table_addr).unwrap();
+        let country_count = mem
+            .read_u32(game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_COUNT as u64)
+            .unwrap();
+        let table_len = country_count as usize * 8;
+        let alternate_country_table = country_table + 0x4000;
+        let table_bytes = mem.read_bytes(country_table, table_len).unwrap();
+        mem.add_chunk(alternate_country_table, table_len);
+        mem.write_bytes(alternate_country_table, &table_bytes);
+        let torn = TornFactionValueMemory {
+            inner: mem,
+            address: country_table_addr,
+            len: 8,
+            replacement: alternate_country_table.to_le_bytes().to_vec(),
+            reads: std::cell::Cell::new(0),
+        };
+
+        let extracted = extract_rows_from_current_roots(&torn)
+            .expect("country-oracle tear is non-fatal to d53");
+        assert!(extracted.rows.factions.is_empty());
+        assert!(
+            !extracted.rows.faction_roster_complete,
+            "a witness must bind to the double-read-stable country acceptance oracle"
+        );
+        assert_eq!(
+            extracted.source_proofs & SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+            0
+        );
+    }
+
+    #[test]
+    fn reader_suppresses_faction_witness_when_inner_allocation_changes_after_outer_reread() {
+        let mem = fake_domain53_memory(true, true);
+        let outer_root_addr = mem.module_base + profile::CG_STATE_DATE_OFFSET as u64;
+        let game_state = mem.read_u64(outer_root_addr).unwrap();
+        let country_table = mem
+            .read_u64(game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64)
+            .unwrap();
+        let country_count = mem
+            .read_u32(game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_COUNT as u64)
+            .unwrap();
+        let allocation_len = country_count as usize * 8;
+        assert_ne!(mem.read_u64(country_table + 8).unwrap(), 0);
+        let torn = CountryTableAllocationChangesAfterOuterValidationMemory {
+            inner: mem,
+            outer_root_addr,
+            country_table,
+            allocation_len,
+            changed_slot_offset: 8,
+            replacement: 0u64.to_le_bytes().to_vec(),
+            outer_root_reads: std::cell::Cell::new(0),
+            allocation_changed: std::cell::Cell::new(false),
+        };
+
+        let extracted = extract_rows_from_current_roots(&torn).unwrap();
+        assert!(torn.allocation_changed.get());
+        assert!(extracted.rows.factions.is_empty());
+        assert!(!extracted.rows.faction_roster_complete);
+        assert_eq!(
+            extracted.source_proofs & SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+            0
+        );
+    }
+
+    #[test]
+    fn reader_preserves_countries_but_suppresses_witness_when_bulk_table_capture_fails() {
+        let mem = fake_domain53_memory(true, true);
+        let game_state = mem
+            .read_u64(mem.module_base + profile::CG_STATE_DATE_OFFSET as u64)
+            .unwrap();
+        let country_table = mem
+            .read_u64(game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64)
+            .unwrap();
+        let country_count = mem
+            .read_u32(game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_COUNT as u64)
+            .unwrap();
+        let torn = CountryTableBulkReadFailsMemory {
+            inner: mem,
+            country_table,
+            allocation_len: country_count as usize * 8,
+        };
+
+        let oracle =
+            resolve_country_acceptance_oracle(&torn, torn.module_base(), game_state).unwrap();
+        assert!(!oracle.allocation_capture_complete);
+        assert_eq!(oracle.ambiguous_or_rejected_count, 1);
+        assert_eq!(oracle.slot_allocation.len(), country_count as usize);
+        assert_eq!(oracle.accepted_countries.len(), FAKE_COUNTRY_ROWS as usize);
+        assert!(!oracle.supports_positive_faction_witness());
+
+        let extracted = extract_rows_from_current_roots(&torn).unwrap();
+        assert!(extracted.rows.factions.is_empty());
+        assert!(!extracted.rows.faction_roster_complete);
+        assert_eq!(
+            extracted.source_proofs & SOURCE_PROOF_FACTION_SYSTEM_870EBF,
             0
         );
     }
@@ -5841,7 +6587,7 @@ mod tests {
     fn fake_faction_system(
         members: &[(u32, bool)],
         member_count_override: Option<u32>,
-    ) -> (FakeMemory, u64, Vec<CountryRoot>) {
+    ) -> (FakeMemory, u64, Vec<CountryRoot>, CountryAcceptanceOracle) {
         let module = 0x1400_0000_0;
         let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
         let game_state = heap + 0x100;
@@ -5850,32 +6596,44 @@ mod tests {
         let faction1 = heap + 0x3000;
         let faction_members = heap + 0x4000;
         let country_base = heap + 0x5000;
+        let country_table = heap + 0x8000;
 
         let mut mem = FakeMemory::new(module);
+        mem.add_chunk(module + profile::CG_STATE_DATE_OFFSET as u64, 8);
         mem.add_chunk(game_state, 0x500);
         mem.add_chunk(faction_system, 0x40);
         mem.add_chunk(faction_array, 0x20);
         mem.add_chunk(faction1, 0x80);
         mem.add_chunk(faction_members, 0x100);
+        mem.add_chunk(country_table, members.len() * 8);
 
-        let mut countries = Vec::new();
         for (idx, (tag, is_country)) in members.iter().enumerate() {
             let cptr = country_base + (idx as u64) * 0x200;
             mem.add_chunk(cptr, 0x100);
             if *is_country {
                 mem.write_u64(cptr, module + profile::DOMAIN53_COUNTRY_VTABLE_RVA as u64);
                 mem.write_u32(cptr + profile::DOMAIN53_OBJ_TAG_DB_ID as u64, *tag);
-                countries.push(CountryRoot {
-                    tag_db_id: *tag,
-                    country_ptr: cptr,
-                });
             } else {
                 // Wrong vtable => not a validated CCountry.
                 mem.write_u64(cptr, module + 0x00DE_AD00);
             }
             mem.write_u64(faction_members + (idx as u64) * 8, cptr);
+            mem.write_u64(country_table + (idx as u64) * 8, cptr);
         }
 
+        mem.write_u64(module + profile::CG_STATE_DATE_OFFSET as u64, game_state);
+        mem.write_u64(
+            game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64,
+            country_table,
+        );
+        mem.write_u32(
+            game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64 + 8,
+            members.len() as u32,
+        );
+        mem.write_u32(
+            game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_COUNT as u64,
+            members.len() as u32,
+        );
         mem.write_u64(
             game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64,
             faction_system,
@@ -5902,16 +6660,94 @@ mod tests {
             faction1 + profile::DOMAIN53_FACTION_MEMBERS_SIZE as u64,
             member_count_override.unwrap_or(members.len() as u32),
         );
-        (mem, game_state, countries)
+        let country_acceptance_oracle =
+            resolve_country_acceptance_oracle(&mem, module, game_state).unwrap();
+        let countries = country_acceptance_oracle.accepted_countries.clone();
+        (mem, game_state, countries, country_acceptance_oracle)
+    }
+
+    #[test]
+    fn faction_reader_suppresses_duplicate_tag_country_table() {
+        let (mut mem, game_state, _, _) = fake_faction_system(&[(1, true), (2, true)], None);
+        let country_table = mem
+            .read_u64(game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64)
+            .unwrap();
+        let first_country = mem.read_u64(country_table).unwrap();
+        let colliding_country = mem.read_u64(country_table + 8).unwrap();
+        assert_ne!(first_country, colliding_country);
+        mem.write_u32(
+            colliding_country + profile::DOMAIN53_OBJ_TAG_DB_ID as u64,
+            1,
+        );
+
+        // Reproduce the attack exactly: the faction points only at B(tag=1),
+        // while A(tag=1) occupies the earlier country-table slot.
+        let faction_system = mem
+            .read_u64(game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64)
+            .unwrap();
+        let faction_array = mem
+            .read_u64(faction_system + profile::DOMAIN53_FACTION_ARRAY as u64)
+            .unwrap();
+        let faction = mem.read_u64(faction_array).unwrap();
+        let members = mem
+            .read_u64(faction + profile::DOMAIN53_FACTION_MEMBERS as u64)
+            .unwrap();
+        mem.write_u64(members, colliding_country);
+        mem.write_u32(faction + profile::DOMAIN53_FACTION_MEMBERS_SIZE as u64, 1);
+
+        let oracle = resolve_country_acceptance_oracle(&mem, mem.module_base, game_state).unwrap();
+        assert_eq!(oracle.duplicate_tag_slot_count, 2);
+        assert_eq!(oracle.ambiguous_or_rejected_count, 2);
+        assert!(oracle.accepted_countries.is_empty());
+        assert!(!oracle.supports_positive_faction_witness());
+        assert!(
+            read_faction_rows(&mem, mem.module_base, game_state, &oracle)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn faction_reader_rejects_member_pointer_outside_accepted_table() {
+        let (mut mem, game_state, _, oracle) = fake_faction_system(&[(1, true)], None);
+        assert!(oracle.supports_positive_faction_witness());
+        let unaccepted_country = profile::DOMAIN53_HEAP_LO as u64 + 0x20_0000;
+        mem.add_chunk(unaccepted_country, 0x100);
+        mem.write_u64(
+            unaccepted_country,
+            mem.module_base + profile::DOMAIN53_COUNTRY_VTABLE_RVA as u64,
+        );
+        mem.write_u32(
+            unaccepted_country + profile::DOMAIN53_OBJ_TAG_DB_ID as u64,
+            1,
+        );
+        let faction_system = mem
+            .read_u64(game_state + profile::DOMAIN53_CGAMESTATE_FACTION_SYSTEM as u64)
+            .unwrap();
+        let faction_array = mem
+            .read_u64(faction_system + profile::DOMAIN53_FACTION_ARRAY as u64)
+            .unwrap();
+        let faction = mem.read_u64(faction_array).unwrap();
+        let members = mem
+            .read_u64(faction + profile::DOMAIN53_FACTION_MEMBERS as u64)
+            .unwrap();
+        mem.write_u64(members, unaccepted_country);
+
+        assert!(
+            read_faction_rows(&mem, mem.module_base, game_state, &oracle)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn faction_reader_fails_closed_when_a_member_is_not_a_country() {
         // Second member is a non-country object -> the whole roster is torn -> [].
-        let (mem, game_state, countries) = fake_faction_system(&[(1, true), (2, false)], None);
+        let (mem, game_state, _countries, oracle) =
+            fake_faction_system(&[(1, true), (2, false)], None);
         let rows =
-            read_faction_rows(&mem, mem.module_base, game_state, &countries).expect("faction read");
-        assert!(rows.is_empty());
+            read_faction_rows(&mem, mem.module_base, game_state, &oracle).expect("faction read");
+        assert!(rows.is_none());
     }
 
     #[test]
@@ -5922,18 +6758,20 @@ mod tests {
         // that stays internally consistent is indistinguishable from a genuinely
         // smaller faction without an external oracle; the orchestrator's melt
         // member-count check — {18,31,3,8,10,1} — is the defense there.)
-        let (mem, game_state, countries) = fake_faction_system(&[(1, true), (2, true)], Some(5));
+        let (mem, game_state, _countries, oracle) =
+            fake_faction_system(&[(1, true), (2, true)], Some(5));
         let rows =
-            read_faction_rows(&mem, mem.module_base, game_state, &countries).expect("faction read");
-        assert!(rows.is_empty());
+            read_faction_rows(&mem, mem.module_base, game_state, &oracle).expect("faction read");
+        assert!(rows.is_none());
     }
 
     #[test]
     fn faction_reader_emits_clean_roster() {
-        let (mem, game_state, countries) =
+        let (mem, game_state, _countries, oracle) =
             fake_faction_system(&[(1, true), (2, true), (3, true)], None);
         let rows =
-            read_faction_rows(&mem, mem.module_base, game_state, &countries).expect("faction read");
+            read_faction_rows(&mem, mem.module_base, game_state, &oracle).expect("faction read");
+        let rows = rows.expect("stable complete faction roster");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].faction_id, 1);
         assert_eq!(rows[0].leader_tag_db_id, 1);

@@ -5,6 +5,7 @@
 //! container (must fail closed), scrub semantics, and the Absent /
 //! Unobtained / Measured trichotomy.
 
+use replay_core::world::FactionRosterStatus;
 use replay_core::{
     open_recording, open_recording_game, Leaf, MapLayerSource, SourceError, ViewStatus, WorldError,
     WorldFrame, WorldTimeline,
@@ -13,6 +14,7 @@ use serde_json::{json, Value};
 use snapshot::{pack, PackEntry, PackIdentity};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -397,6 +399,44 @@ fn open_timeline(path: &Path) -> WorldTimeline {
     WorldTimeline::open(open_recording(path).unwrap()).unwrap()
 }
 
+fn push_h4cr_record(
+    out: &mut Vec<u8>,
+    template: &[u8],
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    payload: &[u8],
+) {
+    assert!(template.len() >= 32);
+    out.extend_from_slice(&template[..8]);
+    out.extend_from_slice(&sequence.to_le_bytes());
+    out.extend_from_slice(&game_hour_raw.to_le_bytes());
+    out.extend_from_slice(&domain_id.to_le_bytes());
+    out.extend_from_slice(&record_type.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(payload);
+}
+
+fn run_cargo(extractor_native: &Path, temp_dir: &Path, args: &[&str]) {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .current_dir(extractor_native)
+        .env("TEMP", temp_dir)
+        .env("TMP", temp_dir)
+        .args(args)
+        .output()
+        .expect("launch extractor cargo command");
+    assert!(
+        output.status.success(),
+        "extractor cargo command failed: {}\nstdout:\n{}\nstderr:\n{}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn write_absence_unavailable_store(root: &Path) {
     let game = "absence_unavailable";
     let dir = root.join(game);
@@ -446,9 +486,336 @@ fn write_absence_unavailable_store(root: &Path) {
     fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
 }
 
+fn write_faction_roster_status_store(root: &Path) {
+    let game = "faction_roster_status";
+    let dir = root.join(game);
+    fs::create_dir_all(&dir).unwrap();
+    let states = [
+        (20, "unavailable", json!(null)),
+        (21, "measured_empty", json!([])),
+        (
+            22,
+            "measured_nonempty",
+            json!([{
+                "faction_id": 7,
+                "faction_type": 88,
+                "name_hash": 0x1234_5678u32,
+                "leader": "GER",
+                "leader_tag_db_id": 1,
+                "member_tag_db_ids": [1, 16],
+                "members": ["GER", "ITA"],
+                "member_count": 2
+            }]),
+        ),
+    ];
+    let mut snapshots = Vec::new();
+    for (hour, status, rows) in states {
+        let mut extra = json!({ "faction_roster_status": status });
+        if !rows.is_null() {
+            extra["faction_rows"] = rows;
+        }
+        let snapshot = json!({
+            "schema_version": "1",
+            "game_id": game,
+            "date": format!("1936.1.1.{}", hour - 20),
+            "hour_index": hour,
+            "countries": {},
+            "diplomacy_world": { "domain53_extra": extra }
+        });
+        let file = format!("{hour:012}.snapshot.json");
+        fs::write(dir.join(&file), serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        snapshots.push(json!({
+            "hour_index": hour,
+            "date": format!("1936.1.1.{}", hour - 20),
+            "file": file
+        }));
+    }
+    let index = json!({
+        "game_id": game,
+        "schema_version": "1",
+        "snapshots": snapshots
+    });
+    fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+}
+
+fn write_legacy_faction_roster_store(root: &Path) {
+    let game = "legacy_faction_roster";
+    let dir = root.join(game);
+    fs::create_dir_all(&dir).unwrap();
+    let cases = [
+        (30, None),
+        (31, Some(json!({"axis": ["GER", "ITA"]}))),
+        (32, Some(json!({"axis": 7}))),
+        (33, Some(json!({"axis": ["GER", "ITA"], "allies": 7}))),
+        (34, Some(json!({}))),
+    ];
+    let mut snapshots = Vec::new();
+    for (hour, legacy) in cases {
+        let mut snapshot = json!({
+            "schema_version": "1",
+            "game_id": game,
+            "date": format!("1936.1.1.{}", hour - 30),
+            "hour_index": hour,
+            "countries": {}
+        });
+        if let Some(legacy) = legacy {
+            snapshot["diplomacy_live"] = json!({"faction_members": legacy});
+        }
+        let file = format!("{hour:012}.snapshot.json");
+        fs::write(dir.join(&file), serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        snapshots.push(json!({
+            "hour_index": hour,
+            "date": format!("1936.1.1.{}", hour - 30),
+            "file": file
+        }));
+    }
+    let index = json!({
+        "game_id": game,
+        "schema_version": "1",
+        "snapshots": snapshots
+    });
+    fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // typed views + trichotomy
 // ---------------------------------------------------------------------------
+
+#[test]
+fn domain53_faction_roster_status_survives_open_into_typed_view() {
+    let root = unique_temp_dir("faction_roster_status");
+    write_faction_roster_status_store(&root);
+    let timeline = open_timeline(&root);
+
+    let unavailable = timeline.frame(20).unwrap();
+    assert_eq!(
+        unavailable.diplomacy().faction_roster_status(),
+        FactionRosterStatus::Unavailable
+    );
+    assert_eq!(unavailable.diplomacy().faction_members, Leaf::Unobtained);
+
+    let empty = timeline.frame(21).unwrap();
+    assert_eq!(
+        empty.diplomacy().faction_roster_status(),
+        FactionRosterStatus::MeasuredEmpty
+    );
+    assert_eq!(
+        empty.diplomacy().faction_members,
+        Leaf::Measured(Default::default())
+    );
+
+    let nonempty = timeline.frame(22).unwrap();
+    assert_eq!(
+        nonempty.diplomacy().faction_roster_status(),
+        FactionRosterStatus::MeasuredNonEmpty
+    );
+    assert_eq!(
+        nonempty
+            .diplomacy()
+            .faction_members
+            .measured()
+            .unwrap()
+            .get("7"),
+        Some(&vec!["GER".to_string(), "ITA".to_string()])
+    );
+}
+
+#[test]
+fn legacy_faction_roster_is_measured_only_when_valid_and_nonempty() {
+    let root = unique_temp_dir("legacy_faction_roster");
+    write_legacy_faction_roster_store(&root);
+    let timeline = open_timeline(&root);
+
+    for hour in [30, 32, 33, 34] {
+        let frame = timeline.frame(hour).unwrap();
+        let diplomacy = frame.diplomacy();
+        assert_eq!(
+            diplomacy.faction_roster_status(),
+            FactionRosterStatus::Unavailable,
+            "legacy case at hour {hour} must fail closed"
+        );
+        assert_ne!(
+            diplomacy.faction_roster_status(),
+            FactionRosterStatus::MeasuredEmpty
+        );
+    }
+
+    let valid = timeline.frame(31).unwrap();
+    assert_eq!(
+        valid.diplomacy().faction_roster_status(),
+        FactionRosterStatus::MeasuredNonEmpty
+    );
+    assert_eq!(
+        valid
+            .diplomacy()
+            .faction_members
+            .measured()
+            .unwrap()
+            .get("axis"),
+        Some(&vec!["GER".to_string(), "ITA".to_string()])
+    );
+}
+
+#[test]
+fn production_encode_decode_fold_typed_unavailable_beats_present_legacy_json() {
+    let root = unique_temp_dir("faction_roster_composed");
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .unwrap();
+    let extractor_native = repo_root.join("extractor/native");
+    // Use the test's own writable temp root (matching the game_ui harness) rather
+    // than a hardcoded path under the source tree, so the test runs under a
+    // read-only source fence with an external CARGO_TARGET_DIR.
+    let extractor_temp = root.join("extractor_tmp");
+    fs::create_dir_all(&extractor_temp).unwrap();
+
+    let proof_record = root.join("d53.compact.bin");
+    let proof_report = root.join("d53.proof.json");
+    let proof_manifest = root.join("d53.manifest.json");
+    let proof_replay = root.join("d53.battleplan");
+    run_cargo(
+        &extractor_native,
+        &extractor_temp,
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "-p",
+            "diplomacy_intel_operatives_live",
+            "--bin",
+            "domain53_proof",
+            "--",
+            "--out-record",
+            proof_record.to_str().unwrap(),
+            "--out-report",
+            proof_report.to_str().unwrap(),
+            "--out-manifest",
+            proof_manifest.to_str().unwrap(),
+            "--out-replay",
+            proof_replay.to_str().unwrap(),
+        ],
+    );
+
+    // Hour N is a production-encoded valid d53 frame. Hour N+1 is a
+    // well-framed d53 record with a deliberately malformed payload, exercising
+    // the production decoder rejection and fold suppression path.
+    let mut encoded = fs::read(&proof_record).unwrap();
+    assert_eq!(&encoded[..4], b"H4CR");
+    assert_eq!(u16::from_le_bytes(encoded[20..22].try_into().unwrap()), 53);
+    assert_eq!(u16::from_le_bytes(encoded[22..24].try_into().unwrap()), 3);
+    // The proof CLI's historical 24-hour smoke timestamp predates the fold's
+    // plausible-calendar gate. Keep its production-encoded payload and move
+    // only the H4CR test clock into the canonical 1936 window.
+    let raw_hour = 43_799_999i32 + (1936 * 365 * 24);
+    encoded[16..20].copy_from_slice(&raw_hour.to_le_bytes());
+    let mut stream = encoded.clone();
+    let frame_end = vec![0u8; 28];
+    push_h4cr_record(&mut stream, &encoded, 2, raw_hour, 1000, 2, &frame_end);
+    push_h4cr_record(
+        &mut stream,
+        &encoded,
+        3,
+        raw_hour + 1,
+        53,
+        3,
+        &[0x00, 0x01, 0x02],
+    );
+    push_h4cr_record(&mut stream, &encoded, 4, raw_hour + 1, 1000, 2, &frame_end);
+    let stream_path = root.join("collector_stream.bin");
+    fs::write(&stream_path, stream).unwrap();
+
+    let game = "faction_roster_composed";
+    let store_root = root.join("store");
+    let game_dir = store_root.join(game);
+    fs::create_dir_all(&game_dir).unwrap();
+    run_cargo(
+        &extractor_native,
+        &extractor_temp,
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "-p",
+            "recorder_host",
+            "--bin",
+            "stream_fold",
+            "--",
+            stream_path.to_str().unwrap(),
+            game_dir.to_str().unwrap(),
+            "--game-id",
+            game,
+            "--workers",
+            "1",
+        ],
+    );
+
+    let mut index_rows = Vec::new();
+    let mut snapshot_paths = fs::read_dir(&game_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".snapshot.json"))
+        })
+        .collect::<Vec<_>>();
+    snapshot_paths.sort();
+    assert_eq!(snapshot_paths.len(), 2);
+    for path in snapshot_paths {
+        let snapshot: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let hour = snapshot["hour_index"].as_i64().unwrap();
+        index_rows.push((hour, path, snapshot));
+    }
+    index_rows.sort_by_key(|(hour, _, _)| *hour);
+    let max_hour = index_rows.last().unwrap().0;
+    let unavailable = &mut index_rows.last_mut().unwrap().2;
+    assert_eq!(
+        unavailable["diplomacy_world"]["domain53_extra"]["faction_roster_status"],
+        json!("unavailable"),
+        "the real fold must serialize the suppressed d53 roster state"
+    );
+    // A valid nonempty v1 roster would be measured on its own. The serialized
+    // modern unavailable status must take precedence before legacy parsing.
+    unavailable["diplomacy_live"] = json!({"faction_members": {"axis": ["GER", "ITA"]}});
+
+    let mut snapshots = Vec::new();
+    for (hour, path, snapshot) in &index_rows {
+        fs::write(path, serde_json::to_vec(snapshot).unwrap()).unwrap();
+        snapshots.push(json!({
+            "hour_index": hour,
+            "date": snapshot["date"].as_str().unwrap(),
+            "file": path.file_name().unwrap().to_str().unwrap()
+        }));
+    }
+    fs::write(
+        game_dir.join("index.json"),
+        serde_json::to_vec(&json!({
+            "game_id": game,
+            "schema_version": "1",
+            "snapshots": snapshots
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let timeline = open_timeline(&store_root);
+    let frame = timeline.frame(max_hour).unwrap();
+    assert_eq!(
+        frame.diplomacy().faction_roster_status(),
+        FactionRosterStatus::Unavailable
+    );
+    assert_ne!(
+        frame.diplomacy().faction_roster_status(),
+        FactionRosterStatus::MeasuredEmpty
+    );
+    assert_eq!(frame.diplomacy().faction_members, Leaf::Unobtained);
+    drop(frame);
+    drop(timeline);
+    fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn dir_store_typed_views_and_trichotomy() {
@@ -847,7 +1214,9 @@ fn typed_view_status_distinguishes_absent_from_unavailable_domains() {
     assert_eq!(absent.weather_status(), ViewStatus::DomainAbsent);
     assert_eq!(unavailable.weather_status(), ViewStatus::DomainUnavailable);
 
-    assert_eq!(absent.diplomacy().status, ViewStatus::DomainAbsent);
+    // The faction completeness leaf is safety-critical: without a modern status
+    // it makes the aggregate diplomacy view unavailable, never measured-empty.
+    assert_eq!(absent.diplomacy().status, ViewStatus::DomainUnavailable);
     assert_eq!(
         unavailable.diplomacy().status,
         ViewStatus::DomainUnavailable

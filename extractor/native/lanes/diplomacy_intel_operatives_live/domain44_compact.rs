@@ -179,9 +179,12 @@ const INTEL_NETWORK_GRAPH_ROW_HEADER_LEN: usize = 16;
 
 // `FACS` faction-roster trailer (tail-appended after the base self-delimiting
 // payload; DIAQ/INGR precedent). Per faction: a fixed row header + a
-// variable-length sorted member tag_db_id list. Emitted only when >=1 faction.
+// variable-length sorted member tag_db_id list. Version 1 was emitted only for
+// a non-empty roster. Version 2 is an explicit completeness witness and is
+// therefore emitted with row_count == 0 for a positively measured empty roster.
 const FACTION_TRAILER_MAGIC: &[u8; 4] = b"FACS";
-const FACTION_TRAILER_VERSION: u16 = 1;
+const FACTION_TRAILER_VERSION_V1_NONEMPTY: u16 = 1;
+const FACTION_TRAILER_VERSION: u16 = 2;
 const FACTION_TRAILER_HEADER_LEN: usize = 12;
 // row header: faction_id u32, faction_type u32, name_hash u32,
 //             leader_tag_db_id u32, member_count u32
@@ -217,6 +220,11 @@ pub struct DiplomacyIntelSnapshot {
     /// self-delimiting base payload — NOT counted in `row_count()`. Absent
     /// trailer => empty.
     pub factions: Vec<FactionRow>,
+    /// True only when the runtime CFactionSystem roster read was complete and
+    /// double-read stable. On the wire this is FACS v2, including row_count 0.
+    /// An absent FACS trailer decodes false; legacy FACS v1 with rows decodes
+    /// true to preserve its established non-empty completeness semantics.
+    pub faction_roster_complete: bool,
 }
 
 impl DiplomacyIntelSnapshot {
@@ -285,7 +293,10 @@ fn encoded_payload_capacity(snapshot: &DiplomacyIntelSnapshot) -> usize {
     .saturating_add(intel_network_graph_trailer_capacity(
         &snapshot.intel_network_graphs,
     ))
-    .saturating_add(faction_trailer_capacity(&snapshot.factions))
+    .saturating_add(faction_trailer_capacity(
+        &snapshot.factions,
+        snapshot.faction_roster_complete,
+    ))
 }
 
 fn operation_instance_trailer_capacity(rows: &[OperationInstanceRow]) -> usize {
@@ -322,8 +333,8 @@ fn intel_network_graph_trailer_capacity(rows: &[IntelNetworkGraphRow]) -> usize 
     }
 }
 
-fn faction_trailer_capacity(rows: &[FactionRow]) -> usize {
-    if rows.is_empty() {
+fn faction_trailer_capacity(rows: &[FactionRow], roster_complete: bool) -> usize {
+    if rows.is_empty() && !roster_complete {
         0
     } else {
         rows.iter().fold(FACTION_TRAILER_HEADER_LEN, |acc, row| {
@@ -729,7 +740,11 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
     append_operation_instance_trailer(&mut payload, &snapshot.operation_instances);
     append_incoming_action_queue_trailer(&mut payload, &snapshot.incoming_actions);
     append_intel_network_graph_trailer(&mut payload, &snapshot.intel_network_graphs);
-    append_faction_trailer(&mut payload, &snapshot.factions);
+    append_faction_trailer(
+        &mut payload,
+        &snapshot.factions,
+        snapshot.faction_roster_complete,
+    );
     payload
 }
 
@@ -1009,7 +1024,11 @@ pub fn summarize_snapshot_instrumented(
     append_operation_instance_trailer(&mut trailer_bytes, &snapshot.operation_instances);
     append_incoming_action_queue_trailer(&mut trailer_bytes, &snapshot.incoming_actions);
     append_intel_network_graph_trailer(&mut trailer_bytes, &snapshot.intel_network_graphs);
-    append_faction_trailer(&mut trailer_bytes, &snapshot.factions);
+    append_faction_trailer(
+        &mut trailer_bytes,
+        &snapshot.factions,
+        snapshot.faction_roster_complete,
+    );
 
     let mut operation_instance_rows = 0usize;
     let mut operation_instance_country_rows = 0usize;
@@ -1204,13 +1223,20 @@ pub fn encode_payload_with_summary(
 ///   magic "FACS" (4) | version u16 | header_len u16 (=12) | row_count u32
 /// then per faction: {faction_id u32, faction_type u32, name_hash u32,
 /// leader_tag_db_id u32, member_count u32} followed by member_count u32
-/// tag_db_ids (sorted ascending). Emitted only when >=1 faction present.
-fn append_faction_trailer(payload: &mut Vec<u8>, rows: &[FactionRow]) {
-    if rows.is_empty() {
+/// tag_db_ids (sorted ascending). Version 1 is retained for callers encoding a
+/// legacy non-empty snapshot without the explicit runtime witness. Version 2
+/// positively witnesses a complete roster and is emitted even with zero rows.
+fn append_faction_trailer(payload: &mut Vec<u8>, rows: &[FactionRow], roster_complete: bool) {
+    if rows.is_empty() && !roster_complete {
         return;
     }
     payload.extend_from_slice(FACTION_TRAILER_MAGIC);
-    payload.extend_from_slice(&FACTION_TRAILER_VERSION.to_le_bytes());
+    let version = if roster_complete {
+        FACTION_TRAILER_VERSION
+    } else {
+        FACTION_TRAILER_VERSION_V1_NONEMPTY
+    };
+    payload.extend_from_slice(&version.to_le_bytes());
     payload.extend_from_slice(&(FACTION_TRAILER_HEADER_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     for row in rows {
@@ -1406,6 +1432,7 @@ struct DecodedTrailers {
     incoming_actions: Vec<IncomingActionQueueRow>,
     intel_network_graphs: Vec<IntelNetworkGraphRow>,
     factions: Vec<FactionRow>,
+    faction_roster_complete: bool,
 }
 
 fn decode_domain53_trailers(
@@ -1470,11 +1497,13 @@ fn decode_domain53_trailers(
                 errors.push(format!("offset {offset}: duplicate faction trailer"));
                 return decoded;
             }
-            let (rows, consumed) = decode_faction_trailer(offset, payload, cursor, errors);
+            let (rows, roster_complete, consumed) =
+                decode_faction_trailer(offset, payload, cursor, errors);
             if consumed == 0 {
                 return decoded;
             }
             decoded.factions = rows;
+            decoded.faction_roster_complete = roster_complete;
             seen_facs = true;
             cursor += consumed;
         } else {
@@ -1711,12 +1740,12 @@ fn decode_faction_trailer(
     payload: &[u8],
     trailer_offset: usize,
     errors: &mut Vec<String>,
-) -> (Vec<FactionRow>, usize) {
+) -> (Vec<FactionRow>, bool, usize) {
     let Some(trailer) = payload.get(trailer_offset..) else {
         errors.push(format!(
             "offset {offset}: faction trailer offset {trailer_offset} beyond payload"
         ));
-        return (Vec::new(), 0);
+        return (Vec::new(), false, 0);
     };
     if trailer.len() < FACTION_TRAILER_HEADER_LEN {
         errors.push(format!(
@@ -1724,26 +1753,36 @@ fn decode_faction_trailer(
             trailer.len(),
             FACTION_TRAILER_HEADER_LEN
         ));
-        return (Vec::new(), 0);
+        return (Vec::new(), false, 0);
     }
     if &trailer[0..4] != FACTION_TRAILER_MAGIC {
         errors.push(format!("offset {offset}: faction trailer magic is invalid"));
-        return (Vec::new(), 0);
+        return (Vec::new(), false, 0);
     }
     let version = read_u16_le(trailer, 4);
     let header_len = read_u16_le(trailer, 6) as usize;
     let row_count = read_u32_le(trailer, 8) as usize;
-    if version != FACTION_TRAILER_VERSION || header_len != FACTION_TRAILER_HEADER_LEN {
+    if !matches!(
+        version,
+        FACTION_TRAILER_VERSION_V1_NONEMPTY | FACTION_TRAILER_VERSION
+    ) || header_len != FACTION_TRAILER_HEADER_LEN
+    {
         errors.push(format!(
             "offset {offset}: faction trailer header shape invalid (version {version}, header_len {header_len})"
         ));
-        return (Vec::new(), 0);
+        return (Vec::new(), false, 0);
+    }
+    if version == FACTION_TRAILER_VERSION_V1_NONEMPTY && row_count == 0 {
+        errors.push(format!(
+            "offset {offset}: legacy faction trailer cannot witness an empty roster"
+        ));
+        return (Vec::new(), false, 0);
     }
     if row_count > MAX_FACTION_ROWS {
         errors.push(format!(
             "offset {offset}: faction row_count {row_count} exceeds {MAX_FACTION_ROWS}"
         ));
-        return (Vec::new(), 0);
+        return (Vec::new(), false, 0);
     }
 
     let mut rows = Vec::with_capacity(row_count);
@@ -1754,7 +1793,7 @@ fn decode_faction_trailer(
             errors.push(format!(
                 "offset {offset}: faction row header truncated at byte {cursor}"
             ));
-            return (Vec::new(), 0);
+            return (Vec::new(), false, 0);
         }
         let faction_id = read_u32_le(trailer, cursor);
         let faction_type = read_u32_le(trailer, cursor + 4);
@@ -1766,14 +1805,14 @@ fn decode_faction_trailer(
             errors.push(format!(
                 "offset {offset}: faction row has invalid member_count {member_count}"
             ));
-            return (Vec::new(), 0);
+            return (Vec::new(), false, 0);
         }
         let members_len = member_count.saturating_mul(4);
         if trailer.len().saturating_sub(cursor) < members_len {
             errors.push(format!(
                 "offset {offset}: faction member list truncated at byte {cursor}"
             ));
-            return (Vec::new(), 0);
+            return (Vec::new(), false, 0);
         }
         if !seen.insert(faction_id) {
             errors.push(format!(
@@ -1816,7 +1855,7 @@ fn decode_faction_trailer(
             member_tag_db_ids,
         });
     }
-    (rows, cursor)
+    (rows, true, cursor)
 }
 
 pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
@@ -2440,6 +2479,7 @@ pub fn decode_snapshot_payload(
         snapshot.incoming_actions = trailers.incoming_actions;
         snapshot.intel_network_graphs = trailers.intel_network_graphs;
         snapshot.factions = trailers.factions;
+        snapshot.faction_roster_complete = trailers.faction_roster_complete;
         if !trailer_errors.is_empty() {
             return Err(trailer_errors);
         }
@@ -4950,9 +4990,14 @@ mod tests {
         let mut snapshot = fixture_snapshot();
         snapshot.factions = melt_faction_rows();
         let payload = encode_payload(&snapshot);
-        assert!(payload
+        let facs_offset = payload
             .windows(4)
-            .any(|window| window == FACTION_TRAILER_MAGIC));
+            .position(|window| window == FACTION_TRAILER_MAGIC)
+            .expect("legacy FACS trailer");
+        assert_eq!(
+            read_u16_le(&payload, facs_offset + 4),
+            FACTION_TRAILER_VERSION_V1_NONEMPTY
+        );
         let summary = decode_payload(0, &payload);
         assert!(
             summary.parse_errors.is_empty(),
@@ -4970,6 +5015,7 @@ mod tests {
         );
         let decoded = decode_snapshot_payload(0, &payload).unwrap();
         assert_eq!(decoded.factions, snapshot.factions);
+        assert!(decoded.faction_roster_complete);
         // Leader is members[0] in the melt; verify each decoded leader is a
         // member and the member counts match the melt shape.
         let counts: Vec<usize> = decoded
@@ -5058,6 +5104,28 @@ mod tests {
             .any(|window| window == FACTION_TRAILER_MAGIC));
         let decoded = decode_snapshot_payload(0, &payload).unwrap();
         assert!(decoded.factions.is_empty());
+        assert!(!decoded.faction_roster_complete);
+    }
+
+    #[test]
+    fn faction_trailer_v2_witnesses_measured_empty_roster() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.factions.clear();
+        snapshot.faction_roster_complete = true;
+        let payload = encode_payload(&snapshot);
+        let facs_offset = payload
+            .windows(4)
+            .position(|window| window == FACTION_TRAILER_MAGIC)
+            .expect("FACS v2 completeness witness");
+        assert_eq!(
+            read_u16_le(&payload, facs_offset + 4),
+            FACTION_TRAILER_VERSION
+        );
+        assert_eq!(read_u32_le(&payload, facs_offset + 8), 0);
+
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert!(decoded.factions.is_empty());
+        assert!(decoded.faction_roster_complete);
     }
 
     #[test]
@@ -5366,6 +5434,7 @@ mod tests {
             incoming_actions: Vec::new(),
             intel_network_graphs: Vec::new(),
             factions: Vec::new(),
+            faction_roster_complete: false,
         }
     }
 

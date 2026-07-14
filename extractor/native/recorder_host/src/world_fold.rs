@@ -1154,6 +1154,10 @@ pub struct WorldFold {
     /// Successful stateful fold domains. Used to distinguish absent-never-seen
     /// from a measured empty baseline when building schema containers.
     successful_fold_domains_seen: BTreeSet<u16>,
+    /// Persistent d53 wire-presence bit, set before decode/gates. Unlike
+    /// `successful_fold_domains_seen`, this survives a first-record failure so
+    /// later absent hours still serialize roster unavailability.
+    domain53_seen_in_stream: bool,
     /// Domains that were present this hour but unknown/fail-closed. Their
     /// accumulators are retained, but owned leaves emit null for this snapshot.
     fold_domains_unknown_this_hour: BTreeSet<u16>,
@@ -1258,28 +1262,39 @@ struct Domain53WorldOverlay {
     operation_instances: Vec<diplomacy53::compact::OperationInstanceRow>,
     incoming_actions: Vec<diplomacy53::compact::IncomingActionQueueRow>,
     intel_network_graphs: Vec<diplomacy53::compact::IntelNetworkGraphRow>,
-    factions: Vec<diplomacy53::compact::FactionRow>,
-    faction_roster_status: FactionRosterStatus,
+    faction_roster: FactionRoster,
 }
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
-enum FactionRosterStatus {
+/// The status and rows are one value so projection cannot observe a measured
+/// empty status beside stale rows (or measured rows beside unavailable).
+#[derive(Default, Clone)]
+enum FactionRoster {
     /// No FACS trailer/completeness witness. This includes the current
     /// collector's unreadable-system/header/slot path, which emits no trailer.
     #[default]
     Unavailable,
-    /// A roster with an explicit completeness witness. The current wire can
-    /// produce only a non-empty value; a future zero-row FACS witness can use
-    /// the same state without conflating it with Unavailable.
-    Measured { is_empty: bool },
+    /// A roster with an explicit completeness witness. FACS v1 witnesses its
+    /// legacy non-empty rows; FACS v2 also witnesses a zero-row roster.
+    Measured(Vec<diplomacy53::compact::FactionRow>),
 }
 
-impl FactionRosterStatus {
-    fn as_str(self) -> &'static str {
+impl FactionRoster {
+    fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable)
+    }
+
+    fn as_str(&self) -> &'static str {
         match self {
             Self::Unavailable => "unavailable",
-            Self::Measured { is_empty: true } => "measured_empty",
-            Self::Measured { is_empty: false } => "measured_nonempty",
+            Self::Measured(rows) if rows.is_empty() => "measured_empty",
+            Self::Measured(_) => "measured_nonempty",
+        }
+    }
+
+    fn rows(&self) -> Option<&[diplomacy53::compact::FactionRow]> {
+        match self {
+            Self::Unavailable => None,
+            Self::Measured(rows) => Some(rows),
         }
     }
 }
@@ -1419,6 +1434,7 @@ impl WorldFold {
             hub_motorization: BTreeMap::new(),
             air_wing_cumulative: BTreeMap::new(),
             successful_fold_domains_seen: BTreeSet::new(),
+            domain53_seen_in_stream: false,
             fold_domains_unknown_this_hour: BTreeSet::new(),
             land_combats_known_this_hour: false,
             land_combats_unknown_note_this_hour: None,
@@ -2682,6 +2698,18 @@ impl WorldFold {
         diplomacy_world.insert("subjects".into(), json!([]));
         if self.domain53_known_this_hour {
             self.project_domain53_diplomacy_world(&mut diplomacy_world, &mut unresolved);
+        } else if self.domain53_seen_in_stream {
+            // Suppressing failed/malformed/absent current-hour d53 rows must not
+            // suppress the roster safety signal with them. Serialize the atomic
+            // unavailable state even when every other d53 projection is withheld,
+            // so typed replay cannot reinterpret an absent status as measured
+            // emptiness (or consult a stale legacy leaf).
+            let mut extra = Map::new();
+            extra.insert(
+                "faction_roster_status".into(),
+                json!(FactionRoster::Unavailable.as_str()),
+            );
+            diplomacy_world.insert(DOMAIN53_EXTRA_KEY.into(), Value::Object(extra));
         }
         if self.market_trade_unknown_this_hour {
             diplomacy_world.insert("trade_contracts".into(), Value::Null);
@@ -2808,8 +2836,10 @@ impl WorldFold {
             }
         };
         if self.domain53_known_this_hour {
-            if self.domain53_world_overlay_this_hour.faction_roster_status
-                == FactionRosterStatus::Unavailable
+            if self
+                .domain53_world_overlay_this_hour
+                .faction_roster
+                .is_unavailable()
             {
                 push_problem(
                     DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
@@ -3253,13 +3283,11 @@ impl WorldFold {
         countries: &mut Map<String, Value>,
         unresolved: &mut BTreeSet<u32>,
     ) {
-        if self.domain53_world_overlay_this_hour.faction_roster_status
-            == FactionRosterStatus::Unavailable
-        {
+        let Some(factions) = self.domain53_world_overlay_this_hour.faction_roster.rows() else {
             return;
-        }
+        };
         let conflicts = self.domain53_faction_member_conflicts();
-        for faction in &self.domain53_world_overlay_this_hour.factions {
+        for faction in factions {
             let leader = self.country_ref_json(faction.leader_tag_db_id, unresolved);
             for member_tag_db_id in &faction.member_tag_db_ids {
                 if conflicts.contains(member_tag_db_id) {
@@ -3287,14 +3315,12 @@ impl WorldFold {
     }
 
     fn domain53_faction_member_conflicts(&self) -> BTreeSet<u32> {
-        if self.domain53_world_overlay_this_hour.faction_roster_status
-            == FactionRosterStatus::Unavailable
-        {
+        let Some(factions) = self.domain53_world_overlay_this_hour.faction_roster.rows() else {
             return BTreeSet::new();
-        }
+        };
         let mut faction_by_member = BTreeMap::new();
         let mut conflicts = BTreeSet::new();
-        for faction in &self.domain53_world_overlay_this_hour.factions {
+        for faction in factions {
             for member_tag_db_id in &faction.member_tag_db_ids {
                 if faction_by_member
                     .insert(*member_tag_db_id, faction.faction_id)
@@ -3555,7 +3581,7 @@ impl WorldFold {
             "faction_roster_status".into(),
             json!(if faction_member_conflicts.is_empty() {
                 self.domain53_world_overlay_this_hour
-                    .faction_roster_status
+                    .faction_roster
                     .as_str()
             } else {
                 "ambiguous_member_exclusivity"
@@ -3573,15 +3599,16 @@ impl WorldFold {
                 ),
             );
         }
-        if self.domain53_world_overlay_this_hour.faction_roster_status
-            != FactionRosterStatus::Unavailable
-            && faction_member_conflicts.is_empty()
+        if let Some(faction_rows) = self
+            .domain53_world_overlay_this_hour
+            .faction_roster
+            .rows()
+            .filter(|_| faction_member_conflicts.is_empty())
         {
             extra.insert(
                 "faction_rows".into(),
                 Value::Array(
-                    self.domain53_world_overlay_this_hour
-                        .factions
+                    faction_rows
                         .iter()
                         .map(|row| {
                             json!({
@@ -11130,6 +11157,10 @@ impl WorldFold {
 
     // --- DOMAIN 53 diplomacy_intel_operatives_live (validated R2 slice) ---
     fn fold_diplomacy_intel_operatives(&mut self, payload: &[u8]) -> Result<(), String> {
+        // Set before decode/gates: a malformed first d53 record is still proof
+        // that this is a modern d53 stream whose later absent hours must carry an
+        // explicit unavailable roster status.
+        self.domain53_seen_in_stream = true;
         // A decode failure is a d53 rejection like any other: it must set
         // known=false so a stale success earlier this hour is NOT projected
         // (Codex). Do NOT clear the accumulator — a later good frame this hour can
@@ -11150,14 +11181,10 @@ impl WorldFold {
             }
         };
         let status_flags = decoded.status_flags;
-        // FACS is emitted only when the producer has a complete non-empty
-        // roster. With the current wire contract, no FACS rows therefore means
-        // unavailable, never measured-empty.
-        let faction_roster_status = if decoded.factions.is_empty() {
-            FactionRosterStatus::Unavailable
-        } else {
-            FactionRosterStatus::Measured { is_empty: false }
-        };
+        // The trailer witness, not row count, distinguishes positive absence
+        // from unavailability. Legacy FACS v1 decodes witnessed only when it
+        // carries rows; FACS v2 can witness row_count == 0.
+        let faction_roster_witnessed = decoded.faction_roster_complete;
         // Layer-2 (D53_LAYER2_SPEC.md): a tolerated-PARTIAL d53 frame carries
         // valid rows plus known per-row omissions. SPARSE-MERGE it into the hour
         // (retain rows it omits) instead of clearing; a CLEAN frame is
@@ -11242,6 +11269,11 @@ impl WorldFold {
         // behavior); a tolerated-PARTIAL frame keeps the accumulator and merges.
         // The clear happens HERE (not at the top) so a failed frame above never
         // wipes a good accumulator before returning (Codex).
+        // FACS absence is unmeasured, not revocation. Preserve the prior
+        // measured roster as one atomic value unless this record carries a
+        // replacement witness. At an hour boundary the accumulator is already
+        // reset, so a first no-witness record still projects unavailable.
+        let retained_faction_roster = self.domain53_world_overlay_this_hour.faction_roster.clone();
         if !is_partial && !is_delta {
             self.domain53_country_overlays_this_hour.clear();
             self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
@@ -11250,6 +11282,10 @@ impl WorldFold {
         } else if is_delta {
             self.domain53_country_overlays_this_hour = self.domain53_delta_country_overlays.clone();
             self.domain53_world_overlay_this_hour = self.domain53_delta_world_overlay.clone();
+            // The delta baseline carries row families, but FACS absence is not
+            // a roster delta. Keep the current hour's atomic roster unless the
+            // decoded record supplies a replacement witness below.
+            self.domain53_world_overlay_this_hour.faction_roster = retained_faction_roster.clone();
             self.domain53_world_overlay_this_hour
                 .operation_instances
                 .clear();
@@ -11259,9 +11295,6 @@ impl WorldFold {
             self.domain53_world_overlay_this_hour
                 .intel_network_graphs
                 .clear();
-            self.domain53_world_overlay_this_hour.factions.clear();
-            self.domain53_world_overlay_this_hour.faction_roster_status =
-                FactionRosterStatus::Unavailable;
             // A DELTA|PARTIAL frame (lane/d53-partial-delta) is still a partial
             // read: record the same non-fatal partial-data problem the legacy
             // full-emit partial frame records, so the folded snapshot's
@@ -11431,10 +11464,11 @@ impl WorldFold {
         }
         if is_partial || is_delta {
             // Sparse-merge the world-scoped families by their stable keys into the
-            // hour's accumulator (retain any this frame omits); update the status.
+            // hour's accumulator (retain any this frame omits). A witnessed FACS
+            // roster is complete and therefore replaces atomically, even on a
+            // tolerated-PARTIAL record; no witness leaves the prior value intact.
             let world = &mut self.domain53_world_overlay_this_hour;
             world.status_flags = domain53_projected_status_flags(status_flags);
-            world.faction_roster_status = faction_roster_status;
             for row in decoded.wars {
                 let key =
                     domain53_war_key(domain53_row_key(row.first_tag_db_id), row.second_tag_db_id);
@@ -11478,8 +11512,8 @@ impl WorldFold {
                     (r.strategic_operative_index, r.network_slot)
                 });
             }
-            for row in decoded.factions {
-                domain53_upsert_by_key(&mut world.factions, row, |r| r.faction_id);
+            if faction_roster_witnessed {
+                world.faction_roster = FactionRoster::Measured(decoded.factions);
             }
         } else {
             // CLEAN frame: authoritative full-replace (byte-identical).
@@ -11492,8 +11526,11 @@ impl WorldFold {
                 operation_instances: decoded.operation_instances,
                 incoming_actions: decoded.incoming_actions,
                 intel_network_graphs: decoded.intel_network_graphs,
-                factions: decoded.factions,
-                faction_roster_status,
+                faction_roster: if faction_roster_witnessed {
+                    FactionRoster::Measured(decoded.factions)
+                } else {
+                    retained_faction_roster
+                },
             };
         }
         self.domain53_country_overlays_this_hour
