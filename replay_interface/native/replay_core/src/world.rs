@@ -6497,7 +6497,21 @@ mod tests {
         );
     }
 
+    // MERGE-WAVE CONFLICT (2026-07-14, boundary-auth × foldwave2 — OWNER DECISION OWED):
+    // This test simulates a malformed D45 via a TRUNCATED payload and expects the fold to
+    // SUCCEED while degrading D45 (record a "malformed_payload" problem, mark focus
+    // DomainUnavailable, retain carried raw metrics). But boundary-auth's stream-boundary
+    // authority now validates every DOMAIN_DATA payload at production-fold INGEST
+    // (stream_fold.rs drive_fold) and FAILS-CLOSED on a structurally-malformed payload — its
+    // own tests assert drive_fold returns InvalidData. The two gated designs are directly
+    // contradictory on this scenario: fail-closed-whole-fold (boundary-auth) vs
+    // per-domain-degrade (foldwave2 + zero-data-loss). The merged code keeps boundary-auth's
+    // fail-closed behavior; this foldwave2 test is PARKED pending the owner's call on whether
+    // a malformed single-domain payload should degrade that domain or reject the fold.
+    // foldwave2's D45->focus_status mapping itself is still exercised via the coverage-metadata
+    // (domain_problems / provenance envelope) tests, which do not truncate a payload.
     #[test]
+    #[ignore = "merge-wave boundary-auth×foldwave2 conflict: truncated-payload degradation vs fail-closed ingest — owner decision owed"]
     fn folded_malformed_d45_without_d12_is_unavailable_to_typed_consumer() {
         const HOUR_A: i64 = 16_959_360;
         const HOUR_B: i64 = HOUR_A + 1;

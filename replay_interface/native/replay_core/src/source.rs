@@ -1368,6 +1368,14 @@ mod tests {
                     "let data = std::fs::read(path.as_ref())?;"
                 )
                 | ("snapshot/container.rs", "use std::path::Path;")
+                // String-only source-path canonicalization (stitching alias
+                // ledger): `components.join("/")` builds a normalized String for
+                // comparison — it is never opened. Slice/String join, not
+                // Path::join. (merge-wave: stitching + replay-loader F4 gate.)
+                | (
+                    "snapshot/container.rs",
+                    "let joined = components.join(\"/\");"
+                )
                 | ("snapshot/dir_store/linux.rs", "use std::fs::File;")
                 | ("snapshot/dir_store/linux.rs", "use std::path::Path;")
                 | (
