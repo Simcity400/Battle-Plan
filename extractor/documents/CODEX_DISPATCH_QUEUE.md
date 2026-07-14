@@ -3410,3 +3410,24 @@ the DEFINITIVE fix (closes both directions), not another per-direction patch - s
 not the symptom" move as autoattach default-deny. ONE fix round for r5.
 IN FLIGHT: facs-wire fix6, replay-loader fix4, foldwave2 fix4, stitching r3. MERGE-READY: boundary-
 auth, autoattach (SHIP @15a817f3e).
+
+## 2026-07-14 replay-loader fix4 verified GREEN -> r4 gate launched (expected FINAL)
+Both r3 findings closed (out-file fresh this time; verified worktree directly regardless):
+- F1 verify->promote TOCTOU (mechanism a): recorder opens temp FILE_SHARE_READ only (deny external
+  write/delete/rename), holds THAT handle through strict verify + capture-hash compare (main.rs:4720),
+  promotes via SetFileInformationByHandle(FileRenameInfo) on the SAME handle, NO source-path
+  re-resolution (main.rs:5236,5266); other 2 finalization paths also hold the guard; test
+  post_verify_pathname_swap_never_promotes_impostor (main.rs:28847) RED (impostor promoted) ->
+  GREEN. recorder_host/main.rs authorized into scope for this.
+- F2 F4 gate default-deny over SITES: expanded primitives (std::fs/File/OpenOptions/CreateFile/
+  CreateFile2/A/W/Nt+ZwCreateFile/Nt+ZwOpenFile/OpenFileById/ReOpenFile, multi-line + whitespace-
+  split + identifier-boundary, Path/PathBuf join+push); file-access-capable module w/ ZERO recognized
+  sites FAILS (source.rs:1644); classified==60 REMOVED; RED CreateFile2 violations:[] -> GREEN all
+  variants caught.
+ORCHESTRATOR-VERIFIED: snapshot 72/0 (only accepted Dev-Mode symlink skipped), recorder_host 200
+lib/200 bin(2 ign) 0-failed incl swap test, replay_core 71/0 incl F4 gate. Scope: snapshot/* +
+replay_core/source.rs + recorder_host/main.rs (F1). regate-replayloader-r4 LAUNCHED (attacks deny-
+share race window, rename collision/ReplaceIfExists, other finalization paths, unrecognized opens
+CreateFileTransacted/mmap/tokio/alias, file-access-capable detection holes, + full regression).
+IN FLIGHT: replay-loader r4 gate, facs-wire fix6, foldwave2 fix4, stitching r3. MERGE-READY:
+boundary-auth, autoattach (SHIP @15a817f3e).
