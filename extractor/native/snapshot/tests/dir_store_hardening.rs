@@ -65,7 +65,11 @@ fn dir_load_file_rejects_traversal_outside_game_dir() {
     let store = Store::open(&tmp.path);
 
     // the legitimate file still loads fine.
-    assert!(store.load_file("g", "000000000100.snapshot.json").is_ok());
+    let canonical = store.load_file("g", "000000000100.snapshot.json");
+    assert!(
+        canonical.is_ok(),
+        "canonical handle-relative load failed: {canonical:?}"
+    );
     // a segment-prefixed rollback name (legitimate, contains a '/') still loads.
     fs::create_dir_all(gdir.join("seg3")).unwrap();
     fs::write(
@@ -111,4 +115,38 @@ fn dir_load_by_hour_rejects_negative_synthesized_name() {
         r.is_err(),
         "a missing/negative hour must error, never panic or traverse"
     );
+}
+
+#[test]
+fn directory_snapshot_duplicate_members_are_rejected_recursively() {
+    for (case, snapshot_bytes, duplicate_key) in [
+        (
+            "duplicate_session",
+            br#"{"game_id":"g","hour_index":1,"session":{"active_dlcs":["Wrong DLC"]},"session":{}}"#.as_slice(),
+            "session",
+        ),
+        (
+            "duplicate_nested_active_dlcs",
+            br#"{"game_id":"g","hour_index":1,"session":{"active_dlcs":["Wrong DLC"],"active_dlcs":[]}}"#.as_slice(),
+            "active_dlcs",
+        ),
+    ] {
+        let tmp = Tmp::new(case);
+        let game = tmp.path.join("g");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(
+            game.join("index.json"),
+            br#"{"game_id":"g","snapshots":[{"hour_index":1,"file":"000000000001.snapshot.json"}]}"#,
+        )
+        .unwrap();
+        fs::write(game.join("000000000001.snapshot.json"), snapshot_bytes).unwrap();
+        let store = Store::open_directory(&tmp.path).unwrap();
+
+        let error = store
+            .load_file("g", "000000000001.snapshot.json")
+            .expect_err("duplicate snapshot members must be rejected")
+            .to_string();
+        assert!(error.contains("duplicate JSON member"), "{case}: {error}");
+        assert!(error.contains(duplicate_key), "{case}: {error}");
+    }
 }

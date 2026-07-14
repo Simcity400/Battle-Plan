@@ -1361,7 +1361,16 @@ fn compact_stream_container_fails_closed() {
         },
         PackEntry {
             path: format!("payload/{game}/recorder/native_session_manifest.json"),
-            bytes: serde_json::to_vec(&json!({ "session": "synthetic fixture" })).unwrap(),
+            bytes: serde_json::to_vec(&json!({
+                "modset": {
+                    "resolved": true,
+                    "errors": [],
+                    "dlc": { "enabled": [] },
+                    "dlc_display_names": {},
+                    "localisation_language": "l_english"
+                }
+            }))
+            .unwrap(),
             role: "recorder_manifest",
             hour_index: None,
         },
@@ -1385,6 +1394,797 @@ fn compact_stream_container_fails_closed() {
     }
 
     let _ = fs::remove_dir_all(&root);
+}
+
+fn resolved_recorder_manifest() -> Value {
+    json!({
+        "modset": {
+            "resolved": true,
+            "errors": [],
+            "dlc": {
+                "installed": ["dlc/a.dlc", "dlc/b.dlc"],
+                "enabled": ["dlc/a.dlc"],
+                "disabled": ["dlc/b.dlc"]
+            },
+            "dlc_display_names": {
+                "dlc/a.dlc": "DLC A",
+                "dlc/b.dlc": "DLC B"
+            },
+            "localisation_language": "l_english"
+        }
+    })
+}
+
+fn metadata_snapshot(game: &str, rest: Value) -> Value {
+    let mut snapshot = json!({
+        "game_id": game,
+        "hour_index": 1,
+        "date": "1936.1.1.1",
+        "schema_version": "1"
+    });
+    let object = snapshot.as_object_mut().unwrap();
+    for (key, value) in rest.as_object().unwrap() {
+        object.insert(key.clone(), value.clone());
+    }
+    snapshot
+}
+
+fn write_metadata_container(
+    root: &Path,
+    tag: &str,
+    timeline_bytes: Vec<u8>,
+    snapshot: Value,
+    extra_entries: Vec<(String, Vec<u8>, &'static str)>,
+) -> PathBuf {
+    write_metadata_container_with_timeline_role(
+        root,
+        tag,
+        timeline_bytes,
+        snapshot,
+        "timeline",
+        extra_entries,
+    )
+}
+
+fn write_metadata_container_with_timeline_role(
+    root: &Path,
+    tag: &str,
+    timeline_bytes: Vec<u8>,
+    snapshot: Value,
+    timeline_role: &'static str,
+    extra_entries: Vec<(String, Vec<u8>, &'static str)>,
+) -> PathBuf {
+    let game = format!("metadata_{tag}");
+    let index = json!({
+        "game_id": game,
+        "schema_version": "1",
+        "snapshots": [{
+            "hour_index": 1,
+            "date": "1936.1.1.1",
+            "file": "000000000001.snapshot.json"
+        }]
+    });
+    let mut entries = vec![
+        PackEntry {
+            path: format!("payload/{game}/index.json"),
+            bytes: serde_json::to_vec(&index).unwrap(),
+            role: "index",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/timeline.json"),
+            bytes: timeline_bytes,
+            role: timeline_role,
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/000000000001.snapshot.json"),
+            bytes: serde_json::to_vec(&snapshot).unwrap(),
+            role: "snapshot",
+            hour_index: Some(1),
+        },
+    ];
+    entries.extend(
+        extra_entries
+            .into_iter()
+            .map(|(path, bytes, role)| PackEntry {
+                path: format!("payload/{game}/{path}"),
+                bytes,
+                role,
+                hour_index: None,
+            }),
+    );
+    let path = root.join(format!("{tag}.battleplan"));
+    fs::write(
+        &path,
+        pack(
+            &game,
+            &entries,
+            &PackIdentity {
+                schema_version: Some("1".into()),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+fn write_metadata_container_without_timeline(
+    root: &Path,
+    tag: &str,
+    extra_entries: Vec<(String, Vec<u8>, &'static str)>,
+) -> PathBuf {
+    let game = format!("metadata_{tag}");
+    let index = json!({
+        "game_id": game,
+        "schema_version": "1",
+        "snapshots": [{"hour_index": 1, "file": "000000000001.snapshot.json"}]
+    });
+    let snapshot = metadata_snapshot(&game, json!({}));
+    let mut entries = vec![
+        PackEntry {
+            path: format!("payload/{game}/index.json"),
+            bytes: serde_json::to_vec(&index).unwrap(),
+            role: "index",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/000000000001.snapshot.json"),
+            bytes: serde_json::to_vec(&snapshot).unwrap(),
+            role: "snapshot",
+            hour_index: Some(1),
+        },
+    ];
+    entries.extend(
+        extra_entries
+            .into_iter()
+            .map(|(path, bytes, role)| PackEntry {
+                path: format!("payload/{game}/{path}"),
+                bytes,
+                role,
+                hour_index: None,
+            }),
+    );
+    let path = root.join(format!("{tag}.battleplan"));
+    fs::write(
+        &path,
+        pack(&game, &entries, &PackIdentity::default(), false).unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn recorder_metadata_binds_session_metadata_end_to_end() {
+    let root = unique_temp_dir("recorder_metadata_e2e");
+    let manifest = serde_json::to_vec(&resolved_recorder_manifest()).unwrap();
+    let path = write_metadata_container(
+        &root,
+        "canonical",
+        br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.to_vec(),
+        metadata_snapshot("metadata_canonical", json!({"world": {"scenario": {}}})),
+        vec![(
+            "recorder/native_session_manifest.json".into(),
+            manifest,
+            "recorder_manifest",
+        )],
+    );
+    let timeline = WorldTimeline::open(open_recording(&path).unwrap()).unwrap();
+    let frame = timeline.frame(1).unwrap();
+    assert_eq!(
+        frame.session_metadata().active_dlcs,
+        Leaf::Measured(vec!["DLC A".to_string()])
+    );
+    assert_eq!(
+        frame.session_metadata().localisation_language,
+        Leaf::Measured("l_english".to_string())
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn genuinely_unreferenced_snapshot_container_remains_legacy() {
+    let root = unique_temp_dir("metadata_legacy");
+    let path = write_metadata_container(
+        &root,
+        "legacy",
+        br#"{"format":"snapshot_timeline_v1"}"#.to_vec(),
+        metadata_snapshot("metadata_legacy", json!({})),
+        vec![],
+    );
+    let timeline = WorldTimeline::open(open_recording(&path).unwrap()).unwrap();
+    let frame = timeline.frame(1).unwrap();
+    assert_eq!(frame.session_metadata().active_dlcs, Leaf::Absent);
+    assert_eq!(frame.session_metadata().localisation_language, Leaf::Absent);
+    let _ = fs::remove_dir_all(root);
+}
+#[test]
+fn wholly_absent_canonical_timeline_obeys_the_same_legacy_gate() {
+    let root = unique_temp_dir("metadata_no_timeline_matrix");
+    let legacy = write_metadata_container_without_timeline(&root, "no_timeline_legacy", vec![]);
+    let timeline = WorldTimeline::open(open_recording(&legacy).unwrap()).unwrap();
+    let frame = timeline.frame(1).unwrap();
+    assert_eq!(frame.session_metadata().active_dlcs, Leaf::Absent);
+
+    let orphan = write_metadata_container_without_timeline(
+        &root,
+        "no_timeline_orphan_role",
+        vec![(
+            "recorder/native_session_manifest.json".into(),
+            serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
+            "recorder_manifest",
+        )],
+    );
+    let message = open_recording(&orphan).err().unwrap().to_string();
+    assert!(message.contains("recorder_manifest"), "{message}");
+    assert!(message.contains("canonical timeline"), "{message}");
+    assert!(message.contains("absent"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn container_timeline_role_reconciliation_matrix_fails_closed() {
+    let root = unique_temp_dir("metadata_timeline_roles");
+
+    let zero = write_metadata_container_with_timeline_role(
+        &root,
+        "zero_timeline_role",
+        br#"{"legacy":true}"#.to_vec(),
+        metadata_snapshot("metadata_zero_timeline_role", json!({})),
+        "metadata",
+        vec![],
+    );
+    let timeline = WorldTimeline::open(open_recording(&zero).unwrap()).unwrap();
+    assert_eq!(
+        timeline.frame(1).unwrap().session_metadata().active_dlcs,
+        Leaf::Absent
+    );
+
+    let mismatch = write_metadata_container_with_timeline_role(
+        &root,
+        "mismatched_timeline_role",
+        br#"{"legacy":true}"#.to_vec(),
+        metadata_snapshot("metadata_mismatched_timeline_role", json!({})),
+        "metadata",
+        vec![("other_timeline.json".into(), b"{}".to_vec(), "timeline")],
+    );
+    let message = open_recording(&mismatch).err().unwrap().to_string();
+    assert!(message.contains("timeline role"), "{message}");
+    assert!(message.contains("other_timeline.json"), "{message}");
+
+    let duplicate = write_metadata_container(
+        &root,
+        "duplicate_timeline_roles",
+        br#"{"legacy":true}"#.to_vec(),
+        metadata_snapshot("metadata_duplicate_timeline_roles", json!({})),
+        vec![("other_timeline.json".into(), b"{}".to_vec(), "timeline")],
+    );
+    let message = open_recording(&duplicate).err().unwrap().to_string();
+    assert!(message.contains("timeline role"), "{message}");
+    assert!(message.contains("multiple"), "{message}");
+    assert!(message.contains("other_timeline.json"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn recorder_role_without_timeline_reference_is_inconsistent() {
+    let root = unique_temp_dir("metadata_orphan_recorder_role");
+    let path = write_metadata_container(
+        &root,
+        "orphan_recorder_role",
+        br#"{"legacy":true}"#.to_vec(),
+        metadata_snapshot("metadata_orphan_recorder_role", json!({})),
+        vec![(
+            "recorder/native_session_manifest.json".into(),
+            serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
+            "recorder_manifest",
+        )],
+    );
+    let message = open_recording(&path).err().unwrap().to_string();
+    assert!(message.contains("recorder_manifest"), "{message}");
+    assert!(message.contains("session_manifest"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn referenced_but_missing_recorder_role_is_never_legacy() {
+    let root = unique_temp_dir("metadata_missing_role");
+    let reference = "recorder/native_session_manifest.json";
+    let path = write_metadata_container(
+        &root,
+        "missing_role",
+        format!(r#"{{"session_manifest":"{reference}"}}"#).into_bytes(),
+        metadata_snapshot("metadata_missing_role", json!({})),
+        vec![],
+    );
+    let error = open_recording(&path).err().expect("must reject");
+    let message = error.to_string();
+    assert!(
+        message.contains("timeline.json.session_manifest"),
+        "{message}"
+    );
+    assert!(message.contains(reference), "{message}");
+    assert!(message.contains("recorder_manifest"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_invalid_session_manifest_references_fail_closed() {
+    let root = unique_temp_dir("metadata_invalid_refs");
+    let cases = vec![
+        ("null", json!(null)),
+        ("blank", json!("  ")),
+        ("non_string", json!(7)),
+        ("absolute", json!("/recorder/manifest.json")),
+        (
+            "backslash",
+            Value::String(format!("recorder{}manifest.json", char::from(92))),
+        ),
+        ("dot", json!("recorder/./manifest.json")),
+        ("dotdot", json!("recorder/../manifest.json")),
+        ("empty_segment", json!("recorder//manifest.json")),
+    ];
+    for (tag, reference) in cases {
+        let path = write_metadata_container(
+            &root,
+            tag,
+            serde_json::to_vec(&json!({"session_manifest": reference})).unwrap(),
+            metadata_snapshot(&format!("metadata_{tag}"), json!({})),
+            vec![],
+        );
+        let error = open_recording(&path).err().expect("must reject");
+        let message = error.to_string();
+        assert!(
+            message.contains("timeline.json.session_manifest"),
+            "{tag}: {message}"
+        );
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn duplicate_and_mismatched_recorder_roles_fail_closed() {
+    let root = unique_temp_dir("metadata_bad_roles");
+    let timeline = br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.to_vec();
+    let manifest = serde_json::to_vec(&resolved_recorder_manifest()).unwrap();
+
+    let mismatch = write_metadata_container(
+        &root,
+        "role_mismatch",
+        timeline.clone(),
+        metadata_snapshot("metadata_role_mismatch", json!({})),
+        vec![(
+            "recorder/other.json".into(),
+            manifest.clone(),
+            "recorder_manifest",
+        )],
+    );
+    let message = open_recording(&mismatch).err().unwrap().to_string();
+    assert!(message.contains("session_manifest"), "{message}");
+    assert!(message.contains("recorder_manifest path"), "{message}");
+
+    let duplicate = write_metadata_container(
+        &root,
+        "role_duplicate",
+        timeline,
+        metadata_snapshot("metadata_role_duplicate", json!({})),
+        vec![
+            (
+                "recorder/native_session_manifest.json".into(),
+                manifest.clone(),
+                "recorder_manifest",
+            ),
+            ("recorder/backup.json".into(), manifest, "recorder_manifest"),
+        ],
+    );
+    let message = open_recording(&duplicate).err().unwrap().to_string();
+    assert!(
+        message.contains("exactly one recorder_manifest"),
+        "{message}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn unresolved_or_incomplete_recorder_binding_fails_closed() {
+    let root = unique_temp_dir("metadata_bad_binding");
+    let timeline = br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.to_vec();
+    let unresolved = json!({
+        "modset": {
+            "resolved": false,
+            "errors": ["settings.txt language was unreadable"]
+        }
+    });
+    let unresolved_path = write_metadata_container(
+        &root,
+        "unresolved",
+        timeline.clone(),
+        metadata_snapshot("metadata_unresolved", json!({})),
+        vec![(
+            "recorder/native_session_manifest.json".into(),
+            serde_json::to_vec(&unresolved).unwrap(),
+            "recorder_manifest",
+        )],
+    );
+    let message = open_recording(&unresolved_path).err().unwrap().to_string();
+    assert!(message.contains("unresolved"), "{message}");
+    assert!(
+        message.contains("settings.txt language was unreadable"),
+        "{message}"
+    );
+
+    let mut missing_name = resolved_recorder_manifest();
+    missing_name["modset"]["dlc_display_names"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dlc/a.dlc");
+    let missing_name_path = write_metadata_container(
+        &root,
+        "missing_name",
+        timeline,
+        metadata_snapshot("metadata_missing_name", json!({})),
+        vec![(
+            "recorder/native_session_manifest.json".into(),
+            serde_json::to_vec(&missing_name).unwrap(),
+            "recorder_manifest",
+        )],
+    );
+    let message = open_recording(&missing_name_path)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("metadata binding check"), "{message}");
+    assert!(message.contains("dlc/a.dlc"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn snapshot_session_or_scenario_conflicts_are_rejected_before_injection() {
+    let root = unique_temp_dir("metadata_conflicts");
+    let timeline = br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.to_vec();
+    let manifest = serde_json::to_vec(&resolved_recorder_manifest()).unwrap();
+    let cases = [
+        (
+            "session_conflict",
+            json!({"session": {"active_dlcs": ["Wrong DLC"]}}),
+            "session.active_dlcs",
+        ),
+        (
+            "scenario_conflict",
+            json!({"world": {"scenario": {"localisation_language": "l_french"}}}),
+            "world.scenario.localisation_language",
+        ),
+        (
+            "malformed_world",
+            json!({"world": []}),
+            "snapshot world is not an object",
+        ),
+    ];
+    for (tag, rest, expected_context) in cases {
+        let path = write_metadata_container(
+            &root,
+            tag,
+            timeline.clone(),
+            metadata_snapshot(&format!("metadata_{tag}"), rest),
+            vec![(
+                "recorder/native_session_manifest.json".into(),
+                manifest.clone(),
+                "recorder_manifest",
+            )],
+        );
+        let timeline = WorldTimeline::open(open_recording(&path).unwrap()).unwrap();
+        let message = timeline.frame(1).err().expect("must reject").to_string();
+        assert!(message.contains(expected_context), "{tag}: {message}");
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+fn write_metadata_directory(root: &Path, game: &str, timeline_bytes: &[u8], manifest_bytes: &[u8]) {
+    let game_dir = root.join(game);
+    fs::create_dir_all(game_dir.join("recorder")).unwrap();
+    fs::write(
+        game_dir.join("index.json"),
+        serde_json::to_vec(&json!({
+            "game_id": game,
+            "schema_version": "1",
+            "snapshots": [{
+                "hour_index": 1,
+                "file": "000000000001.snapshot.json"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        game_dir.join("000000000001.snapshot.json"),
+        serde_json::to_vec(&metadata_snapshot(game, json!({}))).unwrap(),
+    )
+    .unwrap();
+    fs::write(game_dir.join("timeline.json"), timeline_bytes).unwrap();
+    fs::write(
+        game_dir
+            .join("recorder")
+            .join("native_session_manifest.json"),
+        manifest_bytes,
+    )
+    .unwrap();
+}
+
+#[test]
+fn directory_reference_gate_rejects_missing_and_explicit_invalid_manifest() {
+    let root = unique_temp_dir("metadata_directory_reference_gate");
+    let missing = root.join("missing");
+    let reference = "recorder/native_session_manifest.json";
+    write_metadata_directory(
+        &missing,
+        "missing_manifest",
+        br#"{"session_manifest":"recorder/native_session_manifest.json"}"#,
+        &serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
+    );
+    fs::remove_file(
+        missing
+            .join("missing_manifest")
+            .join("recorder")
+            .join("native_session_manifest.json"),
+    )
+    .unwrap();
+    let message = open_recording(&missing).err().unwrap().to_string();
+    assert!(message.contains(reference), "{message}");
+    assert!(message.contains("missing"), "{message}");
+
+    let invalid = root.join("invalid");
+    write_metadata_directory(
+        &invalid,
+        "invalid_reference",
+        br#"{"session_manifest":null}"#,
+        &serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
+    );
+    let message = open_recording(&invalid).err().unwrap().to_string();
+    assert!(
+        message.contains("timeline.json.session_manifest"),
+        "{message}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn duplicate_timeline_members_are_rejected_in_container_and_directory() {
+    let root = unique_temp_dir("metadata_duplicate_timeline");
+    let duplicate =
+        br#"{"session_manifest":"recorder/native_session_manifest.json","session_manifest":"recorder/native_session_manifest.json"}"#;
+    let manifest = serde_json::to_vec(&resolved_recorder_manifest()).unwrap();
+    let container = write_metadata_container(
+        &root,
+        "duplicate_timeline_container",
+        duplicate.to_vec(),
+        metadata_snapshot("metadata_duplicate_timeline_container", json!({})),
+        vec![(
+            "recorder/native_session_manifest.json".into(),
+            manifest.clone(),
+            "recorder_manifest",
+        )],
+    );
+    let message = open_recording(&container).err().unwrap().to_string();
+    assert!(message.contains("duplicate JSON member"), "{message}");
+    assert!(message.contains("session_manifest"), "{message}");
+
+    let directory = root.join("directory");
+    write_metadata_directory(
+        &directory,
+        "duplicate_timeline_directory",
+        duplicate,
+        &manifest,
+    );
+    let message = open_recording(&directory).err().unwrap().to_string();
+    assert!(message.contains("duplicate JSON member"), "{message}");
+    assert!(message.contains("session_manifest"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn duplicate_nested_manifest_members_are_rejected_in_container_and_directory() {
+    let root = unique_temp_dir("metadata_duplicate_nested");
+    let timeline = br#"{"session_manifest":"recorder/native_session_manifest.json"}"#;
+    let duplicate_manifest = br#"{
+        "modset":{
+            "resolved":true,
+            "errors":[],
+            "dlc":{"enabled":[],"enabled":["dlc/a.dlc"]},
+            "dlc_display_names":{"dlc/a.dlc":"DLC A"},
+            "localisation_language":"l_english"
+        }
+    }"#;
+    let container = write_metadata_container(
+        &root,
+        "duplicate_nested_container",
+        timeline.to_vec(),
+        metadata_snapshot("metadata_duplicate_nested_container", json!({})),
+        vec![(
+            "recorder/native_session_manifest.json".into(),
+            duplicate_manifest.to_vec(),
+            "recorder_manifest",
+        )],
+    );
+    let message = open_recording(&container).err().unwrap().to_string();
+    assert!(message.contains("duplicate JSON member"), "{message}");
+    assert!(message.contains("enabled"), "{message}");
+
+    let directory = root.join("directory");
+    write_metadata_directory(
+        &directory,
+        "duplicate_nested_directory",
+        timeline,
+        duplicate_manifest,
+    );
+    let message = open_recording(&directory).err().unwrap().to_string();
+    assert!(message.contains("duplicate JSON member"), "{message}");
+    assert!(message.contains("enabled"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn directory_intermediate_lookalike_is_attributed_and_never_legacy() {
+    let root = unique_temp_dir("metadata_intermediate_lookalike");
+    let game = "lookalike_game";
+    let game_dir = root.join(game);
+    fs::create_dir_all(game_dir.join("Recorder")).unwrap();
+    fs::write(
+        game_dir.join("index.json"),
+        serde_json::to_vec(&json!({
+            "game_id": game,
+            "snapshots": [{"hour_index": 1, "file": "000000000001.snapshot.json"}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        game_dir.join("000000000001.snapshot.json"),
+        serde_json::to_vec(&metadata_snapshot(game, json!({}))).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        game_dir.join("timeline.json"),
+        br#"{"session_manifest":"recorder/native_session_manifest.json"}"#,
+    )
+    .unwrap();
+    fs::write(
+        game_dir
+            .join("Recorder")
+            .join("native_session_manifest.json"),
+        serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
+    )
+    .unwrap();
+    let message = open_recording(&root).err().unwrap().to_string();
+    assert!(message.contains("ASCII-lookalike policy"), "{message}");
+    assert!(message.contains("recorder"), "{message}");
+    assert!(message.contains("Recorder"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn same_parent_metadata_hard_link_alias_is_ambiguous() {
+    let root = unique_temp_dir("metadata_hardlink_alias");
+    let game = "hardlink_game";
+    write_metadata_directory(
+        &root,
+        game,
+        br#"{"session_manifest":"recorder/native_session_manifest.json"}"#,
+        &serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
+    );
+    let recorder = root.join(game).join("recorder");
+    fs::hard_link(
+        recorder.join("native_session_manifest.json"),
+        recorder.join("backup.json"),
+    )
+    .unwrap();
+    let message = open_recording(&root).err().unwrap().to_string();
+    assert!(message.contains("same-parent identity alias"), "{message}");
+    assert!(
+        message.contains("native_session_manifest.json"),
+        "{message}"
+    );
+    assert!(message.contains("backup.json"), "{message}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn canonical_and_genuinely_legacy_directory_stores_both_open() {
+    let root = unique_temp_dir("metadata_directory_positives");
+    let canonical_root = root.join("canonical");
+    let canonical_game = "canonical_directory";
+    write_metadata_directory(
+        &canonical_root,
+        canonical_game,
+        br#"{"session_manifest":"recorder/native_session_manifest.json"}"#,
+        &serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
+    );
+    let timeline = WorldTimeline::open(open_recording(&canonical_root).unwrap()).unwrap();
+    let frame = timeline.frame(1).unwrap();
+    assert_eq!(
+        frame.session_metadata().active_dlcs,
+        Leaf::Measured(vec!["DLC A".to_string()])
+    );
+
+    let legacy_root = root.join("legacy");
+    let legacy_game = "legacy_directory";
+    let game_dir = legacy_root.join(legacy_game);
+    fs::create_dir_all(&game_dir).unwrap();
+    fs::write(
+        game_dir.join("index.json"),
+        serde_json::to_vec(&json!({
+            "game_id": legacy_game,
+            "snapshots": [{"hour_index": 1, "file": "000000000001.snapshot.json"}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        game_dir.join("000000000001.snapshot.json"),
+        serde_json::to_vec(&metadata_snapshot(legacy_game, json!({}))).unwrap(),
+    )
+    .unwrap();
+    fs::write(game_dir.join("timeline.json"), br#"{"legacy":true}"#).unwrap();
+    let timeline = WorldTimeline::open(open_recording(&legacy_root).unwrap()).unwrap();
+    assert_eq!(
+        timeline.frame(1).unwrap().session_metadata().active_dlcs,
+        Leaf::Absent
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Must run on the primary OneDrive dev rig before ship. The environment
+/// variable must name a genuinely dehydrated recorder-metadata directory
+/// store; opening its first frame proves hydration returned logical bytes and
+/// that the recorder binding reached the public session-metadata view.
+#[cfg(windows)]
+#[test]
+#[ignore = "requires a real dehydrated OneDrive recorder-metadata store on the dev rig"]
+fn windows_onedrive_dehydrated_recorder_store_binds_end_to_end_before_ship() {
+    let path = std::env::var_os("BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE").or_else(|| std::env::var_os("HOI4_ONEDRIVE_DEHYDRATED_REPLAY_STORE"))
+        .map(PathBuf::from)
+        .expect("set BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE to the dehydrated store");
+    let timeline = WorldTimeline::open(open_recording(&path).unwrap()).unwrap();
+    let frame = timeline.frame(timeline.first_hour()).unwrap();
+    let metadata = frame.session_metadata();
+    assert!(
+        matches!(&metadata.active_dlcs, Leaf::Measured(_)),
+        "recorder DLC binding did not reach session metadata: {:?}",
+        metadata.active_dlcs
+    );
+    assert!(
+        matches!(&metadata.localisation_language, Leaf::Measured(language) if !language.trim().is_empty()),
+        "recorder language binding did not reach session metadata: {:?}",
+        metadata.localisation_language
+    );
+}
+
+#[test]
+fn directory_timeline_filename_lookalike_is_not_legacy() {
+    let root = unique_temp_dir("metadata_timeline_lookalike");
+    let game = "timeline_lookalike";
+    let game_dir = root.join(game);
+    fs::create_dir_all(&game_dir).unwrap();
+    fs::write(
+        game_dir.join("index.json"),
+        serde_json::to_vec(&json!({
+            "game_id": game,
+            "snapshots": [{"hour_index": 1, "file": "000000000001.snapshot.json"}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        game_dir.join("000000000001.snapshot.json"),
+        serde_json::to_vec(&metadata_snapshot(game, json!({}))).unwrap(),
+    )
+    .unwrap();
+    fs::write(game_dir.join("Timeline.json"), br#"{"legacy":true}"#).unwrap();
+    let message = open_recording(&root).err().unwrap().to_string();
+    assert!(message.contains("ASCII-lookalike policy"), "{message}");
+    assert!(message.contains("Timeline.json"), "{message}");
+    let _ = fs::remove_dir_all(root);
 }
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,6 @@ use crate::zip::{ZipArchive, ZipEntry, MAX_CONTAINER_ENTRY_BYTES};
 use crate::{Index, Snapshot};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -169,12 +168,30 @@ impl Container {
         path: P,
         expected: &ExpectedIdentity,
     ) -> Result<Container, ContainerError> {
-        let data = fs::read(path.as_ref())?;
-        Self::from_bytes(data, expected)
+        Self::open_strict(path, expected)
+    }
+
+    /// Read the container once and strictly validate the exact manifest buffer
+    /// that constructs the in-memory archive.
+    pub fn open_strict<P: AsRef<Path>>(
+        path: P,
+        expected: &ExpectedIdentity,
+    ) -> Result<Container, ContainerError> {
+        let data = std::fs::read(path.as_ref())?;
+        Self::from_bytes_strict(data, expected)
     }
 
     /// As [`open`](Self::open) but from in-memory bytes (used by tests).
     pub fn from_bytes(
+        data: Vec<u8>,
+        expected: &ExpectedIdentity,
+    ) -> Result<Container, ContainerError> {
+        Self::from_bytes_strict(data, expected)
+    }
+
+    /// Strict in-memory open. The strict pass returns the semantic value, so
+    /// man_bytes is never decoded ordinarily before or after validation.
+    pub fn from_bytes_strict(
         data: Vec<u8>,
         expected: &ExpectedIdentity,
     ) -> Result<Container, ContainerError> {
@@ -210,7 +227,8 @@ impl Container {
             .ok_or(ContainerError::NoManifest)?
             .clone();
         let man_bytes = archive.read_entry(&man_entry)?;
-        let manifest: Value = serde_json::from_slice(&man_bytes)?;
+        let manifest = crate::strict_json::from_slice(&man_bytes)?;
+        validate_strict_manifest(&manifest)?;
 
         // (5) format + version
         if manifest.get("format").and_then(Value::as_str) != Some("hoi4replay") {
@@ -396,7 +414,7 @@ impl Container {
         // hashes the bytes against the manifest before returning them.
         let index_path = format!("payload/{game_id}/index.json");
         let index_bytes = verify_and_read(&archive, &mut by_path, &index_path)?;
-        let index: Index = serde_json::from_slice(&index_bytes)?;
+        let index: Index = crate::decode_json_strict(&index_bytes)?;
         // index.game_id must agree with the manifest game_id
         if index.game_id != game_id {
             return Err(ContainerError::Reject(format!(
@@ -417,7 +435,7 @@ impl Container {
         if let Some(first) = index.snapshots.first() {
             let snap_path = format!("payload/{game_id}/{}", first.file);
             let snap_bytes = verify_and_read(&archive, &mut by_path, &snap_path)?;
-            let snap: Value = serde_json::from_slice(&snap_bytes)?;
+            let snap: Value = crate::strict_json::from_slice(&snap_bytes)?;
             let snap_modset = snap
                 .get("provenance")
                 .and_then(|p| p.get("mod"))
@@ -450,7 +468,7 @@ impl Container {
     pub fn load_file(&self, file: &str) -> Result<Snapshot, ContainerError> {
         let path = format!("payload/{}/{}", self.game_id, file);
         let bytes = self.read_entry_bytes(&path)?;
-        Ok(serde_json::from_slice(&bytes)?)
+        Ok(crate::decode_json_strict(&bytes)?)
     }
 
     /// Read any manifest-listed payload entry as verified raw bytes. This is the
@@ -486,6 +504,37 @@ impl Container {
         }
         Ok(())
     }
+}
+
+/// Strict states that ContainerEntry's permissive projection cannot express.
+/// This runs before format, digest, identity, or role-table semantics.
+fn validate_strict_manifest(manifest: &Value) -> Result<(), ContainerError> {
+    let game_id = manifest.get("game_id").and_then(Value::as_str);
+    let timeline_path = game_id.map(|game| format!("payload/{game}/timeline.json"));
+    let Some(entries) = manifest.get("entries").and_then(Value::as_array) else {
+        return Ok(());
+    };
+
+    for (index, entry) in entries.iter().enumerate() {
+        let path = entry.get("path").and_then(Value::as_str);
+        if let Some(role) = entry.get("role") {
+            if !role.is_string() {
+                return Err(ContainerError::Reject(format!(
+                    "manifest entry {} role is present but is not a string",
+                    path.map(|value| format!("{value:?}"))
+                        .unwrap_or_else(|| format!("at index {index}"))
+                )));
+            }
+        }
+        if let (Some(path), Some(canonical)) = (path, timeline_path.as_deref()) {
+            if path != canonical && path.eq_ignore_ascii_case(canonical) {
+                return Err(ContainerError::Reject(format!(
+                    "manifest entry path {path:?} is an ASCII-case lookalike of canonical timeline {canonical:?}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Features this reader build understands. A `required_features` entry not here is

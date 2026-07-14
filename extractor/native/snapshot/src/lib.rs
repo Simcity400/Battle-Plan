@@ -15,17 +15,20 @@
 //! for an ABSENT key (never captured) and `Some(Value::Null)` for an explicit null
 //! (captured-but-unobtained) — the two are distinguishable, never collapsed onto a `0`.
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::fs;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub mod canon;
 pub mod container;
+mod dir_store;
 pub mod pack;
 pub mod sha256;
 pub mod stream_verify;
+pub mod strict_json;
 pub mod zip;
 
 pub use container::{Container, ContainerError, ExpectedIdentity};
@@ -35,7 +38,20 @@ pub use pack::{
     pack_streaming_zstd_to_writer_with_profile, pack_with, BorrowedPackEntry, CompressionProfile,
     FileBackedPackEntry, PackEntry, PackError, PackIdentity, PackOptions, StreamingFileEntry,
 };
-pub use stream_verify::{verify_replay_container_streaming, StreamVerifyReport};
+pub use stream_verify::{
+    verify_replay_container_streaming, verify_replay_container_streaming_file,
+    verify_replay_container_streaming_file_at_path, StreamVerifyReport,
+};
+pub use strict_json::from_slice as parse_json_strict;
+
+/// Strictly build one JSON tree, rejecting duplicate members recursively, then
+/// project the typed view from that exact validated tree (never from a second
+/// permissive byte decoder).
+pub(crate) fn decode_json_strict<T: DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, serde_json::Error> {
+    serde_json::from_value(strict_json::from_slice(bytes)?)
+}
 
 /// The `index.json` manifest for one game (our stable format).
 #[derive(Debug, Clone, Deserialize)]
@@ -121,6 +137,8 @@ fn path_walk<'a>(mut cur: &'a Value, dotted: &str) -> Option<&'a Value> {
 pub enum LoadError {
     Io(std::io::Error),
     Json(serde_json::Error),
+    /// Anchored directory traversal or namespace validation failed.
+    Directory(String),
     /// A `.battleplan` container could not be opened/validated.
     Container(ContainerError),
 }
@@ -130,6 +148,7 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Io(e) => write!(f, "io: {e}"),
             LoadError::Json(e) => write!(f, "json: {e}"),
+            LoadError::Directory(e) => write!(f, "directory store rejected: {e}"),
             LoadError::Container(e) => write!(f, "container: {e}"),
         }
     }
@@ -161,22 +180,39 @@ pub struct Store {
     backend: Backend,
 }
 
+#[derive(Clone, Debug)]
+struct DirGame {
+    dir: dir_store::BoundDir,
+    index_bytes: Option<Vec<u8>>,
+}
+
 #[derive(Clone)]
 enum Backend {
     Dir {
-        root: PathBuf,
+        root: Option<dir_store::AnchoredDir>,
+        games: Arc<OnceLock<Result<BTreeMap<String, DirGame>, dir_store::DirAccessError>>>,
+        label: PathBuf,
+        open_error: Option<dir_store::DirAccessError>,
     },
     /// A single opened, verified `.battleplan` (Arc so the `Store: Clone` contract
     /// the app/scrub rely on stays cheap and shares one opened/verified archive).
-    Replay {
-        container: Arc<Container>,
-    },
+    Replay { container: Arc<Container> },
 }
 
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.backend {
-            Backend::Dir { root } => f.debug_struct("Store::Dir").field("root", root).finish(),
+            Backend::Dir {
+                root,
+                label,
+                open_error,
+                ..
+            } => f
+                .debug_struct("Store::Dir")
+                .field("root", label)
+                .field("anchored", &root.is_some())
+                .field("open_error", open_error)
+                .finish(),
             Backend::Replay { container } => f
                 .debug_struct("Store::Replay")
                 .field("game_id", &container.game_id())
@@ -208,14 +244,46 @@ impl Store {
                     // fall through to a Dir backend so the error is reported on the
                     // first `index`/`load` call (consistent with the old contract).
                     return Store {
-                        backend: Backend::Dir { root: path },
+                        backend: Self::dir_backend(path),
                     };
                 }
             }
         }
         Store {
-            backend: Backend::Dir { root: path },
+            backend: Self::dir_backend(path),
         }
+    }
+
+    fn dir_backend(path: PathBuf) -> Backend {
+        match dir_store::AnchoredDir::open(&path) {
+            Ok(root) => Backend::Dir {
+                root: Some(root),
+                games: Arc::new(OnceLock::new()),
+                label: path,
+                open_error: None,
+            },
+            Err(error) => Backend::Dir {
+                root: None,
+                games: Arc::new(OnceLock::new()),
+                label: path,
+                open_error: Some(error),
+            },
+        }
+    }
+
+    /// Open and anchor a directory store, returning root-open failures eagerly.
+    pub fn open_directory<P: AsRef<Path>>(path: P) -> Result<Self, LoadError> {
+        let path = path.as_ref().to_path_buf();
+        let root = dir_store::AnchoredDir::open(&path)
+            .map_err(|error| LoadError::Directory(error.message))?;
+        Ok(Self {
+            backend: Backend::Dir {
+                root: Some(root),
+                games: Arc::new(OnceLock::new()),
+                label: path,
+                open_error: None,
+            },
+        })
     }
 
     /// Open a `.battleplan` with explicit identity expectations (build/schema/mod).
@@ -241,29 +309,71 @@ impl Store {
         }
     }
 
-    pub fn game_dir(&self, game: &str) -> PathBuf {
-        match &self.backend {
-            Backend::Dir { root } => root.join(game),
-            // synthetic: the container's logical game dir (not a real fs path).
-            Backend::Replay { .. } => PathBuf::from(game),
+    fn directory_games(&self) -> Result<&BTreeMap<String, DirGame>, LoadError> {
+        let (root, cache) = match &self.backend {
+            Backend::Dir {
+                root: Some(root),
+                games,
+                ..
+            } => (root, games),
+            Backend::Dir {
+                open_error: Some(error),
+                ..
+            } => return Err(LoadError::Directory(error.message.clone())),
+            Backend::Dir { .. } => {
+                return Err(LoadError::Directory(
+                    "directory root is not anchored".to_string(),
+                ))
+            }
+            Backend::Replay { .. } => {
+                return Err(LoadError::Directory(
+                    "container has no directory games".to_string(),
+                ))
+            }
+        };
+        cache
+            .get_or_init(|| Self::discover_directory_games(root))
+            .as_ref()
+            .map_err(|error| LoadError::Directory(error.message.clone()))
+    }
+
+    fn discover_directory_games(
+        root: &dir_store::AnchoredDir,
+    ) -> Result<BTreeMap<String, DirGame>, dir_store::DirAccessError> {
+        let mut games = BTreeMap::new();
+        for entry in root.root_entries()? {
+            if !entry.directory_or_link {
+                continue;
+            }
+            let dir = root.bind_child_dir(&entry.name)?;
+            let index_bytes = dir.read_optional(&["index.json"])?;
+            games.insert(entry.name, DirGame { dir, index_bytes });
         }
+        Ok(games)
+    }
+
+    fn directory_game(&self, game: &str) -> Result<&DirGame, LoadError> {
+        self.directory_games()?.get(game).ok_or_else(|| {
+            LoadError::Directory(format!(
+                "game directory {game:?} was not selected from the anchored store root"
+            ))
+        })
     }
 
     /// Game ids. Dir store: subdirectories containing an `index.json`. Container:
     /// the single packed game.
-    pub fn games(&self) -> std::io::Result<Vec<String>> {
+    pub fn games(&self) -> Result<Vec<String>, LoadError> {
         match &self.backend {
-            Backend::Dir { root } => {
+            Backend::Dir { .. } => {
                 let mut out = Vec::new();
-                for entry in fs::read_dir(root)? {
-                    let entry = entry?;
-                    if entry.path().join("index.json").is_file() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            out.push(name.to_string());
-                        }
+                for (name, game) in self.directory_games()? {
+                    if game.index_bytes.is_some() {
+                        game.dir
+                            .revalidate()
+                            .map_err(|error| LoadError::Directory(error.message))?;
+                        out.push(name.clone());
                     }
                 }
-                out.sort();
                 Ok(out)
             }
             Backend::Replay { container } => Ok(vec![container.game_id().to_string()]),
@@ -272,9 +382,25 @@ impl Store {
 
     pub fn index(&self, game: &str) -> Result<Index, LoadError> {
         match &self.backend {
-            Backend::Dir { root } => {
-                let txt = fs::read_to_string(root.join(game).join("index.json"))?;
-                Ok(serde_json::from_str(&txt)?)
+            Backend::Dir { .. } => {
+                let selected = self.directory_game(game)?;
+                selected
+                    .dir
+                    .revalidate()
+                    .map_err(|error| LoadError::Directory(error.message))?;
+                let bytes = selected.index_bytes.as_deref().ok_or_else(|| {
+                    LoadError::Directory(format!(
+                        "required index.json is missing from selected game directory {game:?}"
+                    ))
+                })?;
+                let index: Index = decode_json_strict(bytes)?;
+                if index.game_id != game {
+                    return Err(LoadError::Container(ContainerError::Reject(format!(
+                        "index.game_id {:?} != selected directory name {game:?}",
+                        index.game_id
+                    ))));
+                }
+                Ok(index)
             }
             Backend::Replay { container } => {
                 if container.game_id() != game {
@@ -288,11 +414,6 @@ impl Store {
         }
     }
 
-    fn read_snapshot(path: &Path) -> Result<Snapshot, LoadError> {
-        let txt = fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&txt)?)
-    }
-
     /// Read a snapshot from the dir backend after validating that `file` is a SAFE,
     /// game-dir-relative path. A `file` field comes from `index.json`, which may be
     /// tampered/corrupt; without this guard a `../../secret.json` (or an absolute /
@@ -301,13 +422,14 @@ impl Store {
     /// resolves through the verified `by_path` map). Legitimate names —
     /// `000000000100.snapshot.json` and segment-prefixed `seg3/...json` — pass
     /// `zip::validate_path`'s rules unchanged (Codex bug-hunt FIX-1).
-    fn read_dir_snapshot(root: &Path, game: &str, file: &str) -> Result<Snapshot, LoadError> {
+    fn read_dir_snapshot(&self, game: &str, file: &str) -> Result<Snapshot, LoadError> {
         crate::zip::validate_path(file).map_err(|e| {
             LoadError::Container(ContainerError::Reject(format!(
                 "unsafe snapshot file name {file:?}: {e}"
             )))
         })?;
-        Self::read_snapshot(&root.join(game).join(file))
+        let bytes = self.read_game_file_bytes_required(game, file)?;
+        Ok(decode_json_strict(&bytes)?)
     }
 
     /// Load a snapshot by its in-game `hour_index` (the canonical key). The
@@ -315,7 +437,7 @@ impl Store {
     /// so a segment-prefixed rollback file loads correctly.
     pub fn load(&self, game: &str, hour_index: i64) -> Result<Snapshot, LoadError> {
         match &self.backend {
-            Backend::Dir { root } => {
+            Backend::Dir { .. } => {
                 // A negative hour_index would format with a leading '-' and break the
                 // fixed width; refuse it up front (it can never name a real snapshot,
                 // and the synthesized name must stay a safe, game-dir-relative path).
@@ -325,7 +447,7 @@ impl Store {
                     ))));
                 }
                 let fname = format!("{:012}.snapshot.json", hour_index);
-                Self::read_dir_snapshot(root, game, &fname)
+                self.read_dir_snapshot(game, &fname)
             }
             Backend::Replay { container } => Ok(container.load(hour_index)?),
         }
@@ -334,8 +456,57 @@ impl Store {
     /// Load a snapshot by its explicit file name (from an [`IndexEntry`]).
     pub fn load_file(&self, game: &str, file: &str) -> Result<Snapshot, LoadError> {
         match &self.backend {
-            Backend::Dir { root } => Self::read_dir_snapshot(root, game, file),
+            Backend::Dir { .. } => self.read_dir_snapshot(game, file),
             Backend::Replay { container } => Ok(container.load_file(file)?),
         }
+    }
+
+    /// Read one game-relative file through the anchored directory walk, or one
+    /// verified manifest entry for a container.
+    pub fn read_game_file_bytes(
+        &self,
+        game: &str,
+        relative: &str,
+    ) -> Result<Option<Vec<u8>>, LoadError> {
+        let logical = format!("{game}/{relative}");
+        crate::zip::validate_path(&logical).map_err(|error| {
+            LoadError::Container(ContainerError::Reject(format!(
+                "unsafe game-relative path {logical:?}: {error}"
+            )))
+        })?;
+        match &self.backend {
+            Backend::Dir { .. } => {
+                let components: Vec<&str> = relative.split('/').collect();
+                self.directory_game(game)?
+                    .dir
+                    .read_optional(&components)
+                    .map_err(|error| LoadError::Directory(error.message))
+            }
+            Backend::Replay { container } => {
+                if container.game_id() != game {
+                    return Err(LoadError::Container(ContainerError::Reject(format!(
+                        "container holds game {:?}, not {game:?}",
+                        container.game_id()
+                    ))));
+                }
+                let path = format!("payload/{game}/{relative}");
+                if !container.entries().iter().any(|entry| entry.path == path) {
+                    return Ok(None);
+                }
+                Ok(Some(container.read_entry_bytes(&path)?))
+            }
+        }
+    }
+
+    fn read_game_file_bytes_required(
+        &self,
+        game: &str,
+        relative: &str,
+    ) -> Result<Vec<u8>, LoadError> {
+        self.read_game_file_bytes(game, relative)?.ok_or_else(|| {
+            LoadError::Directory(format!(
+                "required game-relative file {game:?}/{relative} is missing"
+            ))
+        })
     }
 }

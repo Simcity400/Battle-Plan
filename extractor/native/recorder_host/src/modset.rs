@@ -62,6 +62,7 @@
 //! - The repack path (main.rs) now refuses manifests without a current-schema
 //!   `modset` object (legacy/absent bindings cannot be reconstructed).
 
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fs;
 use std::io::Read;
@@ -268,6 +269,13 @@ pub struct ModsetReport {
     pub installed_dlcs: Vec<String>,
     pub disabled_dlcs: Vec<String>,
     pub enabled_dlcs: Vec<String>,
+    /// Installed descriptor path -> descriptor `name=` display value. A
+    /// descriptor whose name cannot be read stays present with a null value;
+    /// the corresponding resolution failure is recorded in `errors`.
+    pub dlc_display_names: BTreeMap<String, Option<String>>,
+    /// `language=` from settings.txt in the same corroborated Paradox user
+    /// directory. Never defaulted when the file or field is unavailable.
+    pub localisation_language: Option<String>,
 }
 
 impl ModsetReport {
@@ -300,6 +308,8 @@ impl ModsetReport {
                 "disabled": self.disabled_dlcs,
                 "enabled": self.enabled_dlcs,
             },
+            "dlc_display_names": self.dlc_display_names,
+            "localisation_language": self.localisation_language,
         });
         if self.resolved {
             let mut doc = json!({
@@ -342,6 +352,8 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
         installed_dlcs: Vec::new(),
         disabled_dlcs: Vec::new(),
         enabled_dlcs: Vec::new(),
+        dlc_display_names: BTreeMap::new(),
+        localisation_language: None,
     };
     macro_rules! fail {
         ($($arg:tt)*) => {{
@@ -376,7 +388,7 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
     };
 
     // --- Paradox user dir + dlc_load.json ---
-    match locate_user_dir(user_dir_override) {
+    let user_dir_corroborated = match locate_user_dir(user_dir_override) {
         Ok((dir, source)) => {
             // G2-regen finding 2: a well-formed but WRONG directory (stale
             // override, stale probe while the game runs a custom user dir)
@@ -384,13 +396,44 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
             // its logs into its real user dir continuously, so this dir's
             // logs/ must have been written at/after process start. No
             // corroboration -> fail closed (override and probed alike).
-            if let Err(e) = corroborate_user_dir_live(&dir, pid) {
-                fail!("user dir not corroborated against the attached process: {e}");
-            }
+            let corroborated = match corroborate_user_dir_live(&dir, pid) {
+                Ok(()) => true,
+                Err(e) => {
+                    fail!("user dir not corroborated against the attached process: {e}");
+                    false
+                }
+            };
             report.user_dir = Some(dir);
             report.user_dir_source = Some(source);
+            corroborated
         }
-        Err(e) => fail!("{e}"),
+        Err(e) => {
+            fail!("{e}");
+            false
+        }
+    };
+
+    // The language is evidence from the SAME user directory whose live log
+    // handle corroborates dlc_load.json. A merely probed/overridden path is
+    // not sufficient provenance for settings.txt, and disk state written
+    // after launch cannot describe the running process.
+    if user_dir_corroborated {
+        if let Some(user_dir) = report.user_dir.as_deref() {
+            match process_start {
+                Some(start) => match read_localisation_language(user_dir, start) {
+                    Ok(Some(language)) => report.localisation_language = Some(language),
+                    Ok(None) => fail!(
+                        "settings.txt localisation language assignment is absent; recorded null"
+                    ),
+                    Err(e) => {
+                        fail!("settings.txt localisation language unresolved: {e}; recorded null")
+                    }
+                },
+                None => {
+                    fail!("settings.txt launch binding unavailable; recorded language as null")
+                }
+            }
+        }
     }
 
     let mut disabled_dlcs: Vec<String> = Vec::new();
@@ -407,9 +450,9 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                 "dlc_load.json mtime is at/after the game process start; \
                  launcher state not provably the launched state"
             ),
-            (None, _) => fail!(
-                "dlc_load.json mtime unavailable; launcher-state provenance unprovable"
-            ),
+            (None, _) => {
+                fail!("dlc_load.json mtime unavailable; launcher-state provenance unprovable")
+            }
             _ => {}
         }
         match fs::read_to_string(&dlc_load_path) {
@@ -418,8 +461,7 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                     // Re-check mtime AFTER the read: a launcher rewrite between
                     // the metadata read and the content read would otherwise
                     // pair new content with the old, accepted timestamp.
-                    let mtime_after =
-                        fs::metadata(&dlc_load_path).and_then(|m| m.modified()).ok();
+                    let mtime_after = fs::metadata(&dlc_load_path).and_then(|m| m.modified()).ok();
                     if mtime_after != mtime_before {
                         fail!("dlc_load.json changed while being read (mtime moved)");
                     }
@@ -481,9 +523,9 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                                             "mod descriptor written at/after process start \
                                              (post-launch update?): {entry:?}"
                                         ),
-                                        None if resolved.descriptor_sha256.is_some() => fail!(
-                                            "mod descriptor mtime unavailable: {entry:?}"
-                                        ),
+                                        None if resolved.descriptor_sha256.is_some() => {
+                                            fail!("mod descriptor mtime unavailable: {entry:?}")
+                                        }
                                         _ => {}
                                     }
                                     match resolved.content_max_mtime {
@@ -533,15 +575,6 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                              the DLC set the process loaded"
                         );
                     }
-                    match census_installed_dlcs(game_root) {
-                        Ok((again, again_mtime))
-                            if again == installed && again_mtime == census_max_mtime => {}
-                        Ok(_) => fail!(
-                            "installed-DLC census changed while being read \
-                             (unstable between passes)"
-                        ),
-                        Err(e) => fail!("dlc census stability pass failed: {e}"),
-                    }
                     // G2-regen finding 4 (DLC arm): an installed-DLC descriptor
                     // written at/after process start means the census describes
                     // a different DLC set than the one the process loaded.
@@ -569,6 +602,24 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                         .filter(|rel| !disabled_dlcs.iter().any(|d| d == *rel))
                         .cloned()
                         .collect();
+                    // Display names are read INSIDE the census bracket. Each
+                    // descriptor is also double-read with a metadata bracket
+                    // and must predate launch.
+                    let (display_names, display_name_errors) =
+                        resolve_dlc_display_names(game_root, &installed, process_start);
+                    report.dlc_display_names = display_names;
+                    for error in display_name_errors {
+                        fail!("{error}");
+                    }
+                    match census_installed_dlcs(game_root) {
+                        Ok((again, again_mtime))
+                            if again == installed && again_mtime == census_max_mtime => {}
+                        Ok(_) => fail!(
+                            "installed-DLC census changed while display names were being read \
+                             (unstable between passes)"
+                        ),
+                        Err(e) => fail!("dlc census stability pass failed: {e}"),
+                    }
                     report.installed_dlcs = installed;
                 }
                 Err(e) => fail!("dlc census failed: {e}"),
@@ -578,6 +629,191 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
     }
 
     report
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: SystemTime,
+}
+
+fn file_stamp(path: &Path) -> Result<FileStamp, String> {
+    let metadata = fs::metadata(path).map_err(|e| format!("{} metadata: {e}", path.display()))?;
+    let modified = metadata
+        .modified()
+        .map_err(|e| format!("{} mtime: {e}", path.display()))?;
+    Ok(FileStamp {
+        len: metadata.len(),
+        modified,
+    })
+}
+
+fn validate_stable_text_read(
+    path: &Path,
+    process_start: SystemTime,
+    before: FileStamp,
+    first: Vec<u8>,
+    second: Vec<u8>,
+    after: FileStamp,
+) -> Result<String, String> {
+    if before.modified >= process_start {
+        return Err(format!(
+            "{} mtime is at/after game process start",
+            path.display()
+        ));
+    }
+    if after != before {
+        return Err(format!(
+            "{} changed while being read (metadata moved)",
+            path.display()
+        ));
+    }
+    if first != second {
+        return Err(format!(
+            "{} changed while being read (bytes differ between reads)",
+            path.display()
+        ));
+    }
+    if first.len() as u64 != before.len {
+        return Err(format!(
+            "{} read length does not match bracketed metadata",
+            path.display()
+        ));
+    }
+    String::from_utf8(first).map_err(|e| format!("{} is not UTF-8: {e}", path.display()))
+}
+
+/// Read one launch-bound text file with both a metadata stability bracket and
+/// two byte-identical reads. Equality with process start fails closed because
+/// it cannot prove that the running process saw these bytes.
+fn read_text_stable_before_start(path: &Path, process_start: SystemTime) -> Result<String, String> {
+    let before = file_stamp(path)?;
+    let first = fs::read(path).map_err(|e| format!("{} first read: {e}", path.display()))?;
+    let second = fs::read(path).map_err(|e| format!("{} second read: {e}", path.display()))?;
+    let after = file_stamp(path)?;
+    validate_stable_text_read(path, process_start, before, first, second, after)
+}
+
+/// Read the localisation language from settings.txt in the already
+/// corroborated Paradox user directory. Absent values stay absent; malformed,
+/// unstable, or post-launch evidence is an attributed error.
+fn read_localisation_language(
+    user_dir: &Path,
+    process_start: SystemTime,
+) -> Result<Option<String>, String> {
+    let path = user_dir.join("settings.txt");
+    let text = read_text_stable_before_start(&path, process_start)?;
+    clausewitz_string_field(&text, "language")
+}
+
+/// Parse a single line-oriented Clausewitz `key = "value"` assignment.
+/// Duplicate target keys and any malformed target assignment are ambiguous and
+/// fail closed. Only explicit quoted-string escapes are accepted.
+fn clausewitz_string_field(text: &str, wanted: &str) -> Result<Option<String>, String> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut found: Option<String> = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            continue;
+        };
+        if key.trim() != wanted {
+            continue;
+        }
+        if found.is_some() {
+            return Err(format!("duplicate {wanted}= assignment"));
+        }
+        let raw = value.trim();
+        let Some(body) = raw.strip_prefix('"') else {
+            return Err(format!("{wanted}= value is not a quoted string"));
+        };
+        let mut parsed = String::new();
+        let mut chars = body.char_indices();
+        let mut closing = None;
+        while let Some((offset, ch)) = chars.next() {
+            match ch {
+                '"' => {
+                    closing = Some(offset);
+                    break;
+                }
+                '\\' => {
+                    let Some((_, escaped)) = chars.next() else {
+                        return Err(format!("{wanted}= has a trailing escape"));
+                    };
+                    parsed.push(match escaped {
+                        '\\' => '\\',
+                        '"' => '"',
+                        'n' => '\n',
+                        'r' => '\r',
+                        't' => '\t',
+                        _ => return Err(format!("{wanted}= has malformed escape \\{escaped}")),
+                    });
+                }
+                _ => parsed.push(ch),
+            }
+        }
+        let Some(closing) = closing else {
+            return Err(format!("{wanted}= has an unbalanced quoted string"));
+        };
+        let trailing = body[closing + 1..].trim();
+        if !trailing.is_empty() && !trailing.starts_with('#') {
+            return Err(format!(
+                "{wanted}= has trailing tokens after the quoted string"
+            ));
+        }
+        if parsed.trim().is_empty() {
+            return Err(format!("{wanted}= value is whitespace-only"));
+        }
+        found = Some(parsed);
+    }
+    Ok(found)
+}
+
+/// Resolve display names without inventing a fallback from directory/file
+/// names. Every installed path gets a map entry; unreadable or nameless
+/// descriptors carry null plus a fail-closed resolution note.
+fn resolve_dlc_display_names(
+    game_root: &Path,
+    installed: &[String],
+    process_start: Option<SystemTime>,
+) -> (BTreeMap<String, Option<String>>, Vec<String>) {
+    let mut names = BTreeMap::new();
+    let mut errors = Vec::new();
+    for relative in installed {
+        let path = game_root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let name = match process_start {
+            None => {
+                errors.push(format!(
+                    "DLC descriptor launch binding unavailable: {relative:?}; recorded null"
+                ));
+                None
+            }
+            Some(start) => match read_text_stable_before_start(&path, start) {
+                Ok(text) => match clausewitz_string_field(&text, "name") {
+                    Ok(Some(name)) => Some(name),
+                    Ok(None) => {
+                        errors.push(format!(
+                            "DLC descriptor has no name= display value: {relative:?}; recorded null"
+                        ));
+                        None
+                    }
+                    Err(e) => {
+                        errors.push(format!(
+                            "DLC descriptor display name malformed: {relative:?}: {e}; recorded null"
+                        ));
+                        None
+                    }
+                },
+                Err(e) => {
+                    errors.push(format!(
+                        "DLC descriptor display name not launch-bound: {relative:?}: {e}; recorded null"
+                    ));
+                    None
+                }
+            },
+        };
+        names.insert(relative.clone(), name);
+    }
+    (names, errors)
 }
 
 /// A field that MUST exist as an array of strings. Anything else is unproven
@@ -612,7 +848,9 @@ fn query_process_image_path(pid: u32) -> Result<PathBuf, String> {
         if ok == 0 {
             return Err(format!("QueryFullProcessImageNameW({pid}) failed"));
         }
-        Ok(PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
+        Ok(PathBuf::from(String::from_utf16_lossy(
+            &buf[..len as usize],
+        )))
     }
 }
 
@@ -952,9 +1190,7 @@ fn hash_file_streaming_stable(path: &Path) -> Result<(u64, String), String> {
 /// must itself prove out (contain the file). Without one, both the plain and
 /// the OneDrive-redirected Documents locations are probed; exactly one match
 /// resolves, zero or several fail closed with the probed paths recorded.
-fn locate_user_dir(
-    user_dir_override: Option<&Path>,
-) -> Result<(PathBuf, &'static str), String> {
+fn locate_user_dir(user_dir_override: Option<&Path>) -> Result<(PathBuf, &'static str), String> {
     if let Some(dir) = user_dir_override {
         if dir.join("dlc_load.json").is_file() {
             return Ok((dir.to_path_buf(), "override"));
@@ -1079,8 +1315,11 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
             }
         };
         if let Some(hashed) = hash_content_stable(&content_abs) {
-            resolved.content_fingerprint =
-                Some((hashed.files, hashed.bytes, system_time_unix(hashed.max_mtime)));
+            resolved.content_fingerprint = Some((
+                hashed.files,
+                hashed.bytes,
+                system_time_unix(hashed.max_mtime),
+            ));
             resolved.content_sha256 = Some(hashed.sha256);
             resolved.content_max_mtime = Some(hashed.max_mtime);
         }
@@ -1245,8 +1484,7 @@ fn census_installed_dlcs(game_root: &Path) -> Result<(Vec<String>, Option<System
         let Some(dir_name) = dir.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let children =
-            fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let children = fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         for child in children {
             let child = child.map_err(|e| format!("{}: {e}", dir.display()))?;
             let path = child.path();
@@ -1290,7 +1528,8 @@ mod tests {
     fn mod_descriptor_fields_parse_hash_and_fingerprint() {
         let dir = temp_dir("descriptor");
         fs::create_dir_all(dir.join("mod").join("test")).unwrap();
-        let descriptor = "version=\"1.2\"\nname=\"Test Mod\"\nremote_file_id=\"12345\"\npath=\"mod/test\"\n";
+        let descriptor =
+            "version=\"1.2\"\nname=\"Test Mod\"\nremote_file_id=\"12345\"\npath=\"mod/test\"\n";
         fs::write(dir.join("mod").join("test.mod"), descriptor).unwrap();
         fs::write(dir.join("mod").join("test").join("a.txt"), b"hello").unwrap();
 
@@ -1366,7 +1605,9 @@ mod tests {
         fs::create_dir_all(root.join("dlc").join("dlc023_man_the_guns")).unwrap();
         fs::create_dir_all(root.join("dlc").join("dlc013_sabaton")).unwrap();
         fs::write(
-            root.join("dlc").join("dlc023_man_the_guns").join("dlc023.dlc"),
+            root.join("dlc")
+                .join("dlc023_man_the_guns")
+                .join("dlc023.dlc"),
             "name=\"Man the Guns\"",
         )
         .unwrap();
@@ -1394,12 +1635,147 @@ mod tests {
             .collect();
         assert_eq!(enabled, vec!["dlc/dlc023_man_the_guns/dlc023.dlc"]);
 
+        let launch = SystemTime::now() + std::time::Duration::from_secs(60);
+        let (display_names, display_errors) =
+            resolve_dlc_display_names(&root, &installed, Some(launch));
+        assert!(display_errors.is_empty());
+        assert_eq!(
+            display_names["dlc/dlc013_sabaton/dlc013.dlc"].as_deref(),
+            Some("Sabaton")
+        );
+        assert_eq!(
+            display_names["dlc/dlc023_man_the_guns/dlc023.dlc"].as_deref(),
+            Some("Man the Guns")
+        );
+
+        let (post_launch, post_launch_errors) =
+            resolve_dlc_display_names(&root, &installed, Some(std::time::UNIX_EPOCH));
+        assert!(post_launch.values().all(Option::is_none));
+        assert_eq!(post_launch_errors.len(), installed.len());
+        assert!(post_launch_errors
+            .iter()
+            .all(|error| error.contains("recorded null") && error.contains("at/after")));
+
+        // Every installed path remains present when its descriptor becomes
+        // unreadable; the value is null and the failure note is explicit.
+        fs::remove_file(root.join("dlc").join("dlc013_sabaton").join("dlc013.dlc")).unwrap();
+        let (after_remove, errors) = resolve_dlc_display_names(&root, &installed, Some(launch));
+        assert!(after_remove["dlc/dlc013_sabaton/dlc013.dlc"].is_none());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("recorded null"));
+
         // An unmatched disabled key is detectable by the same exact-match rule
         // resolve_modset enforces (fails closed there).
         let drifted = "DLC/dlc013_sabaton/dlc013.dlc".to_string();
         assert!(!installed.iter().any(|rel| rel == &drifted));
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn localisation_language_reads_settings_without_defaulting() {
+        let dir = temp_dir("language");
+        fs::write(
+            dir.join("settings.txt"),
+            "\u{feff}language=\"l_english\"\nvolume=0.5\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_localisation_language(
+                &dir,
+                SystemTime::now() + std::time::Duration::from_secs(60),
+            )
+            .unwrap()
+            .as_deref(),
+            Some("l_english")
+        );
+
+        fs::write(dir.join("settings.txt"), "volume=0.5\n").unwrap();
+        assert!(read_localisation_language(
+            &dir,
+            SystemTime::now() + std::time::Duration::from_secs(60),
+        )
+        .unwrap()
+        .is_none());
+        assert!(read_localisation_language(&dir, std::time::UNIX_EPOCH).is_err());
+        fs::remove_file(dir.join("settings.txt")).unwrap();
+        assert!(read_localisation_language(
+            &dir,
+            SystemTime::now() + std::time::Duration::from_secs(60),
+        )
+        .is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clausewitz_string_field_rejects_torn_escaped_duplicate_and_blank_assignments() {
+        for (label, text) in [
+            ("unclosed quote", "language=\"l_english\n"),
+            ("malformed escape", "language=\"l_eng\\qish\"\n"),
+            (
+                "duplicate",
+                "language=\"l_english\"\nlanguage=\"l_french\"\n",
+            ),
+            ("whitespace only", "language=\"   \"\n"),
+        ] {
+            assert!(
+                clausewitz_string_field(text, "language").is_err(),
+                "{label} assignment must fail closed"
+            );
+        }
+        assert_eq!(
+            clausewitz_string_field("language=\"l_eng\\nlish\" # bound\n", "language")
+                .unwrap()
+                .as_deref(),
+            Some("l_eng\nlish")
+        );
+        assert!(clausewitz_string_field("volume=\"0.5\"\n", "language")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn stable_text_validation_rejects_post_launch_torn_and_metadata_drift() {
+        let path = Path::new("settings.txt");
+        let before = FileStamp {
+            len: 4,
+            modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(10),
+        };
+        let launch = std::time::UNIX_EPOCH + std::time::Duration::from_secs(20);
+        assert!(validate_stable_text_read(
+            path,
+            launch,
+            before,
+            b"same".to_vec(),
+            b"torn".to_vec(),
+            before,
+        )
+        .unwrap_err()
+        .contains("bytes differ"));
+        let moved = FileStamp {
+            modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(11),
+            ..before
+        };
+        assert!(validate_stable_text_read(
+            path,
+            launch,
+            before,
+            b"same".to_vec(),
+            b"same".to_vec(),
+            moved,
+        )
+        .unwrap_err()
+        .contains("metadata moved"));
+        assert!(validate_stable_text_read(
+            path,
+            before.modified,
+            before,
+            b"same".to_vec(),
+            b"same".to_vec(),
+            before,
+        )
+        .unwrap_err()
+        .contains("at/after"));
     }
 
     #[test]
@@ -1434,6 +1810,8 @@ mod tests {
             installed_dlcs: vec!["dlc/a/a.dlc".to_string()],
             disabled_dlcs: Vec::new(),
             enabled_dlcs: vec!["dlc/a/a.dlc".to_string()],
+            dlc_display_names: BTreeMap::from([("dlc/a/a.dlc".to_string(), Some("A".to_string()))]),
+            localisation_language: None,
         };
         let doc = report.as_json();
         // A naive consumer reading top-level lists on an unresolved report
@@ -1442,6 +1820,11 @@ mod tests {
         assert!(doc.get("dlc").is_none());
         assert_eq!(doc["resolved"], Value::Bool(false));
         assert!(doc["partial_evidence"]["dlc"]["enabled"].is_array());
+        assert_eq!(
+            doc["partial_evidence"]["dlc_display_names"]["dlc/a/a.dlc"],
+            "A"
+        );
+        assert!(doc["partial_evidence"]["localisation_language"].is_null());
 
         let resolved = ModsetReport {
             resolved: true,
@@ -1450,6 +1833,8 @@ mod tests {
         let doc = resolved.as_json();
         assert!(doc.get("partial_evidence").is_none());
         assert!(doc["dlc"]["enabled"].is_array());
+        assert_eq!(doc["dlc_display_names"]["dlc/a/a.dlc"], "A");
+        assert!(doc["localisation_language"].is_null());
     }
 
     #[test]
@@ -1495,10 +1880,7 @@ mod tests {
         assert!(err.contains("enabled_mods"), "{err}");
 
         // Mixed escape forms of the same name are also duplicates.
-        let dup2 = format!(
-            r#"{{"abc":1,"ab{}":2}}"#,
-            concat!(r"\u", "0063")
-        );
+        let dup2 = format!(r#"{{"abc":1,"ab{}":2}}"#, concat!(r"\u", "0063"));
         assert!(reject_duplicate_top_level_keys(&dup2).is_err());
 
         // Distinct decoded names stay accepted.
@@ -1513,11 +1895,18 @@ mod tests {
             decode_json_string(&format!("enabled{}mods", concat!(r"\u", "005f"))).unwrap(),
             "enabled_mods"
         );
-        assert_eq!(decode_json_string(r#"a\"b\\c\/d\n"#).unwrap(), "a\"b\\c/d\n");
+        assert_eq!(
+            decode_json_string(r#"a\"b\\c\/d\n"#).unwrap(),
+            "a\"b\\c/d\n"
+        );
         // Surrogate pair: U+1F600.
         assert_eq!(
-            decode_json_string(&format!("{}{}", concat!(r"\u", "D83D"), concat!(r"\u", "DE00")))
-                .unwrap(),
+            decode_json_string(&format!(
+                "{}{}",
+                concat!(r"\u", "D83D"),
+                concat!(r"\u", "DE00")
+            ))
+            .unwrap(),
             "\u{1F600}"
         );
         // Unpaired surrogate fails closed.
@@ -1583,7 +1972,11 @@ mod tests {
         fs::rename(content.join("a.txt"), content.join("b.txt")).unwrap();
         let renamed = resolve_mod_descriptor(&dir, "mod/m.mod");
         let (files_r, bytes_r, _) = renamed.content_fingerprint.expect("tuple");
-        assert_eq!((files_b, bytes_b), (files_r, bytes_r), "tuple collides on rename");
+        assert_eq!(
+            (files_b, bytes_b),
+            (files_r, bytes_r),
+            "tuple collides on rename"
+        );
         assert_ne!(
             renamed.content_sha256.as_deref(),
             Some(sha_before.as_str()),

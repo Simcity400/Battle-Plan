@@ -327,6 +327,39 @@ fn byte_identical_via_store_interface() {
 }
 
 #[test]
+fn container_snapshot_duplicate_members_are_rejected_recursively() {
+    for (case, snapshot_bytes, duplicate_key) in [
+        (
+            "duplicate_session",
+            br#"{"game_id":"campaign","hour_index":17050260,"session":{"active_dlcs":["Wrong DLC"]},"session":{}}"#.as_slice(),
+            "session",
+        ),
+        (
+            "duplicate_nested_active_dlcs",
+            br#"{"game_id":"campaign","hour_index":17050260,"session":{"active_dlcs":["Wrong DLC"],"active_dlcs":[]}}"#.as_slice(),
+            "active_dlcs",
+        ),
+    ] {
+        let mut entries = fixture_entries();
+        entries
+            .iter_mut()
+            .find(|entry| entry.path.ends_with("s0003.000017050260.snapshot.json"))
+            .expect("second snapshot fixture")
+            .bytes = snapshot_bytes.to_vec();
+        let bytes = pack(GAME, &entries, &fixture_identity(), false).expect("pack duplicate fixture");
+        let container = Container::from_bytes(bytes, &ExpectedIdentity::default())
+            .expect("the first representative snapshot remains valid");
+
+        let error = container
+            .load(17050260)
+            .expect_err("duplicate snapshot members must be rejected")
+            .to_string();
+        assert!(error.contains("duplicate JSON member"), "{case}: {error}");
+        assert!(error.contains(duplicate_key), "{case}: {error}");
+    }
+}
+
+#[test]
 fn raw_collector_stream_can_be_enumerated_and_read_verified() {
     let bytes = build_container(true);
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default()).expect("open");
@@ -598,6 +631,71 @@ fn rejects_path_traversal_entry_name() {
     use snapshot::zip::validate_path;
     assert!(validate_path("../escape").is_err());
     assert!(validate_path("payload/../../etc").is_err());
+}
+
+#[test]
+fn strict_open_rejects_duplicate_role_member_before_last_wins() {
+    let bytes = pack_with(
+        GAME,
+        &fixture_entries(),
+        &fixture_identity(),
+        false,
+        &PackOptions {
+            inject_duplicate_role_member: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let error = Container::from_bytes_strict(bytes, &ExpectedIdentity::default())
+        .err()
+        .expect("duplicate role must reject")
+        .to_string();
+    assert!(error.contains("duplicate JSON member"), "{error}");
+    assert!(error.contains("role"), "{error}");
+}
+
+#[test]
+fn strict_open_rejects_present_non_string_role() {
+    let bytes = pack_with(
+        GAME,
+        &fixture_entries(),
+        &fixture_identity(),
+        false,
+        &PackOptions {
+            first_role_raw: Some(json!(7)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let error = Container::from_bytes_strict(bytes, &ExpectedIdentity::default())
+        .err()
+        .expect("non-string role must reject")
+        .to_string();
+    assert!(
+        error.contains("role is present but is not a string"),
+        "{error}"
+    );
+}
+
+#[test]
+fn strict_open_rejects_unroled_ascii_timeline_lookalike() {
+    let mut entries: Vec<PackEntry> = fixture_entries()
+        .into_iter()
+        .filter(|entry| entry.path != format!("payload/{GAME}/timeline.json"))
+        .collect();
+    entries.push(PackEntry {
+        path: format!("payload/{GAME}/Timeline.json"),
+        bytes: br#"{"lookalike":true}"#.to_vec(),
+        role: "artifact",
+        hour_index: None,
+    });
+    let bytes = pack(GAME, &entries, &fixture_identity(), false).unwrap();
+    let error = Container::from_bytes_strict(bytes, &ExpectedIdentity::default())
+        .err()
+        .expect("timeline lookalike must reject")
+        .to_string();
+    assert!(error.contains("ASCII-case lookalike"), "{error}");
+    assert!(error.contains("Timeline.json"), "{error}");
 }
 
 // ------------------------------- helpers --------------------------------

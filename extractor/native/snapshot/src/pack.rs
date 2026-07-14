@@ -123,6 +123,12 @@ pub struct PackOptions {
     /// `(path, bytes)`; the manifest digest stays valid because the entry never
     /// enters the manifest — exactly the tamper case the reader must catch.
     pub inject_stowaway: Option<(String, Vec<u8>)>,
+    /// Duplicate the first raw role member with the same value after the
+    /// semantic manifest and digest are complete. Ordinary last-wins decoding
+    /// would preserve the semantic value and valid digest.
+    pub inject_duplicate_role_member: bool,
+    /// Replace the first manifest entry's role with an arbitrary raw value.
+    pub first_role_raw: Option<Value>,
 }
 
 /// Default zstd compression level for production `.battleplan` payload entries.
@@ -339,7 +345,6 @@ pub fn pack_mixed_to_writer<W: Write>(
             .unwrap_or("")
             .cmp(b["path"].as_str().unwrap_or(""))
     });
-
     let mut manifest = json!({
         "format": "hoi4replay",
         "container_version": 1,
@@ -723,6 +728,12 @@ pub fn pack_borrowed_with_writer<W: Write>(
             .unwrap_or("")
             .cmp(b["path"].as_str().unwrap_or(""))
     });
+    if let (Some(raw), Some(first)) = (&opts.first_role_raw, manifest_entries.first_mut()) {
+        first
+            .as_object_mut()
+            .expect("manifest entry object")
+            .insert("role".into(), raw.clone());
+    }
 
     // --- the manifest object (digest filled in below) ---
     let required_features = match (&opts.required_features_raw, &opts.inject_required_feature) {
@@ -793,7 +804,10 @@ pub fn pack_borrowed_with_writer<W: Write>(
     // manifest.json is written LAST (spec §6). The omit-manifest test fixture
     // produces a recovery-only file (no manifest) to exercise the NoManifest path.
     if !opts.omit_manifest {
-        let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest serializes");
+        let mut manifest_bytes = serde_json::to_vec(&manifest).expect("manifest serializes");
+        if opts.inject_duplicate_role_member {
+            inject_duplicate_role_member(&mut manifest_bytes);
+        }
         write_zip_file(
             writer,
             &mut central,
@@ -809,6 +823,25 @@ pub fn pack_borrowed_with_writer<W: Write>(
 
     finish_zip(writer, &mut central, written, file_count, zip64_used)?;
     Ok(())
+}
+
+fn inject_duplicate_role_member(bytes: &mut Vec<u8>) {
+    let marker = br#""role":""#;
+    let start = bytes
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("test fixture manifest has a role member")
+        + marker.len();
+    let end = bytes[start..]
+        .iter()
+        .position(|byte| *byte == b'"')
+        .map(|offset| start + offset)
+        .expect("test fixture role string terminates");
+    let role = bytes[start..end].to_vec();
+    let mut duplicate = br#","role":""#.to_vec();
+    duplicate.extend_from_slice(&role);
+    duplicate.push(b'"');
+    bytes.splice(end + 1..end + 1, duplicate);
 }
 
 // --------------------------------------------------------------------------

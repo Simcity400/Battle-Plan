@@ -617,8 +617,10 @@ dependencies = [
  "compact_stream",
  "crc32fast",
  "flate2",
+ "libc",
  "serde",
  "serde_json",
+ "windows-sys",
  "zstd",
 ]
 

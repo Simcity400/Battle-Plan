@@ -24,10 +24,12 @@ use serde_json::{json, Value};
 use session_multiplayer_metadata_live as session57;
 use snapshot::sha256::{to_hex, Sha256};
 use snapshot::{
-    pack_borrowed_to_writer, pack_mixed_to_writer, pack_streaming_zstd_to_writer_with_profile,
-    verify_replay_container_streaming, BorrowedPackEntry, CompressionProfile, Container,
-    ExpectedIdentity, FileBackedPackEntry, PackIdentity, StreamingFileEntry,
+    pack_borrowed_to_writer, pack_streaming_zstd_to_writer_with_profile,
+    verify_replay_container_streaming_file, verify_replay_container_streaming_file_at_path,
+    BorrowedPackEntry, CompressionProfile, FileBackedPackEntry, PackIdentity, StreamingFileEntry,
 };
+#[cfg(test)]
+use snapshot::{Container, ExpectedIdentity};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{c_char, c_void, OsStr, OsString};
@@ -97,6 +99,17 @@ struct ByHandleFileInformation {
     file_index_low: Dword,
 }
 
+/// ABI-compatible prefix of Win32 `FILE_RENAME_INFO`. `replace_or_flags` is
+/// the four-byte union containing `ReplaceIfExists`/`Flags`; `file_name` is the
+/// first element of the variable-length UTF-16 destination name.
+#[repr(C)]
+struct FileRenameInfo {
+    replace_or_flags: Dword,
+    root_directory: Handle,
+    file_name_length: Dword,
+    file_name: [u16; 1],
+}
+
 const WH_GETMESSAGE: i32 = 3;
 const WM_NULL: u32 = 0x0000;
 const PIPE_ACCESS_INBOUND: Dword = 0x00000001;
@@ -108,8 +121,15 @@ const ERROR_NO_MORE_FILES: Dword = 18;
 const ERROR_BROKEN_PIPE: Dword = 109;
 const ERROR_NO_DATA: Dword = 232;
 const ERROR_PIPE_LISTENING: Dword = 536;
-const MOVEFILE_REPLACE_EXISTING: Dword = 0x00000001;
-const MOVEFILE_WRITE_THROUGH: Dword = 0x00000008;
+const DELETE_ACCESS: Dword = 0x00010000;
+const GENERIC_READ_ACCESS: Dword = 0x80000000;
+const GENERIC_WRITE_ACCESS: Dword = 0x40000000;
+const FILE_SHARE_READ_ACCESS: Dword = 0x00000001;
+#[cfg(test)]
+const FILE_SHARE_WRITE_ACCESS: Dword = 0x00000002;
+#[cfg(test)]
+const FILE_SHARE_DELETE_ACCESS: Dword = 0x00000004;
+const FILE_RENAME_INFO_CLASS: i32 = 3;
 const GENERIC_READ_BUFFER: usize = 65_536;
 const INVALID_HANDLE_VALUE: isize = -1;
 const TH32CS_SNAPTHREAD: Dword = 0x00000004;
@@ -749,8 +769,12 @@ extern "system" {
         bytes_read: *mut Dword,
         overlapped: *mut c_void,
     ) -> Bool;
-    fn MoveFileExW(existing_file_name: *const u16, new_file_name: *const u16, flags: Dword)
-        -> Bool;
+    fn SetFileInformationByHandle(
+        file: Handle,
+        file_information_class: i32,
+        file_information: *const c_void,
+        buffer_size: Dword,
+    ) -> Bool;
     fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
     fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
 }
@@ -2204,10 +2228,27 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
             "fold-and-repack manifest modset has no boolean `resolved` (legacy shape)".to_string()
         })?;
     if !resolved {
-        if obj.contains_key("enabled_mods") || obj.contains_key("dlc") {
+        for key in obj.keys() {
+            if !["resolved", "errors", "partial_evidence"].contains(&key.as_str()) {
+                return Err(format!(
+                    "fold-and-repack manifest modset is UNRESOLVED but carries top-level \
+                     `{key}` evidence; unresolved evidence belongs only under partial_evidence"
+                ));
+            }
+        }
+        let attributed_errors = obj
+            .get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| {
+                !errors.is_empty()
+                    && errors
+                        .iter()
+                        .all(|error| error.as_str().is_some_and(|text| !text.trim().is_empty()))
+            });
+        if !attributed_errors {
             return Err(
-                "fold-and-repack manifest modset is UNRESOLVED but carries top-level \
-                 enabled_mods/dlc (pre-fix vanilla-looking shape); refusing to republish"
+                "fold-and-repack manifest modset is UNRESOLVED without nonempty attributed \
+                 errors; null/partial evidence cannot be republished unexplained"
                     .to_string(),
             );
         }
@@ -2279,9 +2320,41 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
             "process_start_unix",
             "enabled_mods",
             "dlc",
+            "dlc_display_names",
+            "localisation_language",
         ],
         "resolved object",
     )?;
+    let dlc_display_names = obj
+        .get("dlc_display_names")
+        .and_then(Value::as_object)
+        .ok_or("fold-and-repack manifest modset dlc_display_names is not an object map")?;
+    for (path, display_name) in dlc_display_names {
+        if path.is_empty() {
+            return Err(
+                "fold-and-repack manifest modset dlc_display_names holds an empty path key".into(),
+            );
+        }
+        match display_name {
+            Value::String(name) if !name.trim().is_empty() => {}
+            _ => {
+                return Err(format!(
+                    "fold-and-repack manifest modset dlc_display_names[{path:?}] is not \
+                     a nonempty string"
+                ));
+            }
+        }
+    }
+    match obj.get("localisation_language") {
+        Some(Value::String(language)) if !language.trim().is_empty() => {}
+        _ => {
+            return Err(
+                "fold-and-repack manifest modset localisation_language is not a nonempty \
+                 string"
+                    .into(),
+            );
+        }
+    }
     let game = obj
         .get("game")
         .and_then(Value::as_object)
@@ -2593,6 +2666,17 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
     // from the enabled derivation alone.)
     let installed_set: std::collections::BTreeSet<&str> = installed.iter().copied().collect();
     let disabled_set: std::collections::BTreeSet<&str> = disabled.iter().copied().collect();
+    if dlc_display_names.len() != installed_set.len()
+        || !dlc_display_names
+            .keys()
+            .all(|path| installed_set.contains(path.as_str()))
+    {
+        return Err(
+            "fold-and-repack manifest modset dlc_display_names keys do not exactly match \
+             dlc.installed"
+                .into(),
+        );
+    }
     if !disabled_set.is_subset(&installed_set) {
         return Err(
             "fold-and-repack manifest modset dlc.disabled lists entries outside \
@@ -4331,29 +4415,31 @@ fn write_native_replay_container(
     manifest_path: &Path,
     replay_path: &Path,
 ) -> Result<(), String> {
-    write_native_replay_container_with_verifier(
+    write_native_replay_container_with_pre_verify_hook(
         cfg,
         stream_bytes,
         snapshots,
         manifest,
         manifest_path,
         replay_path,
-        verify_native_replay_container,
+        |_, _| Ok(()),
     )
 }
 
-fn write_native_replay_container_with_verifier<F>(
+fn write_native_replay_container_with_pre_verify_hook<F>(
     cfg: &Config,
     stream_bytes: &[u8],
     snapshots: &[(i64, String, Vec<u8>)],
     manifest: &Value,
     manifest_path: &Path,
     replay_path: &Path,
-    verifier: F,
+    pre_verify_hook: F,
 ) -> Result<(), String>
 where
-    F: FnOnce(&Path, &str, &str, &[u8], &[(String, Vec<u8>)]) -> Result<(), String>,
+    F: FnOnce(&Path, &mut fs::File) -> Result<(), String>,
 {
+    let session_manifest = read_session_manifest_bytes_validated(manifest_path, manifest)?;
+    let manifest = &session_manifest.value;
     let game_id = manifest
         .get("replay_game_id")
         .and_then(Value::as_str)
@@ -4426,7 +4512,6 @@ where
         "session_manifest_role": "recorder_manifest",
     }))
     .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
-    let manifest_bytes = read_session_manifest_bytes_validated(manifest_path)?;
     let mut entries = vec![
         BorrowedPackEntry {
             path: format!("payload/{game_id}/index.json"),
@@ -4448,7 +4533,7 @@ where
         },
         BorrowedPackEntry {
             path: format!("payload/{game_id}/{manifest_payload_path}"),
-            bytes: &manifest_bytes,
+            bytes: &session_manifest.bytes,
             role: "recorder_manifest",
             hour_index: None,
         },
@@ -4485,213 +4570,51 @@ where
                 .flush()
                 .map_err(|e| format!("flush replay temp failed: {e}"))
         })
+        .and_then(|()| {
+            tmp_file
+                .sync_all()
+                .map_err(|e| format!("sync replay temp failed: {e}"))
+        })
     {
         drop(tmp_file);
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }
-    drop(tmp_file);
-    let result = verifier(
-        &tmp,
-        &game_id,
-        &stream_payload_path,
-        stream_bytes,
-        &static_artifact_entries,
-    )
-    .and_then(|()| finalize_verified_replay(&tmp, replay_path));
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
-}
-
-// Superseded on the production path by `write_native_replay_container_streaming`
-// (which never holds the whole stream in RAM); retained as reference + test
-// coverage of the in-RAM mixed packer.
-#[allow(dead_code)]
-fn write_native_replay_container_file_backed(
-    cfg: &Config,
-    stream_bytes: &[u8],
-    snapshot_files: &[FoldedSnapshotFile],
-    manifest: &Value,
-    manifest_path: &Path,
-    replay_path: &Path,
-) -> Result<(), String> {
-    write_native_replay_container_file_backed_with_verifier(
-        cfg,
-        stream_bytes,
-        snapshot_files,
-        manifest,
-        manifest_path,
-        replay_path,
-        verify_native_replay_container,
-    )
-}
-
-#[allow(dead_code)]
-fn write_native_replay_container_file_backed_with_verifier<F>(
-    cfg: &Config,
-    stream_bytes: &[u8],
-    snapshot_files: &[FoldedSnapshotFile],
-    manifest: &Value,
-    manifest_path: &Path,
-    replay_path: &Path,
-    verifier: F,
-) -> Result<(), String>
-where
-    F: FnOnce(&Path, &str, &str, &[u8], &[(String, Vec<u8>)]) -> Result<(), String>,
-{
-    let game_id = manifest
-        .get("replay_game_id")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| replay_game_id(&cfg.session_id));
-    let stream_name = cfg.stream_format.stream_file_name();
-    let manifest_name = manifest_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("native_session_manifest.json");
-    let stream_payload_path = format!("collector_raw/{stream_name}");
-    let manifest_payload_path = format!("recorder/{manifest_name}");
-    let mut index_snapshots: Vec<Value> = Vec::with_capacity(snapshot_files.len());
-    for snapshot in snapshot_files {
-        let file = format!("snapshots/{:012}.snapshot.json", snapshot.hour_index);
-        index_snapshots.push(json!({
-            "hour_index": snapshot.hour_index,
-            "date": snapshot.date.as_str(),
-            "file": file,
-        }));
-    }
-
-    let mut resolved_by_name: BTreeMap<&'static str, ResolvedStaticArtifact> = BTreeMap::new();
-    for request in &cfg.static_artifacts {
-        let resolved = resolve_static_artifact(&game_id, request)?;
-        resolved_by_name.insert(request.name, resolved);
-    }
-    let mut static_artifact_index: Vec<Value> = Vec::with_capacity(KNOWN_STATIC_ARTIFACTS.len());
-    let mut static_artifact_entries: Vec<(String, Vec<u8>)> = Vec::new();
-    for name in KNOWN_STATIC_ARTIFACTS {
-        if let Some(resolved) = resolved_by_name.get(name) {
-            static_artifact_index.push(resolved.index_descriptor.clone());
-            static_artifact_entries.push((
-                format!("{game_id}/{}", resolved.payload_path),
-                resolved.bytes.clone(),
-            ));
-        } else {
-            static_artifact_index.push(json!({
-                "name": name,
-                "present": false,
-                "role": "static_artifact",
-                "absence_reason": "not supplied to the recorder for this recording",
-            }));
-        }
-    }
-
-    let index_bytes = serde_json::to_vec_pretty(&json!({
-        "game_id": game_id.clone(),
-        "schema_version": "1",
-        "snapshots": index_snapshots,
-        "static_artifacts": static_artifact_index,
-    }))
-    .map_err(|e| format!("serialize replay index failed: {e}"))?;
-    let timeline_bytes = serde_json::to_vec_pretty(&json!({
-        "format": "hoi4_compact_stream_timeline_v1",
-        "stream_format": cfg.stream_format.as_str(),
-        "stream": stream_payload_path.clone(),
-        "session_manifest": manifest_payload_path.clone(),
-        "raw_stream_role": "collector_compact_stream",
-        "session_manifest_role": "recorder_manifest",
-    }))
-    .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
-    let manifest_bytes = read_session_manifest_bytes_validated(manifest_path)?;
-    let mut borrowed_entries = vec![
-        BorrowedPackEntry {
-            path: format!("payload/{game_id}/index.json"),
-            bytes: &index_bytes,
-            role: "index",
-            hour_index: None,
-        },
-        BorrowedPackEntry {
-            path: format!("payload/{game_id}/timeline.json"),
-            bytes: &timeline_bytes,
-            role: "timeline",
-            hour_index: None,
-        },
-        BorrowedPackEntry {
-            path: format!("payload/{game_id}/{stream_payload_path}"),
-            bytes: stream_bytes,
-            role: "collector_compact_stream",
-            hour_index: None,
-        },
-        BorrowedPackEntry {
-            path: format!("payload/{game_id}/{manifest_payload_path}"),
-            bytes: &manifest_bytes,
-            role: "recorder_manifest",
-            hour_index: None,
-        },
-    ];
-    for (path, bytes) in &static_artifact_entries {
-        borrowed_entries.push(BorrowedPackEntry {
-            path: format!("payload/{path}"),
-            bytes,
-            role: "static_artifact",
-            hour_index: None,
-        });
-    }
-    let file_entries = snapshot_files
-        .iter()
-        .map(|snapshot| FileBackedPackEntry {
-            path: format!(
-                "payload/{game_id}/snapshots/{:012}.snapshot.json",
-                snapshot.hour_index
-            ),
-            file_path: snapshot.path.as_path(),
-            role: "snapshot",
-            hour_index: Some(snapshot.hour_index),
+    let expected_stream_sha256 = to_hex(&Sha256::digest(stream_bytes));
+    let result = pre_verify_hook(&tmp, &mut tmp_file)
+        .and_then(|()| {
+            match cfg.stream_format {
+                StreamFormat::Compact => verify_replay_container_streaming_file(
+                    &mut tmp_file,
+                    &game_id,
+                    "collector_compact_stream",
+                ),
+                StreamFormat::Json => verify_replay_container_streaming_file_at_path(
+                    &mut tmp_file,
+                    &game_id,
+                    "collector_compact_stream",
+                    &stream_payload_path,
+                ),
+            }
+            .map_err(|e| format!("verify replay entries failed: {e}"))
         })
-        .collect::<Vec<_>>();
-    let identity = PackIdentity {
-        schema_version: Some("native_collector_session_v1".to_string()),
-        created_utc: Some(created_utc_label()),
-        ..Default::default()
-    };
-    let (tmp, mut tmp_file) = create_unique_replay_temp(replay_path)?;
-    if let Err(err) = pack_mixed_to_writer(
-        &game_id,
-        &borrowed_entries,
-        &file_entries,
-        &identity,
-        true,
-        &mut tmp_file,
-    )
-    .map_err(|e| format!("pack replay container failed: {e}"))
-    .and_then(|()| {
-        tmp_file
-            .flush()
-            .map_err(|e| format!("flush replay temp failed: {e}"))
-    }) {
-        drop(tmp_file);
-        let _ = fs::remove_file(&tmp);
-        return Err(err);
-    }
+        .and_then(|report| match report.stream_entry_sha256 {
+            Some(sha) if sha == expected_stream_sha256 => Ok(()),
+            Some(sha) => Err(format!(
+                "verify replay stream entry failed: packed stream sha256 {sha} != in-memory {expected_stream_sha256}"
+            )),
+            None => Err("verify replay stream entry failed: stream entry not found".to_string()),
+        })
+        .and_then(|()| finalize_verified_replay(&tmp_file, replay_path));
     drop(tmp_file);
-    let result = verifier(
-        &tmp,
-        &game_id,
-        &stream_payload_path,
-        stream_bytes,
-        &static_artifact_entries,
-    )
-    .and_then(|()| finalize_verified_replay(&tmp, replay_path));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
 }
 
-/// Streaming production container writer. Identical container shape to
-/// [`write_native_replay_container_file_backed`], but the raw compact stream is
-/// appended straight from disk in bounded-memory chunks (never buffered whole)
+/// Streaming production container writer. The raw compact stream is appended
+/// straight from disk in bounded-memory chunks (never buffered whole)
 /// and the finished container is re-verified FROM DISK, one entry at a time. The
 /// old whole-stream in-RAM byte-compare is replaced by a hash compare: the
 /// packed stream entry's decompressed sha256 (re-read from the container on disk)
@@ -4707,6 +4630,8 @@ fn write_native_replay_container_streaming(
     manifest_path: &Path,
     replay_path: &Path,
 ) -> Result<snapshot::StreamVerifyReport, String> {
+    let session_manifest = read_session_manifest_bytes_validated(manifest_path, manifest)?;
+    let manifest = &session_manifest.value;
     let game_id = manifest
         .get("replay_game_id")
         .and_then(Value::as_str)
@@ -4774,7 +4699,7 @@ fn write_native_replay_container_streaming(
     }))
     .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
     let manifest_bytes =
-        session_manifest_bytes_with_pre_pack_host_finalize(manifest_path, capture, fold_stats)?;
+        session_manifest_bytes_with_pre_pack_host_finalize(&session_manifest, capture, fold_stats)?;
     let mut borrowed_entries = vec![
         BorrowedPackEntry {
             path: format!("payload/{game_id}/index.json"),
@@ -4848,18 +4773,29 @@ fn write_native_replay_container_streaming(
         tmp_file
             .flush()
             .map_err(|e| format!("flush replay temp failed: {e}"))
+    })
+    .and_then(|()| {
+        tmp_file
+            .sync_all()
+            .map_err(|e| format!("sync replay temp failed: {e}"))
     }) {
         drop(tmp_file);
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }
-    drop(tmp_file);
 
     // Streaming re-verify FROM DISK: every entry hashed against the manifest, and
-    // the stream entry's decompressed hash compared to the capture hash.
+    // the stream entry's decompressed hash compared to the capture hash. The
+    // original creation handle remains the verifier/promotion guard throughout:
+    // it has never shared write/delete, so neither a pathname swap nor a
+    // surviving writable mapping can arise before promotion.
     let verify = (|| -> Result<snapshot::StreamVerifyReport, String> {
-        let report = verify_replay_container_streaming(&tmp, &game_id, "collector_compact_stream")
-            .map_err(|e| format!("verify replay entries failed: {e}"))?;
+        let report = verify_replay_container_streaming_file(
+            &mut tmp_file,
+            &game_id,
+            "collector_compact_stream",
+        )
+        .map_err(|e| format!("verify replay entries failed: {e}"))?;
         match &report.stream_entry_sha256 {
             Some(sha) if *sha == capture.sha256 => Ok(report),
             Some(sha) => Err(format!(
@@ -4870,15 +4806,17 @@ fn write_native_replay_container_streaming(
         }
     })();
     let verify = match verify.and_then(|report| {
-        finalize_verified_replay(&tmp, replay_path)?;
+        finalize_verified_replay(&tmp_file, replay_path)?;
         Ok(report)
     }) {
         Ok(report) => report,
         Err(err) => {
+            drop(tmp_file);
             let _ = fs::remove_file(&tmp);
             return Err(err);
         }
     };
+    drop(tmp_file);
     Ok(verify)
 }
 
@@ -4965,35 +4903,49 @@ fn build_host_finalize_telemetry(
     block
 }
 
-/// Modset re-gate finding 3 (2026-07-12): the container writers REREAD the
-/// session manifest from disk at pack time, so a replacement landing after
-/// validation (OneDrive sync, another process — the repack path folds for
-/// minutes in between) would be embedded and cryptographically sealed instead
-/// of the validated object. Every pack-time read now validates the ACTUAL
-/// bytes being embedded immediately before packing.
-fn read_session_manifest_bytes_validated(manifest_path: &Path) -> Result<Vec<u8>, String> {
+/// Bind one strict, modset-validated disk read to both the finalizer decisions
+/// and the recorder-manifest payload. A replacement landing after this read
+/// cannot change either side of that binding, while a replacement that landed
+/// before it must equal the caller's already-validated manifest value.
+#[derive(Debug)]
+struct ValidatedSessionManifest {
+    bytes: Vec<u8>,
+    value: Value,
+}
+
+fn read_session_manifest_bytes_validated(
+    manifest_path: &Path,
+    expected_manifest: &Value,
+) -> Result<ValidatedSessionManifest, String> {
     let bytes =
         fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
-    let manifest: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("parse session manifest failed: {e}"))?;
-    validate_repack_manifest_modset(&manifest)
+    let value = snapshot::parse_json_strict(&bytes)
+        .map_err(|e| format!("strict parse session manifest failed: {e}"))?;
+    validate_repack_manifest_modset(&value)
         .map_err(|e| format!("session manifest modset invalid at pack time: {e}"))?;
     // W12C: a present campaign_identity object must satisfy the exact grammar
     // (drift/mismatch is fatal); an absent one is a legacy identity-unavailable
     // stream and repacks unchanged.
-    recorder_host::campaign_identity::validate_in_session_manifest(&manifest)
+    recorder_host::campaign_identity::validate_in_session_manifest(&value)
         .map_err(|e| format!("session manifest campaign_identity invalid at pack time: {e}"))?;
-    Ok(bytes)
+    // replay-loader single-read binding: the parsed value that drove the
+    // finalization decisions must be byte-identical to the one embedded, or a
+    // concurrent swap could seal a mixed-session container.
+    if &value != expected_manifest {
+        return Err(
+            "session manifest changed after finalization decisions; refusing to seal a mixed-session container"
+                .to_string(),
+        );
+    }
+    Ok(ValidatedSessionManifest { bytes, value })
 }
 
 fn session_manifest_bytes_with_pre_pack_host_finalize(
-    manifest_path: &Path,
+    session_manifest: &ValidatedSessionManifest,
     capture: &PipeCapture,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
 ) -> Result<Vec<u8>, String> {
-    let bytes = read_session_manifest_bytes_validated(manifest_path)?;
-    let mut manifest: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("parse session manifest failed: {e}"))?;
+    let mut manifest = session_manifest.value.clone();
     manifest
         .as_object_mut()
         .ok_or_else(|| "session manifest is not an object".to_string())?
@@ -5064,49 +5016,6 @@ fn update_host_finalize_telemetry(
         .insert("host_finalize".to_string(), block);
     let pretty = serde_json::to_vec_pretty(&manifest).map_err(|e| format!("serialize: {e}"))?;
     fs::write(manifest_path, pretty).map_err(|e| format!("write manifest: {e}"))
-}
-
-fn verify_native_replay_container(
-    replay_path: &Path,
-    game_id: &str,
-    stream_payload_path: &str,
-    stream_bytes: &[u8],
-    static_artifact_entries: &[(String, Vec<u8>)],
-) -> Result<(), String> {
-    let container = Container::open(replay_path, &ExpectedIdentity::default())
-        .map_err(|e| format!("verify replay open failed: {e}"))?;
-    container
-        .verify_all()
-        .map_err(|e| format!("verify replay entries failed: {e}"))?;
-    let stream_entry = format!("payload/{game_id}/{stream_payload_path}");
-    let verified_stream = container
-        .read_entry_bytes(&stream_entry)
-        .map_err(|e| format!("verify replay stream entry failed: {e}"))?;
-    if verified_stream != stream_bytes {
-        return Err("verify replay stream entry failed: compact bytes changed".to_string());
-    }
-    // Each present static artifact must round-trip byte-identically through the
-    // verified container (loss-less pack, spec §5) and be reachable by its role.
-    let static_role_entries = container.entries_by_role("static_artifact");
-    if static_role_entries.len() != static_artifact_entries.len() {
-        return Err(format!(
-            "verify replay static artifacts failed: packed {} role entries, container reports {}",
-            static_artifact_entries.len(),
-            static_role_entries.len()
-        ));
-    }
-    for (path, bytes) in static_artifact_entries {
-        let entry_path = format!("payload/{path}");
-        let verified = container
-            .read_entry_bytes(&entry_path)
-            .map_err(|e| format!("verify replay static artifact {entry_path} failed: {e}"))?;
-        if &verified != bytes {
-            return Err(format!(
-                "verify replay static artifact {entry_path} failed: payload bytes changed"
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn replay_path_for_gate(out_dir: &Path, hourly_met: bool) -> PathBuf {
@@ -5325,7 +5234,14 @@ fn create_unique_replay_temp(replay_path: &Path) -> Result<(PathBuf, fs::File), 
     for attempt in 0..32 {
         let tmp = replay_temp_candidate(replay_path, attempt);
         match fs::OpenOptions::new()
+            .read(true)
             .write(true)
+            .access_mode(GENERIC_READ_ACCESS | GENERIC_WRITE_ACCESS | DELETE_ACCESS)
+            // This sharing contract is established atomically with creation and
+            // held by the same handle through write, verify, and promotion.
+            // Read-only verifiers may coexist; write/delete/rename handles and
+            // therefore new writable mappings cannot ever be acquired.
+            .share_mode(FILE_SHARE_READ_ACCESS)
             .create_new(true)
             .open(&tmp)
         {
@@ -5365,14 +5281,79 @@ fn cleanup_snapshot_spill_dir(path: &Path) {
     }
 }
 
-fn finalize_verified_replay(tmp: &Path, replay_path: &Path) -> Result<(), String> {
-    let tmp_wide = wide(tmp.as_os_str());
-    let replay_wide = wide(replay_path.as_os_str());
+#[cfg(test)]
+fn open_replay_promotion_guard_with_share(
+    tmp: &Path,
+    share_mode: Dword,
+) -> Result<fs::File, String> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ_ACCESS | GENERIC_WRITE_ACCESS | DELETE_ACCESS)
+        .share_mode(share_mode)
+        .open(tmp)
+        .map_err(|error| {
+            format!(
+                "open replay temp promotion guard {} failed: {error}",
+                tmp.display()
+            )
+        })?;
+    file.sync_all().map_err(|error| {
+        format!(
+            "flush replay temp promotion guard {} failed: {error}",
+            tmp.display()
+        )
+    })?;
+    Ok(file)
+}
+
+/// Atomically rename the exact open object that survived strict verification.
+/// No source pathname is accepted or re-resolved here.
+fn finalize_verified_replay(verified_file: &fs::File, replay_path: &Path) -> Result<(), String> {
+    let replay_path = if replay_path.is_absolute() {
+        replay_path.to_path_buf()
+    } else {
+        env::current_dir()
+            .map_err(|error| format!("resolve replay destination failed: {error}"))?
+            .join(replay_path)
+    };
+    let replay_wide = replay_path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if replay_wide.is_empty() || replay_wide.contains(&0) {
+        return Err(format!(
+            "finalize replay failed: invalid destination {}",
+            replay_path.display()
+        ));
+    }
+    let file_name_bytes = replay_wide
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|length| Dword::try_from(length).ok())
+        .ok_or_else(|| "finalize replay failed: destination path is too long".to_string())?;
+    let info_bytes = std::mem::size_of::<FileRenameInfo>()
+        .checked_add((replay_wide.len() - 1) * std::mem::size_of::<u16>())
+        .ok_or_else(|| "finalize replay failed: rename buffer length overflow".to_string())?;
+    let info_bytes_u32 = Dword::try_from(info_bytes)
+        .map_err(|_| "finalize replay failed: rename buffer is too large".to_string())?;
+    let word_bytes = std::mem::size_of::<usize>();
+    let word_count = info_bytes
+        .checked_add(word_bytes - 1)
+        .ok_or_else(|| "finalize replay failed: rename buffer length overflow".to_string())?
+        / word_bytes;
+    let mut storage = vec![0usize; word_count];
+    let info = storage.as_mut_ptr().cast::<FileRenameInfo>();
     let ok = unsafe {
-        MoveFileExW(
-            tmp_wide.as_ptr(),
+        (*info).replace_or_flags = 1;
+        (*info).root_directory = ptr::null_mut();
+        (*info).file_name_length = file_name_bytes;
+        ptr::copy_nonoverlapping(
             replay_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            (*info).file_name.as_mut_ptr(),
+            replay_wide.len(),
+        );
+        SetFileInformationByHandle(
+            verified_file.as_raw_handle() as Handle,
+            FILE_RENAME_INFO_CLASS,
+            info.cast(),
+            info_bytes_u32,
         )
     };
     if ok == 0 {
@@ -20561,8 +20542,11 @@ mod tests {
             decoded_sha256: String::new(),
         };
 
+        let expected = snapshot::parse_json_strict(&fs::read(&manifest_path).unwrap()).unwrap();
+        let session_manifest =
+            read_session_manifest_bytes_validated(&manifest_path, &expected).unwrap();
         let bytes = session_manifest_bytes_with_pre_pack_host_finalize(
-            &manifest_path,
+            &session_manifest,
             &capture,
             Some(&fold_stats),
         )
@@ -20581,6 +20565,29 @@ mod tests {
         assert!(host_finalize.get("finalize_seconds").is_none());
         assert!(host_finalize.get("peak_private_bytes").is_none());
         assert!(host_finalize.get("peak_working_set_bytes").is_none());
+    }
+
+    #[test]
+    fn recorder_finalization_rejects_duplicate_nested_modset_member() {
+        let dir = TmpDir::new("manifest_duplicate_nested_modset");
+        let manifest_path = dir.join("native_session_manifest.json");
+        fs::write(
+            &manifest_path,
+            br#"{
+                "schema":"native_collector_session_v1",
+                "modset":{
+                    "resolved":false,
+                    "errors":["first attributed failure"],
+                    "errors":["replacement attributed failure"],
+                    "partial_evidence":{}
+                }
+            }"#,
+        )
+        .unwrap();
+        let error = read_session_manifest_bytes_validated(&manifest_path, &Value::Null)
+            .expect_err("recorder finalization must reject nested duplicate members");
+        assert!(error.contains("duplicate JSON member"), "{error}");
+        assert!(error.contains("errors"), "{error}");
     }
 
     fn country_identity_payload_with_cosmetic(rows: &[(u32, &str, u8, Option<&str>)]) -> Vec<u8> {
@@ -30471,84 +30478,42 @@ mod tests {
     }
 
     #[test]
-    fn replay_container_file_backed_snapshots_roundtrip() {
-        let dir = std::env::temp_dir().join(format!(
-            "battle-plan_file_backed_pack_test_{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let spill_dir = dir.join("spill");
-        fs::create_dir_all(&spill_dir).unwrap();
-        let manifest_path = dir.join("native_session_manifest.json");
-        let replay_path = dir.join("native_session.battleplan");
-        let session_id = "file-backed pack test/session";
+    fn replay_container_preserves_json_debug_stream_bytes() {
+        let dir = TmpDir::new("json_debug_pack");
+        let session_id = "json debug pack test/session";
         let game_id = replay_game_id(session_id);
-        let hour_index = 16_959_360i64;
-        let snapshot_path = spill_dir.join("000016959360.snapshot.json");
-        let snapshot_bytes = format!(
-            r#"{{"schema_version":"1","game_id":"{game_id}","date":"1936.1.1.0","hour_index":{hour_index},"countries":{{"47":{{"fuel":{{"current":4046848}}}}}},"states":{{}}}}"#
-        )
-        .into_bytes();
-        fs::write(&snapshot_path, &snapshot_bytes).unwrap();
-        let snapshots = vec![FoldedSnapshotFile {
-            hour_index,
-            date: "1936.1.1.0".to_string(),
-            path: snapshot_path,
-            byte_len: snapshot_bytes.len(),
-            sha256: None,
-        }];
         let manifest = json!({
             "schema": "native_collector_session_v1",
-            // Current-schema UNRESOLVED modset (fail-closed shape): pack-time
-            // validation refuses manifests without a modset binding.
             "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
             "session_id": session_id,
             "replay_game_id": game_id,
-            "stream_format": "compact",
+            "stream_format": "json",
         });
+        let manifest_path = dir.join("native_session_manifest.json");
         fs::write(
             &manifest_path,
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
+        let replay_path = dir.join("native_session.battleplan");
         let mut cfg = test_config(vec![], None);
-        cfg.out_dir = dir.clone();
+        cfg.out_dir = dir.0.clone();
         cfg.session_id = session_id.to_string();
-        let raw = b"H4CR compact stream bytes".to_vec();
+        cfg.stream_format = StreamFormat::Json;
+        let stream = br#"{"type":"debug_frame","sequence":1}
+"#;
 
-        write_native_replay_container_file_backed(
-            &cfg,
-            &raw,
-            &snapshots,
-            &manifest,
-            &manifest_path,
-            &replay_path,
-        )
-        .unwrap();
+        write_native_replay_container(&cfg, stream, &[], &manifest, &manifest_path, &replay_path)
+            .unwrap();
 
         let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
         container.verify_all().unwrap();
-        let stored_stream = container
+        let stored = container
             .read_entry_bytes(&format!(
-                "payload/{game_id}/collector_raw/collector_stream.bin"
+                "payload/{game_id}/collector_raw/collector_frames.jsonl"
             ))
             .unwrap();
-        assert_eq!(stored_stream, raw);
-        let stored_snapshot = container
-            .read_entry_bytes(&format!(
-                "payload/{game_id}/snapshots/000016959360.snapshot.json"
-            ))
-            .unwrap();
-        assert_eq!(stored_snapshot, snapshot_bytes);
-        let snap = container.load(hour_index).unwrap();
-        assert_eq!(snap.hour_index, Some(hour_index));
-        assert_eq!(
-            snap.country_path("47", "fuel.current")
-                .and_then(Value::as_i64),
-            Some(4_046_848)
-        );
-        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(stored, stream);
     }
 
     #[test]
@@ -30667,6 +30632,319 @@ mod tests {
         let index_json: Value = serde_json::from_slice(&index_bytes).unwrap();
         assert_eq!(index_json["host_fold_skipped"], json!(false));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn post_verify_pathname_swap_never_promotes_impostor() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan_post_verify_swap_test_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join("native_session.battleplan.tmp");
+        let displaced = dir.join("verified-displaced.battleplan");
+        let replay_path = dir.join("native_session.battleplan");
+        let verified_bytes = snapshot::pack(
+            "g",
+            &[snapshot::PackEntry {
+                path: "payload/g/collector_raw/collector_stream.bin".to_string(),
+                bytes: b"strictly verified stream".to_vec(),
+                role: "collector_compact_stream",
+                hour_index: None,
+            }],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let impostor_bytes = b"post-verify pathname impostor";
+        fs::write(&tmp, &verified_bytes).unwrap();
+
+        let mut guard = open_replay_promotion_guard_with_share(
+            &tmp,
+            FILE_SHARE_READ_ACCESS | FILE_SHARE_WRITE_ACCESS | FILE_SHARE_DELETE_ACCESS,
+        )
+        .unwrap();
+        verify_replay_container_streaming_file(&mut guard, "g", "collector_compact_stream")
+            .unwrap();
+        fs::rename(&tmp, &displaced).unwrap();
+        fs::write(&tmp, impostor_bytes).unwrap();
+
+        finalize_verified_replay(&guard, &replay_path).unwrap();
+        assert_eq!(
+            fs::read(&replay_path).unwrap(),
+            verified_bytes,
+            "rename-by-handle must promote the exact strictly verified object"
+        );
+        assert_eq!(
+            fs::read(&tmp).unwrap(),
+            impostor_bytes,
+            "the swapped pathname impostor must remain unpromoted"
+        );
+        drop(guard);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replay_temp_writer_denies_write_and_delete_until_same_handle_promotion() {
+        let dir = TmpDir::new("replay_temp_deny_share");
+        let replay_path = dir.join("native_session.battleplan");
+        let (tmp, mut writer) = create_unique_replay_temp(&replay_path).unwrap();
+
+        let concurrent_write = fs::OpenOptions::new().write(true).open(&tmp);
+        assert!(
+            concurrent_write.is_err(),
+            "the creation handle must deny every concurrent write handle"
+        );
+        assert!(
+            fs::remove_file(&tmp).is_err(),
+            "the creation handle must deny delete/rename while finalization is in flight"
+        );
+
+        let verified_bytes = snapshot::pack(
+            "g",
+            &[snapshot::PackEntry {
+                path: "payload/g/collector_raw/collector_stream.bin".to_string(),
+                bytes: b"captured stream".to_vec(),
+                role: "collector_compact_stream",
+                hour_index: None,
+            }],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        writer.write_all(&verified_bytes).unwrap();
+        writer.flush().unwrap();
+        writer.sync_all().unwrap();
+        verify_replay_container_streaming_file(&mut writer, "g", "collector_compact_stream")
+            .unwrap();
+
+        assert!(fs::OpenOptions::new().write(true).open(&tmp).is_err());
+        assert!(fs::remove_file(&tmp).is_err());
+        finalize_verified_replay(&writer, &replay_path).unwrap();
+        drop(writer);
+        assert_eq!(fs::read(&replay_path).unwrap(), verified_bytes);
+    }
+
+    fn make_test_junction(link: &Path, target: &Path) {
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .expect("launch mklink /J");
+        assert!(status.success(), "mklink /J failed with {status}");
+    }
+
+    fn retarget_test_junction(link: &Path, target: &Path) {
+        fs::remove_dir(link).expect("remove old junction");
+        make_test_junction(link, target);
+    }
+
+    fn reparse_rebind_fixture(tag: &str) -> (PathBuf, PathBuf, Value, Config, Vec<u8>, Vec<u8>) {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan_reparse_rebind_{tag}_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let session_id = format!("reparse rebind/{tag}");
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
+            "session_id": session_id,
+            "replay_game_id": replay_game_id(&session_id),
+            "stream_format": "compact",
+        });
+        let manifest_path = dir.join("native_session_manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let mut cfg = test_config(vec!["fuel_live"], None);
+        cfg.session_id = session_id.clone();
+        cfg.out_dir = dir.clone();
+        let (raw, snapshots) = valid_stream_and_snapshots(&session_id);
+
+        // The decoy is a VALID container but for a DIFFERENT game_id/session. This makes the
+        // test DISCRIMINATING per the fix7 re-gate finding: the real verifier runs after the
+        // pre-verify hook has rebound the junction, so if it ever regressed to a pathname reopen
+        // it would inspect this decoy and, being told to expect the ORIGINAL game_id, FAIL
+        // verification (wrong game) -> the finalize call would Err and the test's unwrap would
+        // panic. Verifying through the retained handle inspects the original (correct game) and
+        // succeeds. So a check-one/promote-another regression can no longer pass this test.
+        let decoy_session = format!("reparse decoy DIFFERENT game/{tag}");
+        let mut decoy_manifest = manifest.clone();
+        {
+            let obj = decoy_manifest.as_object_mut().unwrap();
+            obj.insert("session_id".to_string(), json!(decoy_session));
+            obj.insert(
+                "replay_game_id".to_string(),
+                json!(replay_game_id(&decoy_session)),
+            );
+            obj.insert("reparse_decoy".to_string(), json!(true));
+        }
+        let decoy_manifest_path = dir.join("decoy_session_manifest.json");
+        fs::write(
+            &decoy_manifest_path,
+            serde_json::to_vec_pretty(&decoy_manifest).unwrap(),
+        )
+        .unwrap();
+        let decoy_path = dir.join("decoy.battleplan");
+        write_native_replay_container(
+            &cfg,
+            &raw,
+            &snapshots,
+            &decoy_manifest,
+            &decoy_manifest_path,
+            &decoy_path,
+        )
+        .unwrap();
+        let decoy_bytes = fs::read(&decoy_path).unwrap();
+
+        (dir, manifest_path, manifest, cfg, raw, decoy_bytes)
+    }
+
+    #[test]
+    fn in_memory_finalizer_reparse_ancestor_rebind_keeps_verify_and_promotion_on_one_object() {
+        let (dir, manifest_path, manifest, cfg, raw, decoy_bytes) =
+            reparse_rebind_fixture("in_memory");
+        let target_a = dir.join("target_a");
+        let target_b = dir.join("target_b");
+        let junction = dir.join("out");
+        fs::create_dir_all(&target_a).unwrap();
+        fs::create_dir_all(&target_b).unwrap();
+        make_test_junction(&junction, &target_a);
+        let replay_path = junction.join("native_session.battleplan");
+        let (_, snapshots) = valid_stream_and_snapshots(&cfg.session_id);
+        let mut verifier_bytes = None;
+
+        write_native_replay_container_with_pre_verify_hook(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+            |tmp_path, tmp_file| {
+                let tmp_name = tmp_path.file_name().expect("temp leaf name").to_os_string();
+                retarget_test_junction(&junction, &target_b);
+                fs::write(target_b.join(tmp_name), &decoy_bytes)
+                    .map_err(|e| format!("write reparse decoy failed: {e}"))?;
+                let pathname_bytes = fs::read(tmp_path)
+                    .map_err(|e| format!("read verifier pathname failed: {e}"))?;
+                assert_eq!(
+                    pathname_bytes, decoy_bytes,
+                    "rebound pathname reaches decoy"
+                );
+                std::io::Seek::seek(tmp_file, std::io::SeekFrom::Start(0))
+                    .map_err(|e| format!("seek retained verifier handle failed: {e}"))?;
+                let mut handle_bytes = Vec::new();
+                tmp_file
+                    .read_to_end(&mut handle_bytes)
+                    .map_err(|e| format!("read retained verifier handle failed: {e}"))?;
+                assert_ne!(
+                    handle_bytes, decoy_bytes,
+                    "retained handle must stay on original"
+                );
+                verifier_bytes = Some(handle_bytes);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let promoted = fs::read(target_b.join("native_session.battleplan")).unwrap();
+        assert_eq!(
+            promoted,
+            verifier_bytes.expect("verifier inspected bytes"),
+            "the promoted object must be the exact object accepted by verification"
+        );
+        assert_ne!(
+            promoted, decoy_bytes,
+            "the pathname decoy must not be promoted"
+        );
+        fs::remove_dir(&junction).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn swapped_valid_manifest_is_rejected_by_every_finalizer() {
+        let dir = TmpDir::new("swapped_valid_manifest");
+        let session_a = "manifest decision A";
+        let manifest_a = json!({
+            "schema": "native_collector_session_v1",
+            "modset": {"resolved": false, "errors": ["A evidence"], "partial_evidence": {"session": "A"}},
+            "session_id": session_a,
+            "replay_game_id": replay_game_id(session_a),
+            "stream_format": "compact",
+        });
+        let session_b = "manifest replacement B";
+        let manifest_b = json!({
+            "schema": "native_collector_session_v1",
+            "modset": {"resolved": false, "errors": ["B evidence"], "partial_evidence": {"session": "B"}},
+            "session_id": session_b,
+            "replay_game_id": replay_game_id(session_b),
+            "stream_format": "compact",
+        });
+        let manifest_path = dir.join("native_session_manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest_b).unwrap(),
+        )
+        .unwrap();
+        let raw_path = dir.join("collector_stream.bin");
+        fs::write(&raw_path, b"").unwrap();
+        let capture = PipeCapture {
+            byte_count: 0,
+            stored_byte_count: 0,
+            sha256: to_hex(&Sha256::digest(&[])),
+        };
+        let mut cfg = test_config(vec!["fuel_live"], None);
+        cfg.session_id = session_a.to_string();
+        cfg.out_dir = dir.0.clone();
+
+        let in_memory_path = dir.join("in_memory.battleplan");
+        let in_memory = write_native_replay_container(
+            &cfg,
+            b"",
+            &[],
+            &manifest_a,
+            &manifest_path,
+            &in_memory_path,
+        );
+        assert!(
+            in_memory.is_err(),
+            "in-memory finalizer accepted manifest B"
+        );
+        assert!(!in_memory_path.exists());
+
+        let streaming_path = dir.join("streaming.battleplan");
+        let streaming = write_native_replay_container_streaming(
+            &cfg,
+            &raw_path,
+            &capture,
+            &[],
+            None,
+            &manifest_a,
+            &manifest_path,
+            &streaming_path,
+        );
+        assert!(
+            streaming.is_err(),
+            "streaming finalizer accepted manifest B"
+        );
+        assert!(!streaming_path.exists());
     }
 
     /// `--skip-host-fold`: the streaming container packs with an EMPTY snapshots
@@ -34866,20 +35144,35 @@ mod tests {
         }});
         assert!(validate_repack_manifest_modset(&flat_unresolved)
             .unwrap_err()
-            .contains("vanilla-looking"));
+            .contains("partial_evidence"));
 
         // Unresolved without partial_evidence is also legacy.
         let unresolved_no_evidence = json!({"modset": {"resolved": false, "errors": []}});
         assert!(validate_repack_manifest_modset(&unresolved_no_evidence)
             .unwrap_err()
-            .contains("without a partial_evidence"));
+            .contains("attributed errors"));
+        let unresolved_unattributed = json!({"modset": {
+            "resolved": false, "errors": [], "partial_evidence": {
+                "localisation_language": null
+            }
+        }});
+        assert!(validate_repack_manifest_modset(&unresolved_unattributed)
+            .unwrap_err()
+            .contains("attributed errors"));
+        let unresolved_top_level_null = json!({"modset": {
+            "resolved": false, "errors": ["language unreadable"],
+            "partial_evidence": {}, "localisation_language": null
+        }});
+        assert!(validate_repack_manifest_modset(&unresolved_top_level_null)
+            .unwrap_err()
+            .contains("only under partial_evidence"));
 
         // Modset re-gate finding 4: a BARE resolved:true (no build hash /
         // provenance / bindings) previously passed — it must now refuse.
         let bare_resolved = json!({"modset": {"resolved": true, "errors": [], "enabled_mods": []}});
         assert!(validate_repack_manifest_modset(&bare_resolved)
             .unwrap_err()
-            .contains("game build object"));
+            .contains("dlc_display_names"));
         // resolved with errors also refuses.
         let resolved_with_errors = json!({"modset": {
             "resolved": true, "errors": ["x"], "enabled_mods": []
@@ -34902,6 +35195,11 @@ mod tests {
                 "dlc_load_mtime_unix": 1i64,
                 "process_start_unix": 2i64,
                 "enabled_mods": mods,
+                "dlc_display_names": {
+                    "dlc/dlc010_a/dlc010.dlc": "DLC A",
+                    "dlc/dlc020_b/dlc020.dlc": "DLC B",
+                },
+                "localisation_language": "l_english",
                 // Consistent census: enabled = installed − disabled, and
                 // every disabled key exactly matches an installed key (the
                 // live resolver fails a non-matching disabled entry closed —
@@ -34941,6 +35239,44 @@ mod tests {
         }]);
         let resolved = full(good_mods.clone());
         assert!(validate_repack_manifest_modset(&resolved).is_ok());
+        // W12B contract: the display-name field is an object map whose values
+        // are string/null, and language is string/null. Wrong containers or
+        // scalar types must not survive the closed grammar.
+        let mut mistyped_display_map = full(good_mods.clone());
+        mistyped_display_map["modset"]["dlc_display_names"] = json!([]);
+        assert!(validate_repack_manifest_modset(&mistyped_display_map)
+            .unwrap_err()
+            .contains("not an object map"));
+        let mut mistyped_display_value = full(good_mods.clone());
+        mistyped_display_value["modset"]["dlc_display_names"]["dlc/dlc010_a/dlc010.dlc"] = json!(7);
+        assert!(validate_repack_manifest_modset(&mistyped_display_value)
+            .unwrap_err()
+            .contains("nonempty string"));
+        let mut non_string_language = full(good_mods.clone());
+        non_string_language["modset"]["localisation_language"] = json!(7);
+        assert!(validate_repack_manifest_modset(&non_string_language)
+            .unwrap_err()
+            .contains("nonempty string"));
+        let mut null_display_name = full(good_mods.clone());
+        null_display_name["modset"]["dlc_display_names"]["dlc/dlc010_a/dlc010.dlc"] = Value::Null;
+        assert!(validate_repack_manifest_modset(&null_display_name)
+            .unwrap_err()
+            .contains("nonempty string"));
+        let mut null_language = full(good_mods.clone());
+        null_language["modset"]["localisation_language"] = Value::Null;
+        assert!(validate_repack_manifest_modset(&null_language)
+            .unwrap_err()
+            .contains("nonempty string"));
+        let mut blank_display_name = full(good_mods.clone());
+        blank_display_name["modset"]["dlc_display_names"]["dlc/dlc010_a/dlc010.dlc"] = json!("   ");
+        assert!(validate_repack_manifest_modset(&blank_display_name)
+            .unwrap_err()
+            .contains("nonempty string"));
+        let mut blank_language = full(good_mods.clone());
+        blank_language["modset"]["localisation_language"] = json!("\t");
+        assert!(validate_repack_manifest_modset(&blank_language)
+            .unwrap_err()
+            .contains("nonempty string"));
         // Fix-round-3 gate finding 3: uppercase hex is not a shape the shared
         // lowercase sha256 encoder ever writes...
         let mut upper_hash = full(good_mods.clone());
@@ -35232,6 +35568,17 @@ mod tests {
             ],
             disabled_dlcs: vec!["dlc/dlc020_b/dlc020.dlc".to_string()],
             enabled_dlcs: vec!["dlc/dlc010_a/dlc010.dlc".to_string()],
+            dlc_display_names: std::collections::BTreeMap::from([
+                (
+                    "dlc/dlc010_a/dlc010.dlc".to_string(),
+                    Some("DLC A".to_string()),
+                ),
+                (
+                    "dlc/dlc020_b/dlc020.dlc".to_string(),
+                    Some("DLC B".to_string()),
+                ),
+            ]),
+            localisation_language: Some("l_english".to_string()),
         };
         let manifest = json!({"modset": report.as_json()});
         validate_repack_manifest_modset(&manifest).unwrap();
@@ -36482,14 +36829,14 @@ mod tests {
         cfg.static_artifacts = Vec::new();
 
         let (raw, snapshots) = valid_stream_and_snapshots(session_id);
-        let err = match write_native_replay_container_with_verifier(
+        let err = match write_native_replay_container_with_pre_verify_hook(
             &cfg,
             &raw,
             &snapshots,
             &manifest,
             &manifest_path,
             &replay_path,
-            |tmp_path, _, _, _, _| {
+            |tmp_path, _| {
                 assert!(tmp_path.exists(), "verification runs against the temp file");
                 assert_ne!(tmp_path, replay_path.as_path());
                 Err("injected verification failure".to_string())

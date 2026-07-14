@@ -43,7 +43,8 @@ const VERIFY_CHUNK: usize = 4 * 1024 * 1024;
 pub struct StreamVerifyReport {
     /// Number of manifest-listed entries whose bytes were re-read and hash-matched.
     pub entries_verified: usize,
-    /// Decompressed sha256 of the entry whose role matched `stream_role`, if found.
+    /// Decompressed sha256 of the unique canonical entry whose role matched
+    /// the requested stream role, if found.
     pub stream_entry_sha256: Option<String>,
     /// Decompressed byte length of that stream entry.
     pub stream_entry_bytes: u64,
@@ -98,6 +99,36 @@ pub fn verify_replay_container_streaming(
 ) -> Result<StreamVerifyReport, String> {
     let mut file =
         File::open(path).map_err(|e| format!("open container {}: {e}", path.display()))?;
+    verify_replay_container_streaming_file(&mut file, game_id, stream_role)
+}
+
+/// Verify through a caller-owned open file handle. The caller controls the
+/// handle's access and sharing policy and can keep this exact object open after
+/// verification (for example, through an atomic rename-by-handle promotion).
+/// The verifier never re-opens or resolves a pathname.
+pub fn verify_replay_container_streaming_file(
+    file: &mut File,
+    game_id: &str,
+    stream_role: &str,
+) -> Result<StreamVerifyReport, String> {
+    verify_replay_container_streaming_file_at_path(
+        file,
+        game_id,
+        stream_role,
+        "collector_raw/collector_stream.bin",
+    )
+}
+
+/// Verify through a caller-owned handle while binding the requested stream role
+/// to an explicit game-relative payload path.
+pub fn verify_replay_container_streaming_file_at_path(
+    mut file: &mut File,
+    game_id: &str,
+    stream_role: &str,
+    stream_payload_path: &str,
+) -> Result<StreamVerifyReport, String> {
+    validate_path(stream_payload_path)
+        .map_err(|e| format!("invalid canonical stream payload path: {e}"))?;
     let file_len = file
         .metadata()
         .map_err(|e| format!("stat container: {e}"))?
@@ -119,8 +150,8 @@ pub fn verify_replay_container_streaming(
         ));
     }
     let man_bytes = read_entry_bytes(&mut file, man_entry)?;
-    let manifest: Value =
-        serde_json::from_slice(&man_bytes).map_err(|e| format!("parse manifest.json: {e}"))?;
+    let manifest: Value = crate::strict_json::from_slice(&man_bytes)
+        .map_err(|e| format!("strict parse manifest.json: {e}"))?;
     if manifest.get("format").and_then(Value::as_str) != Some("hoi4replay") {
         return Err("manifest.format != \"hoi4replay\"".to_string());
     }
@@ -176,6 +207,33 @@ pub fn verify_replay_container_streaming(
         }
     }
 
+    // The capture hash binds to one object, not merely to a role label. A
+    // second role-bearing decoy must not be able to overwrite the report after
+    // the canonical stream has been hashed, and a lone role at any other path
+    // is not the captured stream for this game.
+    let canonical_stream_path = format!("payload/{game_id}/{stream_payload_path}");
+    let mut stream_role_paths = by_path
+        .iter()
+        .filter_map(|(path, rec)| {
+            (rec.role.as_deref() == Some(stream_role)).then_some(path.as_str())
+        })
+        .collect::<Vec<_>>();
+    stream_role_paths.sort_unstable();
+    match stream_role_paths.as_slice() {
+        [path] if *path == canonical_stream_path => {}
+        [path] => {
+            return Err(format!(
+                "stream role {stream_role:?} must occur at canonical path {canonical_stream_path:?}, found {path:?}"
+            ))
+        }
+        paths => {
+            return Err(format!(
+                "stream role {stream_role:?} must occur exactly one time at {canonical_stream_path:?}, found {} entries: {paths:?}",
+                paths.len()
+            ))
+        }
+    }
+
     // Coverage: every zip payload entry is in the manifest with the declared size,
     // and every manifest entry exists in the zip (no stowaways, no phantoms).
     let mut zip_names: HashMap<&str, &CdEntry> = HashMap::new();
@@ -215,8 +273,8 @@ pub fn verify_replay_container_streaming(
         }
     }
 
-    // --- hash EVERY payload entry from disk (bounded), tracking the stream role ---
-    let _ = game_id; // reserved for future per-game path checks
+    // --- hash EVERY payload entry from disk (bounded), tracking only the
+    // unique canonical stream object established above ---
     let mut report = StreamVerifyReport::default();
     for e in &entries {
         if e.name == "manifest.json" {
@@ -234,10 +292,15 @@ pub fn verify_replay_container_streaming(
         }
         report.entries_verified += 1;
         report.total_uncompressed = report.total_uncompressed.saturating_add(uncomp);
-        if rec.role.as_deref() == Some(stream_role) {
+        if e.name == canonical_stream_path {
             report.stream_entry_sha256 = Some(sha);
             report.stream_entry_bytes = uncomp;
         }
+    }
+    if report.stream_entry_sha256.is_none() {
+        return Err(format!(
+            "canonical stream entry {canonical_stream_path:?} was not verified"
+        ));
     }
     Ok(report)
 }
@@ -798,9 +861,10 @@ mod tests {
     use super::*;
     use crate::container::{Container, ExpectedIdentity};
     use crate::pack::{
-        pack_streaming_to_writer, pack_streaming_zstd_to_writer,
+        pack, pack_streaming_to_writer, pack_streaming_zstd_to_writer,
         pack_streaming_zstd_to_writer_with_profile, BorrowedPackEntry, CompressionProfile,
-        FileBackedPackEntry, PackIdentity, StreamingFileEntry, DEFAULT_ZSTD_COMPRESSION_LEVEL,
+        FileBackedPackEntry, PackEntry, PackIdentity, StreamingFileEntry,
+        DEFAULT_ZSTD_COMPRESSION_LEVEL,
     };
     use std::fs;
     use std::io::{Read, Seek, SeekFrom};
@@ -928,6 +992,129 @@ mod tests {
         (data_start, entry.comp_size)
     }
 
+    fn write_with_duplicate_stream_role_manifest(source: &Path, output: &Path) {
+        let bytes = fs::read(source).unwrap();
+        let eocd = find_eocd(&bytes).expect("fixture EOCD");
+        assert!(
+            find_zip64_locator(&bytes, eocd).is_none(),
+            "small fixture unexpectedly uses Zip64"
+        );
+        let cd_offset = rd_u32(&bytes, eocd + 16).unwrap() as usize;
+        let cd_size = rd_u32(&bytes, eocd + 12).unwrap() as usize;
+        let mut cursor = cd_offset;
+        let cd_end = cd_offset + cd_size;
+        let mut manifest_cdh = None;
+        while cursor < cd_end {
+            assert_eq!(rd_u32(&bytes, cursor), Some(CDH_SIG));
+            let name_len = rd_u16(&bytes, cursor + 28).unwrap() as usize;
+            let extra_len = rd_u16(&bytes, cursor + 30).unwrap() as usize;
+            let comment_len = rd_u16(&bytes, cursor + 32).unwrap() as usize;
+            let name_start = cursor + 46;
+            let name_end = name_start + name_len;
+            if &bytes[name_start..name_end] == b"manifest.json" {
+                manifest_cdh = Some(cursor);
+            }
+            cursor = name_end + extra_len + comment_len;
+        }
+        let manifest_cdh = manifest_cdh.expect("manifest central-directory record");
+        assert_eq!(rd_u16(&bytes, manifest_cdh + 8), Some(0));
+        assert_eq!(rd_u16(&bytes, manifest_cdh + 10), Some(ZIP_METHOD_STORE));
+        let old_len = rd_u32(&bytes, manifest_cdh + 20).unwrap() as usize;
+        assert_eq!(rd_u32(&bytes, manifest_cdh + 24), Some(old_len as u32));
+        let local_header = rd_u32(&bytes, manifest_cdh + 42).unwrap() as usize;
+        assert_eq!(rd_u32(&bytes, local_header), Some(LFH_SIG));
+        let local_name_len = rd_u16(&bytes, local_header + 26).unwrap() as usize;
+        let local_extra_len = rd_u16(&bytes, local_header + 28).unwrap() as usize;
+        let data_start = local_header + 30 + local_name_len + local_extra_len;
+        let original = &bytes[data_start..data_start + old_len];
+        let needle = br#""role":"collector_compact_stream""#;
+        let replacement = br#""role":"collector_compact_stream","role":"collector_compact_stream""#;
+        let positions = original
+            .windows(needle.len())
+            .enumerate()
+            .filter_map(|(index, window)| (window == needle).then_some(index))
+            .collect::<Vec<_>>();
+        assert_eq!(positions.len(), 1, "fixture has one stream role");
+        let role_offset = positions[0];
+        let mut manifest = Vec::with_capacity(original.len() + replacement.len() - needle.len());
+        manifest.extend_from_slice(&original[..role_offset]);
+        manifest.extend_from_slice(replacement);
+        manifest.extend_from_slice(&original[role_offset + needle.len()..]);
+
+        let delta = manifest.len() - old_len;
+        let new_len = u32::try_from(manifest.len()).unwrap();
+        let crc = crc32fast::hash(&manifest);
+        let mut tampered = Vec::with_capacity(bytes.len() + delta);
+        tampered.extend_from_slice(&bytes[..data_start]);
+        tampered.extend_from_slice(&manifest);
+        tampered.extend_from_slice(&bytes[data_start + old_len..]);
+
+        fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        put_u32(&mut tampered, local_header + 14, crc);
+        put_u32(&mut tampered, local_header + 18, new_len);
+        put_u32(&mut tampered, local_header + 22, new_len);
+        let new_manifest_cdh = manifest_cdh + delta;
+        put_u32(&mut tampered, new_manifest_cdh + 16, crc);
+        put_u32(&mut tampered, new_manifest_cdh + 20, new_len);
+        put_u32(&mut tampered, new_manifest_cdh + 24, new_len);
+        let new_eocd = eocd + delta;
+        put_u32(
+            &mut tampered,
+            new_eocd + 16,
+            u32::try_from(cd_offset + delta).unwrap(),
+        );
+        fs::write(output, tampered).unwrap();
+    }
+
+    #[test]
+    fn streaming_verifier_rejects_duplicate_role_in_raw_manifest() {
+        let dir = TmpDir::new("duplicate_role");
+        let (container_path, _, _) = build_store_streaming_container(&dir, "duplicate_role");
+        let bad_path = dir.join("duplicate_role_bad.battleplan");
+        write_with_duplicate_stream_role_manifest(&container_path, &bad_path);
+
+        let error = verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream")
+            .expect_err("raw duplicate manifest members must block recorder promotion");
+        assert!(error.contains("duplicate JSON member"), "{error}");
+        assert!(error.contains("role"), "{error}");
+    }
+
+    #[test]
+    fn streaming_verifier_rejects_two_role_entries_even_when_decoy_hash_is_last() {
+        let dir = TmpDir::new("two_stream_role_entries");
+        let captured = b"genuine captured stream";
+        let container = pack(
+            "g",
+            &[
+                PackEntry {
+                    path: "payload/g/collector_raw/collector_stream.bin".into(),
+                    bytes: b"substituted canonical stream".to_vec(),
+                    role: "collector_compact_stream",
+                    hour_index: None,
+                },
+                PackEntry {
+                    path: "payload/g/decoy/captured_stream.bin".into(),
+                    bytes: captured.to_vec(),
+                    role: "collector_compact_stream",
+                    hour_index: None,
+                },
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let path = dir.join("two_stream_role_entries.battleplan");
+        fs::write(&path, container).unwrap();
+
+        let error = verify_replay_container_streaming(&path, "g", "collector_compact_stream")
+            .expect_err("a last-ordered decoy role must never bind the capture hash");
+        assert!(error.contains("exactly one"), "{error}");
+        assert!(error.contains("collector_compact_stream"), "{error}");
+    }
+
     #[test]
     fn streaming_reader_rejects_zip64_entry_count_above_reader_cap() {
         let dir = TmpDir::new("entry_count_cap");
@@ -968,12 +1155,20 @@ mod tests {
         let dir = TmpDir::new("eocd_collision");
         let path = dir.join("collision.battleplan");
         let index = br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#.to_vec();
-        let borrowed = vec![BorrowedPackEntry {
-            path: "payload/g/index.json".into(),
-            bytes: &index,
-            role: "index",
-            hour_index: None,
-        }];
+        let borrowed = vec![
+            BorrowedPackEntry {
+                path: "payload/g/index.json".into(),
+                bytes: &index,
+                role: "index",
+                hour_index: None,
+            },
+            BorrowedPackEntry {
+                path: "payload/g/collector_raw/collector_stream.bin".into(),
+                bytes: b"",
+                role: "collector_compact_stream",
+                hour_index: None,
+            },
+        ];
         let mut base = Vec::new();
         crate::pack::pack_borrowed_to_writer(
             "g",
@@ -987,7 +1182,7 @@ mod tests {
 
         let report = verify_replay_container_streaming(&path, "g", "collector_compact_stream")
             .expect("collision inside EOCD comment does not hide real EOCD");
-        assert_eq!(report.entries_verified, 1);
+        assert_eq!(report.entries_verified, 2);
     }
 
     fn build_zstd_streaming_container(dir: &TmpDir, tag: &str) -> (PathBuf, Vec<u8>, String) {
@@ -1789,7 +1984,7 @@ mod tests {
             hour_index: None,
         }];
         let streaming = vec![StreamingFileEntry {
-            path: "payload/g/collector_raw/s.bin".into(),
+            path: "payload/g/collector_raw/collector_stream.bin".into(),
             file_path: &stream_path,
             source_compression: compact_stream::StreamCompression::None,
             decoded_len: None,
