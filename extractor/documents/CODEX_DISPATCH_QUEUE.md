@@ -3449,3 +3449,40 @@ read that adds/removes a row, alternate constructor, numeric-residual = cosmetic
 fidelity, + full regression witness/R2-F2/map-helper/MeasuredEmpty-vs-Unavailable). Expected FINAL.
 IN FLIGHT: facs-wire r6 gate, replay-loader r4 gate, foldwave2 fix4, stitching r3. MERGE-READY:
 boundary-auth, autoattach (SHIP @15a817f3e).
+
+## 2026-07-14 replay-loader r4 gate = REJECT (4 findings, deepest lane) -> fix5 + F4 scope ruling
+Post-guard swap + rename-by-handle CONFIRMED closed; no regressions (sentinels, strict decode,
+BoundDir, namespace, error prop, canonical keys all intact). But adversarial deepening found 4 more
+(genuinely NEW/subtler Win32, not a recurring leak):
+- F1 HIGH: permissive-share CREATION window + mapped-view attack. Temp created w/o explicit share
+  (main.rs:5192) => Rust defaults share write/delete/rename; writer dropped + reopened by pathname
+  (4716, 4335-6, 4527-8). Attacker in the pre-guard window maps the file WRITABLE, closes the map
+  handle (view SURVIVES per MS), mutates bytes AFTER hashing; deny-share guard doesn't revoke the
+  view => rename-by-handle promotes mutated bytes. FIX: writer itself deny-share (FILE_SHARE_READ
+  only) from ORIGINAL creation, deny-share handle held CONTINUOUS creation->verify->rename, no
+  reopen-by-pathname gap (all 3 finalization paths); atomic identity-bound handoff if unavoidable.
+- F2 HIGH: capture hash not bound to ONE canonical entry. verify_replay_container_streaming ignores
+  game_id (stream_verify.rs:231), overwrites report for EVERY stream-role entry last-wins (:249).
+  Decoy entry w/ same role holding genuine bytes ordered LAST => report ends w/ decoy hash, compare
+  passes, canonical stream is malicious. FIX: require EXACTLY ONE role entry AT canonical path
+  (bind game_id + payload/<game>/collector_raw/collector_stream.bin); >1 / non-canonical / zero =
+  FAIL.
+- F3 MED: recorder finalization read_session_manifest_bytes_validated (main.rs:4847) permissive
+  serde_json => dup-nested-modset last-wins passes, but LOADER rejects (source.rs:362) => finalize
+  and load DISAGREE. FIX: strict_json-decode the recorder manifest in finalization.
+- F4 MED: ORCHESTRATOR RULING = OUT-OF-SCOPE OVER-REACH. The F4 static gate is a DEV-TIME LINT for
+  honest introduction of a pathname open in OUR OWN code, NOT a runtime security boundary; a text
+  scanner can't defeat renamed FFI (#[link_name])/macros/generated code (not Turing-complete, not
+  in threat model). Required only: cheap extern/link_name file-API detection + an explicit
+  accepted-limitation note. Do NOT chase completeness.
+FIX5 launched (tid threads/i1-replayloader-e2e.tid): F1 deny-share continuity + F2 canonical-entry
+binding + F3 strict recorder manifest + F4 note. RED->GREEN for deny-share/decoy-role/dup-modset/
+link_name. 4th REJECT but findings are distinct adversarial-deepening (mapped views, decoy entries),
+NOT a recurring leak - each narrower than the last. THREAT-MODEL NOTE: F1/F2 attacks need a hostile
+SAME-USER process racing the recorder on the user's own machine; F1/F2/F3 fixes are correct
+regardless (verification must bind to promoted bytes = core lane purpose). ESCALATION: if r5
+surfaces YET another same-user-race class, raise the threat-model scope question w/ the user (is
+same-user-attacker hardening of replay finalization in scope?) rather than grind - that's a scope
+decision, not technical.
+IN FLIGHT: replay-loader fix5, facs-wire r6 gate, foldwave2 fix4, stitching r3. MERGE-READY:
+boundary-auth, autoattach (SHIP @15a817f3e).
