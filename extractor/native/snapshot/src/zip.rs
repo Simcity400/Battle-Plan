@@ -7,9 +7,11 @@
 //! so a caller that does materialize files is handed only safe names.
 //!
 //! Hardening: rejects duplicate entry names, validates paths, supports Zip64
-//! metadata explicitly, enforces the declared uncompressed size per entry, and
-//! keeps the in-RAM reader's 2 GiB materialization cap separate from the
-//! streaming verifier's larger multi-GiB cap.
+//! metadata explicitly, cross-checks every local file header against the central
+//! directory, provides whole-archive payload CRC validation, enforces the
+//! declared uncompressed size per entry, and keeps the in-RAM reader's 2 GiB
+//! materialization cap separate from the streaming verifier's larger multi-GiB
+//! cap.
 
 use flate2::read::DeflateDecoder;
 use std::collections::HashSet;
@@ -20,6 +22,7 @@ const ZIP64_EOCD_SIG: u32 = 0x0606_4b50;
 const ZIP64_LOCATOR_SIG: u32 = 0x0706_4b50;
 const CDH_SIG: u32 = 0x0201_4b50;
 const LFH_SIG: u32 = 0x0403_4b50;
+const DATA_DESCRIPTOR_SIG: u32 = 0x0807_4b50;
 const ZIP64_EXTRA_ID: u16 = 0x0001;
 
 pub const ZIP_METHOD_STORE: u16 = 0;
@@ -50,7 +53,12 @@ pub const INITIAL_ENTRY_RESERVE: usize = 64 * 1024;
 #[derive(Debug, Clone)]
 pub struct ZipEntry {
     pub name: String,
+    pub version_needed: u16,
+    pub flags: u16,
     pub method: u16,
+    pub mod_time: u16,
+    pub mod_date: u16,
+    pub crc32: u32,
     pub comp_size: u64,
     pub uncomp_size: u64,
     /// offset of the local file header within the archive
@@ -123,6 +131,29 @@ fn rd_u64(b: &[u8], off: usize) -> Option<u64> {
 pub struct ZipArchive {
     data: Vec<u8>,
     entries: Vec<ZipEntry>,
+    central_directory_off: usize,
+}
+
+struct LocalFileHeader<'a> {
+    version_needed: u16,
+    flags: u16,
+    method: u16,
+    mod_time: u16,
+    mod_date: u16,
+    crc32: u32,
+    comp_size32: u32,
+    uncomp_size32: u32,
+    name: &'a [u8],
+    extra: &'a [u8],
+    data_start: usize,
+}
+
+#[derive(Clone, Copy)]
+struct LocalEntryRegion {
+    header_start: usize,
+    data_start: usize,
+    data_end: usize,
+    region_end: usize,
 }
 
 impl ZipArchive {
@@ -135,21 +166,74 @@ impl ZipArchive {
     /// in-RAM materialization cap.
     pub fn parse(data: Vec<u8>) -> Result<ZipArchive, ZipError> {
         let eocd = find_eocd(&data).ok_or(ZipError::Truncated("no EOCD record"))?;
+        let disk_no = rd_u16(&data, eocd + 4).ok_or(ZipError::Truncated("eocd"))?;
+        let cd_disk = rd_u16(&data, eocd + 6).ok_or(ZipError::Truncated("eocd"))?;
+        if disk_no != 0 || cd_disk != 0 {
+            return Err(ZipError::Unsupported(
+                "multi-disk ZIP archives are not supported".into(),
+            ));
+        }
+        let entries_on_disk16 = rd_u16(&data, eocd + 8).ok_or(ZipError::Truncated("eocd"))?;
         let total16 = rd_u16(&data, eocd + 10).ok_or(ZipError::Truncated("eocd"))?;
         let cd_size32 = rd_u32(&data, eocd + 12).ok_or(ZipError::Truncated("eocd"))?;
         let cd_off32 = rd_u32(&data, eocd + 16).ok_or(ZipError::Truncated("eocd"))?;
         let locator = find_zip64_locator(&data, eocd);
-        let (total, cd_size_u64, cd_off_u64) = if total16 == u16::MAX
+        let zip64_in_effect = entries_on_disk16 == u16::MAX
+            || total16 == u16::MAX
             || cd_size32 == u32::MAX
             || cd_off32 == u32::MAX
-            || locator.is_some()
-        {
+            || locator.is_some();
+        let (total, cd_size_u64, cd_off_u64, expected_cd_end) = if zip64_in_effect {
             let locator =
                 locator.ok_or_else(|| ZipError::Unsupported("Zip64 locator missing".into()))?;
-            parse_zip64_eocd(&data, locator)?
+            let (zip64_total, zip64_cd_size, zip64_cd_off, zip64_eocd_off) =
+                parse_zip64_eocd(&data, locator)?;
+            validate_ordinary_zip64_field(
+                "entries-on-disk count",
+                entries_on_disk16 as u64,
+                u16::MAX as u64,
+                zip64_total,
+            )?;
+            validate_ordinary_zip64_field(
+                "total-entry count",
+                total16 as u64,
+                u16::MAX as u64,
+                zip64_total,
+            )?;
+            validate_ordinary_zip64_field(
+                "central-directory size",
+                cd_size32 as u64,
+                u32::MAX as u64,
+                zip64_cd_size,
+            )?;
+            validate_ordinary_zip64_field(
+                "central-directory offset",
+                cd_off32 as u64,
+                u32::MAX as u64,
+                zip64_cd_off,
+            )?;
+            (zip64_total, zip64_cd_size, zip64_cd_off, zip64_eocd_off)
         } else {
-            (total16 as u64, cd_size32 as u64, cd_off32 as u64)
+            if entries_on_disk16 != total16 {
+                return Err(ZipError::Unsupported(
+                    "split ZIP central directories are not supported".into(),
+                ));
+            }
+            (
+                total16 as u64,
+                cd_size32 as u64,
+                cd_off32 as u64,
+                eocd as u64,
+            )
         };
+        let actual_cd_end = cd_off_u64
+            .checked_add(cd_size_u64)
+            .ok_or_else(|| ZipError::Unsupported("central directory range overflows".into()))?;
+        if actual_cd_end != expected_cd_end {
+            return Err(ZipError::Unsupported(format!(
+                "central directory does not end at its end record: {actual_cd_end} != {expected_cd_end}"
+            )));
+        }
         if total > MAX_READER_ENTRIES {
             return Err(ZipError::Unsupported(format!(
                 "entry count {total} exceeds reader cap {MAX_READER_ENTRIES}"
@@ -175,6 +259,7 @@ impl ZipArchive {
             if sig != CDH_SIG {
                 break;
             }
+            let version_needed = rd_u16(&data, p + 6).ok_or(ZipError::Truncated("cdh"))?;
             let flags = rd_u16(&data, p + 8).ok_or(ZipError::Truncated("cdh"))?;
             if flags & !0x0008 != 0 {
                 return Err(ZipError::Unsupported(format!(
@@ -182,11 +267,20 @@ impl ZipArchive {
                 )));
             }
             let method = rd_u16(&data, p + 10).ok_or(ZipError::Truncated("cdh"))?;
+            let mod_time = rd_u16(&data, p + 12).ok_or(ZipError::Truncated("cdh"))?;
+            let mod_date = rd_u16(&data, p + 14).ok_or(ZipError::Truncated("cdh"))?;
+            let crc32 = rd_u32(&data, p + 16).ok_or(ZipError::Truncated("cdh"))?;
             let comp_size32 = rd_u32(&data, p + 20).ok_or(ZipError::Truncated("cdh"))?;
             let uncomp_size32 = rd_u32(&data, p + 24).ok_or(ZipError::Truncated("cdh"))?;
             let name_len = rd_u16(&data, p + 28).ok_or(ZipError::Truncated("cdh"))? as usize;
             let extra_len = rd_u16(&data, p + 30).ok_or(ZipError::Truncated("cdh"))? as usize;
             let comment_len = rd_u16(&data, p + 32).ok_or(ZipError::Truncated("cdh"))? as usize;
+            let disk_start = rd_u16(&data, p + 34).ok_or(ZipError::Truncated("cdh"))?;
+            if disk_start != 0 {
+                return Err(ZipError::Unsupported(format!(
+                    "entry at central-directory offset {p} starts on disk {disk_start}; multi-disk ZIP archives are not supported"
+                )));
+            }
             let lho32 = rd_u32(&data, p + 42).ok_or(ZipError::Truncated("cdh"))?;
 
             let name_start = p + 46;
@@ -245,7 +339,12 @@ impl ZipArchive {
 
             entries.push(ZipEntry {
                 name,
+                version_needed,
+                flags,
                 method,
+                mod_time,
+                mod_date,
+                crc32,
                 comp_size,
                 uncomp_size,
                 local_header_off: lho,
@@ -267,11 +366,308 @@ impl ZipArchive {
         if p != cd_end {
             return Err(ZipError::Truncated("central directory trailing bytes"));
         }
-        Ok(ZipArchive { data, entries })
+        Ok(ZipArchive {
+            data,
+            entries,
+            central_directory_off: cd_off,
+        })
     }
 
     pub fn by_name(&self, name: &str) -> Option<&ZipEntry> {
         self.entries.iter().find(|e| e.name == name)
+    }
+
+    /// Cross-check every local file header against its central-directory record
+    /// before callers trust any payload. Central-directory order must also be
+    /// physical local-header order, and complete entry regions may not overlap or
+    /// extend into the central directory.
+    pub fn validate_local_headers(&self) -> Result<(), ZipError> {
+        let mut previous: Option<(&ZipEntry, LocalEntryRegion)> = None;
+        for entry in &self.entries {
+            let current = self.validate_local_entry(entry)?;
+            if let Some((previous_entry, previous_region)) = previous {
+                if previous_region.header_start >= current.header_start {
+                    return Err(ZipError::Unsupported(format!(
+                        "local header order disagrees with central directory: {} at {} then {} at {}",
+                        previous_entry.name,
+                        previous_region.header_start,
+                        entry.name,
+                        current.header_start
+                    )));
+                }
+                if previous_region.region_end > current.header_start {
+                    return Err(ZipError::Unsupported(format!(
+                        "entry regions overlap: {} ends at {}, {} starts at {}",
+                        previous_entry.name,
+                        previous_region.region_end,
+                        entry.name,
+                        current.header_start
+                    )));
+                }
+            }
+            previous = Some((entry, current));
+        }
+        Ok(())
+    }
+
+    /// Re-derive the uncompressed length and CRC-32 for every stored payload.
+    /// Compressed entries are decoded through a declared-size-bounded reader, so
+    /// callers can gate archive open without materializing every entry.
+    pub fn validate_payloads(&self) -> Result<(), ZipError> {
+        for entry in &self.entries {
+            let region = self.validate_local_entry(entry)?;
+            self.validate_payload_crc(entry, region)?;
+        }
+        Ok(())
+    }
+
+    fn read_local_header<'a>(&'a self, entry: &ZipEntry) -> Result<LocalFileHeader<'a>, ZipError> {
+        let header_start = usize::try_from(entry.local_header_off).map_err(|_| {
+            ZipError::Unsupported(format!(
+                "entry {}: local header offset {} is too large",
+                entry.name, entry.local_header_off
+            ))
+        })?;
+        let header_end = header_start.checked_add(30).ok_or_else(|| {
+            ZipError::Unsupported(format!(
+                "entry {}: local header range overflows",
+                entry.name
+            ))
+        })?;
+        if header_end > self.data.len() {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: local header at {} is truncated",
+                entry.name, header_start
+            )));
+        }
+        if rd_u32(&self.data, header_start) != Some(LFH_SIG) {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: bad local file header signature at {}",
+                entry.name, header_start
+            )));
+        }
+        let name_len =
+            rd_u16(&self.data, header_start + 26).ok_or(ZipError::Truncated("lfh"))? as usize;
+        let extra_len =
+            rd_u16(&self.data, header_start + 28).ok_or(ZipError::Truncated("lfh"))? as usize;
+        let name_end = header_end.checked_add(name_len).ok_or_else(|| {
+            ZipError::Unsupported(format!(
+                "entry {}: local header name range overflows",
+                entry.name
+            ))
+        })?;
+        let extra_end = name_end.checked_add(extra_len).ok_or_else(|| {
+            ZipError::Unsupported(format!(
+                "entry {}: local header extra range overflows",
+                entry.name
+            ))
+        })?;
+        if extra_end > self.data.len() {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: local header name/extra is truncated",
+                entry.name
+            )));
+        }
+        Ok(LocalFileHeader {
+            version_needed: rd_u16(&self.data, header_start + 4)
+                .ok_or(ZipError::Truncated("lfh"))?,
+            flags: rd_u16(&self.data, header_start + 6).ok_or(ZipError::Truncated("lfh"))?,
+            method: rd_u16(&self.data, header_start + 8).ok_or(ZipError::Truncated("lfh"))?,
+            mod_time: rd_u16(&self.data, header_start + 10).ok_or(ZipError::Truncated("lfh"))?,
+            mod_date: rd_u16(&self.data, header_start + 12).ok_or(ZipError::Truncated("lfh"))?,
+            crc32: rd_u32(&self.data, header_start + 14).ok_or(ZipError::Truncated("lfh"))?,
+            comp_size32: rd_u32(&self.data, header_start + 18).ok_or(ZipError::Truncated("lfh"))?,
+            uncomp_size32: rd_u32(&self.data, header_start + 22)
+                .ok_or(ZipError::Truncated("lfh"))?,
+            name: &self.data[header_end..name_end],
+            extra: &self.data[name_end..extra_end],
+            data_start: extra_end,
+        })
+    }
+
+    fn validate_local_entry(&self, entry: &ZipEntry) -> Result<LocalEntryRegion, ZipError> {
+        let local = self.read_local_header(entry)?;
+        if local.name != entry.name.as_bytes() {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: local/central name mismatch (local {:?})",
+                entry.name,
+                String::from_utf8_lossy(local.name)
+            )));
+        }
+        if local.version_needed != entry.version_needed {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: local/central version-needed mismatch (local {}, central {})",
+                entry.name, local.version_needed, entry.version_needed
+            )));
+        }
+        if local.flags != entry.flags {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: local/central flags mismatch (local 0x{:04x}, central 0x{:04x})",
+                entry.name, local.flags, entry.flags
+            )));
+        }
+        if local.method != entry.method {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: local/central method mismatch (local {}, central {})",
+                entry.name, local.method, entry.method
+            )));
+        }
+        if local.mod_time != entry.mod_time || local.mod_date != entry.mod_date {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: local/central timestamp mismatch",
+                entry.name
+            )));
+        }
+        if entry.method == ZIP_METHOD_STORE && entry.comp_size != entry.uncomp_size {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: STORE compressed size {} != uncompressed size {}",
+                entry.name, entry.comp_size, entry.uncomp_size
+            )));
+        }
+
+        if entry.flags & 0x0008 == 0 {
+            let need_comp = local.comp_size32 == u32::MAX;
+            let need_uncomp = local.uncomp_size32 == u32::MAX;
+            let zip64 =
+                parse_zip64_extra(local.extra, need_uncomp, need_comp, false).map_err(|error| {
+                    ZipError::Unsupported(format!(
+                        "entry {}: invalid local Zip64 sizes: {error}",
+                        entry.name
+                    ))
+                })?;
+            let local_comp_size = if need_comp {
+                zip64.comp_size.ok_or_else(|| {
+                    ZipError::Unsupported(format!(
+                        "entry {}: local Zip64 compressed size missing",
+                        entry.name
+                    ))
+                })?
+            } else {
+                local.comp_size32 as u64
+            };
+            let local_uncomp_size = if need_uncomp {
+                zip64.uncomp_size.ok_or_else(|| {
+                    ZipError::Unsupported(format!(
+                        "entry {}: local Zip64 uncompressed size missing",
+                        entry.name
+                    ))
+                })?
+            } else {
+                local.uncomp_size32 as u64
+            };
+            if local.crc32 != entry.crc32
+                || local_comp_size != entry.comp_size
+                || local_uncomp_size != entry.uncomp_size
+            {
+                return Err(ZipError::Unsupported(format!(
+                    "entry {}: local/central crc or size mismatch",
+                    entry.name
+                )));
+            }
+        } else if local.crc32 != 0 || local.comp_size32 != 0 || local.uncomp_size32 != 0 {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: data-descriptor local crc/size fields must be zero",
+                entry.name
+            )));
+        }
+
+        let data_end = local
+            .data_start
+            .checked_add(usize::try_from(entry.comp_size).map_err(|_| {
+                ZipError::Unsupported(format!(
+                    "entry {}: compressed size {} is too large",
+                    entry.name, entry.comp_size
+                ))
+            })?)
+            .ok_or_else(|| {
+                ZipError::Unsupported(format!("entry {}: data range overflows", entry.name))
+            })?;
+        if data_end > self.data.len() {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: data range ends past archive",
+                entry.name
+            )));
+        }
+        let region_end = if entry.flags & 0x0008 != 0 {
+            self.data_descriptor_end(entry, data_end)?
+        } else {
+            data_end
+        };
+        let header_start = usize::try_from(entry.local_header_off).map_err(|_| {
+            ZipError::Unsupported(format!(
+                "entry {}: local header offset {} is too large",
+                entry.name, entry.local_header_off
+            ))
+        })?;
+        if header_start >= self.central_directory_off || region_end > self.central_directory_off {
+            return Err(ZipError::Unsupported(format!(
+                "entry {} region {}..{} overlaps central directory at {}",
+                entry.name, header_start, region_end, self.central_directory_off
+            )));
+        }
+        Ok(LocalEntryRegion {
+            header_start,
+            data_start: local.data_start,
+            data_end,
+            region_end,
+        })
+    }
+
+    fn validate_payload_crc(
+        &self,
+        entry: &ZipEntry,
+        region: LocalEntryRegion,
+    ) -> Result<(), ZipError> {
+        let comp = &self.data[region.data_start..region.data_end];
+        let (crc32, uncompressed_len) = match entry.method {
+            ZIP_METHOD_STORE => (crc32fast::hash(comp), comp.len() as u64),
+            ZIP_METHOD_DEFLATE => crc32_and_len(
+                DeflateDecoder::new(comp),
+                entry.uncomp_size.saturating_add(1),
+            )?,
+            ZIP_METHOD_ZSTD => {
+                let mut dec = zstd::stream::read::Decoder::new(comp)
+                    .map_err(|err| ZipError::Decompress(err.to_string()))?;
+                dec.window_log_max(ZSTD_WINDOW_LOG)
+                    .map_err(|err| ZipError::Decompress(err.to_string()))?;
+                crc32_and_len(dec, entry.uncomp_size.saturating_add(1))?
+            }
+            method => {
+                return Err(ZipError::Unsupported(format!(
+                    "compression method {method}"
+                )));
+            }
+        };
+        if uncompressed_len != entry.uncomp_size {
+            return Err(ZipError::SizeMismatch {
+                name: entry.name.clone(),
+                declared: entry.uncomp_size,
+                got: uncompressed_len,
+            });
+        }
+        if crc32 != entry.crc32 {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: payload crc32 mismatch (derived {crc32:08x}, declared {:08x})",
+                entry.name, entry.crc32
+            )));
+        }
+        Ok(())
+    }
+
+    fn data_descriptor_end(&self, entry: &ZipEntry, start: usize) -> Result<usize, ZipError> {
+        let signed = data_descriptor_candidate(&self.data, entry, start, true);
+        let unsigned = data_descriptor_candidate(&self.data, entry, start, false);
+        match (signed, unsigned) {
+            (Some(end), None) | (None, Some(end)) => Ok(end),
+            (Some(_), Some(_)) => Err(ZipError::Unsupported(format!(
+                "entry {}: ambiguous signed/unsigned data descriptor",
+                entry.name
+            ))),
+            (None, None) => Err(ZipError::Unsupported(format!(
+                "entry {}: data descriptor missing, truncated, or inconsistent with central directory",
+                entry.name
+            ))),
+        }
     }
 
     /// Read + decompress one entry's bytes. Enforces the declared uncompressed
@@ -283,42 +679,8 @@ impl ZipArchive {
                 e.name, e.uncomp_size, MAX_CONTAINER_ENTRY_BYTES
             )));
         }
-        let lh = usize::try_from(e.local_header_off)
-            .map_err(|_| ZipError::Unsupported("local header offset too large".into()))?;
-        let header_end = lh
-            .checked_add(30)
-            .ok_or(ZipError::Truncated("local header range overflow"))?;
-        if header_end > self.data.len() {
-            return Err(ZipError::Truncated("local header"));
-        }
-        let sig = rd_u32(&self.data, lh).ok_or(ZipError::Truncated("lfh"))?;
-        if sig != LFH_SIG {
-            return Err(ZipError::BadSignature("local file header"));
-        }
-        let lh_method = rd_u16(&self.data, lh + 8).ok_or(ZipError::Truncated("lfh"))?;
-        let lh_name_len = rd_u16(&self.data, lh + 26).ok_or(ZipError::Truncated("lfh"))? as usize;
-        let lh_extra_len = rd_u16(&self.data, lh + 28).ok_or(ZipError::Truncated("lfh"))? as usize;
-        // central-directory method is authoritative; a mismatch is suspicious.
-        if lh_method != e.method {
-            return Err(ZipError::Unsupported(format!(
-                "local/central method mismatch for {}",
-                e.name
-            )));
-        }
-        let data_start = header_end
-            .checked_add(lh_name_len)
-            .and_then(|v| v.checked_add(lh_extra_len))
-            .ok_or(ZipError::Truncated("entry data start overflow"))?;
-        let data_end = data_start
-            .checked_add(
-                usize::try_from(e.comp_size)
-                    .map_err(|_| ZipError::Unsupported("compressed size too large".into()))?,
-            )
-            .ok_or(ZipError::Truncated("entry data range overflow"))?;
-        if data_end > self.data.len() {
-            return Err(ZipError::Truncated("entry data out of range"));
-        }
-        let comp = &self.data[data_start..data_end];
+        let local = self.validate_local_entry(e)?;
+        let comp = &self.data[local.data_start..local.data_end];
 
         let out = match e.method {
             ZIP_METHOD_STORE => comp.to_vec(),
@@ -356,11 +718,77 @@ impl ZipArchive {
     }
 }
 
+fn crc32_and_len<R: Read>(reader: R, limit: u64) -> Result<(u32, u64), ZipError> {
+    let mut reader = reader.take(limit);
+    let mut crc32 = crc32fast::Hasher::new();
+    let mut len = 0u64;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buf)
+            .map_err(|err| ZipError::Decompress(err.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        crc32.update(&buf[..read]);
+        len += read as u64;
+    }
+    Ok((crc32.finalize(), len))
+}
+
+fn data_descriptor_candidate(
+    data: &[u8],
+    entry: &ZipEntry,
+    start: usize,
+    signed: bool,
+) -> Option<usize> {
+    let mut p = start;
+    if signed {
+        if rd_u32(data, p)? != DATA_DESCRIPTOR_SIG {
+            return None;
+        }
+        p = p.checked_add(4)?;
+    }
+    let crc32 = rd_u32(data, p)?;
+    p = p.checked_add(4)?;
+    let zip64 =
+        entry.comp_size > ZIP32_MAX_FIELD_VALUE || entry.uncomp_size > ZIP32_MAX_FIELD_VALUE;
+    let (comp_size, uncomp_size) = if zip64 {
+        let comp_size = rd_u64(data, p)?;
+        p = p.checked_add(8)?;
+        let uncomp_size = rd_u64(data, p)?;
+        p = p.checked_add(8)?;
+        (comp_size, uncomp_size)
+    } else {
+        let comp_size = rd_u32(data, p)? as u64;
+        p = p.checked_add(4)?;
+        let uncomp_size = rd_u32(data, p)? as u64;
+        p = p.checked_add(4)?;
+        (comp_size, uncomp_size)
+    };
+    (crc32 == entry.crc32 && comp_size == entry.comp_size && uncomp_size == entry.uncomp_size)
+        .then_some(p)
+}
+
 #[derive(Default)]
 struct Zip64Extra {
     uncomp_size: Option<u64>,
     comp_size: Option<u64>,
     local_header_off: Option<u64>,
+}
+
+fn validate_ordinary_zip64_field(
+    name: &str,
+    ordinary: u64,
+    sentinel: u64,
+    zip64: u64,
+) -> Result<(), ZipError> {
+    if ordinary != sentinel && ordinary != zip64 {
+        return Err(ZipError::Unsupported(format!(
+            "ordinary EOCD {name} {ordinary} disagrees with Zip64 value {zip64}"
+        )));
+    }
+    Ok(())
 }
 
 fn find_zip64_locator(data: &[u8], eocd: usize) -> Option<usize> {
@@ -371,7 +799,7 @@ fn find_zip64_locator(data: &[u8], eocd: usize) -> Option<usize> {
     (rd_u32(data, off) == Some(ZIP64_LOCATOR_SIG)).then_some(off)
 }
 
-fn parse_zip64_eocd(data: &[u8], locator: usize) -> Result<(u64, u64, u64), ZipError> {
+fn parse_zip64_eocd(data: &[u8], locator: usize) -> Result<(u64, u64, u64, u64), ZipError> {
     if rd_u32(data, locator + 4).ok_or(ZipError::Truncated("zip64 locator"))? != 0 {
         return Err(ZipError::Unsupported(
             "multi-disk Zip64 archives are not supported".into(),
@@ -412,7 +840,7 @@ fn parse_zip64_eocd(data: &[u8], locator: usize) -> Result<(u64, u64, u64), ZipE
     }
     let cd_size = rd_u64(data, off + 40).ok_or(ZipError::Truncated("zip64 eocd"))?;
     let cd_off = rd_u64(data, off + 48).ok_or(ZipError::Truncated("zip64 eocd"))?;
-    Ok((total_entries, cd_size, cd_off))
+    Ok((total_entries, cd_size, cd_off, zip64_eocd_off))
 }
 
 fn parse_zip64_extra(
@@ -422,7 +850,11 @@ fn parse_zip64_extra(
     need_lho: bool,
 ) -> Result<Zip64Extra, ZipError> {
     let mut p = 0usize;
-    while p + 4 <= extra.len() {
+    let mut zip64 = None;
+    while p < extra.len() {
+        if extra.len() - p < 4 {
+            return Err(ZipError::Truncated("extra field header"));
+        }
         let id = rd_u16(extra, p).ok_or(ZipError::Truncated("extra"))?;
         let len = rd_u16(extra, p + 2).ok_or(ZipError::Truncated("extra"))? as usize;
         let start = p + 4;
@@ -433,28 +865,32 @@ fn parse_zip64_extra(
             return Err(ZipError::Truncated("extra past end"));
         }
         if id == ZIP64_EXTRA_ID {
-            let mut q = start;
+            if zip64.is_some() {
+                return Err(ZipError::Unsupported("duplicate Zip64 extra field".into()));
+            }
+            let field = &extra[start..end];
+            let mut q = 0usize;
             let mut z = Zip64Extra::default();
             if need_uncomp {
-                z.uncomp_size = Some(rd_u64(extra, q).ok_or(ZipError::Truncated("zip64 extra"))?);
+                z.uncomp_size = Some(rd_u64(field, q).ok_or(ZipError::Truncated("zip64 extra"))?);
                 q += 8;
             }
             if need_comp {
-                z.comp_size = Some(rd_u64(extra, q).ok_or(ZipError::Truncated("zip64 extra"))?);
+                z.comp_size = Some(rd_u64(field, q).ok_or(ZipError::Truncated("zip64 extra"))?);
                 q += 8;
             }
             if need_lho {
                 z.local_header_off =
-                    Some(rd_u64(extra, q).ok_or(ZipError::Truncated("zip64 extra"))?);
+                    Some(rd_u64(field, q).ok_or(ZipError::Truncated("zip64 extra"))?);
             }
-            return Ok(z);
+            zip64 = Some(z);
         }
         p = end;
     }
-    if need_uncomp || need_comp || need_lho {
+    if zip64.is_none() && (need_uncomp || need_comp || need_lho) {
         return Err(ZipError::Unsupported("Zip64 extra field missing".into()));
     }
-    Ok(Zip64Extra::default())
+    Ok(zip64.unwrap_or_default())
 }
 
 /// Scan backwards for the End-Of-Central-Directory signature (handles a ZIP

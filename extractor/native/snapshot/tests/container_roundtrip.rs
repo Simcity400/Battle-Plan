@@ -431,6 +431,10 @@ fn rejects_tampered_first_snapshot_at_open() {
     let needle = b"\"stability\":0.0";
     let pos = find(&bytes, needle).expect("snapshot data present in STORE zip");
     bytes[pos + needle.len() - 1] = b'9'; // 0.0 -> 0.9
+    reseal_store_crc(
+        &mut bytes,
+        &format!("payload/{GAME}/000017000461.snapshot.json"),
+    );
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default());
     assert!(
         matches!(c.as_ref().err(), Some(ContainerError::Reject(m)) if m.contains("sha256")),
@@ -450,6 +454,10 @@ fn rejects_tampered_later_snapshot_on_lazy_read() {
     let needle = br#""countries":{"GER":{}}"#;
     let pos = find(&bytes, needle).expect("snap_b unique payload present");
     bytes[pos + 2] = b'x'; // corrupt inside the snap_b bytes only
+    reseal_store_crc(
+        &mut bytes,
+        &format!("payload/{GAME}/s0003.000017050260.snapshot.json"),
+    );
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default())
         .expect("opens: first snapshot + index are intact");
     let err = c.load(17050260).unwrap_err();
@@ -522,6 +530,7 @@ fn rejects_manifest_digest_corruption() {
     let needle = b"2026-06-26T21:30:00Z";
     let pos = find(&bytes, needle).expect("created_utc in manifest");
     bytes[pos] = b'1'; // 2026 -> 1026
+    reseal_store_crc(&mut bytes, "manifest.json");
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default());
     assert!(
         matches!(c, Err(ContainerError::Reject(m)) if m.contains("manifest_digest")),
@@ -699,6 +708,33 @@ fn strict_open_rejects_unroled_ascii_timeline_lookalike() {
 }
 
 // ------------------------------- helpers --------------------------------
+
+fn named_zip_header(bytes: &[u8], name: &str, signature: [u8; 4], fixed_len: usize) -> usize {
+    bytes
+        .windows(name.len())
+        .enumerate()
+        .find_map(|(name_start, candidate)| {
+            let header = name_start.checked_sub(fixed_len)?;
+            (candidate == name.as_bytes()
+                && bytes.get(header..header + 4) == Some(signature.as_slice()))
+            .then_some(header)
+        })
+        .unwrap_or_else(|| panic!("missing ZIP header for {name}"))
+}
+
+fn reseal_store_crc(bytes: &mut [u8], name: &str) {
+    let local = named_zip_header(bytes, name, [0x50, 0x4b, 0x03, 0x04], 30);
+    let name_len = u16::from_le_bytes(bytes[local + 26..local + 28].try_into().unwrap()) as usize;
+    let extra_len = u16::from_le_bytes(bytes[local + 28..local + 30].try_into().unwrap()) as usize;
+    let payload_len =
+        u32::from_le_bytes(bytes[local + 18..local + 22].try_into().unwrap()) as usize;
+    let payload_start = local + 30 + name_len + extra_len;
+    let crc = crc32fast::hash(&bytes[payload_start..payload_start + payload_len]);
+    bytes[local + 14..local + 18].copy_from_slice(&crc.to_le_bytes());
+
+    let central = named_zip_header(bytes, name, [0x50, 0x4b, 0x01, 0x02], 46);
+    bytes[central + 16..central + 20].copy_from_slice(&crc.to_le_bytes());
+}
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)

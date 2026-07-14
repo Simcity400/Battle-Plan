@@ -54,13 +54,92 @@ pub(crate) fn decode_json_strict<T: DeserializeOwned>(
 }
 
 /// The `index.json` manifest for one game (our stable format).
+///
+/// A plain (v1) index carries only `game_id`/`schema_version`/`snapshots`. A
+/// **stitched** (container v2) index additionally carries `index_schema`
+/// (`"stitched-main-v1"`), `segments_file`, `main_head`, and visible `coverage`
+/// gaps (`STITCHING_DESIGN.md` §7.1). All of the stitched fields are
+/// `#[serde(default)]`, so a v1 index still parses and a stitched index never
+/// loses its extra fields.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Index {
     pub game_id: String,
     #[serde(default)]
     pub schema_version: Option<Value>,
+    /// Present only on a stitched index (`"stitched-main-v1"`).
+    #[serde(default)]
+    pub index_schema: Option<String>,
+    /// Path (game-relative) to `segments.json` for a stitched index.
+    #[serde(default)]
+    pub segments_file: Option<String>,
+    /// The final main-timeline head `{ segment_id, hour_index }` (stitched).
+    #[serde(default)]
+    pub main_head: Option<Value>,
+    /// Visible main-timeline coverage gaps (stitched); never lists a superseded
+    /// snapshot and never hides a main gap.
+    #[serde(default)]
+    pub coverage: Vec<Value>,
+    /// The default-playback snapshot list (visible `Snapshot` hours only, on a
+    /// stitched index).
     #[serde(default)]
     pub snapshots: Vec<IndexEntry>,
+}
+
+impl Index {
+    /// True when this is a stitched (reload/relaunch) main index.
+    pub fn is_stitched(&self) -> bool {
+        self.index_schema.as_deref() == Some("stitched-main-v1")
+    }
+}
+
+/// The authoritative branch graph of a stitched container (`segments.json`;
+/// `STITCHING_DESIGN.md` §7.2). Read-only and forward-compatible: known fields are
+/// typed, everything else stays a raw `Value` so the reader never breaks as the
+/// graph grows.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SegmentGraph {
+    #[serde(default)]
+    pub stitch_input_digest: Option<String>,
+    #[serde(default)]
+    pub play_order_ledger_digest: Option<String>,
+    #[serde(default)]
+    pub stream_major: Option<u64>,
+    #[serde(default)]
+    pub campaign: Option<Value>,
+    #[serde(default)]
+    pub main_head: Option<Value>,
+    #[serde(default)]
+    pub main_slices: Vec<Value>,
+    #[serde(default)]
+    pub segments: Vec<SegmentRecord>,
+}
+
+/// One segment entry in the branch graph. Visible and superseded spans are span
+/// properties (§6), not whole-segment labels — a segment can carry both.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SegmentRecord {
+    pub segment_id: u32,
+    #[serde(default)]
+    pub play_order: Option<u64>,
+    #[serde(default)]
+    pub in_session_ordinal: Option<u32>,
+    #[serde(default)]
+    pub cutover_hour: Option<i64>,
+    #[serde(default)]
+    pub head_hour: Option<i64>,
+    #[serde(default)]
+    pub parent_segment: Option<u32>,
+    #[serde(default)]
+    pub empty_recovery: bool,
+    #[serde(default)]
+    pub index_file: Option<String>,
+    #[serde(default)]
+    pub visible_spans: Vec<Value>,
+    #[serde(default)]
+    pub superseded_spans: Vec<Value>,
+    /// Every other field (source_ref, provenance, reasons, ...) stays raw.
+    #[serde(flatten)]
+    pub rest: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

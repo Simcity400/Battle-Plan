@@ -129,6 +129,15 @@ pub struct PackOptions {
     pub inject_duplicate_role_member: bool,
     /// Replace the first manifest entry's role with an arbitrary raw value.
     pub first_role_raw: Option<Value>,
+    /// PRODUCTION: the `container_version` to declare (default `None` -> 1). A
+    /// stitched (reload/relaunch) container sets this to 2 (`STITCHING_DESIGN.md`
+    /// §9). Not a negative-test knob.
+    pub container_version: Option<u64>,
+    /// PRODUCTION: the `required_features` to declare (default `None` -> `[]`). A
+    /// stitched container sets `["timeline_segments_v1"]`. Distinct from the
+    /// negative-test injectors above; `required_features_raw` and
+    /// `inject_required_feature` still take precedence for malformed-input tests.
+    pub required_features: Option<Vec<String>>,
 }
 
 /// Default zstd compression level for production `.battleplan` payload entries.
@@ -739,11 +748,15 @@ pub fn pack_borrowed_with_writer<W: Write>(
     let required_features = match (&opts.required_features_raw, &opts.inject_required_feature) {
         (Some(raw), _) => raw.clone(),
         (None, Some(f)) => json!([f]),
-        (None, None) => json!([]),
+        (None, None) => match &opts.required_features {
+            Some(list) => json!(list),
+            None => json!([]),
+        },
     };
+    let container_version = opts.container_version.unwrap_or(1);
     let mut manifest = json!({
         "format": "hoi4replay",
-        "container_version": 1,
+        "container_version": container_version,
         "required_features": required_features,
         "optional_features": [],
         "schema_version": identity.schema_version,
