@@ -3504,3 +3504,19 @@ PASSES (1/0) under external target. regate-facs-wire-r7 LAUNCHED (confirm R5-F1 
 only change + full regression + suite now runs green). Expected FINAL/SHIP.
 IN FLIGHT: facs-wire r7 gate, replay-loader fix5, foldwave2 fix4, stitching r3. MERGE-READY:
 boundary-auth, autoattach (SHIP @15a817f3e).
+
+## 2026-07-14 *** facs-wire r7 = SHIP *** (SECOND hard lane closed; 5 adversarial rounds r3->r7)
+VERDICT SHIP, zero findings. R5-F1 CLOSED (single-source co-derivation binding.rs:417/489,
+disagreement impossible both directions, politics only decorates leader, no alternate constructor/
+serde/mutation). Test-path fix confirmed temp-only. ALL regressions PASS: witness R3-F1/F2 (complete
+stable oracle + every-member validation + double-read + outer-oracle recapture), R2-F2 (unavailable
+never->measured-empty world.rs:3169), fail-closed/zero-loss, map helper (Unavailable->None,
+MeasuredEmpty preserved), stream compat v1/v2, MeasuredEmpty-vs-Unavailable distinguishable through
+fold->typed->binding->map. Residuals = user/consumer-gated only: live FACS v2 injected capture, owed
+live-map integration test (case-b, no production consumer yet), cosmetic name_hash display-name
+resolver. Gate couldn't run cargo (read-only fence) but I INDEPENDENTLY VERIFIED green (d53 125/0,
+game_ui 139/0, replay_core 48/0, map_viewer 755+/0, recorder 207+199, nested-cargo prod test 1/0) =
+full standard met. PRESERVED: committed fix3-6 + test-path on the lane branch @1da8812b8.
+=> facs-wire MERGE-READY, joins the 2nd merge wave.
+MERGE-READY now: boundary-auth (guards), autoattach (SHIP @15a817f3e), facs-wire (SHIP @1da8812b8).
+IN FLIGHT: replay-loader fix5, foldwave2 fix4, stitching r3.
