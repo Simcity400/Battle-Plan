@@ -3486,3 +3486,21 @@ same-user-attacker hardening of replay finalization in scope?) rather than grind
 decision, not technical.
 IN FLIGHT: replay-loader fix5, facs-wire r6 gate, foldwave2 fix4, stitching r3. MERGE-READY:
 boundary-auth, autoattach (SHIP @15a817f3e).
+
+## 2026-07-14 facs-wire r6 gate = REVISE (R5-F1 CLOSED structurally; only test-infra) -> orchestrator-fixed test path -> r7
+R5-F1 (single-source list+status) CONFIRMED CLOSED STRUCTURALLY: binding.rs:417 one exhaustive
+faction_members match, disagreement impossible both directions, politics only decorates leader, no
+alternate constructor/serde/mutation, typed parse rejects empty/dup/cross-faction/invalid-leader/
+contradictory before a measured map, numeric identity cosmetic (members {1,3,22} preserved), test
+uses real d53 encoder+stream_fold+open_recording+WorldTimeline+binding + would fail pre-fix. ALL
+regressions intact (witness, R2-F2, map helper, stream compat, MeasuredEmpty-vs-Unavailable). ONLY
+finding = MEDIUM TEST-INFRA: world_timeline.rs:667 hardcoded extractor/native/target/tmp for nested
+cargo TEMP/TMP -> fails under read-only source fence even w/ external CARGO_TARGET_DIR, so the gate
+couldn't run the current UI suite (=> couldn't SHIP despite the code being sound - I'd already
+verified game_ui 139/replay_core 48 green on my env). ORCHESTRATOR-FIXED DIRECTLY (trivial test
+hygiene, not a Codex round): world_timeline.rs:667 now root.join("extractor_tmp") (writable, matches
+game_ui harness) + comment. VERIFIED: the nested-cargo production_encode_decode_fold_typed test now
+PASSES (1/0) under external target. regate-facs-wire-r7 LAUNCHED (confirm R5-F1 + test-path = temp-
+only change + full regression + suite now runs green). Expected FINAL/SHIP.
+IN FLIGHT: facs-wire r7 gate, replay-loader fix5, foldwave2 fix4, stitching r3. MERGE-READY:
+boundary-auth, autoattach (SHIP @15a817f3e).
