@@ -1,8 +1,9 @@
 # Campaign identity design
 
-**Lane:** `w12g-campaignid-fix`
-**Scope:** identity binding and recorder-host protocol design; collector/contract/replay wiring remains
-outside this lane.
+**Purpose:** Define the campaign-identity source, validation rules, wire contract, rollover
+semantics, and implementation gates without claiming that the design is already wired.
+**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; this document is
+the design of record, not a completion ledger.
 **Product requirement:** pillar 3 requires an engine-derived identity read from live memory and
 stamped into every stream before reload/relaunch stitching can be enabled
 (`extractor/documents/PRODUCT_SESSION_SEMANTICS.md:34-39`).
@@ -83,9 +84,7 @@ whose offsets are already established (`extractor/documents/EXTRACTION_ATLAS.md:
 This proves that an engine-persisted UUID-shaped candidate exists in saves. It does not prove
 its live address, in-memory representation, load stability, or new-campaign uniqueness. No
 `game_unique_*` field appears in the current d68 profile
-(`extractor/native/compact_contract/src/build_profile.rs:349-401`). The raw D04 melt named by
-the discovery report is absent from this worktree, so this lane could not independently
-re-read the atlas sample.
+(`extractor/native/compact_contract/src/build_profile.rs:349-401`).
 
 The older continuity harness exposes the gap: it prefers a caller-supplied save seed but
 otherwise uses a process-instance id stable only for one `hoi4.exe`
@@ -387,9 +386,9 @@ are required for production activation.
 7. **Manifest metadata can drift from stream truth.** Survives: derive and hash-bind it from the
    first record; mismatch is fatal.
 
-## Outside-fence implementation dossier
+## Implementation map
 
-This lane may edit only this document. Required future changes, not made here:
+The design requires coordinated changes in these components:
 
 ```diff
 extractor/native/compact_contract/src/lib.rs
@@ -429,13 +428,5 @@ extractor/native/recorder_host/src/world_fold.rs
 - No live offset, RTTI owner, representation, or guard is proven for either chosen field.
 - No capture pair proves reload/relaunch/hotjoin/observer/rehost stability or distinctness
   across two new campaigns.
-- The raw D04 melt and atlas support CSVs named by retained documents are absent here, so their
-  scalar samples were not independently re-parsed.
-- The prompt names two `extractor/native/runs/production_speed5_*` manifests, but no such
-  directories exist here. The current C0 defaults report d57/d68 clean; that does not validate
-  identity.
-- `c0_domain_census.py --selftest` is not implemented at this revision: `main()` treats every
-  argument as a manifest path (`extractor/native/scripts/c0_domain_census.py:119-120`). The
-  requested command was run and skipped `--selftest` as a missing path.
 - Independent campaigns cloned from one save cannot be distinguished by passive persisted
   engine identity until the engine changes it.

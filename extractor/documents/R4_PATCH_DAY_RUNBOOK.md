@@ -1,14 +1,17 @@
 # R4 — Patch-day robustness runbook
 
-**What this is (plan §4 R4):** the extractor's offsets/vtables are derived against a specific
+**Purpose (plan §4 R4):** the extractor's offsets/vtables are derived against a specific
 `hoi4.exe` build. A game patch can move them. This is the **fail-closed preparedness** checklist
 to re-validate (and, where needed, re-derive) after a the game update. It is NOT a claim of
 forward-compatibility over unseen versions — the first capture on a new build MUST pass this
 runbook **before** that version is declared compatible. Every step is fail-closed: if a check
 can't prove green, the version stays *unsupported*, not *assumed-good*.
 
-**Preconditions:** a save loadable on the new build; the analyzed Ghidra substrate available;
-`rakaly` for the melt oracle. Run from `extractor/native/`.
+**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; this runbook
+defines the procedure and does not certify any build by itself.
+
+**Preconditions:** Windows; a save loadable on the new build; the analyzed Ghidra substrate
+available; `rakaly` for the melt oracle. Run from `extractor/native/`.
 
 ---
 
@@ -78,9 +81,9 @@ python ../save_oracle/parse_characters.py "<save>.hoi4"     # d47 characters
 
 ## Step 6 — declare
 Only when Steps 1–5 are green: bump the supported-build list and note the new build id in the
-release doc. If ANY step is red, the version is **fail-closed unsupported** — captures on it still
-run (readers fail-closed per domain) but the version is not certified. This preserves zero-data-loss:
-a captured-but-unsupported session is safely PARTIAL/SOURCE, never silently wrong.
+release doc. If ANY step is red, the version is **fail-closed unsupported**; captures from it
+must not be admitted as supported production evidence. Any diagnostic attempt remains explicitly
+failed/partial rather than being treated as valid capture data.
 
 ---
 
@@ -93,5 +96,5 @@ bash ~/.claude/hoi4_gate_prompts/run_one_window.sh patchcheck 120 - --d53-relati
 python ../save_oracle/parse_world.py "<save>.hoi4"             # compare vs live d69 (groups/members)
 # review: per-domain status, *_sample sanity, d53 shadow agreement, oracle counts
 ```
-The vtable half is automatic and self-proven; Steps 2–5 are the human-reviewed gate. Budget ~30
-min for a minor patch (few/no vtables moved), a full domain re-validation for a major one.
+The vtable half is automatic and self-proven; Steps 2–5 are the human-reviewed gate. A major
+patch requires full domain re-validation.

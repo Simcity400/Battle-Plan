@@ -6,20 +6,23 @@ audit tables every such bound and classifies its exceed-behavior. The standing l
 pattern) is: a bound MUST **fail closed WITH an attribution sample**, so a modded save that
 trips one **names itself in a single capture** instead of silently losing data.
 
-**Scope:** 239 named ceiling constants swept across `collector/src/lib.rs` and
-`compact_contract/src/build_profile.rs` (`~/scratchpad/r2_bounds_named.txt`), filtered to the
-149 that gate *content* (IDs, counts, lengths, caps) — the mod-exceedable set. Pure
+**Evidence scope:** 239 named ceiling constants swept across `collector/src/lib.rs` and
+`compact_contract/src/build_profile.rs`, filtered to the 149 that gate *content* (IDs, counts,
+lengths, caps) — the mod-exceedable set. Pure
 value/magnitude sanity limits (100M-scale raw-word guards) and internal-safety limits
 (byte budgets, worker durations, cache-row caps) are catalogued but are **not** mod-support
 gates (a mod cannot make a country lose 200M divisions or a worker run 25h).
 
-**Status:** audit table below is COMPLETE for the mod-critical subset; the exceed-behavior
-column is derived from the fail-site code pattern. **A dominant finding drives the R2→R3 work:
+**Historical snapshot (superseded as status 2026-07-14):** the audit table was complete for the
+mod-critical subset at the audited revision; its exceed-behavior column is derived from the
+then-current fail-site code pattern. **The dominant finding was:
 most bounds use `.filter(|v| *v <= MAX)`, which SILENTLY DROPS the field (→ `None`/absent) when
 exceeded — NOT fail-closed-with-attribution.** On vanilla this never fires; on a modded save
 that exceeds the bound it is a *silent* per-field data loss with no sample naming the trip. The
 d69/d47 attribution-sample pattern is the target end-state; the table marks which bounds already
 have it vs. which need it before R3.
+**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; the implementation
+note below is retained as evidence and does not replace that ledger.
 
 ## Legend — exceed-behavior
 - **CLAMP-DROP**: `.filter(<=MAX)` → value becomes `None`/absent, frame stays CLEAN. Silent on
@@ -71,15 +74,14 @@ The **NO** rows above are the R3 tripwires. For the three R3 sessions:
   oracle. This is the concrete argument that R3's overhaul session needs a melt-oracle cross-check,
   not just a "did it run" check.
 
-## Recommended R2 follow-up (before the production tag, pairs with R3)
-Convert the **NO** CLAMP-DROP bounds to the FAIL-SAMPLE pattern: on `> MAX`, emit a
-`*_bound_trip_sample` diagnostic unit carrying (bound name id, observed raw value) — last-value
-semantics, never summed — so ANY modded trip names itself in one capture. Mechanical, per-site;
-the d69 `*_sample` and d47 attribution units are the templates. This is the single change that
-makes the extractor's bounds mod-robust-by-construction rather than mod-robust-by-vanilla-luck.
+## Follow-up disposition
 
-**IMPLEMENTED 2026-07-12** (`compact_contract::bound_trips` registry + `bt_*` units on the
-probe domain 250, drained once per frame in every profile; acceptance behavior unchanged).
+The required pattern is a `*_bound_trip_sample` carrying bound id and observed raw value, with
+last-value rather than summed sample semantics, so any trip is attributable in one capture.
+
+**Historical implementation evidence (2026-07-12):** `compact_contract::bound_trips` registry +
+`bt_*` units on probe domain 250, drained once per frame in every profile; acceptance behavior
+was unchanged.
 Wired bounds (8 ids): `MAX_UNIT_LEADER_SKILL`, `MAX_FOCUS_COUNT` (filters + cap arm),
 `MAX_COMPLETED_TECH_COUNT` (filters + cap arm), `MAX_COMPACT_OWNER_TAG_DB_ID` (all five
 collector 2048 gates: d47/d48/d68-roster/market-trade/frd helpers), `DOMAIN68_MAX_PLAYER_TAG_DB_ID`,

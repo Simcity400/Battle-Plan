@@ -1,16 +1,17 @@
-# C0 DOSSIERS — pass-2 source-to-bit attribution (2026-07-11, Codex dataflow audit; tid in threads log)
+# C0 DOSSIERS — pass-2 source-to-bit attribution (2026-07-11 Codex dataflow audit)
+
+**(historical - superseded by `MASTER_EXTRACTION_CONTRACT.md` + `domain_registry.json`; evidence only)**
+
+**Purpose:** Preserve the two-pass source-to-status-bit dataflow evidence and instrumentation
+requirements without presenting the dated queue state as current.
+**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; per-domain status
+is code-authoritative in `extractor/native/domain_registry.json`.
 
 Input: c0_domain_census.py pass-1 (13 unexplained pairs) + all 623 SOURCE/PARTIAL set-sites
-with context + the reader function index. Verdict quality: 4 pairs FIRMLY classified from
-code alone; 9 need either specific reader bodies (round 2, exact line ranges below) or the
+with context + the reader function index. At pass 1, 4 pairs were FIRMLY classified from
+code alone; 9 needed either specific reader bodies (round 2, exact line ranges below) or the
 ranked telemetry. KEY CONVERGENCE: the audit's ranked telemetry ledger IS C1 stage A's
 per-subsource evidence-unit spec (G4 amendment 4) — one implementation serves both.
-
-ROUND-2 INPUTS NEEDED (queued Codex job): lib.rs bodies read_compact_naval_combat_live
-(22937-23410, d49+d50), read_compact_diplomacy_intel_operatives_live (19913-20949, d53),
-read_compact_capitulation_war_state_live (21402-21624, d60), d51 reader/status fold from
-17523, TRANSITION_BASELINE_RESET set sites, the frame-to-domain flag OR path, d48 gate.ok
-dataflow — plus any lane-crate status producers those bodies call.
 
 FIRM CLASSIFICATIONS (fail-closed policy confirmed correct for all):
 - d45 PARTIAL = per-frame-structural (decisions.targeted_timed_live.structural_failure,
@@ -74,10 +75,9 @@ It is not proven. Other possibilities are that the census joins frame flags only
    Separate hard inherited failure, construction-row skip, non-construction-line skip, and any other gate clause. This determines whether the current gate is detecting real incompleteness or conservatively rejecting irrelevant rows.
 ---
 
-# ROUND 2 (2026-07-12, two inlined Codex Mode-A audits — jobA tid 019f5178-bebb d49/d50/d60/d48, jobB tid 019f5178-d6e6 d53/d51/frame-OR; sandbox broken so ALL evidence was inlined; line ranges re-verified unchanged at tip c2f3a817f)
+# ROUND 2 EVIDENCE (2026-07-12; line ranges verified at tip `c2f3a817f`)
 
-ORCHESTRATOR VERIFICATION (every load-bearing claim checked against the code before folding —
-user directive 2026-07-11):
+ORCHESTRATOR VERIFICATION (every load-bearing claim checked against the code before folding):
 - VERIFIED: TBR set site 25310 is inside read_compact_land_combat_detail_events_live (fn at
   25220, land_detail55) — the census's "d51 TRANSITION_BASELINE_RESET" pair is CROSS-DOMAIN
   MISATTRIBUTED; the only collector-side TBR setter is d55-owned (ORs PARTIAL simultaneously
@@ -103,7 +103,7 @@ user directive 2026-07-11):
   the one shared read struct). Remaining open: upstream construction of incoming naval
   status_flags (a pre-set PARTIAL before the reader).
 
-JOB A VERDICT (verbatim): see /tmp archive + threads log; key rows folded here:
+JOB A EVIDENCE SUMMARY:
 - d49/d50 PARTIAL first-introduction: transitions at 22945 (inherited failure),
   23029/23066 (NavalWalkError::Torn), 23116 (member/OOB join Torn|Degraded) -> all funnel
   into naval_combat_live_partial_read (22885, PROVEN empty/fail-closed). Classification:
@@ -124,7 +124,7 @@ JOB A VERDICT (verbatim): see /tmp archive + threads log; key rows folded here:
   input_status_flags, collector_status_flags, merged_status_flags, hard_failure_flags,
   gate_ok, gate_errors, roots_error_kind}.
 
-JOB B VERDICT (verbatim key rows):
+JOB B EVIDENCE SUMMARY:
 - d53 SOURCE: domain53_source_unavailable_read calls (unresolved/overflowed needles, cold
   discovery, missing validated war addresses, degraded/invalid roots, extraction error) +
   explicit SOURCE|PARTIAL on !report.ok()||payload_failure. Unit: d53 read unit
@@ -137,7 +137,7 @@ JOB B VERDICT (verbatim key rows):
 - d51 TBR + CONTROL_INVALID: see orchestrator verification above (census misattribution +
   frame-scoped fan-out; d51 owns NEITHER bit).
 
-STILL UNRESOLVED AFTER ROUND 2 (queue for round 3 / C1 stage A instrumentation):
+UNRESOLVED IN THIS HISTORICAL AUDIT AFTER ROUND 2:
 1. domain53_source_unavailable_read + domain53_success_status_flags bodies (literal OR sites;
    possible extra PARTIAL producer from stale_dropped_total).
 2. Upstream naval status_flags construction (pre-set PARTIAL before the reader).
@@ -145,5 +145,5 @@ STILL UNRESOLVED AFTER ROUND 2 (queue for round 3 / C1 stage A instrumentation):
 4. domain48: collect_domain48_frame + gate_decoded_frame bodies (the "!gate.ok" limb).
 5. land_detail55 lane internals for any additional TBR encoding.
 6. The census frame-to-domain join rule (decides the d51 CONTROL_INVALID census question).
-NOTE: items 1-5 are exactly the per-subsource first-introduction sites C1 stage A units
-instrument — the instrumentation closes them without further static reading.
+NOTE: items 1-5 are the per-subsource first-introduction sites the proposed C1 stage A units
+would instrument.

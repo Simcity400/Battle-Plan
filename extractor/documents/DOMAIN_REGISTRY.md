@@ -1,7 +1,10 @@
 # DOMAIN_REGISTRY.md — RETIRED 2026-07-05
 
-This document has been retired. It existed to coordinate compact domain-ID
-assignment across independent lane subagents — a workflow no longer in use.
+**Purpose:** Preserve the retired filename as a compatibility stub and route every reader to the
+code-authoritative registry and the single completion ledger.
+
+The former hand-maintained table existed to coordinate domain-ID assignment across independent
+lane subagents, a workflow no longer in use.
 
 Where its information lives now:
 

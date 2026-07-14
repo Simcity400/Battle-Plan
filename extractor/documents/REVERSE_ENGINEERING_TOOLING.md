@@ -1,6 +1,11 @@
 # Reverse Engineering Tooling
 
-Last verified: 2026-06-29.
+**Purpose:** Inventory the Windows-only local reverse-engineering toolchain and the evidence rules
+for safely promoting findings into the extractor.
+**Verification:** Command/path visibility was re-verified 2026-07-14; version labels remain the
+2026-06-29 inventory snapshot and should be rechecked before version-sensitive work.
+**Completion status:** Extractor progress is tracked only in
+`extractor/documents/MASTER_EXTRACTION_CONTRACT.md`.
 
 This machine has a local reverse-engineering toolchain for the Battle Plan DLL
 work. Prefer scriptable tools first, and use GUI tools only when a task really
@@ -46,16 +51,6 @@ Use Python scripts for repeatable PE inspection, signature extraction,
 disassembly checks, pattern searches, hook prototypes, and evidence dumps.
 
 Example:
-
-```powershell
-python - <<PY
-import pefile
-pe = pefile.PE(r"<BATTLE_PLAN_INSTALL>\hoi4.exe")
-print(hex(pe.OPTIONAL_HEADER.ImageBase))
-PY
-```
-
-PowerShell-safe form:
 
 ```powershell
 @'

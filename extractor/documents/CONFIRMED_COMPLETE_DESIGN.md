@@ -1,5 +1,10 @@
 # Confirmed-complete semantics — design of record (2026-07-10)
 
+**Purpose:** Define proof-carrying per-segment completion semantics, expected-absence constraints,
+and fail-closed fold behavior; retain the measurements that motivated those rules.
+**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; dated investigations
+below are evidence checkpoints, not the current completion ledger.
+
 Origin: the hour-latch live soak booked `capture_failed == attempts` on every frame of a
 production run and the recorder gate failed every production ShortSpeed5 run. First
 misdiagnosis (FRAME_END mask, ec9cf0b15) was refuted and reverted. Second misdiagnosis
@@ -12,7 +17,7 @@ latchsoak2 manifest before adoption).
 ## The corrected diagnosis (verified)
 
 Status flags: `BRIDGE_UNAVAILABLE = 1<<7 (128)`, `SOURCE_UNAVAILABLE = 1<<8 (256)`,
-`PARTIAL_DATA = 1<<9 (512)` (`compact_contract/src/lib.rs`). Tonight's "failing" domains:
+`PARTIAL_DATA = 1<<9 (512)` (`compact_contract/src/lib.rs`). In the analyzed `latchsoak2` run:
 
 | domain | status_or | decode | manifest reality (latchsoak2) |
 |---|---|---|---|
@@ -30,7 +35,7 @@ dev-harness artifacts: per-process heap-pointer snapshots, unfit for production 
 1. **Fix the real defects first (no semantics change buys anything before this):**
    - **d47**: find why the adapter's built rows never emit (1,560/3,471 frames parse-error;
      `data_rows_total = 0` while `domain47_adapter_character_rows = 39.5M`). This is the
-     top-priority extractor defect as of 2026-07-10.
+     investigation's initial top-priority extractor defect.
    - **d43/d69**: identify which sub-source sets SOURCE/PARTIAL every frame despite rows
      flowing (fail-closed sub-source or real gap? attribute before excusing).
    - **d17 war-relations segment**: without `war_relation_bridge`, `at_war`/casualties are
@@ -91,7 +96,7 @@ History: d47 HAS emitted in production (ShortSpeed5 run: 2,360,421 rows, 0 rejec
 `8dd85e295`; no later regression bit. So this is a pre-existing latent fragility, tripped
 whenever a cached character dies.
 
-## Repair plan (STAGED as Codex Mode-C job — full-replacement critical path, needs the sandbox)
+## Historical d47 repair plan (superseded as status 2026-07-11)
 
 Do NOT emit surviving rows on a rejected frame (would convert an unreadable root into an
 unproven deletion — the fold is full-replacement). The repair is to RECOVER:
@@ -112,8 +117,6 @@ unproven deletion — the fold is full-replacement). The repair is to RECOVER:
    copy the original `read_time_us`, OR in `frame.status_flags`, and emit normalized
    parse-error-kind counts/hashes so ONE live frame identifies the exact 15-message family
    (do not guess the adapter/decoder relaxation before that evidence exists).
-4. **DONE (this session, 55287bd6a):** gate-fatal work-implies-rows backstop.
-
 Regression tests to require: `domain47_stale_character_fails_one_frame_then_rebuilds_and_recovers`,
 `domain47_new_sweep_generation_adds_new_character_roots`,
 `domain47_uses_full_country_roots_when_politics_delta_is_empty`,
@@ -132,10 +135,10 @@ SOURCE; (2) production preflight: warm the d43 needle before the first latch fra
 fail closed, never clear the bit); (3) per-segment disposition so MTRF folds while contracts
 stay explicitly failed on a cold frame.
 
-**d69 tech_sharing_groups_live — chronic AND not tolerable; a REAL coverage hole TODAY.**
+**d69 tech_sharing_groups_live — chronic and not tolerable in the analyzed stream.**
 PARTIAL on 3,471/3,471 frames (8 groups on 3,418, 7 on 53); the fold rejects every partial d69
-frame and no clean baseline ever folds ⇒ **tech-sharing contributes NOTHING to any replay right
-now** despite 27.7k groups captured. Cause unattributable from the stream: seven distinct
+frame and no clean baseline ever folds ⇒ **tech-sharing contributed nothing to that replay**
+despite 27.7k groups captured. Cause unattributable from the stream: seven distinct
 failure reasons collapse into ONE boolean (`torn_or_skipped_nonnull_slot`, lib.rs:36493-36584)
 with zero reason telemetry. Strong inference (not proven): the hardcoded NINE-slot topology
 (build_profile.rs:403-419, provenance = a single nine-group fixture) has a stale tail — a
@@ -161,7 +164,7 @@ replays — `skipped_game_hours_detected` independently fails the artifact gate.
   absence; no expected-absence enablement after a mid-run failure; no user-provided
   production absence lists.
 
-## d47 status after O3 (2026-07-11) — refresh SHIPPED, rows still blocked; PARTIAL-upsert is the row restorer
+## d47 follow-up evidence after O3 (2026-07-11; superseded as current status)
 
 Shipped + gate-hardened (commits 6d1ff969c, 886e8b923, 8e10e70ff): generation-aware root
 refresh, rejection-triggered invalidation, fail-closed refresh holds with bounded-staleness
@@ -180,8 +183,8 @@ new characters picked up) — but `data_rows_total` is still 0.
    lives, and a CLEAN full-replacement frame omitting a live root silently deletes it.
    Positive absence = omission from a COMPLETE sweep + prewarm rebuild ONLY.
 2. ~3.6 frame parse errors/frame of UNKNOWN text (manifest counts messages, not strings).
-   NEXT DIAGNOSTIC: one short Debug-profile capture (sidecar on) to read the actual
-   messages — they may be an independent universal blocker (payload self-decode).
+   At that checkpoint the next diagnostic was one short Debug-profile capture (sidecar on) to
+   read the actual messages — they may be an independent universal blocker (payload self-decode).
 3. Validator mismatch (gate HIGH, unfixed): prewarm validates SHALLOWER than the walk —
    unit leaders: prewarm checks the vtable qword only, walk checks type id/ids/skill child/
    trait vector/trait objects; country-leader roles: prewarm follows the character ptr but
@@ -200,13 +203,13 @@ projection, upserts-only, never tombstone on partial):**
 - Verification gates: work-implies-rows extended per-frame-family; fold-identity gated
   (old streams must fold byte-identically — PARTIAL d47 frames in old streams are rowless,
   so upsert-of-nothing is a no-op = compatible by construction; prove it).
-- Replay contract impact: REPLAY_DATA_REQUIREMENTS.md must record the d47 partial-upsert
-  semantics change in the same commit that lands it.
+- Replay contract impact: the replay-side requirements/schema authority must record the d47
+  partial-upsert semantics change in the same commit that lands it.
 - Mass-failure defense in depth: a CLEAN frame whose row families shrink implausibly vs
   the adopted root count should fail closed (bound TBD with live dead_roots/stale rates
   from the new diagnostics).
 
-### PARTIAL-upsert re-priced 2026-07-11 (post char-dedup): DEFERRED
+### Historical PARTIAL-upsert deferral (re-priced 2026-07-11 after character dedup)
 
 The contract above was priced when EVERY d47 frame was discarded (~1 failing root/frame
 read as churn). The duplicate-character dedup (1fbd9f3a4) revealed most 'churn' was

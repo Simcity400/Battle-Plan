@@ -1,6 +1,11 @@
 # Derived recompute specs (replay-side) — A1/A3/A5/A6/A7
 
-Status: reference spec for the REPLAY layer. Each of the five quantities below is
+**Purpose:** Specify replay-side recomputation for five engine-derived quantities, including
+inputs, formulas, evidence grades, outputs, and honest residuals.
+**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; this reference does
+not track implementation or backlog state.
+
+Each of the five quantities below is
 **NOT a stored save/live field** (absence proven in the cited evidence); the engine
 recomputes it at draw time. This document gives the replay layer everything needed to
 reproduce each value from already-captured inputs — exact input offsets → formula →
@@ -8,10 +13,11 @@ output field — so it can implement without re-deriving.
 
 Build: 870ebf (v1.19.2 "Operation Postern"), module base resolved at runtime. All fixed-point
 scalars are i64/i32 ×100000 unless noted (divide by 100000 for the human value). Every game-file
-read MUST go through `mod_resolver` keyed by the recording modset (see MOD_COMPATIBILITY.md) —
+read MUST go through `mod_resolver` keyed by the recording modset (see
+`replay_interface/documents/MOD_COMPATIBILITY.md`) —
 vanilla paths below are the fallback.
 
-Source evidence (authoritative, with probes + Codex gates):
+Historical source-evidence paths (not present in this worktree; retained for provenance):
 - A1 `extractor/native/runs/cracklist_a1_supply/EVIDENCE.md`
 - A3 `extractor/native/runs/cracklist_a3_attrition/EVIDENCE.md`
 - A5 `extractor/native/runs/cracklist_a5_surrender/EVIDENCE.md`
@@ -83,13 +89,6 @@ tooltip number.
 - `carry` (formatter rbx) provenance untraced; helper `0x14CE920` and globals
   `0x331BFE0`(globalTick)/`0x331D160`(rate)/`0x33717E8`(cap) named by role, not fully proven.
 - Byte-exact decimal QA needs one same-frame supply-mapmode tooltip capture (≥8 provinces).
-
----
-
-## A2 — (resource-flow; not in this doc's 5-tuple — see cracklist_a2_resource_flow/EVIDENCE.md)
-
-Placeholder: A2 is covered by its own lane evidence and the wired resource-flow domain; it is
-NOT one of the five draw-time-derived recompute recipes and is intentionally omitted here.
 
 ---
 

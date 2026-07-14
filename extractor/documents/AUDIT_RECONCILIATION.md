@@ -1,17 +1,24 @@
 # AUDIT RECONCILIATION — extractor session branch (G5 gate output + orchestrator cross-reference)
 
-G5 adversarial reconciliation ran 2026-07-11 (tid in ~/.claude/codex_threads.log, reviewed
-tree 319dc641b, inputs: branch log + CODEX_DISPATCH_QUEUE.md). Its table is the BASE LAYER
-below, verbatim. G5 saw ONLY the dispatch queue as gate evidence; the cross-reference
-section resolves rows where gates demonstrably ran (thread ids / session records), leaving
-the TRUE blocking list for F1.
+**(historical - superseded by `MASTER_EXTRACTION_CONTRACT.md` + `domain_registry.json`; evidence only)**
+
+**Purpose:** Preserve the 2026-07-11 G5 gate reconciliation and its commit-level evidence without
+presenting its blocking lists as current project status.
+**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; per-domain status
+is code-authoritative in `extractor/native/domain_registry.json`.
+
+G5 adversarial reconciliation ran 2026-07-11 (reviewed tree 319dc641b; inputs: branch log +
+CODEX_DISPATCH_QUEUE.md). Its table is the BASE LAYER
+below, verbatim. G5 saw only the dispatch queue as gate evidence; the cross-reference
+records later evidence visible at that checkpoint.
 
 ## Orchestrator cross-reference (2026-07-11 evening)
 
 CLOSED or IN-PROGRESS by evidence G5 could not see:
 - O3/d47/d69 chain (8e10e70ff, 28f2043e1, d5bb02247, ebdc5bc4b, 1fbd9f3a4, 2a9dc5091):
   G1 final net gate RAN (resume tid 019f4ebb) -> REFUTED 3 CRITICAL -> fix round
-  615d24125 -> combined RE-GATE IN FLIGHT (tid in threads log, tree b24ac1ce3).
+  615d24125 -> combined re-gate was in flight at this checkpoint (tid in threads log,
+  tree b24ac1ce3).
   O7 (2a9dc5091) explicitly verified safe within G1's failed-attacks list.
 - e9f21a1c8 modset: G2 RAN -> REFUTED 9 -> fix round b24ac1ce3 -> same re-gate in flight.
 - 1cac48222 serial-wall: KNOWN OPEN (G3 held for P1b equivalence evidence; P1a decision
@@ -26,7 +33,7 @@ CLOSED or IN-PROGRESS by evidence G5 could not see:
 - hour-latch family + three-phase family + d53 delta_partial: queue Jobs 0a/0b/1/1R2
   CLOSED (G5 concurs).
 
-TRUE BLOCKING LIST for F1 (no independent adversarial verdict anywhere):
+HISTORICAL F1 BLOCKING LIST at that checkpoint:
 1. 1cac48222 serial-wall (G3 owed; P1b evidence pack required first).
 2. ~~Prefetch plumbing final state (1b8ed7d66 -> bd4fb09b5 -> 8487be6a7)~~ **CLOSED
    2026-07-11: the re-stamp verdict was RECOVERED by resuming tid 019f4b91-0528 —
@@ -67,9 +74,6 @@ TRUE BLOCKING LIST for F1 (no independent adversarial verdict anywhere):
    rides the F5 integrated gate (fix-of-fix, suites green, orchestrator-verified).
 9. B3 repack-level change (NOT YET IMPLEMENTED — when ReplayZstdLevel default changes,
    it needs fold-identity + gate per plan §2b).
-
-NEXT MECHANICAL STEPS: (a) recover the prefetch re-stamp thread verdict; (b) git-verify
-hour-latch net-zero; (c) queue the stream-container net re-gate; (d) M1 gate after its A/B.
 
 ## G5 base layer (verbatim gate output)
 
@@ -173,9 +177,10 @@ I treated the dispatch queue as the gate system of record. Commit-message assert
 | `e61ebf094` | Adds production skip-fold option | LIVE-VALIDATED-ONLY | Covered by later performance/G1 validation, but no recorded adversarial gate; **BLOCKING** |
 | `ca7650189` | Implements 5.4× parallel fold | LIVE-VALIDATED-ONLY | Profile and G1 evidence; no queue-recorded adversarial gate; **BLOCKING** |
 
-## BLOCKING LIST
+## Historical G5 blocking list
 
-These must be closed before a production tag. “Close” means either recover and cite an independent gate whose prompt explicitly names the commit/final tree, or run a new net gate. Live evidence alone is insufficient.
+At the audit checkpoint, these required an independent gate whose prompt named the commit/final
+tree, or a new net gate; live evidence alone was insufficient under that audit's rules.
 
 1. Lossless/capture-semantics changes awaiting an explicit adversarial verdict:
 
@@ -202,4 +207,8 @@ The queued O3 gate must cover exactly `8e10e70ff + 28f2043e1 + d5bb02247 + ebdc5
 - `f24c11d3a` records Opus SOUND verdicts, but also says they were revoked. Those are not usable closures; the queue’s later Codex-controlled 0a/0b outcomes govern.
 - `bf58ffc7b`’s Codex re-stamp is consistent with the later 0a/0b history, but the ledger should cite the actual final 0a/0b gate artifacts, not this commit message.
 
-Self-refutation: I considered treating merge-message gate claims and later live runs as sufficient retroactive coverage. That fails the stated rule: the queue is the status of record, a gate covers only its named commit set, and a later commit touching the same system needs its own explicit coverage. I also checked the opposite risk—over-blocking reverted commits. They still require reconciliation because the mandate applies to every merged change, although their rows can close as “refuted and reverted” once the relevant verdict is cited.
+Self-refutation: I considered treating merge-message gate claims and later live runs as sufficient
+retroactive coverage. That failed the rule used at the time: the queue was the audit input, a gate
+covered only its named commit set, and a later commit touching the same system needed explicit
+coverage. I also checked the opposite risk—over-blocking reverted commits. Their rows could close
+as “refuted and reverted” once the relevant verdict was cited.

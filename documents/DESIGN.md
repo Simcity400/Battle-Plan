@@ -1,7 +1,10 @@
 # Project Vision
 
+**Purpose:** State the product goal and durable project-wide design principles; implementation
+status lives in `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`.
+
 This project is trying to build a full-game replay system for the game
-multiplayer: a recorder that observes a live game without changing it, writes a
+multiplayer on Windows: a recorder that observes a live game without changing it, writes a
 durable `.battleplan` file, and lets a separate replay interface reconstruct the
 war from any perspective after the session is over.
 
@@ -14,6 +17,8 @@ the replay feels like watching the original game unfold.
 ## What We Are Building
 
 The application has two major halves.
+
+The supported product platform is Windows only.
 
 The first half is the recording layer. It watches `hoi4.exe` while the game is
 running and records typed facts about the game at an hourly-or-better cadence.

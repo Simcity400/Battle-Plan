@@ -1,17 +1,22 @@
 # Lane workflow — how delegated work is run in this repo
 
-**Audience: every agent working in this repository — orchestrator or delegate, Claude or Codex,
-any layer (extraction, replay, RE, tooling).** This file is the *method*. It is deliberately
+**Purpose:** Define the repo-wide method for planning, isolating, proving, reviewing, and
+integrating delegated work. It does not track project completion; see
+`extractor/documents/MASTER_EXTRACTION_CONTRACT.md`.
+
+**Audience: every orchestrator or Codex delegate working in this repository, across extraction,
+replay, RE, and tooling.** This file is the *method*. It is deliberately
 free of any one layer's file paths, offsets, and domain facts, so it can be applied to work that
 does not exist yet.
 
-Each layer keeps its own **lane brief** holding that layer's hard requirements, established
-facts, proven NULLs, and gates. A lane reads this file **and** its layer brief before starting.
+Each layer uses a **lane brief or named canonical documents** for its hard requirements,
+established facts, proven NULLs, and gates. A lane reads this file and the layer-specific
+authorities before starting.
 
 | Layer | Lane brief |
 |---|---|
 | Extraction | [`../extractor/documents/CODEX_LANE_BRIEF.md`](../extractor/documents/CODEX_LANE_BRIEF.md) |
-| Replay | owned by the replay agent — see that layer's documents |
+| Replay | use the replay-layer canonical documents named by the lane mission |
 
 Related canon: repo rules `documents/AGENTS.md` · Codex mechanics
 `C:\Users\Example\.claude\CODEX_PROTOCOL.md` · Claude handoffs `documents/CLAUDE.md`
@@ -22,8 +27,13 @@ Related canon: repo rules `documents/AGENTS.md` · Codex mechanics
 
 - **Orchestrator** — plans, decomposes into lanes, reviews every diff, runs every gate, owns the
   outcome. Never rubber-stamps a delegate's report.
-- **Delegate (lane)** — does one well-scoped job in an isolated worktree, proves its own claims,
+- **Delegate (lane)** — the Codex CLI is the sole delegation engine. It does one well-scoped job
+  in an isolated worktree, proves its own claims,
   and reports evidence.
+
+Do not create Opus, Sonnet, Fable, Explore, general-purpose, or other Claude Agent-tool lanes.
+Codex invocation and resumability rules live only in
+`C:\Users\Example\.claude\CODEX_PROTOCOL.md`.
 
 A delegate's *reply is not the diff*. It can be wrong, it can over- or under-claim, and it can
 write files it never mentions. The orchestrator's verification is what makes delegation safe.
@@ -90,9 +100,9 @@ findings against itself to accept. Both halves of that are disqualifying.
 - The **orchestrator** runs an independent adversarial gate on the final diff: a fresh,
   read-only reviewer prompted to *refute* the change, given **named prime suspects** rather than
   a generic "review this." Name the specific ways this specific change could be wrong.
-- Prefer a reviewer that is not the implementer's own model. When one model both implements and
-  reviews, model-diversity in review is lost; the orchestrator is then the only remaining
-  independent check and must act like it.
+- The independent gate uses a fresh, read-only Codex thread with no implementation-thread
+  carry-over. Because Codex is the sole sub-agent, independence comes from fresh context plus the
+  orchestrator's own diff review and mechanical verification, not model branding.
 
 ## 5. Escalation cap — and its exception
 
@@ -114,8 +124,9 @@ precisely where a silent bug hides.
 - **Verify freshness** against the intended base commit before starting; a stale worktree silently
   reverts other lanes' work.
 - **Lanes do not edit a shared plan-of-record document.** Concurrent appends to one file is the
-  most reliable way to manufacture merge conflicts. Each lane writes its **own report file**
-  (`<layer>/documents/lane_reports/<lane>.md`); the orchestrator folds findings into the plan.
+  most reliable way to manufacture merge conflicts. Each lane writes its **own evidence file** in
+  the layer's designated evidence directory (for extraction,
+  `extractor/documents/dossiers/<lane>.md`); the orchestrator updates canonical status.
 - **Large corpora are read in place, never copied.** Delete benchmark intermediates. Verify free
   disk before large writes — and after cleanup, because some deletions fail silently.
 

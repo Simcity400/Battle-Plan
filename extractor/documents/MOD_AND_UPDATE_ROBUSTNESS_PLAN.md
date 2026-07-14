@@ -1,9 +1,11 @@
 # Mod & game-update robustness plan (2026-07-10, user directive)
 
-Status of record: **every extractor test to date has run against VANILLA** (user-confirmed;
-an earlier session note claiming D04 was an overhaul mod is WRONG and retracted). Mod
-robustness is architecturally designed-for but has ZERO live validation. Game updates recur;
-each new exe build must get cheaper to support. Companion contract (replay side):
+**Purpose:** Define fail-closed modset binding, cross-mod validation, and a repeatable
+game-update recovery pipeline.
+**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; this plan does not
+restate the cross-modset or patch-day completion ledger.
+
+Companion contract (replay side):
 `replay_interface/documents/MOD_COMPATIBILITY.md` — capture evidence is modset-bound, bare
 vanilla joins forbidden.
 
@@ -13,21 +15,22 @@ Mods are script/content: they do NOT change exe memory-structure layouts, and th
 reads memory structures — offsets are exe-BUILD-bound, not mod-bound. The real mod surface is
 everything derived from Installed content or tuned on VANILLA OBSERVATIONS:
 
-| # | Gap | Risk | Fix |
+| # | Robustness concern | Risk if violated | Required design |
 |---|---|---|---|
-| M1 | **Static catalogs are vanilla-derived** (templates_equipment, localisation, decisions, idea_tech_loc_xref, ship_definitions, gfx_icon_manifest — generated from `game_defs` off the vanilla install and passed to every capture) | **Silent wrong joins on a modded recording — worst gap, silent-loss class** | Catalog generation must take the recording's modset (mod file tree overlay, load-order aware); launcher resolves catalogs FOR the modset or refuses (fail-closed on mismatch, never silently vanilla) |
-| M2 | **Manifest does not record the modset** | Evidence can't be modset-bound; a modded replay is indistinguishable from vanilla | Read enabled mods + DLC set (dlc_load.json / launcher db + .mod descriptors, with checksums) into the control file and manifest; catalogs carry the modset they were built from; mismatch = gate failure |
+| M1 | **Static catalogs must be modset-resolved** (templates_equipment, localisation, decisions, idea_tech_loc_xref, ship_definitions, gfx_icon_manifest) | **Silent wrong joins on a modded recording — worst gap, silent-loss class** | Catalog generation takes the recording's modset (mod file tree overlay, load-order aware); the launcher resolves catalogs for that modset or refuses (fail-closed on mismatch, never silently vanilla) |
+| M2 | **Manifest-bound modset identity** | Without it, evidence cannot be modset-bound and a modded replay is indistinguishable from vanilla | Record enabled mods + DLC set (dlc_load.json / launcher db + .mod descriptors, with checksums) in control/manifest; catalogs carry their source modset; mismatch = gate failure |
 | M3 | **Validation bounds tuned on vanilla** (d47 char_id ≤ 2,000,000 & skill ≤ 15; vector sanity caps e.g. BUILDING_VECTOR_MAX=64; tag-validity ranges) | A large mod trips fail-closed rejection → loud data loss (post-backstop) | Bounds audit sweep: each bound either derived from installed content, or generous + per-bound diagnostic counter so the FIRST out-of-range mod value is attributable, not just rejected |
 | M4 | **Script-keyed enumerations** (ideologies, idea slots/categories, equipment archetypes) if any reader hardcodes vanilla token lists | Missing/misclassified rows on mods | Audit for hardcoded vanilla tokens; source them from the (modset-resolved) catalogs |
 | M5 | **Scale**: total conversions add tags/states/provinces | d53 is quadratic in tags → bytes+time grow; map-size caps | Caps audited generous (state id 65535, provinces 2^20); scale is a perf concern not correctness |
-| M6 | **Zero cross-modset evidence** | Unknown unknowns | Validation matrix: short standard capture + full gate battery on 2–3 modsets (one big overhaul e.g. Kaiserreich/RT56, one total conversion, one QoL-mods stack). The existing gates/census machinery detects breakage cheaply; fix what fails, record per-modset evidence |
+| M6 | **Cross-modset validation matrix** | Unknown unknowns remain without live modset evidence | Run a short standard capture + full gate battery on 2–3 modsets (one big overhaul e.g. Kaiserreich/RT56, one total conversion, one QoL-mods stack). The existing gates/census machinery detects breakage cheaply; fix what fails, record per-modset evidence |
 
 Definition of "mod-ready": M1+M2 landed (fail-closed modset binding), M3/M4 audits clean, and
 the M6 matrix green on at least two non-vanilla modsets.
 
 ## Game-update preparedness (recurring cost → pipeline)
 
-Today: offsets live centrally in `compact_contract::build_profile` keyed to build 870ebf
+At the build-870ebf design baseline, offsets live centrally in `compact_contract::build_profile`
+keyed to that build
 (exe sha256 pinned); every scanned type is validated against its MSVC RTTI class name, so a
 build shift FAILS CLOSED (refuses to extract) rather than extracting garbage. That's the
 right failure mode; the goal now is cheap recovery. Plan, in order of leverage:
@@ -41,9 +44,11 @@ right failure mode; the goal now is cheap recovery. Plan, in order of leverage:
 | U5 | **New-build acceptance runbook**: U1 → U2 → U3 recipes for any failed validator → short vanilla capture → gate battery + census → green = supported. Single documented pass/fail checklist | Makes patch-day a bounded, repeatable procedure; MP can pin the old version until green |
 | U6 | Duplicated constants audit: offsets copied into python tools (e.g. d23 probe scripts) must be GENERATED from the profile, not hand-mirrored | Kills silent skew between tools and the DLL |
 
-## Sequencing
+## Dependency order (not execution status)
 
-1. M2 (modset in manifest/control — small, unlocks evidence binding) → M1 (modset-resolved
+Current completion remains in `MASTER_EXTRACTION_CONTRACT.md`. The design dependency order is:
+
+1. M2 (modset in manifest/control — unlocks evidence binding) → M1 (modset-resolved
    catalogs, fail-closed) → M6 first matrix run → M3/M4 audits from what the matrix flags.
 2. U1 tool (highest leverage) → U4 profile-as-data → U2/U3/U5 as the first real patch lands.
 3. Every item gets the standard treatment: Codex-gated lane, tests, gate evidence; silent
