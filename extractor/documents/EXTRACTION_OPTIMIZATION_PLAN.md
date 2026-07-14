@@ -1,37 +1,28 @@
-﻿# Extraction Optimization Plan — sub-20 ms frames + lean replays (2026-07-09)
+# Extraction Optimization Reference — measured frame-time and replay-size evidence
 
-Owner: extraction lane. Status: ACTIVE — phases 1/1b/2/3 landed, Phase 4 (change-driven
-capture) in progress. See the dated status sections below for what is proven vs projected.
+**PURPOSE:** preserve reproducible performance/size measurements, proven nulls, and optimization
+levers for the extractor. This is not a completion ledger or current execution queue. Current
+project state, residuals, and the production gate live only in
+[`MASTER_EXTRACTION_CONTRACT.md`](MASTER_EXTRACTION_CONTRACT.md); per-domain status lives only in
+[`../native/domain_registry.json`](../native/domain_registry.json). Dated measurements below are
+historical corpus evidence, not claims about the 2026-07-14 head.
 
-**Delegation (2026-07-10):** Codex CLI is the sole delegation engine and adversarial reviewer,
-pinned `-m gpt-5.6-sol -c model_reasoning_effort=xhigh`. The earlier "Codex unavailable / do not
-depend on it" note is DEAD.
+## Optimization constraints
 
-**Lanes: read [`CODEX_LANE_BRIEF.md`](CODEX_LANE_BRIEF.md) first** — it carries the hard
-requirements, the established facts, the proven NULLs, and the gates. **Lanes must not edit this
-plan**; write [`lane_reports/<lane>.md`](lane_reports/) instead (concurrent edits here conflict).
-The orchestrator folds lane reports into this document.
+- Preserve the master contract's lossless hourly-or-finer production gate; an optimization must
+  prove decoded/fold equivalence and must not mask failure/partial signaling.
+- Optimize total CPU work, not thread count alone, so the extractor remains usable on weaker PCs.
+  The historical target was <20 ms warm average on the dev rig with a 4–6-core companion run.
 
-## Hard requirements (user, 2026-07-09 — binding)
+## Measured baseline (historical 2026-07-08/09 corpus)
 
-1. **Zero data loss.** Every domain captured at hourly-or-finer cadence. Cadence thinning
-   (domain every N>1 game-hours) is FORBIDDEN. A skipped re-read is legal only when the value
-   is provably unchanged (lossless delta); heuristics must be validated fold-identical before
-   shipping.
-2. **Portability.** The extractor must run on weaker PCs than the dev rig. The deep-war frame
-   is CPU-throughput-bound (work/cores), so levers must cut total CPU work per frame, not add
-   threads. Target on the dev rig is <20 ms warm avg **with margin** (internal target ~12–15 ms);
-   every acceptance run gets a core-constrained companion run (affinity-limited to emulate a
-   4–6 core host).
-
-## Measured baseline (evidence-of-record)
-
-- Current production bundle: **55 compact domains**, all-native (no Python on the hot path).
 - Warm frames, speed 2: ~46–62 ms shallow state, **108–120 ms deep-war**
   (`live_perf_20260708/patched_navcache_speed2_60s`: avg 108.2 ms, p95 141 ms, 3.17 M guarded
-  reads/frame, 99.1 % region-cache hit). No clean speed-5 zero-skip run exists at head.
+  reads/frame, 99.1 % region-cache hit).
 - Reads are ~90 % of the frame; encode/append ≈ 4.7 ms. Concurrency is a proven NULL
-  (rc 0→24 sweep flat, `P2B_LEVERA_RESULTS.md`) — the frame is `sum(work)/cores`.
+  (rc 0→24 sweep flat,
+  [`P2B_LEVERA_RESULTS.md`](../native/runs/perf_rearch_20260706/P2B_LEVERA_RESULTS.md)) — the
+  frame was `sum(work)/cores` on that corpus.
 - Stream volume: **6.57 MB/game-hour** busy mid-war
   (`live_perf_20260709/monitored_finalstate_speed2_20s`, 216.7 MB / 33 h). Full-game
   (~105,000 game-hours) projection: **~690 GB raw stream / ~300 GB shipped container**.
@@ -40,11 +31,11 @@ The orchestrator folds lane reports into this document.
   `replay_core/source.rs` consumes). Container codec is deflate-6 (zip), measured 8.5×;
   lzma-6 measured **42.9×** on the same stream → ~5× codec headroom.
 
-### The convergence fact
+### Historical convergence result
 
-The **same five domains dominate both problems**:
+The same five domains dominated both time and bytes on that corpus:
 
-| Domain | id | deep read ms (avg) | share of stream bytes | delta today? |
+| Domain | id | deep read ms (avg) | share of stream bytes | delta in this corpus? |
 |---|---|---|---|---|
 | diplomacy_intel_operatives_live | 53 | 65.4 | 47.5 % | full-replace per clean frame |
 | construction_buildings_state_damage_live | 48 | 36.8 | 4.5 % | NO — full snapshot hourly |
@@ -61,90 +52,64 @@ Shared mechanism of the expensive lanes: walk a large object array with one tiny
 read per field (construction: 127,728 reads for 354 KB ≈ 2.8 B/read). Counter-proof that
 bulk reads work: `weather_live` reads 5.26 MB in **5 reads**, costs ~1.5 ms for 13 k rows.
 
-## Acceptance gates (all phases)
+## Measurement protocol
+
+The master contract owns production acceptance. For optimization experiments, the durable
+measurement rules were:
 
 - **G1 lossless:** A/B/A shadow protocol — new path vs old path fold to byte-identical
   per-hour snapshots (or decoded-row equality) on the same live game, same-state bracketed
   (`u32[gs+0x468]` protocol). No lever ships without this.
-- **G2 speed:** warm avg frame at speed 5, zero skipped hours, deep-war save, dev rig.
-  Phase targets below; final <20 ms (internal 12–15 ms).
-- **G3 portability:** same run with collector+game affinity-limited to 6 cores; frame must
+- **G2 speed:** warm average frame time at speed 5 on a deep-war save, with the master's current
+  hour-accounting gate applied.
+- **G3 weaker-PC check:** same run with collector+game affinity-limited to 6 cores; frame must
   still meet the hourly gate with 0 skips.
 - **G4 size:** measured bytes/game-hour on the same capture, projected to 105 k game-hours.
 - Only live paired A/B counts (~±13 % single-capture noise); no cross-run comparisons at
   different state depths.
-- **G5 bounded memory & post-processing:** recorder host peak private bytes must stay under
+- **G5 bounded memory & post-processing:** recorder host peak private bytes should stay under
   ~2 GB regardless of session length, and replay finalization must complete in time
   proportional to a small constant × capture time (streaming, not batch). Evidence for the
-  defect: 2026-07-09 ShortSpeed5 run (`production_speed5_ShortSpeed5_20260709_124210`) —
+  historical defect: 2026-07-09 ShortSpeed5 run
+  (`production_speed5_ShortSpeed5_20260709_124210`) —
   collector_record.exe reached **27 GB working set / 34 GB private** and post-processing ran
   >15 min after a 300 s capture (hoi4.exe itself: 4.8 GB). User verdict: absurd, major
-  problem. A full-game capture cannot complete under the current batch fold/pack design.
+  problem.
 
-## Phase 0 — Ground truth (small)
+## Historical speed-5 failure baseline (2026-07-09)
 
-1. ~~One clean speed-5 run at current head~~ **DONE 2026-07-09** —
-   `runs/production_speed5_ShortSpeed5_20260709_124210` (live mid-war, speed 5, 300 s,
-   55 domains, full launcher production shape). **The honest baseline is a hard FAIL:**
+- `runs/production_speed5_ShortSpeed5_20260709_124210` (live mid-war, speed 5, 300 s,
+   then-current full launcher shape) was a hard failure:
    - frame avg 69.9 ms, p95 82.4 ms, max 130.1 ms (sum of per-domain avgs 176.9 ms,
      parallel lanes); game advanced ~21 game-h/s.
    - **3,897 of 6,346 game hours SKIPPED (61 % data loss)** — the status quo already
-     violates the zero-data-loss requirement at speed 5. Phase 2 is a correctness fix.
+      violated the zero-data-loss requirement at speed 5, establishing performance as a
+      correctness concern for that run.
    - raw stream **28.15 GB / 300 s** (~11.5 MB per captured hour → ~1.2 TB full game).
      d53 emitted 855.9 M "changed" rows in 2,450 frames (~349 k/frame) — its delta path is
      effectively full-replace.
    - host RAM 27–34 GB + post-processing killed manually after ~55 min, still unfinished
      (G5 evidence). The partial fold had already written **~65 GB of per-hour snapshot
      JSONs** for ~2,449 captured hours (~27 MB/hour) on top of the 28 GB stream — the
-     snapshot representation is ~2.3× the stream at deep-war, confirming Phase 3's
-     keyframe/binary/zstd priorities. Partial snapshots deleted 2026-07-09; the 28 GB
-     stream is retained as the Phase 1b/G5 scale-test input.
+      snapshot representation is ~2.3× the stream at deep-war. Partial snapshots were deleted
+      2026-07-09; the 28 GB stream was retained as the bounded-memory scale-test input.
    - **stream not decodable**: 4 parse errors, `focus depth row N has no token context`
      (focus_research_decisions_depth_live encoder emits rows the host decoder rejects) —
-     BUG, gate-failing independently of skips. Fix in Phase 1b window.
+      an independent gate failure in that historical run.
    - top read costs this save: d53 29.4 ms avg / 36.0 p95; map_detail 15.2; supply 14.2;
      divisions 13.4; division_equipment 13.0.
-2. 6-core portability run: DEFERRED until after Phase 2 (measuring a known failure adds
-   nothing while frames cost ~70 ms and 61 % of hours already skip at full cores).
-3. Fold-equivalence harness (G1): in progress (fold_check tool).
 
-## Phase 1 — Strip debug taxes + `--profile` switch (fast, low risk)
+## Historical debug-tax finding (2026-07-09)
 
-Findings: DOMAIN_PERF records are emitted unconditionally (collector `lib.rs:13249` + ~30
-sites) and byte-copied into every container; the production launcher passes
-`--extraction-perf-gate`, turning per-read RC counters ON in production; the launcher also
-omits `--lightweight-root-frame`; `--stream-format json` is a divergent dead path (bypasses
-production readers) and must never be a debug profile.
+The 2026-07-09 audit found unconditional `DOMAIN_PERF` emission, production-enabled per-read RC
+counters, and a divergent JSON-stream path. The durable design rule is to keep production and
+debug on the same compact schemas/readers/fold while varying diagnostics only. Production must
+retain hour accounting and fail-closed source/partial signaling; only instrumentation cost may be
+removed.
 
-1. Add `--profile production|debug` to recorder_host, propagated as one `profile` field in
-   `collector_control.json`. Both profiles stay `stream_format=compact`, identical domain
-   reader code, identical schemas and fold — only emission/diagnostics differ.
-   - production: perf records OFF (or one aggregate frame-level record if gates need a
-     count — resolve against `domain_perf_record_count` consumers first), RC counters OFF,
-     `compact_country_frame=true`, `lightweight_root_frame=true` **after verifying the
-     skipped country-identity scan carries no replay-consumed data**, minimal manifest,
-     strict `min_game_hours`.
-   - debug: perf records ON, RC counters ON, sidecar phase-timing log ON
-     (`sidecar_log`, currently hardcoded false), full manifest, full provenance fields,
-     relaxed gates.
-2. Update `Start-Hoi4ProductionSpeed5Capture.ps1` to `--profile production`; add a debug
-   launcher mode.
-3. Audit the control-file keys the DLL parses but the Rust host never writes
-   (`army_body_bridge`, `ship_body_bridge`, `war_relation_bridge`, `map_control_*`, …) —
-   prune only what is provably dead across BOTH the Rust host and the Python dev harness
-   (`extractor/live_capture/`), which may still write them for dev bridge workflows.
-4. Fail-closed guarantee is NOT a debug feature: production must preserve skipped-hour
-   accounting and per-domain status signaling (SOURCE_UNAVAILABLE / partial-data). What may
-   be cut in production is instrumentation cost (per-read RC counters, timing verbosity,
-   sidecar logs), never data-loss detection. (Container single-representation moved to
-   Phase 3 per D1.)
+## Historical bounded-memory streaming fold/pack result (2026-07-09)
 
-Expected: a few ms/frame (3.17 M rc_bump calls + perf-record building), container ~2×
-smaller immediately (single representation), clean profile surface for everything after.
-
-## Phase 1b — Bounded-memory streaming fold/pack (recorder host) — **DONE 2026-07-09**
-
-Landed (merge f8cc48d6f): streaming capture→disk with rolling SHA-256, mmap manifest gate,
+Merge `f8cc48d6f` implemented streaming capture→disk with rolling SHA-256, mmap manifest gate,
 file-backed incremental fold (hour spilled + released at FRAME_END), streaming zip pack with
 per-chunk compression, streaming re-read verification, G5 telemetry (`host_finalize.*`) in
 every manifest. Proof: streaming fold chain-hash == batch fold_check chain-hash on the real
@@ -154,169 +119,76 @@ Codex fix → re-review → orchestrator direct fixes): shared 2 GiB writer/read
 enforced mid-stream; zip32 checked casts + entry-count preflight (cap 65,534 — 0xFFFF is the
 zip64 sentinel); unexpected pipe read errors now hard-fail instead of publishing a prefix
 stream; verifier checks CRC-32/flags/local headers/data descriptors; fail-closed manifest
-rewrite when the pack fails (no stale replay advertised). Known deferred: zip64 (needed for
->65,534 entries — a full-game run — goes with the Phase 3 container overhaul); verifier
-accepts only our writer's signed-descriptor form (INFO).
+rewrite when the pack fails (no stale replay advertised). At this measurement point, the verifier
+accepted only the writer's signed-descriptor form; the later container result below records the
+zip64 implementation.
 
-### Original defect record (for history)
 
-Defect (see G5): the host's post-capture replay build batch-folds the entire session in RAM
-(27–34 GB for a 300 s speed-5 mid-war run) and takes >3× the capture time. Required rewrite:
+## Historical bulk-read and delta results (2026-07-09)
 
-1. **Fold incrementally during capture:** consume the pipe stream as it arrives, maintain
-   only the CURRENT world state + the in-progress hour, emit each finished hour's snapshot
-   (or delta) to disk immediately, then release it. Peak memory becomes O(world state), not
-   O(session).
-2. **Stream the container:** write `.battleplan` entries incrementally (zip supports
-   streaming append); never buffer the whole stream or all snapshots in memory. Verify
-   entries by re-reading from disk, not from RAM copies.
-3. Finalization after the capture ends should be seconds (index/manifest write + container
-   close), not minutes.
-4. Gate: G5 measured on a live speed-5 run (peak private bytes logged into the manifest),
-   plus G1 fold-equivalence — the streaming fold must hash identical to the batch fold on
-   the same stream.
+These are implementation/measurement records, not current domain status. Read-side collapse was
+proven for d48, d44, d41, and d53. The d53 exact-offset reader removed an unused 832-byte ×
+104-qword blob scan: the scan yielded zero emitted facts while the real flags came from the
+  `rel+0xD0` vector and the subject-pointer `+0x288` pattern, eliminating about 53 MB/frame
+  of memcpy and 6.7 M lookups. A later live shadow run reported zero relation mismatches.
 
-This phase is independent of the DLL hot loop and can proceed in parallel with Phase 2.
+The same 2026-07-09 change added baseline+delta+tombstone emission for d41/d44/d48/d51/d53
+with fold-equivalence tests;
+trackers did not advance on failed/partial frames. Exact current semantics belong to code and the
+master gate, not this historical summary.
 
-## Phase 2 — The Big Five: bulk-read collapse (time) + delta emission (bytes)
-
-**Status 2026-07-09:** read-side collapse LANDED for d48 (4-6x fewer reads/object,
-byte-identical, all-window-or-all-live fallback), d44 (already collapsed earlier; residual
-~22k allocs/frame removed), d41 (pool/lifecycle bulk reads + scalar fallback, payload-equal
-fixtures), and d53 W3a (exact-offset relation reader d1f0a5722: the 104-qword/832-byte blob
-scan contributed ZERO live emitted facts — real flags are the rel+0xD0 vector — so offsets
-mode eliminates ~53 MB/frame memcpy + 6.7M lookups; runtime `d53_relation_read_mode`
-offsets|scan|shadow, shadow mismatches fail-close the frame as partial).
-**PENDING before next production capture: live shadow A/B for d53** (protocol: one capture
-with `"d53_relation_read_mode":"shadow"`, require domain53_relation_shadow_mismatches == 0
-on every d53 frame; any mismatch is a blocker; only then consider deleting the scan path).
-**Delta-emission wave COMPLETE 2026-07-09** (merge a299d9cc8): all five fat domains now emit
-baseline+delta+tombstone — d41 (8fa005b30), d44 (da29ceb90), d48 (963449eb6), d51
-(fcb39d4b9, freeze waiver), d53 (75e3419b7). Shared architecture: COMPACT_STATUS_DELTA_DATA
-flag, high-bit tombstones carrying only the identity key, per-domain `dNN_emit_mode`
-delta|full runtime override, tracker never advances on failure/partial frames (d53: partial
-frames emit no deltas at all — no tombstone storms), fold treats non-delta records as full
-baselines (old recordings unaffected). Every domain has a lossless gate test folding full vs
-delta streams to byte-identical per-hour state; all five pass together. Honest residuals
-(stay full-emission, no safe identity): ~~d44 computed badges~~ (CLOSED — see residual-deltas
-lane below); d51 delayed-event/scripted-GUI opaque rows (MEASURED-NOT-WORTH-IT — see below);
-d53 operation_instances/incoming_actions/intel_network_graphs/factions.
-
-**Residual-deltas lane 2026-07-09 (lane/residual-deltas):** measured both documented d44/d51
-full-emission residuals on the deep-war corpus
+The residual-delta study measured d44/d51 on the deep-war corpus
 (`runs/live_validation_20260709_221706/stage2_shortspeed5/collector_stream.bin`, 12.9 GB;
 4×300 MiB windows @ 0/35/70/~100 % → 28,964 records, 1.225 GB sampled). Per-domain byte
 shares of the sampled stream: d53 85.3 %, d48 6.1 %, d20 3.6 %, **d44 1.16 %**, everything
 else <0.5 %; **d51 total 0.05 %**.
 
-- **d44 computed badges — CLOSED (implemented + gated).** The five computed-badge rows are
-  constant compile-time rows (each wall flag → a fixed `value_a_raw` code); the collector was
-  force-emitting all five in EVERY delta frame (sample: 1,305 badge rows over 261 records =
-  5.0/frame = **200 B/game-hour**, 0.37 % of d44 bytes, 0.0043 % of the whole stream). Fix:
-  the collector now deltas badges like any other row (emit once in the baseline, skip while
-  unchanged — they never change) and the fold already RETAINS them
-  (`SupplyLogisticsState::badges` keyed by badge_flags; required-badge coverage reads the
-  retained set). Also made the host decode gate's mandatory-five-badges check baseline-only
-  (a delta record legitimately carries zero badges), mirroring the fold. Gates: collector
-  unit test (baseline emits 5, unchanged frame emits 0, changed live row re-emits only itself
-  with badges silent); host fold-identity gate updated so delta frames omit badges and folds
-  stay byte-identical incl. tombstone/reverted/zero-change frames; decoder tests
-  (delta-without-badges decodes clean; baseline-missing-badge still fails).
-- **d51 delayed-event/scripted-GUI opaque rows — MEASURED-NOT-WORTH-IT (documented, no code).**
-  Two sub-parts, both left full-emission:
-  1. *Constant opaque badges* (`VALUE_DELAYED_EVENT_OPAQUE` + `VALUE_SCRIPTED_GUI_OPAQUE`): in
-     the corpus exactly 1 + 1 constant badge row per frame (522 rows over 261 records),
-     **≈165 B/game-hour**, 6.5 % of d51 bytes but only **0.0035 % of the whole stream**. They
-     ARE cleanly deltable in principle (stable string-key identity), but the fold deliberately
-     CLEARS `scripted_world_opaque_badges` every delta frame (Vec, rebuilt per-frame), so
-     closing them needs a coordinated tombstone-parity change across THREE layers that the
-     lane keeps in lock-step — collector key + `world_fold` (Vec→keyed map, stop-clear split,
-     upsert/remove, tombstone-flag arm, render) + the FROZEN lane gate
-     `validate_tombstone_row` (which today hard-rejects opaque value_kinds) — for a reward the
-     zstd-93 container layer (163× measured on exactly this constant-redundancy class) already
-     reduces to ≈1 B/game-hour. Verdict: keep full-emission; the container codec is the
-     intended absorber (same rationale the plan applies to d53 full-churn).
-  2. *Measured delayed-event rows* (`VALUE_DELAYED_EVENT`): carry a per-event
-     `due_remaining_hours` that DECREMENTS every game-hour, so a delta would re-emit them every
-     frame regardless (zero savings); and they measured **ZERO rows across the entire 12.9 GB
-     deep-war corpus** (delayed-event discovery stayed fixture-blocked/unresolved). Verdict:
-     keep full-emission.
+- The five constant d44 badges cost **200 B/game-hour** (0.37% of d44, 0.0043% of the stream);
+  delta-once emission removed the repeated bytes, with baseline coverage and fold identity gated.
+- The d51 opaque badges cost about **165 B/game-hour** (0.0035% of the stream); zstd reduced this
+  constant redundancy to about 1 B/game-hour, so a three-layer tombstone/fold rewrite was measured
+  not worth the risk. Delayed-event rows would decrement `due_remaining_hours` every hour and
+  re-emit even under delta; this corpus contained zero such rows (a corpus fact, not closure proof).
 
-**Adversarial review wave 2026-07-09 night (Opus reviewers):** bulk-collapse sweep
-certified SOUND across all 12 lanes; delta-emission review found and FIXED two real defects
-(merge a1c787a4a): d48 tolerated-partial baseline leak (two-accumulator split + phantom-row/
-reverted-value regression tests) and d53 operative owner-change duplication
-(relocate-on-upsert). Coverage gate verified fail-closed on missing/duplicate per-hour data
-records. Live session is now one command: scripts/Invoke-LiveValidationSession.ps1.
-
-**Remaining in Phase 2:** LIVE validation session — (1) d53 shadow gate
-(`d53_relation_read_mode:"shadow"`, zero mismatches required), (2) paired speed-5 A/B vs the
-07-09 baseline (frame avg/p95, skipped hours, bytes/game-hour, host_finalize peak RAM),
-optionally with per-domain emit-mode full/delta A/B for size attribution. d51 bulk-read
-collapse (read-side) is still open if the A/B shows it matters.
-
-Per lane (order: d48 → d44 → d41 → d53 → d51), two changes, each gated by G1:
-
-- **Bulk collapse:** replace per-field guarded reads with few large `read_bytes` of the
-  contiguous object/array, parse in memory (weather/P4c-2 pattern; `ObjectSnapshot`
-  substrate `62d9643ac` exists). Repo-bounded estimate 2–4× per lane; the ~90 ms these
-  lanes occupy deep → expect **−40 to −60 ms**.
-- **Delta emission:** baseline once + changed-row deltas + tombstones, exactly like
-  divisions/map_control. d53 needs its fail-closed "clean frame full-replaces" semantics
-  rewritten delta-safe (`compact_contract lib.rs:156`). Expected stream **~10–15× smaller**
-  (the five lanes are 93.6 % of bytes; peer lanes emit 0.3–0.7 % changed rows).
-- **d53 exact-offset relation RE (W3a):** replace the 832 B blob × 104-qword × ~64 k-pair
-  scan (~6.7 M BTreeMap lookups + 53 MB memcpy per frame) with reads of the known flag
-  offsets (rel+0xD0 vector already RE'd, subject-ptr +0x288 pattern). Est. d53 relations
-  ~75 → ~15–25 ms. Needs RE validation packet + save-oracle equivalence. First scope the
-  ~40 ms "dark residual" outside d53's phase timers with success-only outcome-split timing.
-- **Prefetch sweep** (dist {8,16,32,64} via collector_control) extended to the cold walks;
-  d53 measured −17 % from dist-16.
-- d51 is a FROZEN lane → needs the freeze-waiver decision (D2) before touching; d47/d52/d56
-  (another ~40 ms deep combined) likewise if Phase 4 needs them.
-
-Phase target (G2): deep-war warm avg **≤ 45 ms** speed-5 zero-skip; stream ≤ ~0.7 MB/game-hour.
-
-## Phase 2c — Offline read-collapse sweep COMPLETE 2026-07-09 (late)
+## Historical offline read-collapse sweep (2026-07-09)
 
 Beyond the Big Five, bulk-read collapse (byte-identical contract, all-window-or-all-fallback,
-equivalence + refused-window fixtures per lane) landed for EVERY deep-war lane above ~13 ms:
+equivalence + refused-window fixtures per lane) was demonstrated for every deep-war lane above
+about 13 ms:
 d51/d52/d56 frozen lanes (627a25f87/60c035914/586666f09), d23 map_detail + d26
 division_equipment (35790f468/30d62ed9d), d28 oob_command + d29 ships (376c9e50f/14e84996c),
-politics_live (921c7c9fa). All merged with green suites. Live A/B still pending for actual
-ms gains. stream_fold gained --discard-snapshots (688ca2840) so full-stream soaks fit disk.
+politics_live (921c7c9fa). `stream_fold` also gained `--discard-snapshots` (688ca2840) so
+full-stream soaks fit disk.
 
-## Phase 3 — Container & codec overhaul (bytes) — CORE LANDED 2026-07-09
+## Historical container/codec result (2026-07-09)
 
-zstd method-93 (level 13, window_log 27, LDM) + full zip64 shipped in the streaming writer
-and both readers (222fae43f + fix round f2631ca70; adversarial-review verdict SOUND, all 5
-findings fixed: streamed file-backed entries, reader allocation caps, EOCD-at-EOF
-validation, checked-in pre-222 legacy fixture, configurable CompressionProfile).
+The historical container implementation used zstd method-93 (level 13, window_log 27, LDM) plus
+full zip64 in the streaming writer
+and both readers (`222fae43f` + `f2631ca70`; controls included streamed file-backed entries,
+reader allocation caps, EOCD-at-EOF validation, a checked-in pre-222 legacy fixture, and a
+configurable `CompressionProfile`).
 **Measured on the real 28 GB deep-war stream (2 GiB slice): zstd 163.2x @ 483.5 MiB/s vs
-deflate-6 9.37x @ 52.6 MiB/s.** Legacy deflate containers remain readable. Remaining Phase 3:
-snapshot-term elimination via the D1 shared decoder crate (in progress — replay_core
-consumes the stream directly; snapshots move to debug profile), keyframe/binary snapshot
-format only if the decoder-crate route stalls.
+deflate-6 9.37x @ 52.6 MiB/s.** Legacy deflate containers remained readable.
 
-## LIVE VALIDATION SESSION 2026-07-09 NIGHT — results of record
+## Historical live-validation result (2026-07-09 night)
 
 Run: runs/live_validation_20260709_221706 (+ probe in live_validation_20260709_215202).
-- **d53 SHADOW GATE PASSED**: domain53_relation_shadow_mismatches == 0 on every frame with
-  both paths live. The exact-offset relation reader is live-proven; the legacy scan may be
-  retired next cleanup.
+- **d53 shadow evidence:** `domain53_relation_shadow_mismatches == 0` on every frame with
+  both paths live, validating the exact-offset relation reader on that build.
 - **Light save probe** (restarted game, ~13.5 h/s): frame avg 36.4 ms, 1/162 hours skipped
   (cold frame), ~0.69 MB/hour (~17x smaller than baseline), host peak 604 MB.
 - **Deep late-war save** (~6 h/s, the game 8.2 GB): frame avg 151.5 ms p95 263.6, 370/1,790
   hours skipped (20.7%), 12.9 GB/300 s raw (~9.1 MB/hour). NOT a paired A/B vs the morning
   baseline (different save depth — 21 h/s vs 6 h/s); it maps the remaining gap on heavy
-  worlds. CONCLUSION: **Phase 4 (lossless change-driven capture) is formally necessary**
-  for deep-war sub-20 ms; read-collapse+delta alone do not defeat work-scales-with-world.
+  worlds. This was initially interpreted as proof that lossless change-driven capture was
+  necessary; the skip-law and 1.2 ms-floor corrections below supersede that conclusion.
 - Delta effectiveness on deep war: d51 0.3% changed, d41 8.3%, d44 10.0% (all working);
-  **d48 79.2% — ROOT-CAUSED + FIXED (lane/d48-partial, see below)**; **d53 ~full-churn** —
-  genuine hourly opinion drift; the zstd-93 container layer (163x measured on this redundancy
-  class) is the intended absorber, and per-field delta encoding is a candidate follow-up.
+  **d48 79.2%**, traced to the tolerated-partial path described below. The contemporaneous
+  attribution of **d53 ~full-churn** to genuine hourly opinion drift was later refuted by the
+  d53 study below: tolerated-partial frames had disabled delta.
 
-### d48 tolerated-partial churn — RESOLVED (lane/d48-partial)
+### Historical d48 tolerated-partial churn result
+
 Root cause (CONFIRMED from code, not a stall): `COMPACT_STATUS_PARTIAL_DATA` is in
 `COMPACT_STATUS_FAILURE_MASK` (compact_contract/src/lib.rs:186), so a tolerated-partial d48
 frame (gate.ok, no hard failure, PARTIAL_DATA set) hit the early return in
@@ -329,54 +201,32 @@ Manifest evidence (live_validation_20260709_221706): d48 `expected_partial_toler
 tolerance reason confirms the partial reads are accurate-but-incomplete ("valid
 construction/building/resource rows retained… omitted siblings preserved"), i.e. the retained
 rows are unchanged hour-to-hour — the ideal case for the projection-diff reduction below.
-Fix (COLLECTOR side, composes with fold fix a1c787a4a): added a second collector accumulator
-`partial_projection` mirroring the fold's `domain48_state`. A tolerated-partial frame now emits
-only the read rows that differ from the projection (upserts only, **no tombstones** — an omitted
-row may be unread, not deleted), and sparse-merges the read rows into the projection. The DELTA
-baseline (`last_*`) is left pinned across partials (unchanged, still mirrors the fold's
-`domain48_delta_state`), so the next real delta and the fold stay byte-identical. The projection
-is diffed against (not the pinned baseline) so a value that a prior partial pushed and then
-reverted is still corrected (no data loss). The overlay is `None` on the common all-clean/delta
-path (no per-frame clone; one clone per partial run, cleared by every clean/delta frame).
-Gates (all automated, all green): collector unit tests
-(`attach_log::domain48_partial_emit_tests::*`, 7) — churn mutation (unchanged partial emits 0
-rows vs legacy 3; one-change partial emits 1), baseline never advanced on partial, reverted-to-
-baseline value re-emitted via projection diff, partial never tombstones, delta still tombstones
-real removals, projection reset, full-mode intact. Fold identity test
-(`compact_d48_reduced_partial_folds_identically_to_full_emission`) proves the reduced-partial
-delta stream folds byte-identically to full emission AND to the legacy full-read-partial stream.
-The a1c787a4a phantom-row/reverted-value regression still passes unchanged.
-Measured churn on the synthetic fixture: unchanged tolerated-partial hour 3 rows → **0** (was 3,
-full re-emit); genuinely-changed subset emits exactly the changed rows.
-- **New bottleneck of record: the post-capture fold** (~5 MB/s single-threaded serde_json)
-  — 12.9 GB folds for ~40 min. Validation sessions killed it after manifest write (numbers
-  live in the manifest). Fix candidates: parallel per-hour fold, faster canonical
-  serialization, or skip host fold in production once replay_core consumes the stream via
-  replay_decoder (D1). Session tooling: --replay-zstd-level plumbed (validation uses 3);
-  emit-mode-full stage optional.
+The fix added a `partial_projection` accumulator: tolerated-partial frames emit changed observed
+rows only, never tombstone an unread omission, and leave the clean delta baseline pinned. Tests
+covered unchanged/changed/reverted rows, deletion behavior, projection reset, and fold identity
+against both full emission and the legacy partial stream. On the synthetic fixture, an unchanged
+partial hour fell from 3 rows to **0**; a real change emitted exactly one row.
 
-## CORPUS RETENTION (2026-07-10 — disk cleanup, user-authorized)
+## Historical performance-corpus record
 
-Deleted, to reclaim ~83 GB: the orphaned partial-fold snapshot temp dir (34.6 GB, regenerable
-from the stream), seven merged-lane worktrees (15.9 GB, recoverable from git), the
-**morning-baseline stream** (26.2 GB), and **all `live_perf_20260708/09` streams** (11.5 GB).
+At the 2026-07-10 cleanup point, the deleted 2026-07-08/09 streams were represented by 54 retained
+manifests. Neither those manifests nor the corpus paths cited in this section are present in this
+worktree; treat them as historical external-artifact identifiers. The recorded morning numbers were
+69.9 ms average / 82.4 p95 / 3,897 skipped / 28.15 GB on a lighter world and are not directly
+comparable to the deep-war run.
 
-**All 54 run manifests were retained and are now the numbers of record for those runs.** Read the
-manifest; there is no `.bin`. Morning baseline stays quotable as 69.9 ms avg / 82.4 p95 / 3,897
-skipped / 28.15 GB — but remember it was a *lighter world* and is **not** directly comparable to
-the deep-war run.
-
-**Surviving stream corpus (the only one):**
+The stream used by the studies below was:
 `runs/live_validation_20260709_221706/stage2_shortspeed5/collector_stream.bin` — deep-war,
 ~12 GB, 1421 hours. Reference fold chain hash over its first 600 MiB:
 `bc517771692b2052122fd1f83e6fda1c29c84b49c536cf058d8935997c1c63f7` (198 hours, 22,059 records),
-reproduced identically by sequential and 4-worker parallel folds. **There is no backup, and
-re-capturing any deleted stream requires a live game session.** Read it in place; never copy or
-modify it.
+reproduced identically by sequential and 4-worker parallel folds. No in-worktree copy or backup was
+found during the 2026-07-14 audit.
 
 ## ⚠ CORRECTION 2026-07-10 (b) — skip law re-measured; "we cause the bursts" REFUTED
 
-Full study: `lane_reports/burst-correlation.md`. Header-only scan of the deep-war stream, using
+Full study:
+[`archive/lane_reports/burst-correlation.md`](archive/lane_reports/burst-correlation.md).
+Header-only scan of the deep-war stream, using
 `elapsed_wall_ms` (frame_end payload `[0:8]`; `frame_time_us` is `[8:16]`, `collector/src/lib.rs:41189`)
 so the game's pace is measured **independently** of our sweep cost.
 
@@ -392,11 +242,11 @@ so the game's pace is measured **independently** of our sweep cost.
   predicts 344 vs **370 actual** at the observed D, 7% under). Target is a **~30–40 ms cycle**, a
   **~3.8× cut** from 151 ms — and d53 measured ~3× above its pure memory-latency floor. Plausibly
   reachable by cheaper acquisition alone, with **no change-driven read scheme**.
-- **Unresolved confound (do not drop):** the curve assumes the game's pace is exogenous. The
-  `+0.4364` correlation says it may not be, and observation cannot separate common-cause from
-  causation. **D≈28 ⇒ zero skips is an upper bound, not a prediction.** Settle it live: hold save +
-  speed fixed, vary sweep cost via domain subsets (~40/~80/~151 ms), and see whether the *interval*
-  distribution shifts. Unchanged ⇒ exogenous; shrinks with us ⇒ CPU-coupled fixed point.
+- **Confound later measured:** the curve assumed the game's pace was exogenous, while the
+  `+0.4364` correlation could not separate common cause from causation. The later fixed-speed
+  subset experiment in [`PRODUCTION_ENDGAME_PLAN.md`](PRODUCTION_ENDGAME_PLAN.md) measured
+  about 6–7% pace cost from roughly 90–100 ms of extraction work on its corpus. Therefore
+  **D≈28 ⇒ zero skips remains an upper bound, not a prediction**.
 - **Acquire/process split — ceiling already bounded.** d53's encode+decode-gate is **7.9 ms** vs a
   **49.3 ms** read: processing ≈14% of that domain's wall, so deferring *encode* buys little. The
   split pays only if **materialisation** is deferrable, which needs a raw-byte copy at the hour
@@ -409,112 +259,46 @@ so the game's pace is measured **independently** of our sweep cost.
 > reconstructed series against the manifest (frame mean 151.5 / p95 263.6 / max 477.2) **before**
 > interpreting it.
 
-## ⚠ OUTSTANDING INDEPENDENT GATES (2026-07-10)
+Retained d53 safety caveat: the historical fold re-seeded hour overlays from the mirror baseline
+on every delta frame. If sampling ever permits multiple d53 records in one game-hour, revalidate
+that it does not keep only the last record where full emission would union them. The invariant is
+fold identity with the defined partial semantics, not a blanket "never tombstone from partial."
 
-Per `CODEX_LANE_BRIEF.md` §7, a lossless-critical diff needs the **orchestrator's** independent
-adversarial gate on the final state — the implementer never clears its own work. Two such diffs
-landed on 2026-07-10 and **that gate has NOT been run**: Codex was rate-limited
-("hit your usage limit") on every attempt. It is not run, so it is not claimed.
-
-| Diff | Ships as | Opus gate (authorized window) | Codex re-stamp | Adjudicated status |
-|---|---|---|---|---|
-| `hour_latch` | **default OFF** | SOUND | **REFUTED** | **REAL FIXES REQUIRED** — fix lane queued |
-| `d53 delta_partial` | **opt-in OFF** | SOUND | **REFUTED** | contract-text defect fixed in brief; **no fold-divergence demonstrated**; blocked on live A/B as before |
-
-**FINAL 2026-07-10 (evening): the Codex re-stamps ran and REFUTED both — overriding the
-earlier Opus SOUND verdicts in one case.** Full verdicts + orchestrator adjudication in
-`lane_reports/hour-latch.md` and `lane_reports/d53-partial-delta.md`. Summary:
-
-- **hour_latch**: 4 real defects Opus missed or under-weighted — (1) frame labeled from the
-  stale sweep clock while the attempt consumes the latch frontier ⇒ duplicate prior-hour
-  frame + silent gap at the frontier hour; (2) `confirm()` fires on failure/partial frames;
-  (3) an all-polls-fail tail leaves hours unaccounted while the invariant passes; (4)
-  thread-spawn failure fails OPEN to the legacy lossy loop. Plus the pre-existing
-  sink-write-error swallowing makes "confirmed" over-claim. **Fix lane queued
-  (`CODEX_DISPATCH_QUEUE.md` Job 0aF); re-gate + live gates after.** Unobservable
-  between-poll reload excursions are inherent to polling and become contract wording.
-- **d53 delta_partial**: the CRITICAL findings refute the BRIEF's absolute rules, not fold
-  output — the design deliberately relaxes them for tolerated-partial d53, where full
-  emission itself drops torn rows hour-by-hour. `CODEX_LANE_BRIEF.md` §3 now carries the
-  partial-tolerance carve-out (the ambiguity that let two reviewers read opposite contracts
-  WAS the defect). One true finding accepted: default mode is byte-identical to pre-lane
-  only where pre-lane was correct — it diverges exactly where pre-lane provably lost data
-  (post-build-rejection sequence); that is the documented intent. Standing falsifier: a
-  concrete fold-divergent interleaving overturns this adjudication.
-
-Enabling: hour_latch blocks on fix lane → fresh Codex gate → live gates. delta_partial
-blocks on the live paired A/B (unchanged).
-
-Notable from the d53 gate (recorded so nobody trips them later): (1) a LATENT fragility — the
-fold re-seeds d53 hour overlays from the mirror baseline on every DELTA frame, so if the
-collector ever emitted two d53 records within one game-hour, delta_partial would keep only the
-last while full emission unions both; unreachable today (one d53 record per FRAME_END), breaks
-silently if sub-hour sampling is ever added. (2) The old "tombstones never from a partial
-view" phrasing is a TRAP — the true invariant is fold-identity-with-full-emission, and
-delta_partial correctly tombstones torn rows; "fixing" the literal wording would break
-byte-identity. Queue doc updated accordingly.
-
-Note the lanes' *own* Codex reviews did run and were valuable: hour-latch's returned REFUTED and
-exposed a real bug (a stale sweep read fabricated a false reload + duplicate capture); d53's
-returned REFUTED and exposed **two real silent-data-loss bugs** its own fuzzer had missed
-(empty-first-frame baseline desync; mutate-before-validate). That is the case for reviewer
-independence, in evidence.
-
-## ⚠ WHAT "ZERO DATA LOSS" ACTUALLY MEANS (2026-07-10 — scope correction)
-
-The `lane/hour-latch` lane forced this, and it is load-bearing for the whole program.
+## Sampling-loss semantics (clarified 2026-07-10)
 
 **An async sampler of a sim it cannot pause cannot deliver literal zero data loss.** Two facts:
 
 1. **Intra-hour transients are unobservable to any hourly sampler.** A value that changes and
    reverts within one game-hour is invisible no matter how fast the sweep is. Hourly cadence is
    the requirement; hourly cadence is also the ceiling on what can be seen.
-2. **A skipped/coalesced hour IS real loss of that hour's world state.** The status quo already
-   loses hours: 370 of 1790 (20.7%) on the deep-war run. The latch does **not** fix that — it
-   makes it *accounted* rather than *silent*.
+2. **A skipped/coalesced hour IS real loss of that hour's world state.** The historical deep-war
+   run lost 370 of 1790 hours (20.7%). A latch makes loss accounted rather than silent; it does
+   not recover the missing state.
 
-So the achievable guarantee, and the one we now hold ourselves to, is:
+The resulting accounting invariant was:
 
 > **ZERO-SILENT-GAP ACCOUNTING + BOUNDED SKEW.** Every game-hour is observed and accounted as
 > either a capture attempt (confirmed-complete or recorded-failed) or a **reason-tagged**
 > coalesce (superseded / overflow / flush / backward / anomalous). Invariant:
 > `observed == attempts + coalesced + in_flight`, with `in_flight == 0` after flush. Read skew
-> exists as it does today and is bounded, not monotonically improved.
+> exists and is bounded, not monotonically improved.
 
 **Capturing every hour remains the goal — and it is a SWEEP-SPEED problem, not a latch problem.**
 Under sustained overrun only ~`RUN_MS / sweep_ms` hours can be captured; the rest are physically
-unrecoverable. The latch buys correct accounting and absorbs *momentary* bursts (which is what the
-28.2 ms bursts against a 167.6 ms mean actually are). Getting hours captured rather than coalesced
-is Phase 2/4's job: make the sweep fast.
+unrecoverable. The latch buys correct accounting and absorbs *momentary* short intervals. Getting
+hours captured rather than coalesced still requires a sufficiently fast sweep.
 
 **Crucially, silent loss is prevented by DELTA accounting, not by the poll rate.**
 `HourLatch::observe` accounts every hour in `last+1..=raw`, so a multi-hour jump between polls is
 detected and coalesced-with-reason. 28.2 ms is the minimum *observed* interval in one capture, not
 a proven floor — correctness must never depend on it, and does not.
 
-### Status: MERGED but NOT CLEARED FOR ENABLING
-`hour_latch_enabled` defaults to **false** (`unwrap_or(false)`); no thread is spawned and no extra
-game memory is read when off, so legacy behaviour is unchanged. Verified on the merged tree by the
-orchestrator: fold path has **zero edits**, workspace **1203 tests / 0 failed**, and G1 fold chain
-hash on the deep-war 600 MiB prefix reproduces the reference
-`bc517771692b2052122fd1f83e6fda1c29c84b49c536cf058d8935997c1c63f7` exactly.
-
-**OUTSTANDING before it may be enabled:**
-1. **The orchestrator's independent adversarial gate DID NOT RUN** — Codex hit its usage limit.
-   This is a lossless-critical diff, so per `CODEX_LANE_BRIEF.md` §7 it requires that gate on the
-   post-fix state. *Not yet performed.* (The lane's own Codex review did run and returned REFUTED
-   on the first draft; one fix round was applied — see `lane_reports/hour-latch.md` for verbatim
-   findings, incl. a real bug where a stale sweep read fabricated a false reload + duplicate
-   capture.)
-2. Live shadow-soak: observed matches the counter 1:1, invariant holds throughout.
-3. Paired A/B vs legacy: skip count, frame p95, max_queue_depth, RAM.
-4. 6-core portability companion run.
-
 ## ⚠ CORRECTION 2026-07-10 — the Phase 4 "1.2 ms floor" is UNSUPPORTED
 
-The `lane/phase4-mirror-mapdetail` lane (report: `lane_reports/phase4-mirror-mapdetail.md`,
-Codex-reviewed twice) **refuted the premise** that `map_control`'s 40x advantage comes from a
-dense-mirror / change-driven read. Verified independently against the source:
+The archived
+[`phase4-mirror-mapdetail.md`](archive/lane_reports/phase4-mirror-mapdetail.md) study refuted the
+premise that `map_control`'s 40x advantage comes from a dense-mirror/change-driven read.
+Verified independently against the source:
 
 - `map_control` reads **one scalar at a fixed offset inside an already-resolved object**
   (`collector/src/lib.rs:33545`) and walks **every** entity **every** frame. It is *not*
@@ -537,15 +321,11 @@ What survives unchanged: **no engine dirty signal exists**; any change-driven sc
 *complete by construction*; and 77% of read-work still reads provably-unchanged rows (that is a
 statement about what is read, not about how cheaply it could be read).
 
-The live open question for scattered-object domains is **region-coalesced bulk reads** of
-already-known pointers (complete by construction; cuts guarded-read *calls*, not entities).
-Payoff is an empirical address-locality question, unanswerable offline — run
-`runs/d23_speed/d23_locality_probe.py` on a paused deep-war save before building anything.
+The later paused-game `d23_locality_probe.py` test settled the region-coalesced bulk-read
+question for d23 as a null; see **Known nulls** below. The data-shape warning still applies to
+other scattered-object domains unless their locality is measured independently.
 
-## DEEP-WAR LEVER RANKING (2026-07-09 night corpus)
-
-> **Read the correction above first.** Lever 1 and its sub-rows (1a–1g) quote a 1.2 ms
-> change-driven floor that is now known to be data-shape-dependent, not universally reachable.
+## Historical deep-war corpus profile (2026-07-09 night)
 
 Source: `runs/live_validation_20260709_221706/stage2_shortspeed5` — manifest per-domain
 `read_time_us` + a full header-only scan of the 12.0 GB `collector_stream.bin` (1421 frame_end
@@ -554,7 +334,7 @@ headers; scan script in lane scratchpad, read-in-place). Frame avg 151.5 ms, p95
 477.2; 1421 hours captured / 370 skipped of 1790 advanced (20.7%); 9.068 MB/hour (matches the
 9.08 reported to 3 s.f.). Numbers below are that run only.
 
-### 1. Per-domain frame-time ranking — and the parallelism caveat
+### Measured per-domain frame time
 
 The sum of per-domain avg `read_time_us` is **693.6 ms**, but the frame avg is **151.5 ms**
 (`reader_concurrency=12`). So the frame is **critical-path bound at ~4.58× effective
@@ -578,95 +358,25 @@ Top read-cost domains (avg ms / p95 ms / % of the 693.6 ms read-sum):
 | scripted_state_flags_variables | 51 | 23.1 | 52.5 | 3.3% | **0.3%** |
 | construction (d48) | 48 | 22.2 | 50.5 | 3.2% | **79.2%** |
 
-**MISSING COUNTER (propose as a lever):** the manifest carries per-domain wall but NO per-frame
-per-lane / critical-path counter, so frame-ms cannot be attributed to lanes and we cannot see
-which domains co-schedule on the slow path. Every ms-saved estimate below therefore carries a
-parallelism band: work removed saves between `X/4.58` (if fully hidden behind other lanes) and
-`X` (if on the critical path). Emitting a per-frame lane-assignment + lane-wall in the frame_end
-record is a zero-risk instrumentation lever that unblocks exact attribution.
-
-### 2. Skip mechanism — the premise is only half true
-
-The skip law is `skipped = Σ(gap−1)` over consecutive captured hours (`main.rs:16575`) on a
-**free-running game the extractor samples** (read-only; extraction does NOT gate the sim). Skips
-are **weakly** correlated with frame time:
-
-- 139 of 370 skipped hours (38%) follow frames **under 120 ms**; the 150–168 ms band skips the
-  *least* (14%). A gap=2 skip occurred at the run's **fastest** 59.5 ms frame.
-- Cause: the game's **local tick rate is bursty**. Reconstructed local inter-hour interval
-  (`ft/gap`): p50 129.5 ms but **min 28.2 ms, p1 33 ms, p5 53 ms** — the sim bursts to ~22–35
-  effective h/s even though the 300 s average is 5.967 h/s (167.6 ms/hour). A frame skips
-  whenever it exceeds the *instantaneous* interval, so any frame landing in a burst skips.
-
-**Zero-skip frame-time threshold (this run): ≤ ~25 ms** (every observed local interval ≥ 28.2 ms;
-at a 25 ms cap 0/1420 windows are tighter). Practical caps leave residual skips: ≤100 ms → 28.2%
-of windows still tighter, ≤60 ms → 7.7%, ≤50 ms → 3.9%. **No practical uniform frame time yields
-true zero-skip on a bursty deep-war world** — reaching it needs either sub-25 ms frames
-(unreachable for this domain set) or an architectural change that decouples the cheap hour-boundary
-latch from the heavy decode. The 167.6 ms "average budget" framing is wrong; the binding number is
-the min-burst interval. Reducing avg/p95 frame time still cuts skip *count* materially (a ~50 ms
-frame floor would take 20.7% → low single digits), just not to zero.
-
-### 3. Where the 9.068 MB/hour lives (post-delta)
+### Measured byte distribution (9.068 MB/hour, post-delta)
 
 Header-summed DOMAIN_DATA bytes/hour: **d53 diplomacy_intel_operatives = 8.372 MB = 92.3%** of the
 entire stream. Everything else is noise: d48 construction 288 KB (3.2%), divisions 169 KB (1.9%),
 supply 52 KB (0.6%), capitulation 35 KB (0.4%). Delta cross-check (changed_rows/row_count,
 cumulative) reproduces the reported figures: d51 0.3%, d41 8.3%, d44 10.0%, **d48 79.2%**, and d53
-churns >100% (242 M opinion rows re-emit hourly). The delta wave works everywhere except d53 and
-d48 — **bytes are now a d53-only problem** (zstd-93 at 163× is the intended absorber; per-field
-opinion delta is the structural follow-up).
+churns >100% (242 M opinion rows re-emit hourly). On this corpus, d53 dominated bytes; the later
+d48 partial-projection fix addressed the measured d48 artifact. zstd-93 was the intended absorber
+for repeated d53 payloads, with the d53 study below testing finer delta options.
 
-### 4. Ranked levers (ms saved on THIS corpus ÷ risk)
+### Surviving lever guidance
 
-Change-driven projection uses the **empirically proven floor**: map_control reads the *same*
-20.6 M-row province set as map_detail but costs **1.2 ms vs 49.2 ms (40×)** because it is already
-change-driven — so `proj = max(1.2 ms, changed_frac × read)`.
+The modeled 1.2 ms floor and every saving projected from it were removed after the data-shape
+correction above. Durable guidance: profile the actual critical lane; prove address locality/data
+shape before proposing bulk or coalesced reads; treat d53 acquisition separately; and require live
+paired A/B plus fold identity for every claimed win. The lane-wall instrumentation and d53 study
+below provide the measured starting points.
 
-| # | lever | est. read-work cut | frame effect | evidence | risk | owner |
-|---|---|---:|---|---|---|---|
-| 1 | **Phase 4 change-driven reads** (whole program) | **532 ms of the 693.6 ms read-sum (77%)** | critical path 151.5 ms → **~50–70 ms floor** (set by d53 49 ms + divisions 24 ms + d48 18 ms, the only genuinely-changing heavies) | map_control 40× proof; 9 domains at 0.1–2.2% changed re-read the full world | HIGH (needs RE'd dirty signal + shadow-soak fold-identity gate, D3) | Phase 4 (unassigned) |
-| 1a | ├ oob_command change-driven | 58.6→1.2 = **57.4 ms** | on slow path (3rd heaviest) | 0.7% changed, 1.4 M roots for 9 k rows | HIGH | Phase 4 |
-| 1b | ├ map_detail change-driven | 49.2→1.2 = **48.0 ms** | slow path | 0.1% changed; map_control already does it | MED (twin exists) | Phase 4 |
-| 1c | ├ supply_44 change-driven | 60→6 = **53.9 ms** | slow path (heaviest) | 10% changed | HIGH | Phase 4 |
-| 1d | ├ ships change-driven | 57.9→5 = **52.9 ms** | slow path | 8.7% changed | HIGH | Phase 4 |
-| 1e | ├ division_equipment | 41.9→1.2 = **40.7 ms** | slow path | 2.2% changed, 23 M entry rows | HIGH | Phase 4 |
-| 1f | ├ politics_live | 37.9→1.2 = **36.7 ms** | mid | 0.6% changed | HIGH | Phase 4 |
-| 1g | └ occupation_52 / naval_missions_56 / scripted_51 | ~24+24+22 = **~70 ms** combined | mid | 1.3% / 0.8% / 0.3% changed | HIGH | Phase 4 |
-| 2 | **d48 churn fix** (79.2% → ~10%) | ~22→~3 = **~19 ms** + 260 KB/hr bytes | mid lane | 79.2% changed is implausible for construction hourly; neighbors 0.1–10%. Suspected tolerated-partial tracker re-emitting vs stale baseline | **LOW** (no RE; fold-identity gated; collector sparse-merge advance) | flagged INVESTIGATE (night note) |
-| 3 | **d53 per-field / opinion-change delta** | read: relations phase **43.2 ms/frame = 88% of d53**; bytes: **8.37 MB/hr = 92.3%** | sets the post-Phase-4 frame floor AND the container size | d53 stays 100%+ churn so Phase 4 dirty-signal does NOT help it; needs per-opinion change-stamp | MED–HIGH (opinion delta correctness; bytes already 163× absorbed by zstd so read-time is the real prize) | d53 lane |
-| 4 | **W1.1 prefetch sweep {8,16,32,64} + success-only outcome-split timing** | single-digit ms on d53 (attributes the ~37% dark residual) | small on slow path | W0 already banked −43% (190→109 ms warm), byte-identical; W0_AB_RESULTS §5 | LOW–MED (CPU-only, fixture-gated) | W-series perf lane |
-| 5 | **Per-lane critical-path counter** | 0 (instrumentation) | unblocks exact ms-attribution for #1–#4 | frame≠Σread (4.58× gap) is currently un-attributable | **NONE** | recorder/collector |
-| 6 | **divisions partial change-driven** | 41.3→24.2 = **17 ms** (the unchanged 41%) | slow path | 58.6% genuinely move late-war; only the static 41% is addressable | HIGH (per-division dirty) | Phase 4 |
-| 7 | **naval_combat walk (d49+d50 shared)** | 34.1→~6 = **~28 ms** (one walk, two domains) | mid; already fail-closes 367 torn frames | 4.4%/19.3% changed on a 34.2 M-µs CFEXGroup walk | HIGH (torn-read correctness) | naval lane |
-
-### 5. Irreducible fraction without Phase 4
-
-**77% of the read-work (532 of 693.6 ms) is spent reading provably-unchanged rows to prove they
-are unchanged.** Delta emission already removed those *bytes*, but the *reads* still happen —
-delta is byte-lossless, not read-free. Without Phase 4 the only remaining read levers are banked
-(read-primitive + bulk-collapse, 3.57×) or per-domain point fixes (d48 churn, d53 W0/W1.1 CPU),
-which leaves deep-war at ~100–150 ms. **Sub-20 ms deep-war is unreachable without a change-driven
-read path** — this quantifies the "Phase 4 formally necessary" conclusion already recorded above:
-the 151.5 ms frame is ~77% unchanged-proving read work, and only a dirty-signal that lets those
-reads be skipped (D3, soak-gated) removes it.
-
-### Top recommendation for the wave after this one
-
-**Stand up Phase 4 change-driven reads behind ONE shared RE'd dirty-signal, sequenced by cut/churn:
-land the low-churn heavies first (map_detail, oob_command, politics, division_equipment,
-occupation_52, naval_missions_56, scripted_51 — all <2.2% changed, each collapsing to the ~1.2 ms
-map_control floor), gated by a shadow-soak fold-identity harness (D3/G1).** Run two cheap lanes in
-parallel: (a) the **d48 churn fix** — low-risk, no RE, also resolves a data-quality suspicion; and
-(b) the **per-lane critical-path counter** — zero-risk instrumentation that makes every subsequent
-ms-saved claim exact instead of parallelism-banded. Treat **d53** (opinion-change delta) as the
-long pole with its own lane: after Phase 4 it is simultaneously the frame-time floor (49 ms, 88% in
-the relations read) and 92.3% of stream bytes. Finally, reset expectations on skips: Phase 4 buys a
-~50–70 ms floor that cuts skips from 20.7% to single digits but **cannot** reach true zero-skip on a
-bursty world (min local interval 28.2 ms) — true zero-skip is a separate architectural item
-(cheap hour-boundary latch decoupled from heavy decode), not a frame-time-reduction item.
-
-### lane/fold-perf — post-capture fold bottleneck (2026-07-10) — **LANDED, 5.4x measured**
+### Historical post-capture fold result (2026-07-10; 5.4x measured)
 
 Profile first (FOLD_PROFILE=1 env-gated phase timers, deep-war 512 MiB prefix, 189 hours,
 release, this rig): fold wall 173.1 s = **build_snapshot 65%** (75.2 s), apply_domain_data
@@ -674,8 +384,8 @@ release, this rig): fold wall 173.1 s = **build_snapshot 65%** (75.2 s), apply_d
 512 MiB expands to 5.13 GB of per-hour snapshot JSON (14x amplification, 27–55 MB/hour) —
 serialization/IO were never the wall; per-hour `Value`-tree projection is.
 
-Levers landed (all G1-gated byte-identical, all orchestration-layer — zero domain-fold
-body edits):
+The measured configuration used these levers (all G1-gated byte-identical, all
+orchestration-layer — zero domain-fold body edits):
 1. **Background emit pipeline**: FRAME_END hands the built snapshot `Value` to a bounded
    (depth 2) worker that serializes straight into the spill file through a SHA-256-tee
    writer (serialize+write+hash off the critical path, no intermediate Vec, no re-read for
@@ -699,32 +409,15 @@ pre-change baseline fold on every configuration; determinism gate: two identical
 parallel runs → identical chain (both 1w-pipelined and 8w). 12.9 GB deep-war projection:
 ~40 min → **~9–13 min**.
 
-Also landed (separate commit): `--skip-host-fold` production option — skips the host fold
+A separate historical commit added `--skip-host-fold` — it skips the host fold
 entirely (raw compact stream is the canonical artifact; replay_decoder D1 gives consumers
 per-hour access), packs an empty snapshots array, and marks the manifest + container index
 `host_fold_skipped` explicitly. Default behavior unchanged.
 
-## Phase 3 (original spec below)
+## Historical change-driven RE evidence (2026-07-10)
 
-1. **zstd with long window** for container entries (writer `snapshot/src/pack.rs:456` is
-   deflate-6; `zip.rs` supports STORE/DEFLATE only → new method or outer frame). Measured
-   proxy: lzma-6 42.9× vs deflate 8.07× on the real stream. Add the zstd crate and measure
-   for real (G4).
-2. **Snapshot term** (72 % of container): keyframe + delta snapshots and/or binary columnar
-   snapshot format (hour-to-hour snapshots ~99 % identical; measured concat-lzma 24.7× vs
-   15.6× per-file). This changes the consumer contract in
-   `replay_interface/native/replay_core/src/source.rs` — replay_interface is another
-   agent's lane, so this goes through `EXTRACTION_INTERFACE_REQUESTS.md` (see D1).
-3. Varint/bit-packing of rows (48–81 % zero bytes measured) only where it survives
-   post-zstd measurement — likely subsumed by the codec.
-
-Phase target (G4): **low-single-digit GB per full game** (from ~300 GB), production profile.
-
-## Phase 4 — Structural time floor: lossless change-driven extraction
-
-**STATIC-RE SCOUT COMPLETE 2026-07-10 (`lane/phase4-scout`) — see
-`extractor/documents/PHASE4_DIRTY_SIGNAL_SCOUT.md` (full evidence, addresses, decompile
-snippets). Headline results that re-shape this phase:**
+Full archived evidence, addresses, and decompile snippets:
+[`archive/PHASE4_DIRTY_SIGNAL_SCOUT.md`](archive/PHASE4_DIRTY_SIGNAL_SCOUT.md).
 
 - **No engine-native per-object dirty/version signal exists.** Confirmed by static RE of
   `hoi4.exe` (Ghidra, image base `0x140000000`): the relation opinion writer at `0xd09d50`
@@ -733,13 +426,9 @@ snippets). Headline results that re-shape this phase:**
   **checksum is a monolithic O(entire-world) serialize walk** (`0x1f2a20` size 8376 / per-
   category mgr `0xd96cb0` size 12878), computed on demand, a single hash — **as expensive as
   the full read and unable to say which row changed. Do NOT build Phase 4 on the checksum.**
-- **The completeness-safe lever is NOT "read only what changed" but "read every value cheaply
-  via the engine's dense mirror arrays + diff host-side"** — this is *complete by construction*
-  (no signal-miss / zero-loss safe) and is exactly what `map_control` already does live at 40×
-  vs `map_detail` (dense `province_array_ptr + id*stride + controller_ptr_offset` read; delta is
-  host-side in `world_fold.rs`, NOT an engine signal). Phase 4 RE work = **per-domain mirror
-  discovery** for the low-churn heavies (`map_detail` first — its twin proves the mirror is
-  real). Where no mirror exists (d53, >100% churn), no change signal helps → per-field lane.
+- Cheap complete reads must be proved per domain from its real data shape. The later
+  map-detail review above refuted using `map_control` as universal dense-mirror evidence;
+  scattered objects require locality measurement, not a projected 1.2 ms floor.
 - **Zero-skip latch (orthogonal to "what changed"):** main-thread hour-boundary hook site found
   `postHourlyUpdate`, reads the hour counter as `(gs[0x468]-43800000) % 24`, asserts
   `ThreadIsMainThread()`, fans out via TBB. A non-mutating atomic-store detour at
@@ -748,30 +437,7 @@ snippets). Headline results that re-shape this phase:**
 - **Fallback if a heavy has no mirror:** OS `GetWriteWatch`/`PAGE_GUARD` — complete but 4 KiB
   page-granular and hostile to the game's shared-page heap layout; low selectivity, last resort.
 
-Original scoping (superseded on the dirty-signal question by the scout above, retained for the
-bulk-rewrite fallback):
-
-Bulk-collapse's theoretical floor: converting 3.17 M scattered reads into ~10² region-sized
-reads (~60 MB/frame) costs single-digit ms of memcpy + parse; whether parse can be made
-cheap enough (SIMD/vectorized row extraction) decides if full-walk alone reaches <20 ms.
-Measure after Phase 2 — if deep-war is still >20 ms:
-
-- **Engine dirty/version signal RE** — **RESOLVED: none exists (scout 2026-07-10 above).** A
-  skip is legal only for provably-unchanged objects; since no engine signal proves that, the
-  sanctioned path is the dense-mirror cheap-read + host-diff (complete by construction). A skip
-  is legal only for provably-unchanged objects. Validation: long shadow soaks where change-
-  driven and full-walk paths run side-by-side and must fold identical for the entire session,
-  plus save-oracle checks, before it may ship (G1 at soak scale) — soak design detailed in the
-  scout doc §LIVE VALIDATION PLAN. If no mirror is found for a walk, the fallback is deeper
-  bulk-rewrite of that walk + frozen-lane waivers.
-
-Final target (G2/G3): deep-war warm avg **<20 ms** (internal 12–15 ms) speed-5 zero-skip on
-the dev rig; hourly gate holds at 6 cores.
-
-## Instrumentation — per-frame lane-wall counter (deep-war lever #5) — LANDED 2026-07-10
-
-(Status note: the "DEEP-WAR LEVER RANKING" section this lever was ranked in is not present
-in this pinned revision, so the landing is recorded here.)
+## Historical per-frame lane-wall instrumentation result (2026-07-10)
 
 WHY: deep-war analysis (2026-07-09 night) measured sum(per-domain avg `read_time_us`) =
 693.6 ms vs frame avg 151.5 ms at reader_concurrency=12 (~4.58x effective parallelism). The
@@ -780,7 +446,7 @@ which lane's wall bounded the frame, so every per-domain ms-saved claim carried 
 attribution band. This lever removes that blindness. Instrumentation only — zero
 capture-semantics change, all profiles.
 
-WHAT LANDED (branch `lane/lane-wall-counter`):
+The branch `lane/lane-wall-counter` implemented:
 - `ReaderGate` permits now carry a lane identity (0..reader_concurrency; free-list
   semaphore, scheduling semantics unchanged). Every top-level fan-out worker records a
   `(domain tag, lane, start_us, end_us)` span (offsets from `worker_read_started`; span
@@ -831,49 +497,43 @@ of record for Job 2's fork; mined via `compact_stream.lane_wall`):
 | latchsoak2 (600 s) | 3471 | 60.7 / 108.4 ms | 71.1% | 43.2 | 42.0 | 106.9 |
 | ShortSpeed5 (600 s) | 4370 | 46.5 / 73.5 ms | 75.7% | 35.2 | 41.9 | 91.4 |
 
-Readings:
-- **d53 owns ~3/4 of the bounding concurrent lane** (next domains: country-bundle ~5-7%,
-  d44 ~6%). Every concurrent-phase optimisation argument starts and ends at d53 — consistent
-  with the three-phase split and the prefetch program.
-- **NEW LEVER — the ~42 ms/frame SERIAL main-thread wall** (`main_wall_us_total/frames`,
+Historical readings:
+- **d53 owned ~3/4 of the bounding concurrent lane** (next domains: country-bundle ~5-7%,
+  d44 ~6%) in these two runs.
+- The runs exposed a **~42 ms/frame serial main-thread wall** (`main_wall_us_total/frames`,
   stable across both runs): the post-join serial reads (d55/d54/d45/d47/d18/d63..d69 +
   sharded domains) extend every frame serially and are nearly as large as the whole
-  concurrent phase. Nothing in the current program attacks it. Candidate: move post-join
+  concurrent phase. At the time, the candidate was to move post-join
   serial reads onto gated lanes (they were serialized for a reason — re-derive that reason
   before touching; if it is ordering, a dedicated ordered lane still overlaps them with d53's
-  tail). UNMEASURED beyond these two runs; needs its own lane + gate before any code change.
+  tail). This observation was unmeasured beyond the two runs and is not a current work-status claim.
 - GOTCHA (cost the session an experiment rerun): on a PAUSED game only the 1 cold baseline
   frame runs the fan-out ⇒ `lane_wall.frames == 1` and `lw_d*` looks "empty". The earlier
   "empty lw_d walls" report was exactly this artifact. Always gate-bracket (hours advanced
   > 0) before reading lane_wall.
 
-## Phase 5 — Acceptance & soak
+## Acceptance routing
 
-Full-game-length soak (or the longest practical session): speed-5 zero-skip, deep-war,
-production profile; report frame avg/p95/max, bytes/game-hour, projected full-game size,
-fold-equivalence hash chain, plus the 6-core companion run. Numbers, not adjectives.
+The combined speed-5 proof is defined and tracked only in the master contract. Its performance
+report should include frame average/p95/max, bytes/game-hour, projected full-game size,
+fold-equivalence hash chain, and a core-constrained companion result.
 
-## Decisions — RESOLVED by user 2026-07-09
+## Durable optimization decisions (2026-07-09)
 
 The stated end goal: hand the `.battleplan` to the replay layer and watch the entire game
 play out in absolute detail; the replay layer is being built as a reverse-engineered game
 engine that consumes the extracted data directly (read-only playback). Full architectural
 free reign granted, bounded only by the zero-data-loss requirement.
 
-- **D1 ADOPTED — stream is canonical.** The compact typed stream is the full-detail record
-  the RE'd engine will eventually consume directly. Production migrates to stream-only
-  containers once a shared decoder crate exists for replay_core (coordinate via
-  `EXTRACTION_INTERFACE_REQUESTS.md`); until then production containers keep the folded
-  snapshots so recordings stay renderer-consumable. The container-representation change is
-  therefore Phase 3 work, not Phase 1.
-- **D2 GRANTED — freeze waiver.** Frozen lanes (d51; d47/d52/d56 if needed) may be
+- The compact typed stream is the canonical full-detail record for direct replay consumption.
+- Frozen lanes (d51; d47/d52/d56 if needed) may be
   rewritten under a fold-identical gate (stream bytes may change; decoded state must not).
-- **D3 CONFIRMED.** Change-driven capture with an RE-proven dirty signal + soak-validated
-  fold-identity counts as lossless.
+- Any change-driven optimization must have an RE-proven completeness mechanism plus
+  soak-validated fold identity.
 
 Non-negotiable consequence of the end goal: the production stream must always remain a
 complete, self-sufficient full-detail record — no lever may ship that makes the stream
-lossy relative to today's decoded state.
+lossy relative to the recorded decoded-state contract.
 
 ## Known nulls — do not revisit
 
@@ -895,13 +555,13 @@ lossy relative to today's decoded state.
 - Read-primitive swaps (SEH + region cache already banked, 3.57×).
 - JSON stream format as a debug profile (divergent dead path).
 
-## lane/d53-perfield — 2026-07-09 (TASK 1 shipped; TASK 2/3 numbers-driven DEFER)
+## Historical d53 per-field study (2026-07-09; status superseded 2026-07-14)
 
-Assigned: (1) make d53 exact-offset relation reader the unconditional default and strip
+Study scope: (1) make d53 exact-offset relation reader the unconditional default and strip
 per-frame scan cost; (2) per-field delta for relation rows; (3) row-level delta for the d53
 full-emit residual subdomains. Measurement on the REAL deep-war stream re-scoped 2 and 3.
 
-**TASK 1 — SHIPPED.** `offsets` is already the default in the collector, host
+**Offset-reader evidence.** At the time, `offsets` was the default in the collector, host
 (`recorder_host` default `Offsets`), and lane (`DOMAIN53_RELATION_READ_MODE` AtomicU8
 default `Offsets`); `scan`/`shadow` stay compiled + runtime-selectable. Removed the last
 per-frame scan cost from the default Offsets path: `read_relation_rows_impl` now allocates
@@ -913,7 +573,7 @@ the Scan pass (shadow referee). Offsets pays zero scan setup. Byte-identity pres
 every frame) before trusting offsets on the new build — the scan path is retired from the
 hot loop but retained as the re-validation oracle.
 
-**DECISIVE MEASUREMENT (reframes TASK 2 + TASK 3).** Tool
+**Decisive measurement.** Tool
 `diplomacy_intel_operatives_live` bin `d53_field_delta_measure` decoded the first 400 d53
 DOMAIN_DATA frames of
 `runs/live_validation_20260709_221706/stage2_shortspeed5/collector_stream.bin` (400 distinct
@@ -935,46 +595,44 @@ place via the authoritative `decode_snapshot_payload`:
   drift hourly across most pairs") is **refuted by the data** — opinions are static in this
   settled deep-war state. If row-level delta FIRED, >99 % of the 5.9 MB/frame would vanish.
 
-**TASK 2 (per-field delta) — DEFER, documented with numbers.** Per-field delta only applies
-on delta frames, which never fire in deep war, so in production it saves **0 bytes** today.
+**Per-field delta conclusion.** Per-field delta applied only on delta frames in the measured
+implementation, so it saved **0 bytes** on this corpus.
 Even hypothetically (if delta fired): per-field would omit the unchanged non-key field bytes
 = **33.6 % of changed-row bytes** (opinion 25 %, state_event 37.5 %, agency 83 %, operative
 79 %, cluster/subject 50–67 %). But d53's dominant rows are key-dominated — OpinionRow is
 key(8)+opinion(4) and StateEventRow's two value fields co-change — and changed rows are ~0 %
 of the frame, so per-field's ABSOLUTE contribution to d53 volume is ~0. Implementing a
 versioned per-field wire format across encoder/decoder/fold/collector would add per-frame
-field-compare CPU (violating the portability law) for ~0 production benefit and expand the
-losslessness attack surface. **Not implemented; it is strictly downstream of enabling delta
-on partial frames (below), and marginal even then.**
+field-compare CPU (violating the weaker-PC CPU law) for ~0 production benefit and expand the
+losslessness attack surface. The study did not implement it; it was marginal even after
+partial-frame delta.
 
-**TASK 3 (row-level delta for full-emit subdomains) — DEFER, "not worth it" with numbers.**
+**Full-emit residual conclusion.**
 Per-frame wire volume of the named residuals: `factions` **~408 B/frame** (changes only
 2/254 frames), `operation_instances` **~77 B/frame** (3/254), `incoming_actions` ~0,
 `intel_network_graphs` / `operation_anchors` / `intel_map` **EMPTY** (0 frames present).
 Combined **<500 B/frame vs a 5.9 MB frame = 0.008 %**. Row-level delta would save ~99 % of
 that (~480 B/frame) but only on delta frames, which never fire. Absolute saving is
-negligible; not implemented.
+negligible; the study did not implement it.
 
-**REAL LEVER (correctly-scoped follow-up): enable delta on tolerated-PARTIAL frames.** This
-is the only change that saves real d53 bytes. It is a SEMANTICS redesign, not a plumbing
-toggle — the current partial-frame fold semantics must change with it:
+**Historical follow-up design (implementation status superseded 2026-07-14):** enable delta on
+tolerated-partial frames. This was a semantics redesign, not a plumbing toggle:
 `domain53_country_overlays_this_hour` is CLEARED at every hour reset (`world_fold.rs:1431`),
-so in a deep-war hour (one partial frame) today's snapshot = that frame's observed set:
+so in a deep-war hour (one partial frame) the snapshot then equaled that frame's observed set:
 torn rows are silently DROPPED from the hour, and in-game deletions are conveyed only
 implicitly by the full re-emit. A baseline-seeded delta variant must therefore define, and
 prove, per-key semantics: (a) collector diffs observed rows vs the last non-partial
 baseline (two-accumulator: the baseline does NOT advance on partial frames) and emits
 `DELTA|PARTIAL` with changed/new observed rows; (b) POSITIVE-absence tombstones only — the
 relation walk distinguishes slot==0 (positively absent → tombstone is safe) from a torn
-read (unknown → NO tombstone; fold retains baseline value, which is BETTER than today's
+read (unknown → NO tombstone; fold retains the baseline value, which is better than the old
 drop-for-the-hour but is a deliberate semantics change to document); (c) fold accepts
 `DELTA|PARTIAL` by seeding the hour from the delta baseline + upserting, WITHOUT advancing
 the baseline (replaces the `delta_partial_unsupported` rejection at `world_fold.rs:10530`);
 (d) automated gate: fold(delta stream) byte-identical to fold(full stream) under the SAME
 new partial semantics, plus randomized-sequence round-trip property tests. Projected from
 the measured stream: d53 **~5.9 MB/hour → tens of KB/hour (>99 % reduction)** at zero data
-loss, and it also deletes most of the ~39 ms/frame payload-encode CPU (the W1.1
+loss, and it also deletes most of the ~39 ms/frame payload-encode CPU (the
 `seg_payload` residual) since only changed rows are encoded. This is a losslessness-
-critical redesign of the fattest domain and must be its own gated lane (the losslessness
-proof is offline — fold-identity over recorded/synthetic streams, no live capture needed).
-Per-field delta (TASK 2) becomes a marginal add-on only after this lands.
+critical redesign whose losslessness proof must be fold identity over recorded/synthetic streams.
+Check current code and the master contract before treating any part of this old proposal as open.

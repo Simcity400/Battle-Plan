@@ -1,10 +1,24 @@
 # Extraction Atlas
 
-Authoritative census of the game runtime-memory/save-state data useful to the multiplayer replay viewer.
+**PURPOSE:** exhaustive, evidence-backed census of the game save paths, per-country schema,
+runtime-memory/UI-only state, derived values, and datum-level gaps relevant to replay extraction.
+It records *what data exists and what evidence was found*; it is not a completion ledger or an
+execution plan. Current completion/residual status lives only in
+[`MASTER_EXTRACTION_CONTRACT.md`](MASTER_EXTRACTION_CONTRACT.md), and code-authoritative domain
+IDs/status/schedulability live in [`../native/domain_registry.json`](../native/domain_registry.json)
+(mirrored by `compact_contract::ASSIGNED_COMPACT_DOMAINS`).
 
-Scope: read-only census from the D04 1944.2.11.18 melt, compact domain registry, contract/residual docs, lane/evidence files, and vanilla `hoi4.exe` RTTI/class strings. No live-memory write or code wiring is part of this document.
+Scope: read-only census generated from the D04 1944.2.11.18 melt, the then-current compact-domain
+registry and contract/residual documents, lane/evidence files, and vanilla `hoi4.exe` RTTI/class
+strings. No live-memory write or code wiring is part of this document. The generated tables'
+`Atlas routing`/feasibility labels are a **2026-07-05 discovery snapshot, superseded as status on
+2026-07-14**; retain them as triage provenance only and use the two authoritative sources above
+for current status.
 
-Generated support files under `extractor/native/runs/extraction_atlas_seed/`:
+Generation-time support-file manifest (historical): the
+`extractor/native/runs/extraction_atlas_seed/` bundle is not present in this worktree and no
+archived replacement was found. The filenames remain here as provenance for the generated census,
+not as resolvable current paths:
 - `extractor/native/runs/extraction_atlas_seed/build_extraction_atlas.py`
 - `extractor/native/runs/extraction_atlas_seed/build_summary.json`
 - `extractor/native/runs/extraction_atlas_seed/top_level_save_census.csv`
@@ -23,30 +37,22 @@ Generated support files under `extractor/native/runs/extraction_atlas_seed/`:
 - `extractor/native/runs/extraction_atlas_seed/derived_recompute_catalog.csv`
 - `extractor/native/runs/extraction_atlas_seed/memory_only_ui_ephemeral_census.csv`
 
-## 0. Orchestrator audit note (2026-07-05)
+## 0. Generation audit and routing caveat (historical, 2026-07-05)
 
-This atlas was independently audited by the orchestrator against the D04 melt and
-the compact domain registry. Findings:
+The D04 enumeration was independently reproduced: 81 unique top-level keys / 134 occurrences and
+82,154 canonical save paths. The old registry crosswalk was also reproduced at generation time,
+but that crosswalk and all completion assertions are superseded by the 2026-07-14 authorities
+linked above.
 
-**Verified accurate.** The enumeration engine is trustworthy: the top-level count
-(81 unique keys / 134 occurrences) and the 82,154 canonical save paths were
-reproduced independently; the §2 domain crosswalk matches `domain_registry.json`
-row-for-row (all 53 slots, correct statuses); the curated §5 memory-only/UI census,
-§6 derived/recompute, §7 residual/fixture-blocked catalog, and §8 gap backlog are
-sound and are the authoritative parts of this document.
-
-**Known caveat — §3 top-level scalar auto-status is heuristic.** The per-row
-Status/Feasibility for loose top-level *scalars* in §3 is template-generated and
-over-applies `GAP-UNINVESTIGATED` / `NEEDS-DISASM`. Several of those scalars are
-NOT genuine gaps: they are either already infrastructure or trivial one-read
-values off `CGameState`. Where §3 conflicts with the curated sections (§2, §5–§8),
-**the curated sections win.** Specific corrections:
+The per-row `Atlas routing`/feasibility values for loose top-level scalars in §3 are heuristic and
+over-apply `GAP-UNINVESTIGATED` / `NEEDS-DISASM`. Treat §3 as exhaustive enumeration, not current
+gap classification. Durable corrections/evidence retained from the audit:
 - `date` is NOT a gap — it is `u32[CGameState+0x468]`, already extracted as the
   clock/frame infrastructure and used as the same-tick pause gate on every
   validation. (Its `NEEDS-DISASM` label is wrong.)
 - `speed` / `pause` — the *pause* bool is cracked (clock singleton `+0x6C1`, see §5)
   and folded via domain 57; only the *speed enum root* tiebreak is genuinely
-  FIXTURE-BLOCKED (§5/§7/§8 have this right; §3's `speed` row is optimistic).
+  FIXTURE-BLOCKED (§5/§7 and the master have this right; §3's `speed` row is optimistic).
 - The remaining top-level meta scalars (`version`, `save_version`,
   `minor_save_version`, `difficulty`, `tutorial`, `dlcs`, `game_unique_seed/id`,
   `multiplayer_random_seed/count`, `debug_current_ref_id`, …) are one-read scalars
@@ -54,8 +60,7 @@ values off `CGameState`. Where §3 conflicts with the curated sections (§2, §5
   most are low replay value (determinism/audit metadata) and simply un-wired, not
   hard gaps.
 
-Net: treat §3 as an exhaustive *enumeration* of every save path (its real value),
-and §2/§5–§8 as the authoritative *status* map.
+Current classification of any named residual must be checked in the master contract.
 
 ## 1. Coverage summary
 
@@ -64,89 +69,21 @@ and §2/§5–§8 as the authoritative *status* map.
 | save top-level structures | 96 seed count; 81 unique key names; 134 top-level assignments | Orchestrator seed reports 96 line-span structures; parser emits unique names in `top_level_save_census.csv` and every assignment in `top_level_save_occurrences.csv` |
 | GER per-country depth-1 entries | 249 direct entries; 77 unique schema keys | Matches orchestrator seed 249; grouped schema in `ger_country_depth1_census.csv`, occurrence list in `ger_country_depth1_entries.csv` |
 | canonical save schema paths | 82154 | `save_path_catalog.csv`; dynamic country/state/province/script tokens canonicalized |
-| compact domains | 53 | 29 extracted/infrastructure, 22 validated/partial/active, 2 reserved |
 | memory/UI/ephemeral rows | 32 | RTTI/class-backed and replay-UI expected runtime-only state |
 | derived/recompute rows | 11 | DERIVED_RECOMPUTE_SPECS plus documented non-pollable UI derivations |
-| deduped residual/fixture/open rows | 32 | consolidated from crack-list, wall/final sweep, wave 3/4/5, registry, and lane docs |
 | RTTI/runtime class candidates surfaced | 450 | `rtti_runtime_class_candidates.csv` |
 | doc signal lines indexed | 1701 | `doc_signal_lines.csv/json` |
 
-| Status bucket | Count | Meaning |
-| --- | --- | --- |
-| EXTRACTED-COMMITTED | 28 | existing/infrastructure compact domains, including already scheduled save-backed rows |
-| VALIDATED-SLICE | 55 | validated/partial/active domains with named open gaps |
-| RESERVED | 4 | domains 58 and 59 |
-| FIXTURE-BLOCKED | 17 | deduped residual catalog rows that explicitly need fixtures |
-| GAP-UNINVESTIGATED | 83 | unmapped save rows plus memory/UI rows without accepted roots |
-| DERIVED-RECOMPUTE | 11 | replay recomputes instead of extracting a scalar |
+## 2. Domain-status authority
 
-Net-new gap candidates not already in the residual docs: **12**. These are almost entirely UI/menu/selection/camera roots surfaced from the atlas requirement rather than prior gameplay extraction residuals.
-
-## 2. Status/domain crosswalk
-
-| ID | Domain | Registry status | Atlas status | Schedulable | Data record |
-| --- | --- | --- | --- | --- | --- |
-| 1 | clock | infrastructure | EXTRACTED-COMMITTED | False | False |
-| 10 | fuel_live | existing | EXTRACTED-COMMITTED | True | True |
-| 11 | production_live | existing | EXTRACTED-COMMITTED | True | True |
-| 12 | focus_live | existing | EXTRACTED-COMMITTED | True | True |
-| 13 | tech_live | existing | EXTRACTED-COMMITTED | True | True |
-| 14 | politics_live | existing | EXTRACTED-COMMITTED | True | True |
-| 15 | politics_residuals | existing | EXTRACTED-COMMITTED | True | True |
-| 16 | decisions_live | existing | EXTRACTED-COMMITTED | True | True |
-| 17 | diplomacy_live | existing | EXTRACTED-COMMITTED | True | True |
-| 18 | country_identity | active_integration | VALIDATED-SLICE | True | True |
-| 20 | divisions_live | existing | EXTRACTED-COMMITTED | True | True |
-| 21 | land_combats_live | existing | EXTRACTED-COMMITTED | True | True |
-| 22 | map_control_live | existing | EXTRACTED-COMMITTED | True | True |
-| 23 | map_detail_live | existing | EXTRACTED-COMMITTED | True | True |
-| 24 | weather_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 26 | division_equipment_live | existing | EXTRACTED-COMMITTED | True | True |
-| 27 | army_orders_live | existing | EXTRACTED-COMMITTED | True | True |
-| 28 | oob_command_live | existing | EXTRACTED-COMMITTED | True | True |
-| 29 | ships_live | existing | EXTRACTED-COMMITTED | True | True |
-| 30 | air_wings_live | existing | EXTRACTED-COMMITTED | True | True |
-| 31 | air_region_activity_live | existing | EXTRACTED-COMMITTED | True | True |
-| 32 | air_wing_loadouts_live | existing | EXTRACTED-COMMITTED | True | True |
-| 33 | air_variant_defs | existing | EXTRACTED-COMMITTED | True | True |
-| 34 | air_base_status_live | existing | EXTRACTED-COMMITTED | True | True |
-| 35 | air_variant_stats | existing | EXTRACTED-COMMITTED | True | True |
-| 36 | air_variant_reserves | existing | EXTRACTED-COMMITTED | True | True |
-| 37 | stockpile_variant_defs | existing | EXTRACTED-COMMITTED | True | True |
-| 38 | air_superiority_inputs | existing | EXTRACTED-COMMITTED | True | True |
-| 39 | air_variant_upgrades | existing | EXTRACTED-COMMITTED | True | True |
-| 40 | stockpile_variant_upgrades | existing | EXTRACTED-COMMITTED | True | True |
-| 41 | projects_live | validated_partial_slice | VALIDATED-SLICE | True | True |
-| 42 | air_combat_losses_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 43 | market_trade_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 44 | supply_logistics_attrition_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 45 | focus_research_decisions_depth_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 46 | air_variant_archetypes_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 47 | characters_leaders_cabinet_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 48 | construction_buildings_state_damage_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 49 | naval_combat_lifecycle_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 50 | naval_combat_members_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 51 | scripted_state_flags_variables_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 52 | occupation_resistance_compliance_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 53 | diplomacy_intel_operatives_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 54 | army_battleplans_depth_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 55 | land_combat_detail_events_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 56 | naval_missions_status_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 57 | session_multiplayer_metadata_live | validated_partial_slice | VALIDATED-SLICE | True | True |
-| 58 | country_economy_counters_live | reserved | RESERVED | False | True |
-| 59 | templates_equipment_catalog_live | reserved | RESERVED | False | False |
-| 60 | capitulation_war_state_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 61 | air_loss_stats_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 62 | hub_motorization_live | validated_slice_open_gaps | VALIDATED-SLICE | True | True |
-| 1000 | frame | infrastructure | EXTRACTED-COMMITTED | False | False |
-
-Expected partial tolerance domains from `compact_contract`: 26, 27, 28, 41, 45, 48, 49, 50, 54
-Static artifacts named by `compact_contract`: templates_equipment_catalog, localisation_join, decisions_static_definitions, idea_tech_loc_xref_static, ship_definitions_static, gfx_icon_asset_manifest_static
+Removed as a duplicated, stale registry snapshot. Use
+[`../native/domain_registry.json`](../native/domain_registry.json) for every per-domain ID/status/
+schedulability claim and `compact_contract` for executable tolerances and static-artifact contracts.
 
 ## 3. Save-persisted state census
 
 Every unique top-level save key in the D04 melt is listed below. `Subkeys` is the direct-child schema, with counts for repeated child keys. The occurrence-level list is in `top_level_save_occurrences.csv`; the full canonical nested schema is in `save_path_catalog.csv`. The orchestrator seed reports 96 top-level line-span structures; this parser finds 81 unique key names and 134 top-level assignments, so both conventions are preserved.
-| Name / path | Category | Status | Replay usefulness | Feasibility if gap | Evidence / notable subkeys |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Replay usefulness | Feasibility if gap | Evidence / notable subkeys |
 | --- | --- | --- | --- | --- | --- |
 | player | meta/session/multiplayer | GAP-UNINVESTIGATED | Anchors the replay timeline, session identity, player control, or deterministic ordering. | NEEDS-DISASM | melt lines 2-2; subkeys: scalar samples: "D04" |
 | ideology | meta/session/multiplayer | GAP-UNINVESTIGATED | Anchors the replay timeline, session identity, player control, or deterministic ordering. | NEEDS-DISASM | melt lines 3-3; subkeys: scalar samples: fascism |
@@ -234,7 +171,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `states/<STATE_ID>`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | states/<STATE_ID> | map/terrain/weather | GAP-UNINVESTIGATED | 1081 occurrences; 18 direct child keys | owner(1081), manpower_pool(1081), resistance(1081), flags(1081), demilitarized(1081), is_border_conflict(1081), state_category(1081), variables(1081), buildings(1050), extra_shared_slots(516), controller(209), dynamic_modifier(187), last_strategic_bombing(160), active_targeted_modifier(129), resources(104), contested_owners(79), strategic_region_data(8), name | melt lines 52189-104967; full rows in save_path_catalog.csv |
 | states/<STATE_ID>/active_targeted_modifier | map/terrain/weather | VALIDATED-SLICE (domain 45; open gaps in registry) | 129 occurrences; 1 direct child keys | <TAG>(477) | melt lines 52308-104701; full rows in save_path_catalog.csv |
@@ -319,7 +256,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `provinces/<PROVINCE_ID>`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | provinces/<PROVINCE_ID> | map/terrain/weather | GAP-UNINVESTIGATED | 5385 occurrences; 5 direct child keys | buildings(3932), controller(1888), victory_points(1501), strategic_province_location(14), name(3) | melt lines 2869-52186; full rows in save_path_catalog.csv |
 | provinces/<PROVINCE_ID>/buildings | construction | GAP-UNINVESTIGATED | 3932 occurrences; 35 direct child keys | rail_way(3490), supply_node(745), naval_base(553), coastal_bunker(312), bunker(254), dam(22), naval_headquarters(10), land_facility(10), naval_supply_hub(9), air_facility(9), naval_facility(7), landmark_great_wall_section(5), nuclear_facility(2), landmark_hakko_ichiu, landmark_tokyo_imperial_palace, landmark_bojnice_castle, landmark_statue_of_liberty, dam_mountain, cataract_dam_mountain, landmark_taj_mahal, landmark_big_ben, landmark_kremlin, canal_kiel, landmark_berlin_reichstag, canal_panama, landmark_eiffel_tower, landmark_hagia_sophia, landmark_forbidden_city, landmark_colosseum, landmark_sadabad_complex, landmark_cristo_redentor, landmark_prague_castle, landmark_hofburg_palace, landmark_nanjing_presidential_palace, landmark_nanjing_presidential_palace_gen | melt lines 2870-52185; full rows in save_path_catalog.csv |
@@ -404,7 +341,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `character_manager`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | character_manager | characters/leaders | VALIDATED-SLICE (domain 47; open gaps) | 1 occurrences; 3 direct child keys | historical, dynamic, next_character_id | melt lines 392799-869706; full rows in save_path_catalog.csv |
 | character_manager/dynamic | characters/leaders | VALIDATED-SLICE (domain 47; open gaps in registry) | 1 occurrences; 1 direct child keys | character(3269) | melt lines 763692-869704; full rows in save_path_catalog.csv |
@@ -489,7 +426,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `strategic_air`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | strategic_air | military-air | VALIDATED-SLICE (domains 30-38,42,46,61; open gaps) | 1 occurrences; 443 direct child keys | air_base(397), air_theatre_index, air_group_index, gun_emplacement, GER, ENG, SOV, SWE, FRA, LUX, BEL, HOL, CZE, POL, AUS, LIT, EST, LAT, SPR, ITA, ROM, YUG, SER, SWI, TUR, GRE, ALB, NOR, DEN, BUL, POR, FIN, IRE, HUN, AFG, ARG, AST, BHU, BOL, BRA; +403 more | melt lines 5150412-5482078; full rows in save_path_catalog.csv |
 | strategic_air/ABK | military-air | EXTRACTED-COMMITTED (domain 30) | 1 occurrences; 4 direct child keys | naval_strike_remaining, history, combat_history, quick_wing_deploy_selection | melt lines 5460858-5460865; full rows in save_path_catalog.csv |
@@ -574,7 +511,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `combat`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | combat | combat-detail | VALIDATED-SLICE (domains 21,49,50,55; open gaps) | 1 occurrences; 3 direct child keys | land_combat(50), naval_combat(4), history | melt lines 5482079-5509471; full rows in save_path_catalog.csv |
 | combat/history | combat-detail | GAP-UNINVESTIGATED | 1 occurrences; 1 direct child keys | history | melt lines 5508515-5509470; full rows in save_path_catalog.csv |
@@ -659,7 +596,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `equipments/<EQUIPMENT_TOKEN>`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | equipments/<EQUIPMENT_TOKEN> | meta/session/multiplayer | GAP-UNINVESTIGATED | 7315 occurrences; 27 direct child keys | id(7315), is_frame(7315), creator(7315), origin(7315), max_version(5845), manpower(3723), modules(3665), can_upgrade_type(2920), upgrades(2869), obsolete(2616), design_team(2005), role_icon_index(1841), can_upgrade_modules(1732), name(1701), design_team_bonus(1632), override_sprite(1594), parent_id(1471), version(1470), number_of_design_team_traits(1371), position(940), can_upgrade_variant(769), ideas(746), division_names_group(721), named_equipment_bonuses(125), override_model(96), show_position(28), highlight | melt lines 104970-283181; full rows in save_path_catalog.csv |
 | equipments/<EQUIPMENT_TOKEN>/can_upgrade_modules | meta/session/multiplayer | GAP-UNINVESTIGATED | 1732 occurrences; 0 direct child keys | scalar samples: yes, yes, yes | melt lines 118630-282752; full rows in save_path_catalog.csv |
@@ -744,7 +681,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `division_templates`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | division_templates | military-land | RESERVED (domain 59) | 1 occurrences; 1 direct child keys | division_template(1454) | melt lines 283183-359338; full rows in save_path_catalog.csv |
 | division_templates/division_template | military-land | RESERVED (domain 59) | 1454 occurrences; 24 direct child keys | id(1454), country(1454), original_tag(1454), foreign_template_tag(1454), priority(1454), allow_new_equipment(1454), allow_foreign_equipment(1454), regiments(1454), template_counter(1454), ingame_set_template_counter(1454), origin_type(1454), support(1093), name(1019), division_names_group(958), role(761), is_army_hq(442), regimental_support(436), localization_key(435), obsolete(366), obsolete_change_date(360), is_locked(36), override_model(31), force_allow_recruiting(8), division_cap(6) | melt lines 283184-359337; full rows in save_path_catalog.csv |
@@ -829,7 +766,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `supply_system_2`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | supply_system_2 | supply/logistics | VALIDATED-SLICE (domains 44,62; open gaps) | 1 occurrences; 1 direct child keys | countries | melt lines 5598752-5612404; full rows in save_path_catalog.csv |
 | supply_system_2/countries | supply/logistics | VALIDATED-SLICE (domain 44; open gaps in registry) | 1 occurrences; 1 direct child keys | <TAG>(101) | melt lines 5598753-5612403; full rows in save_path_catalog.csv |
@@ -914,7 +851,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `rail_way`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | rail_way | supply/logistics | VALIDATED-SLICE (domains 23,44; open gaps) | 1 occurrences; 2 direct child keys | rail_way, cooldown | melt lines 869707-887703; full rows in save_path_catalog.csv |
 | rail_way/cooldown | supply/logistics | VALIDATED-SLICE (domain 44; open gaps in registry) | 1 occurrences; 0 direct child keys | scalar/empty | melt lines 887700-887702; full rows in save_path_catalog.csv |
@@ -999,7 +936,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `countries/<TAG>/units`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | countries/<TAG>/units | meta/session/multiplayer | GAP-UNINVESTIGATED | 91 occurrences; 2 direct child keys | division(3168), fleet(154) | melt lines 975437-4800793; full rows in save_path_catalog.csv |
 | countries/<TAG>/units/division | military-land | EXTRACTED-COMMITTED (domain 20) | 3168 occurrences; 50 direct child keys | id(6336), last_combat_date(3168), location(3168), logical_country(3168), motorization_level(3168), officer(3168), held_officer(3168), division_template_id(3168), division_name(3168), max_supply(3168), organisation(3168), strength(3168), equipment(3168), script_id(3168), army_manpower(3168), experience(3168), army_current_supply_ratio(3168), supply_gain(3168), seed(3149), acclimatization(3135), dig_in_cap(3102), move_priority(2731), requests(2658), previous(2333), killed(2310), killer_definition(2310), dig_in(2022), movement_progress(1758), bonus(1543), army_history(1492), execute_order(1193), path(936), transfer_offset_2(465), out_of_supply_days(460), transfer_offset_1(446), fuel(441), unit_controller_pause(373), strategic_redeployment(220), str_damage(218), org_damage(218); +10 more | melt lines 975438-4798262; full rows in save_path_catalog.csv |
@@ -1084,7 +1021,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `countries/<TAG>/production`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | countries/<TAG>/production | industry/production | EXTRACTED-COMMITTED (domain 11) | 439 occurrences; 19 direct child keys | military_lines(595), available_equipments(439), dirty(439), production_licenses(439), cic_bank(439), equipments(439), industrial_organisations(439), policies(439), max_factories_for_repair(439), energy_production_cost(439), last_named_equipment_bonus(439), naval_lines(243), general_lines(100), foreign_lease_equipments(88), enable_equipment_modules(11), scheduled_equipment_variants(10), discount(8), named_equipment_bonuses(7), ship_refit_lines(2) | melt lines 963183-5148305; full rows in save_path_catalog.csv |
 | countries/<TAG>/production/available_equipments | industry/production | EXTRACTED-COMMITTED (domain 11) | 439 occurrences; 1 direct child keys | equipment(7294) | melt lines 963336-5148067; full rows in save_path_catalog.csv |
@@ -1169,7 +1106,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `countries/<TAG>/resources`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | countries/<TAG>/resources | resources/trade | RESERVED (domain 58) | 439 occurrences; 14 direct child keys | origin(526), delivery_routes(439), dirty(439), produced(439), transfer_overlord_subject(439), imported(439), to_use(439), to_export(439), base_export(439), exported(439), export(411), lend_lease(26), modify_building_resources(10), extra_resource_origin(7) | melt lines 957866-5148052; full rows in save_path_catalog.csv |
 | countries/<TAG>/resources/base_export | resources/trade | VALIDATED-SLICE (domain 43; open gaps in registry) | 439 occurrences; 7 direct child keys | coal(64), steel(54), oil(42), chromium(42), aluminium(34), tungsten(32), rubber(25) | melt lines 961356-5148050; full rows in save_path_catalog.csv |
@@ -1254,7 +1191,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `countries/<TAG>/diplomacy`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | countries/<TAG>/diplomacy | diplomacy | GAP-UNINVESTIGATED | 439 occurrences; 16 direct child keys | active_relations(439), exile_army_leaders(439), proposed_diplo_action(262), faction_join_date(72), cached_allies_and_gurantees(71), autonomy_state(38), capitulated(15), capitulated_date(15), wargoals(13), taken_lead_to_wars(12), last_surrender_date(12), hosting_our_government_in_exile(8), legitimacy(8), captured(6), available_wargoals(3), governments_in_exile_we_host(2) | melt lines 1076294-5148831; full rows in save_path_catalog.csv |
 | countries/<TAG>/diplomacy/active_relations | diplomacy | GAP-UNINVESTIGATED | 439 occurrences; 439 direct child keys | MEX(103), GER(102), ENG(102), SOV(102), SWE(102), FRA(102), LUX(102), BEL(102), HOL(102), POL(102), SPR(102), ITA(102), ROM(102), YUG(102), SER(102), SWI(102), TUR(102), GRE(102), NOR(102), DEN(102), BUL(102), POR(102), FIN(102), IRE(102), HUN(102), AFG(102), ARG(102), AST(102), BHU(102), BOL(102), BRA(102), CAN(102), CHI(102), CHL(102), COL(102), COS(102), ECU(102), ELS(102), ETH(102), GUA(102); +399 more | melt lines 1076295-5148829; full rows in save_path_catalog.csv |
@@ -1339,7 +1276,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `countries/<TAG>/intel`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | countries/<TAG>/intel | intel/operatives | VALIDATED-SLICE (domain 53; open gaps in registry) | 439 occurrences; 10 direct child keys | static_intel_pools(439), dynamic_intel_pools(439), cheat(439), discriminant(439), intel(116), intel_from_static_pools(116), intel_from_dynamic_pools(116), intel_from_dynamic_pools_prev_day(116), intel_from_encryption_decryption(116), intel_from_allies(75) | melt lines 1086423-5148977; full rows in save_path_catalog.csv |
 | countries/<TAG>/intel/cheat | intel/operatives | VALIDATED-SLICE (domain 53; open gaps in registry) | 439 occurrences; 2 direct child keys | id(439), discriminant(439) | melt lines 1090611-5148975; full rows in save_path_catalog.csv |
@@ -1392,7 +1329,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `countries/<TAG>/occupation_status`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | countries/<TAG>/occupation_status | meta/session/multiplayer | VALIDATED-SLICE (domain 52; open gaps in registry) | 439 occurrences; 6 direct child keys | default_law(439), priority(116), division_template_id(106), occupation(32), state_compliance_cache(15), resistance_attack_log(9) | melt lines 1083736-5148922; full rows in save_path_catalog.csv |
 | countries/<TAG>/occupation_status/default_law | meta/session/multiplayer | VALIDATED-SLICE (domain 52; open gaps in registry) | 439 occurrences; 0 direct child keys | scalar samples: "military_governor_occupation", "military_governor_occupation", "military_governor_occupation" | melt lines 1086420-5148921; full rows in save_path_catalog.csv |
@@ -1477,7 +1414,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 
 #### `countries/<TAG>/program_status`
 
-| Name / path | Category | Status | Shape/count | Subkeys / samples | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Shape/count | Subkeys / samples | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | countries/<TAG>/program_status | meta/session/multiplayer | VALIDATED-SLICE (domain 41; open gaps in registry) | 439 occurrences; 3 direct child keys | project_pool(439), breakthrough(439), program(26) | melt lines 953947-5145376; full rows in save_path_catalog.csv |
 | countries/<TAG>/program_status/breakthrough | meta/session/multiplayer | VALIDATED-SLICE (domain 41; open gaps in registry) | 439 occurrences; 4 direct child keys | specialization_nuclear(439), specialization_naval(439), specialization_air(439), specialization_land(439) | melt lines 956238-5145375; full rows in save_path_catalog.csv |
@@ -1563,7 +1500,7 @@ Every unique top-level save key in the D04 melt is listed below. `Subkeys` is th
 ## 4. Per-country deep census
 
 The table is generated from `countries/GER` as the representative country block. Paths are canonicalized as `countries/<TAG>/...`; dynamic repeated tokens (for example `ace-*`) are folded to their schema name where appropriate. It matches the seed's 249 direct entries as 77 unique schema keys; the occurrence-level 249-row list is in `ger_country_depth1_entries.csv`.
-| Name / path | Kind | Category | Status | Replay usefulness | Feasibility if gap | Evidence |
+| Name / path | Kind | Category | Atlas routing (2026-07-05 snapshot) | Replay usefulness | Feasibility if gap | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | countries/<TAG>/accidents_score | scalar | meta/session/multiplayer | VALIDATED-SLICE (domain 61; open gaps in registry) | Anchors the replay timeline, session identity, player control, or deterministic ordering. | CRACKABLE-NOW for validated slice; listed gaps need fixtures/disasm | GER occurrences 1; lines 1082317-5148894; subkeys/samples: scalar samples: 0.322, 0.26741, 0.3242 |
 | countries/<TAG>/ace | block | military-air | VALIDATED-SLICE (domain 46; open gaps in registry) | Drives air wings, bases, air regions, variants, aces, losses, and air-war overlays. | CRACKABLE-NOW for validated slice; listed gaps need fixtures/disasm | GER occurrences 134; lines 1079179-4806724; subkeys/samples: id(258), modifier(258), name(258), surname(258), callsign(258), portrait(258), alive(28), handled(28), kill_type(28), killer_country(28), killer_name(26) |
@@ -1648,7 +1585,7 @@ Dynamic script key dumps: exact country/global/state `flags` and `variables` tok
 ## 5. Memory-only / UI / menu / ephemeral census
 
 These rows are not guaranteed to persist in the save. They are useful for a faithful replay viewer when the viewer wants to reproduce live-game presentation, camera, or session interaction state. RTTI/class candidates are in `rtti_runtime_class_candidates.csv`; accepted memory chains are named where already documented.
-| Name / path | Category | Status | Replay usefulness | Feasibility if gap | Evidence |
+| Name / path | Category | Atlas routing (2026-07-05 snapshot) | Replay usefulness | Feasibility if gap | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | CGameState/current session root | meta/session/multiplayer | VALIDATED-SLICE (domain 57) | timeline/player control/pause parity | CGameState=u64[module+0x3316E90]; player map/pause chains known; speed open | CGameState class; DOMAIN_REGISTRY row 57 |
 | game speed | meta/session/multiplayer | FIXTURE-BLOCKED | faithful playback pacing | root semantic tiebreaker needs speed tap or disasm | MASTER C2 / R4 |
@@ -1811,7 +1748,7 @@ Top replay-relevant RTTI/string candidates from the exe and existing RTTI/vtable
 
 ## 6. Derived / recompute
 
-| Name / path | Status | Replay usefulness / formula | Feasibility | Evidence |
+| Name / path | Atlas disposition | Replay usefulness / formula | Feasibility | Evidence |
 | --- | --- | --- | --- | --- |
 | province supply remaining | DERIVED-RECOMPUTE | A1 draw-time aggregate over CSupplySystem province source lists | DERIVED | DERIVED_RECOMPUTE_SPECS.md A1 |
 | division attrition reason | DERIVED-RECOMPUTE | A3 argmax over supply/fuel/disrupted scalars plus terrain/weather/training/state/tech modifiers | DERIVED | DERIVED_RECOMPUTE_SPECS.md A3 |
@@ -1823,64 +1760,55 @@ Top replay-relevant RTTI/string candidates from the exe and existing RTTI/vtable
 | land-combat planning bonus | DERIVED-RECOMPUTE | A7 per-division stored planning scalar joined to participants | DERIVED | DERIVED_RECOMPUTE_SPECS.md A7 |
 | land-combat direction/source edges | DERIVED-RECOMPUTE | A7 participant source province and static adjacency | DERIVED | DERIVED_RECOMPUTE_SPECS.md A7 |
 | alerts/notifications replay equivalents | DERIVED-RECOMPUTE | derive from underlying domains rather than poll transient UI dispatch | DERIVED | MASTER_EXTRACTION_CONTRACT session alerts row |
-| factory totals/resource totals where no scalar exists | DERIVED-RECOMPUTE | derive from state building/resource domains plus trade/market lanes | DERIVED | MASTER row 58; WAVE4 resources |
+| factory totals/resource totals where no scalar exists | DERIVED-RECOMPUTE | derive from state building/resource domains plus trade/market lanes | DERIVED | master C5; archived wave-4 evidence indexed by `doc_signal_lines.csv/json` |
 
-## 7. Residual / fixture-blocked catalog
+## 7. Datum-level gap catalog
 
-Deduped across the crack list, wall crack, final sweep, wave 3/4/5 docs, domain registry, lane docs, and evidence runs. `doc_signal_lines.csv/json` preserves the raw line-level evidence so disagreements can be chased.
-| Name / gap | Status | Fixture/disasm needed | Evidence |
+This preserves the atlas's per-datum gap inventory without becoming a second backlog. The
+`Master mapping` column is only a locator into the current
+[`MASTER_EXTRACTION_CONTRACT.md`](MASTER_EXTRACTION_CONTRACT.md); that contract alone decides
+whether an item is open, blocked, derived, cracked-but-not-wired, or complete.
+`doc_signal_lines.csv/json` preserves the generation-time line evidence.
+
+| Name / gap | Master locator (not status) | Fixture/disasm needed | Evidence |
 | --- | --- | --- | --- |
-| hub motorization level/settings | FIXTURE-BLOCKED | same-frame hub toggle fixture with at least two known levels, ideally 1 and 3 | WALL_CRACK_RESULTS_2026-07-04.md: true floor; domain 62 registry |
-| focus-paused state | FIXTURE-BLOCKED | paused-focus fixture or serializer disasm; D04 has paused=no for all 113 focuses | WALL_CRACK_RESULTS_2026-07-04.md; MASTER_EXTRACTION_CONTRACT D45 |
-| convoy/port/disrupted supply pressure | FIXTURE-BLOCKED | naval-interdiction/disrupted supply fixture with nonzero pressure records | WALL_CRACK_RESULTS_2026-07-04.md; WAVE4 |
-| MP chat/messages, hotjoin, tag-switch | FIXTURE-BLOCKED | same-build 2-player MP session with controlled join/tag switch and unique chat text | WALL_CRACK_RESULTS_2026-07-04.md; domain 57 SESSION_EVENT_DISPOSITION |
-| game-speed root semantics | FIXTURE-BLOCKED | 10s speed tap fixture or deeper disasm to resolve <=3 candidates | MASTER_EXTRACTION_CONTRACT C2; REPLAY_REQUESTS R4 |
-| air sortie lifecycle / kill attribution / last_killer | FIXTURE-BLOCKED | live advancing air-combat fixture with known losses/kills | WAVE3/WAVE4; domain 42 residuals |
-| ace kill_type / wounded | FIXTURE-BLOCKED | ace death/wounded variance fixture; D04 has no discriminating wounded variance | WAVE4 ace slice; domain 46 |
-| convoy combat loss route/context | FIXTURE-BLOCKED | active convoy battle/loss route fixture | WAVE4; MASTER naval convoy rows |
-| naval mission enum/home base/repair/retreat/route semantics | FIXTURE-BLOCKED | controlled mission-change, port-change, damaged-repairing, retreat fixtures | DOMAIN_REGISTRY row 56; MASTER naval |
-| naval combat lifecycle-end and member join/leave/sinking | FIXTURE-BLOCKED | battle teardown and member-change/sinking fixture plus speed-five proof | DOMAIN_REGISTRY rows 49-50; naval_combat CHAIN |
-| operation owner and operation target semantics | FIXTURE-BLOCKED | running-operation contrast fixture where operative location differs from target | WAVE5 running intel operations; domain 53 |
-| spy-network/intel-map percentages | FIXTURE-BLOCKED | same-tick intel-map fixture and graph root | MASTER domain 53 |
-| incoming/outgoing diplomatic action queues | VALIDATED-SLICE / OPEN | wire CCountry+0xFF8 queue crack or live fixture for queue lifecycle | WAVE5 supersession; domain 53 |
-| full war grouping/name/lifecycle semantics | VALIDATED-SLICE / OPEN | live war-root revalidation plus war grouping/name/date closure | MASTER domain 53/60 |
-| faction leader/name/join-leave timeline | VALIDATED-SLICE / OPEN | faction-change fixture or static join proof | MASTER diplomacy row |
-| subject level/autonomy-change semantics | VALIDATED-SLICE / OPEN | subject-level static joins and autonomy-change fixture | MASTER diplomacy row |
-| garrison law/template/manpower/equipment/suppression extras | VALIDATED-SLICE / OPEN | remaining garrison scalar/collaboration detail roots | domain 52; GARRISON_RESIDUAL_ANALYSIS |
-| delayed-event due semantics | VALIDATED-SLICE / OPEN | CEvent/date sub-struct hop or scripted-state delayed-event fixture | WAVE3 residual; WAVE4 claims due-date cracked but integration still open in domain 51 |
-| scripted GUI open/state | FIXTURE-BLOCKED | controlled scripted-GUI fixture or proof-backed non-replay rejection | MASTER scripted state; domain 51 |
-| decision numeric state/province targets, cooldowns, body fields, direct hooks | FIXTURE-BLOCKED | decision target/cooldown fixtures or event hook proof | DOMAIN_REGISTRY row 45 |
-| advisor roster, appointed advisor, portrait, unit-leader trait-token rows | FIXTURE-BLOCKED | current-build CAdvisor/CUnitLeaderTrait revalidation and live proof | DOMAIN_REGISTRY row 47; WAVE3 advisor crack |
-| construction token/name, created date, exact target location, repair semantics/speed | FIXTURE-BLOCKED | construction target/repair fixture and live speed-five proof | DOMAIN_REGISTRY row 48 |
-| market stockpile owner chain and full trade economy | VALIDATED-SLICE / OPEN | generalizing CCountry->pool owner chain and full reproduction | WAVE3/WAVE5; domain 43 |
-| market sibling resource pools produced/imported/used/to_export/base_export | DERIVED-RECOMPUTE / OPEN | derive from states/trade routes or resource-flow delta fixture if stored counter sought | ORCHESTRATOR_SEED residual; WAVE4 resources |
-| country factory/resource/consumer-goods UI counters | RESERVED (domain 58) | derive factories from state buildings/offmap + trade/resource inputs, or before/after delta fixture | MASTER row 58; country_economy_counters lane |
-| live template-id joins and full templates/equipment catalog live linkage | RESERVED (domain 59) | live template-id joins; static catalog proof already packed | DOMAIN_REGISTRY row 59 |
-| weather enum/particle/internal causal parity | VALIDATED-SLICE / OPEN | weather internals fixture/disasm or explicit non-replay rejection | DOMAIN_REGISTRY row 24; weather lane |
-| air combat lifecycle full rows | GAP-UNINVESTIGATED | deeper instrumentation/root or proof-backed rejection after helper-family rejections | MASTER air section; air_combat_losses AIR_RESIDUALS_STATE |
-| per-entity combat killer label | FIXTURE-BLOCKED | one-event combat attribution fixture for finest killer label | WALL_CRACK_RESULTS combat attribution |
-| division full multi-order membership | GAP-UNINVESTIGATED | new order-body route; primary-order pointer only stores one order | WAVE3 division order residual |
-| projects reward and owner-join plumbing | VALIDATED-SLICE / OPEN | program_status owner-join integration and reward fixture | WAVE4/WAVE5 projects; domain 41 |
-| alerts/notifications/outliner/message UI polling | DERIVED-RECOMPUTE / NOT-POLLABLE | derive alert-equivalents from replay facts; dispatch-hook instrumentation only with sign-off | MASTER row Alerts/notifications; SESSION_EVENT_DISPOSITION |
+| hub motorization level/settings | A1 | same-frame hub toggle fixture with at least two known levels, ideally 1 and 3 | [archived wall-crack result](archive/WALL_CRACK_RESULTS_2026-07-04.md); domain 62 |
+| focus-paused state | A2 | paused-focus fixture or serializer disasm; D04 has paused=no for all 113 focuses | [archived wall-crack result](archive/WALL_CRACK_RESULTS_2026-07-04.md); domain 45 |
+| convoy/port/disrupted supply pressure | A6 | naval-interdiction/disrupted supply fixture with nonzero pressure records | [archived wall-crack result](archive/WALL_CRACK_RESULTS_2026-07-04.md); domain 44 |
+| MP chat/messages, hotjoin, tag-switch | A15 | same-build 2-player MP session with controlled join/tag switch and unique chat text | [archived wall-crack result](archive/WALL_CRACK_RESULTS_2026-07-04.md); domain 57 |
+| game-speed root semantics | A3 | 10s tap at each speed 1–5 | master A3; domain 57 |
+| air sortie lifecycle / kill attribution / last_killer | A4 | live advancing air-combat fixture with known losses/kills | master A4; domain 42 |
+| ace kill_type / wounded | A5 | ace death/wounded variance fixture; D04 has no discriminating wounded variance | master A5; domain 46 |
+| convoy combat loss route/context | A7 | active convoy battle/loss-route fixture | master A7; domain 44 |
+| naval mission enum/home base/repair/retreat/route semantics | A8 | controlled mission-change, port-change, damaged-repairing, and retreat fixtures | master A8; domain 56 |
+| naval combat lifecycle-end and member join/leave/sinking | A9 | battle teardown and member-change/sinking fixture | master A9; domains 49–50 |
+| operation owner and operation target semantics | A10 | running-operation contrast where operative location differs from target | master A10; domain 53 |
+| spy-network/intel-map percentages | A11 | same-tick intel-map fixture and graph root | master A11; domain 53 |
+| incoming/outgoing diplomatic action queues | C3; cracked-items ledger | wire the cracked `CCountry+0xFF8` incoming queue; derive outgoing by transpose | master C3; cracked ledger |
+| full war grouping/name/lifecycle semantics | B5; coverage map | read the already-discovered war-relation row addresses | master B5; domains 53/60 |
+| faction leader/name/join-leave timeline | fix-pipeline `facs-wire`; current residuals | exercise the d53 tri-state against a live faction roster; display-name resolution is cosmetic | master fix-pipeline/residuals; domain 53 |
+| subject level/autonomy-change semantics | A16 | subject autonomy-change fixture | master A16; domain 53 |
+| garrison law/template/manpower/equipment/suppression extras | B3; cracked-items ledger | deeper equipment-bank walk for id/type/amount | master B3; cracked ledger |
+| delayed-event due semantics | A19; cracked-items ledger | unpaused decrement + originator-vs-scope fixture | master A19; domain 64 |
+| scripted GUI open/state | A13 | controlled scripted-GUI fixture or proof-backed non-replay rejection | master A13; domain 51 |
+| decision numeric state/province targets, cooldowns, body fields, direct hooks | A12 | decision target/cooldown fixture | master A12; domain 45 |
+| advisor roster, appointed advisor, portrait, unit-leader trait-token rows | per-domain table d47 | current-build `CAdvisor`/`CUnitLeaderTrait` revalidation and combined speed-5 proof | master per-domain table; domain 47 |
+| construction token/name, created date, exact target location, repair semantics/speed | A14; B8; cracked-items ledger | damaged-building repair fixture; game-file id→token join | master A14/B8; domain 48 |
+| market stockpile owner chain and full trade economy | B1; C4 | crack the global market singleton/per-country keying; derive sibling pools | master B1/C4; domain 43 |
+| market sibling resource pools produced/imported/used/to_export/base_export | C4 | derive from states and trade routes | master C4 |
+| country factory/resource/consumer-goods UI counters | C5; per-domain table d58 | derive from state buildings/offmap + trade/resource inputs | master C5; domain registry |
+| live template-id joins and full templates/equipment catalog live linkage | cracked-items ledger; per-domain table d59 | wire the cracked join and obtain combined speed-5 proof | cracked ledger; domain registry |
+| weather enum/particle/internal causal parity | A20; C2 | unpaused region-flag drift fixture; derive realized province values | master A20/C2; domain 24 |
+| air combat lifecycle full rows | A4; A21 | controlled live air-combat lifecycle and attribution fixture | master A4/A21; domain 42 |
+| per-entity combat killer label | A21 | one controlled combat for the finest available killer label | master A21 |
+| division full multi-order membership | historical candidate; not independently listed in the 2026-07-14 master | new order-body route; primary-order pointer stores only one order | archived wave-3 evidence indexed by `doc_signal_lines` |
+| projects reward and owner-join plumbing | cracked-items ledger; coverage map d41 | wire cracked owner/reward joins; retain lifecycle fixture need | cracked ledger; domain 41 |
+| alerts/notifications/outliner/message UI polling | C6 | derive alert-equivalents from replay facts | master C6 |
 
-## 8. Prioritized gap backlog
+## 8. Gap-backlog authority
 
-| Priority | Item | Status | What it contains / needs | Why this rank | Evidence |
-| --- | --- | --- | --- | --- | --- |
-| P0 | country_economy_counters_live (domain 58) | RESERVED | Would contain country factory/resource/consumer-goods UI counter closure; current evidence says factory totals are recomputed from state buildings/offmap and resources need better oracle. | High replay value for economy panels; derive-now path likely cheaper than scalar hunt. | MASTER row 58; country_economy_counters lane |
-| P0 | templates_equipment_catalog_live (domain 59) | RESERVED | Would contain live template-id joins and static vanilla+mod templates/equipment catalog linkage. Static catalog proof/packing exists; live joins remain open. | High value for division/equipment display names and template history. | DOMAIN_REGISTRY row 59; templates_equipment_catalog lane |
-| P0 | game-speed root semantics | FIXTURE-BLOCKED | One short speed-tap fixture or deeper disasm resolves playback pacing root. | High value, low fixture cost. | MASTER C2; domain 57 |
-| P0 | focus-paused state | FIXTURE-BLOCKED | Pause one national focus; D04 has no paused variance. | Visible focus-panel state; low fixture cost. | WALL; domain 45 |
-| P0 | hub motorization level | FIXTURE-BLOCKED | Toggle two hubs to distinct levels. | Visible supply-map value; low fixture cost. | WALL; domain 62 |
-| P1 | convoy/port/disrupted supply pressure | FIXTURE-BLOCKED | Create blockaded island/cut pocket with nonzero pressure. | High logistics/naval value; fixture more involved. | WALL/WAVE4; domain 44 |
-| P1 | naval mission/homebase/repair/retreat semantics | FIXTURE-BLOCKED | Controlled naval mission, port, repair, retreat fixtures. | High on-map naval replay value; domain 56 already has position/status slice. | domain 56 |
-| P1 | air combat lifecycle and kill/loss causes | FIXTURE-BLOCKED | Advancing air-war fixture with known losses/kills. | High air-war value; current D42 is loss delta only. | MASTER air; WAVE4 |
-| P1 | MP chat/hotjoin/tag-switch | FIXTURE-BLOCKED | 2-player MP fixture with unique chat text and controlled join/tag-switch. | Important for multiplayer session replay; impossible from SP save. | domain 57 |
-| P2 | operation/spy-network/intel-map percentages | FIXTURE-BLOCKED | Running operation contrast fixture and intel-map graph root. | Useful for intel UI; less central to map playback. | domain 53 |
-| P2 | construction exact target/repair semantics | FIXTURE-BLOCKED | Construction target/repair fixture. | Visible construction UI detail; base queue/building slice exists. | domain 48 |
-| P2 | UI camera/menu/selection/map-mode roots | GAP-UNINVESTIGATED | Disassemble UI manager/selection/camera roots or add a separate UI polling lane. | High fidelity for exact screen reproduction; not required for world-state replay. | RTTI candidates; atlas memory-only rows |
-| P3 | weather internals/particles | VALIDATED-SLICE / OPEN | Weather internals disasm or reject as non-replay-relevant. | Low-to-medium; current region weather visual slice exists. | domain 24 |
-| P3 | per-entity killer labels / full multi-order membership | GAP-UNINVESTIGATED | Specific event fixtures or deeper object-layout search. | Nice-to-have detail beyond current validated slices. | WALL/WAVE3 |
+Removed as a duplicated and now-stale priority queue. Current ordering and disposition live only in
+the master contract's OPEN ITEMS REGISTRY; the datum-level census is retained in §7 above.
 
 ## 9. Reproducibility notes
 
