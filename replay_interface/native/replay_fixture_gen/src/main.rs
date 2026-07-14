@@ -1541,8 +1541,8 @@ fn negative_fixtures(seed: u64) -> Result<Vec<NegativeFixture>> {
     bad_hash[pos + needle.len() - 3] = b'X';
     out.push(NegativeFixture {
         name: "neg_bad_snapshot_hash",
-        description: "First snapshot payload is changed after manifest hashing.",
-        expected_error_contains: "sha256",
+        description: "First snapshot payload is changed after manifest hashing. The stitching fix6 whole-archive payload CRC-32 validation at open now catches the byte change (defense-in-depth) before the manifest sha256 check.",
+        expected_error_contains: "crc32 mismatch",
         bytes: bad_hash,
     });
 

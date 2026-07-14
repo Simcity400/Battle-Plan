@@ -1429,7 +1429,8 @@ mod tests {
         // The CLI path surfaces the specific validator string for each negative.
         let cases = [
             ("neg_malformed_manifest", "required_features"),
-            ("neg_bad_snapshot_hash", "sha256"),
+            // stitching fix6 CRC-32-at-open catches the corrupted payload before the sha256 check.
+            ("neg_bad_snapshot_hash", "crc32 mismatch"),
             ("neg_modset_mismatch", "disagrees with snapshot provenance.mod"),
             ("neg_empty_snapshot_index", "empty snapshot index"),
         ];
