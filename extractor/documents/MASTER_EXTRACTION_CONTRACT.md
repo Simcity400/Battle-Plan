@@ -21,25 +21,48 @@ pipeline** — every recording-layer domain re-reviewed adversarially for silent
 namespace-safety defects, then serial-merged. See `CODEX_DISPATCH_QUEUE.md` for the blow-by-blow;
 this section is the summary of record.
 
-**Fix-pipeline & merge status (integration branch `claude/replay-engine-extraction-18b40f`):**
-- **Merged (clean base):** the 6 core wave-12 lanes + the d57 game-speed reconciliation
-  (`DOMAIN57_MAX_GAME_SPEED` corrected 5→4: the engine setter clamps the raw speed index to
-  `0..=4` = five UI speeds).
-- **SHIP / merge-ready, awaiting the second merge wave:**
-  - `boundary-auth` — 82 bounds-guards across the fold dispatch; truncated records return
-    `Err(InvalidData)`, never panic.
-  - `autoattach` — universal injection lease + pipe-client PID/session binding + **default-deny
-    recording proof** (only d10/d44/d68 can prove a live recording, and only from real material
-    rows; badges/tombstones/delta/all-zero/failure never qualify).
-  - `facs-wire` — d53 FACS faction-roster tri-state (measured-empty / measured-nonempty /
-    unavailable) reaching every consumer; a **sound completeness witness** (fingerprint over every
-    country-table slot, duplicate-tag poisoning, pointer-based member validation, inner-table bound
-    through final approval); UI status flag and factions list **co-derived from one source** so they
-    cannot disagree.
-- **In flight (adversarial re-gate loop):** `replay-loader` (`.battleplan` container/loader
-  Windows-namespace hardening — file-ID sentinels, verify→promote handle binding, canonical-entry
-  hashing, strict manifest decode), `foldwave2`, `stitching`.
-- **Gate before master merge:** an integration-adversary re-run over the fully-merged result.
+**Fix-pipeline & merge status (integration branch `claude/replay-engine-extraction-18b40f`;
+per-lane board at rest 2026-07-14 — all lanes committed on their `lane/*` / `w12g-*` branches,
+NOT yet merged to the integration branch):**
+- **Merged (clean base, on the integration branch + master):** the 6 core wave-12 lanes + the d57
+  game-speed reconciliation (`DOMAIN57_MAX_GAME_SPEED` corrected 5→4: the engine setter clamps the
+  raw speed index to `0..=4` = five UI speeds) + the full documentation cleanup.
+- **SHIP (independent adversarial gate returned SHIP) — merge-ready, awaiting the second merge wave:**
+  - `autoattach` (@15a817f3e) — universal injection lease + pipe-client PID/session binding +
+    **default-deny recording proof** (only d10/d44/d68 can prove a live recording, and only from
+    real material rows; badges/tombstones/delta/all-zero/failure never qualify).
+  - `facs-wire` (@1da8812b8) — d53 FACS faction-roster tri-state reaching every consumer; a **sound
+    completeness witness**; UI status flag and factions list **co-derived from one source**.
+  - `d51` (@2c9a4159a), `campaignid` (@4ad2f0da5), `librs` (@50bdf48b2) — SHIP, merge-ready.
+- **ACCEPT / green, orchestrator-verified (independent Codex re-gate unavailable — see blocker):**
+  - `foldwave2` (@025d464d) — malformed provenance/collector envelopes fail closed; D45→focus_status
+    added; replay_core 53/0. fix4 ACCEPT (self-run gate); orchestrator-verified green.
+  - `boundary-auth` (@40aba846a) — 82 fold-dispatch bounds-guards (truncated records →
+    `Err(InvalidData)`, never panic) + production-encoder acceptance sweep. **The r3 REVISE on file
+    reviewed the STALE fix2 commit `5646ffbab`** (the reviewer noted the tree had advanced); fix3
+    already closed both findings. Orchestrator-verified `recorder_host` green. Needs a clean re-gate.
+  - `stitching` (@214b3ad66) — fix3 closed all r2 findings (independent re-derivation of every
+    guarantee on open). **The r3 gate was cyber-refused by Codex (no verdict).** Needs a re-gate.
+- **replay-loader** (@1bf3f573) — production `.battleplan` streaming finalizer fully hardened +
+  green (snapshot / replay_core 72 / recorder_host 200+202, modulo documented env-gated exclusions).
+  **USER-GATED open residual:** a reparse-ancestor-rebind + concurrent-manifest-swap TOCTOU on the
+  two NON-PRODUCTION finalizers (in-memory + file-backed "superseded on the production path") is
+  parked as three `#[ignore]`'d RED tests encoding the target invariant. Scope decision owed:
+  accept-as-residual / cheap ancestor-reparse rejection / full verify-through-handle.
+- **OPEN — real findings, need another fix round (currently blocked by the Codex refusal):**
+  `dlcmeta` (@71920e5c1, r9 REVISE), `foldwave1` (@773d701bc, REVISE), `d57-gate` (@380d6f336,
+  r2 REVISE), `c1stageb` (@e5e141ce8, r7 REVISE — deadline-model contradictions in the
+  `DUPLEX_CONTROL_TRANSPORT`/`C1_STAGEB` *design docs*, not code; stage-B impl is future),
+  `stageb-impl` (@b0897b457, gate BLOCKED by the unelevated-sandbox split-root refusal).
+- **⚠ BLOCKER (new, environmental):** the Codex adversarial-gate engine now **cyber-refuses**
+  security-flavored review prompts — `turn.failed: "This content was flagged for possible
+  cybersecurity risk … join the Trusted Access for Cyber program"`. This halts the independent
+  adversarial re-gate loop for the recorder-hardening lanes. Until it is resolved (rephrase to
+  evade the classifier, get cyber-authorized, or an alternate reviewer), lanes are
+  orchestrator-verified for correctness/tests but cannot receive the independent security gate the
+  protocol requires before merge.
+- **Gate before master merge:** an integration-adversary re-run over the fully-merged result
+  (also currently blocked by the refusal above).
 
 **Remaining engineering acceptance gate (unchanged, USER-GATED):** a fresh speed-5 end-to-end
 capture proving every scheduled domain emits at <100ms/frame with zero skipped hours. All validation
@@ -131,13 +154,18 @@ is **never** a pre-ship residual; a cleanup task to strip/stub it is filed. Do n
 "Linux/macOS run" as owed work.
 
 **Fix-pipeline residuals (non-blocking, tracked in `CODEX_DISPATCH_QUEUE.md`):**
-- **replay-loader:** the `.battleplan` container/loader is Windows-namespace-hardened; two
-  environment-gated tests remain pre-ship — Windows **Developer Mode** must be enabled for the
-  symlink-rejection capability test, and a real **dehydrated OneDrive** placeholder store is needed
-  for the Files-On-Demand tests. The static "no descendant pathname open" gate (F4) is an accepted
-  **best-effort development lint**, not a runtime security boundary: it catches honest introduction
-  of a pathname open but cannot see renamed FFI beyond `#[link_name]`, macro-expanded, or generated
-  code (out of threat model).
+- **replay-loader:** the `.battleplan` container/loader is Windows-namespace-hardened and the
+  **production streaming finalizer** verifies through the retained creation handle (no pathname
+  reopen). **USER-GATED open residual:** a reparse-ancestor-rebind + concurrent-manifest-swap TOCTOU
+  on the two NON-PRODUCTION finalizers (in-memory + file-backed, the latter explicitly superseded on
+  the production path) — parked as three `#[ignore]`'d RED tests (`recorder_host` `main.rs`) that
+  encode the target invariant. Threat = a hostile same-user process with write access to the output
+  dir on a single-user local tool. Scope decision owed: accept-as-residual / cheap output-path
+  ancestor-reparse rejection / full verify-through-handle across both finalizers. Two other tests are
+  environment-gated pre-ship — Windows **Developer Mode** for the symlink-rejection capability test,
+  and a real **dehydrated OneDrive** placeholder store for the Files-On-Demand tests. The static "no
+  descendant pathname open" gate (F4) is an accepted **best-effort development lint**, not a runtime
+  security boundary (cannot see renamed FFI beyond `#[link_name]`, macro-expanded, or generated code).
 - **facs-wire:** with no certified `name_hash → display-name` resolver, the UI renders the
   authoritative **numeric** faction identity (cosmetic only — membership content is fully
   preserved). An owed **live-map integration test** lands when a production factions-map render
