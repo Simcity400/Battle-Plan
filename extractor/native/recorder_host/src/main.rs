@@ -7,7 +7,6 @@
 #[global_allocator]
 static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-
 use air_loss_stats_live_lane as airloss61;
 use army_battleplans_depth_live_lane as battleplans54;
 use capitulation_war_state_live as capwar60;
@@ -31,10 +30,12 @@ use snapshot::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::ffi::{c_char, c_void, OsStr};
+use std::ffi::{c_char, c_void, OsStr, OsString};
 use std::fs;
-use std::io::{Read, Write};
-use std::os::windows::ffi::OsStrExt;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::thread;
@@ -60,6 +61,42 @@ struct ThreadEntry32 {
     dw_flags: Dword,
 }
 
+#[repr(C)]
+struct ModuleEntry32W {
+    dw_size: Dword,
+    th32_module_id: Dword,
+    th32_process_id: Dword,
+    glblcnt_usage: Dword,
+    proccnt_usage: Dword,
+    mod_base_addr: *mut u8,
+    mod_base_size: Dword,
+    h_module: Hmodule,
+    sz_module: [u16; 256],
+    sz_exe_path: [u16; 260],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WinFileTime {
+    low: Dword,
+    high: Dword,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ByHandleFileInformation {
+    file_attributes: Dword,
+    creation_time: WinFileTime,
+    last_access_time: WinFileTime,
+    last_write_time: WinFileTime,
+    volume_serial_number: Dword,
+    file_size_high: Dword,
+    file_size_low: Dword,
+    number_of_links: Dword,
+    file_index_high: Dword,
+    file_index_low: Dword,
+}
+
 const WH_GETMESSAGE: i32 = 3;
 const WM_NULL: u32 = 0x0000;
 const PIPE_ACCESS_INBOUND: Dword = 0x00000001;
@@ -67,6 +104,7 @@ const PIPE_TYPE_BYTE: Dword = 0x00000000;
 const PIPE_READMODE_BYTE: Dword = 0x00000000;
 const PIPE_NOWAIT: Dword = 0x00000001;
 const ERROR_PIPE_CONNECTED: Dword = 535;
+const ERROR_NO_MORE_FILES: Dword = 18;
 const ERROR_BROKEN_PIPE: Dword = 109;
 const ERROR_NO_DATA: Dword = 232;
 const ERROR_PIPE_LISTENING: Dword = 536;
@@ -75,6 +113,20 @@ const MOVEFILE_WRITE_THROUGH: Dword = 0x00000008;
 const GENERIC_READ_BUFFER: usize = 65_536;
 const INVALID_HANDLE_VALUE: isize = -1;
 const TH32CS_SNAPTHREAD: Dword = 0x00000004;
+const TH32CS_SNAPMODULE: Dword = 0x00000008;
+const TH32CS_SNAPMODULE32: Dword = 0x00000010;
+const PROCESS_TERMINATE: Dword = 0x0001;
+const PROCESS_VM_READ: Dword = 0x0010;
+const PROCESS_SET_QUOTA: Dword = 0x0100;
+const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
+const THREAD_QUERY_LIMITED_INFORMATION: Dword = 0x0800;
+const SYNCHRONIZE: Dword = 0x0010_0000;
+const WAIT_OBJECT_0: Dword = 0;
+const WAIT_TIMEOUT: Dword = 258;
+const WAIT_FAILED: Dword = 0xffff_ffff;
+const STILL_ACTIVE: Dword = 259;
+const ERROR_ALREADY_EXISTS: Dword = 183;
+const FILE_SHARE_READ: Dword = 0x0000_0001;
 const COMPACT_RECORD_MAGIC: &[u8; 4] = compact_contract::COMPACT_RECORD_MAGIC;
 const COMPACT_RECORD_HEADER_LEN: usize = compact_contract::COMPACT_RECORD_HEADER_LEN;
 const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
@@ -642,7 +694,41 @@ extern "system" {
     fn GetProcAddress(module: Hmodule, name: *const c_char) -> *const c_void;
     fn FreeLibrary(module: Hmodule) -> Bool;
     fn CloseHandle(handle: Handle) -> Bool;
+    fn CreateJobObjectW(job_attributes: *mut c_void, name: *const u16) -> Handle;
+    fn AssignProcessToJobObject(job: Handle, process: Handle) -> Bool;
+    fn IsProcessInJob(process: Handle, job: Handle, result: *mut Bool) -> Bool;
+    fn GetCurrentProcess() -> Handle;
+    fn ReadProcessMemory(
+        process: Handle,
+        base_address: *const c_void,
+        buffer: *mut c_void,
+        size: usize,
+        bytes_read: *mut usize,
+    ) -> Bool;
+    fn OpenProcess(desired_access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
+    fn OpenThread(desired_access: Dword, inherit_handle: Bool, thread_id: Dword) -> Handle;
+    fn GetProcessIdOfThread(thread: Handle) -> Dword;
+    fn GetProcessTimes(
+        process: Handle,
+        creation: *mut u64,
+        exit: *mut u64,
+        kernel: *mut u64,
+        user: *mut u64,
+    ) -> Bool;
+    fn GetExitCodeProcess(process: Handle, exit_code: *mut Dword) -> Bool;
+    fn WaitForSingleObject(handle: Handle, milliseconds: Dword) -> Dword;
+    fn GetFinalPathNameByHandleW(
+        file: Handle,
+        path: *mut u16,
+        path_len: Dword,
+        flags: Dword,
+    ) -> Dword;
+    fn GetFileInformationByHandle(file: Handle, info: *mut ByHandleFileInformation) -> Bool;
+    fn GetModuleFileNameW(module: Hmodule, path: *mut u16, path_len: Dword) -> Dword;
+    fn GetModuleHandleW(module_name: *const u16) -> Hmodule;
     fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
+    fn Module32FirstW(snapshot: Handle, entry: *mut ModuleEntry32W) -> Bool;
+    fn Module32NextW(snapshot: Handle, entry: *mut ModuleEntry32W) -> Bool;
     fn GetLastError() -> Dword;
     fn CreateNamedPipeW(
         name: *const u16,
@@ -655,6 +741,7 @@ extern "system" {
         security_attributes: *mut c_void,
     ) -> Handle;
     fn ConnectNamedPipe(pipe: Handle, overlapped: *mut c_void) -> Bool;
+    fn GetNamedPipeClientProcessId(pipe: Handle, client_process_id: *mut Dword) -> Bool;
     fn ReadFile(
         file: Handle,
         buffer: *mut c_void,
@@ -1156,10 +1243,97 @@ fn main() {
     }
 }
 
+/// Minimal product entry for the resident dual-order auto-attach supervisor
+/// (roadmap task #36; design `extractor/documents/AUTO_ATTACH_DESIGN.md`). The
+/// full supervisor/coordinator logic lives in the `recorder_host::auto_attach`
+/// module (unit-tested with fakes); this is just the CLI seam that wires the
+/// real Windows adapters and runs the loop. The packaging/tray UI that drives
+/// graceful quit is design §9, outside this lane; here the supervisor runs
+/// until the process is terminated.
+#[cfg(windows)]
+fn run_auto_attach(args: &[String]) -> Result<(), String> {
+    use recorder_host::auto_attach::{run_supervisor, SupervisorOptions};
+    use std::path::PathBuf;
+
+    let mut source_dll: Option<PathBuf> = None;
+    let mut staging_root: Option<PathBuf> = None;
+    let mut out_root: Option<PathBuf> = None;
+    let mut journal_path: Option<PathBuf> = None;
+    let mut worker_extra_args: Vec<String> = Vec::new();
+    let mut poll_ms: u64 = 2_000;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--dll" => {
+                i += 1;
+                source_dll = Some(PathBuf::from(args.get(i).ok_or("--dll needs a value")?));
+            }
+            "--staging-root" => {
+                i += 1;
+                staging_root = Some(PathBuf::from(
+                    args.get(i).ok_or("--staging-root needs a value")?,
+                ));
+            }
+            "--out-root" => {
+                i += 1;
+                out_root = Some(PathBuf::from(
+                    args.get(i).ok_or("--out-root needs a value")?,
+                ));
+            }
+            "--journal" => {
+                i += 1;
+                journal_path = Some(PathBuf::from(args.get(i).ok_or("--journal needs a value")?));
+            }
+            "--poll-ms" => {
+                i += 1;
+                poll_ms = args
+                    .get(i)
+                    .ok_or("--poll-ms needs a value")?
+                    .parse()
+                    .map_err(|e| format!("--poll-ms: {e}"))?;
+            }
+            "--worker-arg" => {
+                i += 1;
+                worker_extra_args.push(args.get(i).ok_or("--worker-arg needs a value")?.clone());
+            }
+            other => return Err(format!("auto-attach: unknown arg {other:?}")),
+        }
+        i += 1;
+    }
+
+    let source_dll = source_dll.ok_or("--auto-attach requires --dll <packaged collector.dll>")?;
+    let out_root = out_root.ok_or("--auto-attach requires --out-root <dir>")?;
+    let staging_root = staging_root.unwrap_or_else(|| out_root.join("staging"));
+    let journal_path = journal_path.unwrap_or_else(|| out_root.join("auto_attach_journal.jsonl"));
+    let worker_exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+
+    let opts = SupervisorOptions {
+        source_dll,
+        staging_root,
+        out_root,
+        journal_path,
+        worker_exe,
+        worker_extra_args,
+        poll_ms,
+    };
+    // Runs until the process is terminated by the tray/OS (graceful-quit UI is
+    // design §9, outside this lane).
+    run_supervisor(opts, || false)
+}
+
+#[cfg(not(windows))]
+fn run_auto_attach(_args: &[String]) -> Result<(), String> {
+    Err("auto-attach is only supported on Windows".to_string())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--fold-and-repack-existing-run-dir") {
         return fold_and_repack_existing_run_dir(parse_repack_args(&args)?);
+    }
+    if args.first().map(String::as_str) == Some("--auto-attach") {
+        return run_auto_attach(&args[1..]);
     }
     let cfg = parse_args(args)?;
     fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("create out dir failed: {e}"))?;
@@ -1185,7 +1359,11 @@ fn run() -> Result<(), String> {
             format!(" errors={:?}", modset_report.errors)
         }
     );
-    let pipe_token = pipe_token();
+    let auto_attach_worker = AutoAttachWorkerContext::from_env(&cfg)?;
+    let pipe_token = auto_attach_worker
+        .as_ref()
+        .map(|context| context.pipe_token.clone())
+        .unwrap_or_else(pipe_token);
     write_control_file(&cfg, &pipe_token)?;
 
     let hook_hold_ms = u64::from(cfg.duration_ms)
@@ -1194,17 +1372,75 @@ fn run() -> Result<(), String> {
         .saturating_add(native_special_projects_prewarm_budget_ms(&cfg))
         .saturating_add(1_000);
     let pipe_timeout_ms = hook_hold_ms.saturating_add(3_000);
-    let pipe_name = format!(r"\\.\pipe\battle-plan_collector_{}_{}", cfg.pid, pipe_token);
+    let pipe_name = capture_pipe_name(cfg.pid, &pipe_token)?;
     // The pipe stream is written STRAIGHT to disk during capture (bounded memory);
     // `capture` carries only the byte count + rolling sha256, never the bytes.
     let capture = {
         let pipe_name = pipe_name.clone();
         let raw_path = raw_path.clone();
+        let pipe_session_token = pipe_token.clone();
         let stream_compression = cfg.stream_compression;
-        let pipe_thread = thread::spawn(move || {
-            capture_pipe_to_file(&pipe_name, pipe_timeout_ms, &raw_path, stream_compression)
+        let proof_expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
+        let expected_creation_filetime = auto_attach_worker
+            .as_ref()
+            .map(|context| context.expected_creation_filetime);
+        let (retained_dll, proof_emitter) = match auto_attach_worker {
+            Some(context) => {
+                let (dll, emitter) = context.into_parts()?;
+                (Some(dll), Some(emitter))
+            }
+            None => (None, None),
+        };
+        // Acquire every authority before exposing the pipe. In particular, a
+        // restart with a coherently rolled-back journal must observe an already
+        // resident collector and fail before it can perform another hook action.
+        let dll_authority = match retained_dll {
+            Some(authority) => authority,
+            None => RetainedDllAuthority::open(&cfg.dll, None)?,
+        };
+        let process_authority = std::sync::Arc::new(match expected_creation_filetime {
+            Some(expected) => validate_process_creation_filetime(cfg.pid, expected)?,
+            None => RetainedProcessAuthority::open(cfg.pid, None)?,
         });
-        attach_hook(cfg.pid, &cfg.dll, hook_hold_ms)?;
+        process_authority.revalidate_live()?;
+        ensure_target_module_absent(process_authority.as_ref(), dll_authority.module_name()?)?;
+        // EVERY injection entry, including an ordinary --pid/--dll CLI
+        // invocation with no auto-attach proof channel, must commit this exact
+        // target identity before pipe exposure or hook action. The named job
+        // association is the cross-entry single-injection lease and the
+        // kernel-retained history poison after either worker exits.
+        let _target_lease = RetainedTargetLease::establish(process_authority.as_ref())?;
+        let target_dll_proof = if proof_emitter.is_some() {
+            Some(dll_authority.target_proof(process_authority.clone())?)
+        } else {
+            None
+        };
+        let hook_target_dll_proof = target_dll_proof.clone();
+        let pipe_target_process = process_authority.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let pipe_thread = thread::spawn(move || {
+            capture_pipe_to_file(
+                &pipe_name,
+                &pipe_session_token,
+                pipe_timeout_ms,
+                &raw_path,
+                stream_compression,
+                proof_expected_domain_ids,
+                proof_emitter,
+                target_dll_proof,
+                pipe_target_process,
+                ready_tx,
+            )
+        });
+        ready_rx
+            .recv()
+            .map_err(|_| "capture pipe exited before listening barrier".to_string())??;
+        attach_hook(
+            process_authority.as_ref(),
+            &dll_authority,
+            hook_target_dll_proof.as_ref(),
+            hook_hold_ms,
+        )?;
         pipe_thread
             .join()
             .map_err(|_| "pipe thread panicked".to_string())??
@@ -1532,9 +1768,7 @@ fn run() -> Result<(), String> {
             // tail before sealing, and the sealed-source read strictness would
             // then make the published container unreadable. A crash tail must
             // stay a raw recovery artifact.
-            if let Err(e) =
-                recorder_host::stream_fold::verify_stream_logical_boundary(&raw_path)
-            {
+            if let Err(e) = recorder_host::stream_fold::verify_stream_logical_boundary(&raw_path) {
                 let error = format!(
                     "refusing to seal (skip-fold): {e}; the raw stream stays the \
                      recovery artifact"
@@ -1727,7 +1961,7 @@ fn parse_repack_args(args: &[String]) -> Result<RepackConfig, String> {
             "--static-decisions-definitions" => {
                 if static_decisions_definitions.is_some() {
                     return Err(
-                        "duplicate --static-decisions-definitions is not allowed".to_string(),
+                        "duplicate --static-decisions-definitions is not allowed".to_string()
                     );
                 }
                 i += 1;
@@ -1736,9 +1970,7 @@ fn parse_repack_args(args: &[String]) -> Result<RepackConfig, String> {
             }
             "--static-idea-tech-loc-xref" => {
                 if static_idea_tech_loc_xref.is_some() {
-                    return Err(
-                        "duplicate --static-idea-tech-loc-xref is not allowed".to_string(),
-                    );
+                    return Err("duplicate --static-idea-tech-loc-xref is not allowed".to_string());
                 }
                 i += 1;
                 static_idea_tech_loc_xref =
@@ -1749,8 +1981,7 @@ fn parse_repack_args(args: &[String]) -> Result<RepackConfig, String> {
                     return Err("duplicate --static-ship-definitions is not allowed".to_string());
                 }
                 i += 1;
-                static_ship_definitions =
-                    Some(PathBuf::from(required(args.get(i), &args[i - 1])?));
+                static_ship_definitions = Some(PathBuf::from(required(args.get(i), &args[i - 1])?));
             }
             "--static-gfx-icon-manifest" => {
                 if static_gfx_icon_manifest.is_some() {
@@ -1879,14 +2110,13 @@ fn recorded_static_artifacts(manifest: &Value) -> Result<Vec<(String, String)>, 
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty())
                 .ok_or_else(|| {
-                    "manifest replay_packaging.static_artifacts contains an invalid name".to_string()
+                    "manifest replay_packaging.static_artifacts contains an invalid name"
+                        .to_string()
                 })?;
             let sha256 = value
                 .get("sha256")
                 .and_then(Value::as_str)
-                .filter(|sha| {
-                    sha.len() == 64 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
-                })
+                .filter(|sha| sha.len() == 64 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
                 .ok_or_else(|| {
                     format!(
                         "manifest replay_packaging static artifact {name:?} has an invalid sha256"
@@ -1959,13 +2189,11 @@ fn repack_writer_config(
 /// keys a naive consumer could misread as vanilla). Absent or legacy shapes
 /// refuse the repack — the binding cannot be reconstructed after capture.
 fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
-    let modset = manifest
-        .get("modset")
-        .ok_or_else(|| {
-            "fold-and-repack manifest has no modset binding (pre-M2 capture); \
+    let modset = manifest.get("modset").ok_or_else(|| {
+        "fold-and-repack manifest has no modset binding (pre-M2 capture); \
              the modset cannot be reconstructed after capture"
-                .to_string()
-        })?;
+            .to_string()
+    })?;
     let obj = modset
         .as_object()
         .ok_or_else(|| "fold-and-repack manifest modset is not an object".to_string())?;
@@ -1973,8 +2201,7 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
         .get("resolved")
         .and_then(Value::as_bool)
         .ok_or_else(|| {
-            "fold-and-repack manifest modset has no boolean `resolved` (legacy shape)"
-                .to_string()
+            "fold-and-repack manifest modset has no boolean `resolved` (legacy shape)".to_string()
         })?;
     if !resolved {
         if obj.contains_key("enabled_mods") || obj.contains_key("dlc") {
@@ -2059,7 +2286,11 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
         .get("game")
         .and_then(Value::as_object)
         .ok_or("fold-and-repack manifest modset lacks the game build object")?;
-    check_keys(game, &["exe_path", "exe_size_bytes", "exe_sha256"], "game object")?;
+    check_keys(
+        game,
+        &["exe_path", "exe_size_bytes", "exe_sha256"],
+        "game object",
+    )?;
     let exe_sha = game
         .get("exe_sha256")
         .and_then(Value::as_str)
@@ -2306,8 +2537,7 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
         }
         dlc_lists.push(list);
     }
-    let (installed, enabled, disabled) =
-        (&dlc_lists[0], &dlc_lists[1], &dlc_lists[2]);
+    let (installed, enabled, disabled) = (&dlc_lists[0], &dlc_lists[1], &dlc_lists[2]);
     if installed.is_empty() {
         // The live resolver fails an empty installed census closed
         // (modset.rs empty-census arm) — an empty set here is a
@@ -2361,10 +2591,8 @@ fn validate_repack_manifest_modset(manifest: &Value) -> Result<(), String> {
     // disabled entry outside installed is a shape the live resolver never
     // resolves. (Round-2 wrongly inferred "disabled may list uninstalled"
     // from the enabled derivation alone.)
-    let installed_set: std::collections::BTreeSet<&str> =
-        installed.iter().copied().collect();
-    let disabled_set: std::collections::BTreeSet<&str> =
-        disabled.iter().copied().collect();
+    let installed_set: std::collections::BTreeSet<&str> = installed.iter().copied().collect();
+    let disabled_set: std::collections::BTreeSet<&str> = disabled.iter().copied().collect();
     if !disabled_set.is_subset(&installed_set) {
         return Err(
             "fold-and-repack manifest modset dlc.disabled lists entries outside \
@@ -2481,7 +2709,9 @@ fn fold_and_repack_existing_run_dir(repack: RepackConfig) -> Result<(), String> 
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "manifest replay_file is missing".to_string())?;
     let replay_file_path = Path::new(replay_file);
-    if replay_file_path.components().count() != 1 || replay_file_path.file_name() != Some(OsStr::new(replay_file)) {
+    if replay_file_path.components().count() != 1
+        || replay_file_path.file_name() != Some(OsStr::new(replay_file))
+    {
         return Err(format!(
             "manifest replay_file must be a leaf file name, got {replay_file:?}"
         ));
@@ -2505,9 +2735,7 @@ fn fold_and_repack_existing_run_dir(repack: RepackConfig) -> Result<(), String> 
         sha256: host_finalize
             .get("stream_sha256")
             .and_then(Value::as_str)
-            .filter(|value| {
-                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .ok_or_else(|| "manifest host_finalize.stream_sha256 is invalid".to_string())?
             .to_ascii_lowercase(),
         stored_byte_count: fs::metadata(&raw_path)
@@ -2804,8 +3032,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--prefetch-dist-relation" => {
                 i += 1;
-                prefetch_dist_relation =
-                    Some(parse_u32(args.get(i), "--prefetch-dist-relation")?);
+                prefetch_dist_relation = Some(parse_u32(args.get(i), "--prefetch-dist-relation")?);
             }
             "--prefetch-dist-candidates" => {
                 i += 1;
@@ -2957,9 +3184,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     if stream_format != StreamFormat::Compact
         && stream_compression != compact_stream::StreamCompression::None
     {
-        return Err(
-            "--stream-compression zstd requires --stream-format compact".to_string(),
-        );
+        return Err("--stream-compression zstd requires --stream-format compact".to_string());
     }
     let production = production
         || preset
@@ -4605,9 +4830,7 @@ fn write_native_replay_container_streaming(
 
     let identity = PackIdentity {
         schema_version: Some("native_collector_session_v1".to_string()),
-        created_utc: Some(
-            replay_packaging_created_utc(manifest).unwrap_or_else(created_utc_label),
-        ),
+        created_utc: Some(replay_packaging_created_utc(manifest).unwrap_or_else(created_utc_label)),
         ..Default::default()
     };
     let (tmp, mut tmp_file) = create_unique_replay_temp(replay_path)?;
@@ -5230,7 +5453,509 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
     fs::write(&control_path, bytes).map_err(|e| format!("write control failed: {e}"))
 }
 
-fn attach_hook(pid: Dword, dll: &Path, hold_ms: u64) -> Result<(), String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    volume_serial_number: Dword,
+    file_index: u64,
+    file_size: u64,
+}
+
+#[derive(Debug)]
+struct RetainedProcessAuthority {
+    handle: Handle,
+    pid: Dword,
+    expected_creation_filetime: u64,
+}
+
+// Windows process handles are kernel-object references and the queried APIs
+// used here are thread-safe. Sharing this authority keeps the same process
+// object retained through both hook installation and target-module proof.
+unsafe impl Send for RetainedProcessAuthority {}
+unsafe impl Sync for RetainedProcessAuthority {}
+
+impl RetainedProcessAuthority {
+    fn open(pid: Dword, expected: Option<u64>) -> Result<Self, String> {
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_TERMINATE
+                    | PROCESS_VM_READ
+                    | PROCESS_SET_QUOTA
+                    | PROCESS_QUERY_LIMITED_INFORMATION
+                    | SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if handle.is_null() {
+            return Err(format!(
+                "pre-hook OpenProcess({pid}) failed: {}",
+                last_error()
+            ));
+        }
+        let creation = match process_creation_filetime(handle, pid) {
+            Ok(value) => value,
+            Err(error) => {
+                unsafe { CloseHandle(handle) };
+                return Err(error);
+            }
+        };
+        if let Some(expected) = expected {
+            if creation != expected {
+                unsafe { CloseHandle(handle) };
+                return Err(format!(
+                    "pre-hook creation FILETIME mismatch for pid {pid}: {creation} != {expected}"
+                ));
+            }
+        }
+        let authority = Self {
+            handle,
+            pid,
+            expected_creation_filetime: creation,
+        };
+        authority.revalidate_live()?;
+        Ok(authority)
+    }
+
+    fn revalidate_live(&self) -> Result<(), String> {
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_TIMEOUT => {}
+            WAIT_OBJECT_0 => {
+                return Err(format!(
+                    "validated process {} exited before hook action",
+                    self.pid
+                ));
+            }
+            WAIT_FAILED => {
+                return Err(format!(
+                    "WaitForSingleObject({}) failed: {}",
+                    self.pid,
+                    last_error()
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "unexpected wait state {other} for validated process {}",
+                    self.pid
+                ));
+            }
+        }
+        let mut exit_code = 0u32;
+        if unsafe { GetExitCodeProcess(self.handle, &mut exit_code) } == 0 {
+            return Err(format!(
+                "GetExitCodeProcess({}) failed: {}",
+                self.pid,
+                last_error()
+            ));
+        }
+        if exit_code != STILL_ACTIVE {
+            return Err(format!(
+                "validated process {} is no longer active (exit code {exit_code})",
+                self.pid
+            ));
+        }
+        let creation = process_creation_filetime(self.handle, self.pid)?;
+        if creation != self.expected_creation_filetime {
+            return Err(format!(
+                "same-handle creation FILETIME changed for pid {}: {} != {}",
+                self.pid, creation, self.expected_creation_filetime
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RetainedProcessAuthority {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+/// A per-process-identity commitment retained by the kernel as an unbreakable
+/// process-to-job association.
+///
+/// Windows does not destroy a job after its last user handle closes while an
+/// associated process is still alive, and a process cannot remove itself from
+/// a job. The PID+creation-FILETIME name therefore survives supervisor/worker
+/// crashes, collector unload, target handle-table corruption, and coherent
+/// deletion of every filesystem journal file.
+#[derive(Debug)]
+struct RetainedTargetLease {
+    local_handle: Handle,
+}
+
+impl RetainedTargetLease {
+    fn establish(process: &RetainedProcessAuthority) -> Result<Self, String> {
+        process.revalidate_live()?;
+        let mut already_in_job = 0;
+        if unsafe { IsProcessInJob(process.handle, ptr::null_mut(), &mut already_in_job) } == 0 {
+            return Err(format!(
+                "IsProcessInJob({}) failed before auto-attach lease: {}",
+                process.pid,
+                last_error()
+            ));
+        }
+        require_target_not_in_job(process.pid, already_in_job != 0)?;
+        let name = format!(
+            r"Global\Hoi4Replay.AutoAttach.TargetLease.{}.{}",
+            process.pid, process.expected_creation_filetime
+        );
+        let wide_name = wide(OsStr::new(&name));
+        let local_handle = unsafe { CreateJobObjectW(ptr::null_mut(), wide_name.as_ptr()) };
+        if local_handle.is_null() {
+            return Err(format!(
+                "CreateJobObjectW for target auto-attach lease {name} failed: {}",
+                last_error()
+            ));
+        }
+        if last_error() == ERROR_ALREADY_EXISTS {
+            unsafe { CloseHandle(local_handle) };
+            return Err(format!(
+                "target auto-attach lease {name} already exists; prior injection state is committed/ambiguous"
+            ));
+        }
+        if unsafe { AssignProcessToJobObject(local_handle, process.handle) } == 0 {
+            let error = last_error();
+            unsafe { CloseHandle(local_handle) };
+            return Err(format!(
+                "AssignProcessToJobObject for target auto-attach lease {name} failed: {error}"
+            ));
+        }
+        if let Err(error) = process.revalidate_live() {
+            unsafe { CloseHandle(local_handle) };
+            return Err(format!(
+                "target exited while retaining auto-attach lease {name}: {error}"
+            ));
+        }
+        Ok(Self { local_handle })
+    }
+}
+
+fn require_target_not_in_job(pid: Dword, already_in_job: bool) -> Result<(), String> {
+    if already_in_job {
+        return Err(format!(
+            "target {pid} already belongs to a job; prior injection state is committed/ambiguous"
+        ));
+    }
+    Ok(())
+}
+
+impl Drop for RetainedTargetLease {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.local_handle) };
+    }
+}
+
+struct RetainedThreadAuthority {
+    handle: Handle,
+    thread_id: Dword,
+}
+
+impl RetainedThreadAuthority {
+    fn open(thread_id: Dword, expected_pid: Dword) -> Result<Self, String> {
+        let handle =
+            unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, thread_id) };
+        if handle.is_null() {
+            return Err(format!(
+                "pre-hook OpenThread({thread_id}) failed: {}",
+                last_error()
+            ));
+        }
+        let authority = Self { handle, thread_id };
+        let owner = unsafe { GetProcessIdOfThread(handle) };
+        if owner == 0 || owner != expected_pid {
+            return Err(format!(
+                "thread {thread_id} owner {owner} did not match retained process {expected_pid}"
+            ));
+        }
+        authority.revalidate_live()?;
+        Ok(authority)
+    }
+
+    fn revalidate_live(&self) -> Result<(), String> {
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_TIMEOUT => Ok(()),
+            WAIT_OBJECT_0 => Err(format!(
+                "validated target thread {} exited before hook action",
+                self.thread_id
+            )),
+            WAIT_FAILED => Err(format!(
+                "WaitForSingleObject(thread {}) failed: {}",
+                self.thread_id,
+                last_error()
+            )),
+            other => Err(format!(
+                "unexpected wait state {other} for target thread {}",
+                self.thread_id
+            )),
+        }
+    }
+}
+
+impl Drop for RetainedThreadAuthority {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ImmutableImageRegion {
+    rva: Dword,
+    length: Dword,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ImmutableImageRelocation {
+    rva: Dword,
+    length: Dword,
+}
+
+#[derive(Clone, Debug)]
+struct ImmutableImageLayout {
+    image_size: Dword,
+    preferred_image_base: u64,
+    regions: Vec<ImmutableImageRegion>,
+    relocations: Vec<ImmutableImageRelocation>,
+}
+
+struct RetainedDllAuthority {
+    _file: fs::File,
+    load_path: PathBuf,
+    identity: FileIdentity,
+    image_size: Dword,
+    immutable_layout: std::sync::Arc<ImmutableImageLayout>,
+    sha256: [u8; 32],
+}
+
+#[derive(Clone, Debug)]
+struct TargetDllProof {
+    process: std::sync::Arc<RetainedProcessAuthority>,
+    module_name: OsString,
+    identity: FileIdentity,
+    image_size: Dword,
+    immutable_layout: std::sync::Arc<ImmutableImageLayout>,
+    expected_mapped_immutable_sha256: std::sync::Arc<std::sync::OnceLock<[u8; 32]>>,
+    sha256: [u8; 32],
+}
+
+#[derive(Clone, Debug)]
+struct TargetModuleObservation {
+    module_name: OsString,
+    path: PathBuf,
+    base_address: usize,
+    image_size: Dword,
+}
+
+impl RetainedDllAuthority {
+    fn open(path: &Path, expected: Option<[u8; 32]>) -> Result<Self, String> {
+        let canonical = fs::canonicalize(path).map_err(|e| {
+            format!(
+                "canonicalize collector dll path {} failed: {e}",
+                path.display()
+            )
+        })?;
+        let mut file = open_locked_dll(&canonical)?;
+        let load_path = final_path_for_file(&file)?;
+        let identity = file_identity(&file)?;
+        let image_size = pe_image_size(&mut file, &load_path)?;
+        let immutable_layout =
+            std::sync::Arc::new(pe_immutable_image_layout(&mut file, &load_path)?);
+        if immutable_layout.image_size != image_size {
+            return Err("PE image layout disagrees with retained SizeOfImage".to_string());
+        }
+        let sha256 = hash_open_file_sha256(&mut file, &load_path)?;
+        if let Some(expected) = expected {
+            require_loaded_dll_hash(expected, sha256)?;
+        }
+        Ok(Self {
+            _file: file,
+            load_path,
+            identity,
+            image_size,
+            immutable_layout,
+            sha256,
+        })
+    }
+
+    fn verify_loaded_module(&self, module: Hmodule) -> Result<[u8; 32], String> {
+        let module_path = module_path(module)?;
+        let mut loaded_file = open_locked_dll(&module_path)?;
+        let loaded_identity = file_identity(&loaded_file)?;
+        if loaded_identity != self.identity {
+            return Err(format!(
+                "LoadLibraryW mapped a different file identity: {}",
+                module_path.display()
+            ));
+        }
+        let loaded_hash = hash_open_file_sha256(&mut loaded_file, &module_path)?;
+        require_loaded_dll_hash(self.sha256, loaded_hash)?;
+        Ok(loaded_hash)
+    }
+
+    fn revalidate_before_load(&self) -> Result<(), String> {
+        // Duplicate the retained handle rather than reopening `load_path`: the
+        // final pre-load hash must be over the same file object whose deny-
+        // write/delete authority has been held since worker validation.
+        let mut file = self
+            ._file
+            .try_clone()
+            .map_err(|e| format!("clone retained DLL handle: {e}"))?;
+        if file_identity(&file)? != self.identity {
+            return Err("retained DLL file identity changed before LoadLibraryW".to_string());
+        }
+        let hash = hash_open_file_sha256(&mut file, &self.load_path)?;
+        require_loaded_dll_hash(self.sha256, hash)
+    }
+
+    fn module_name(&self) -> Result<&OsStr, String> {
+        self.load_path
+            .file_name()
+            .ok_or_else(|| "retained DLL path has no file name".to_string())
+    }
+
+    fn target_proof(
+        &self,
+        process: std::sync::Arc<RetainedProcessAuthority>,
+    ) -> Result<TargetDllProof, String> {
+        Ok(TargetDllProof {
+            process,
+            module_name: self.module_name()?.to_os_string(),
+            identity: self.identity,
+            image_size: self.image_size,
+            immutable_layout: self.immutable_layout.clone(),
+            expected_mapped_immutable_sha256: std::sync::Arc::new(std::sync::OnceLock::new()),
+            sha256: self.sha256,
+        })
+    }
+}
+
+fn run_authorized_process_action<T>(
+    verify: impl FnOnce() -> Result<(), String>,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    verify()?;
+    action()
+}
+
+fn require_loaded_dll_hash(expected: [u8; 32], loaded: [u8; 32]) -> Result<(), String> {
+    if expected != loaded {
+        return Err("loaded DLL hash does not match retained validation authority".to_string());
+    }
+    Ok(())
+}
+
+fn require_mapped_image_hash(expected: [u8; 32], observed: [u8; 32]) -> Result<(), String> {
+    if expected != observed {
+        return Err(
+            "target mapped immutable-image hash does not match the locally loaded image"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn module_name_matches(actual: &OsStr, expected: &OsStr) -> bool {
+    actual
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&expected.to_string_lossy())
+}
+
+fn require_no_matching_target_module(
+    modules: &[TargetModuleObservation],
+    expected_name: &OsStr,
+) -> Result<(), String> {
+    if let Some(existing) = modules
+        .iter()
+        .find(|module| module_name_matches(&module.module_name, expected_name))
+    {
+        return Err(format!(
+            "target already hosts collector module {} at {}; prior injection/lease state is ambiguous",
+            existing.module_name.to_string_lossy(),
+            existing.path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_target_module_absent(
+    process: &RetainedProcessAuthority,
+    expected_name: &OsStr,
+) -> Result<(), String> {
+    process.revalidate_live()?;
+    let modules = target_modules(process.pid)?;
+    process.revalidate_live()?;
+    require_no_matching_target_module(&modules, expected_name)
+}
+
+fn verify_target_loaded_dll(proof: &TargetDllProof) -> Result<[u8; 32], String> {
+    proof.process.revalidate_live()?;
+    let modules = target_modules(proof.process.pid)?;
+    proof.process.revalidate_live()?;
+    let matches: Vec<_> = modules
+        .iter()
+        .filter(|module| module_name_matches(&module.module_name, &proof.module_name))
+        .collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "target module proof expected exactly one {}, observed {}",
+            proof.module_name.to_string_lossy(),
+            matches.len()
+        ));
+    }
+    let observed = matches[0];
+    if observed.image_size != proof.image_size {
+        return Err(format!(
+            "target mapped-image size {} does not match retained PE SizeOfImage {}",
+            observed.image_size, proof.image_size
+        ));
+    }
+
+    let expected_mapped_hash = proof
+        .expected_mapped_immutable_sha256
+        .get()
+        .copied()
+        .ok_or_else(|| {
+            "target mapped-image expectation was not retained through hook action".to_string()
+        })?;
+    let mapped_hash = mapped_immutable_image_sha256(
+        proof.process.handle,
+        observed.base_address,
+        &proof.immutable_layout,
+    )?;
+    require_mapped_image_hash(expected_mapped_hash, mapped_hash)?;
+    // A second complete read detects a target changing the verified immutable
+    // ranges while proof is sampled. Any instability aborts rather than emits.
+    let repeated_mapped_hash = mapped_immutable_image_sha256(
+        proof.process.handle,
+        observed.base_address,
+        &proof.immutable_layout,
+    )?;
+    require_mapped_image_hash(mapped_hash, repeated_mapped_hash)?;
+
+    let mut file = open_locked_dll(&observed.path)?;
+    let identity = file_identity(&file)?;
+    if identity != proof.identity {
+        return Err(format!(
+            "target module backing-file identity mismatch at {}",
+            observed.path.display()
+        ));
+    }
+    let backing_hash = hash_open_file_sha256(&mut file, &observed.path)?;
+    require_loaded_dll_hash(proof.sha256, backing_hash)?;
+    proof.process.revalidate_live()?;
+    // The protocol's DLL sha256 remains the canonical file hash, but it is
+    // emitted only after direct target-memory proof matched the locally loaded
+    // immutable image twice.
+    Ok(backing_hash)
+}
+
+fn attach_hook(
+    process: &RetainedProcessAuthority,
+    dll: &RetainedDllAuthority,
+    target_proof: Option<&TargetDllProof>,
+    hold_ms: u64,
+) -> Result<(), String> {
+    process.revalidate_live()?;
+    let pid = process.pid;
     let hwnd = find_main_window(pid).ok_or_else(|| format!("no visible window for pid {pid}"))?;
     let mut owner = 0u32;
     let thread_id = unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
@@ -5240,16 +5965,45 @@ fn attach_hook(pid: Dword, dll: &Path, hold_ms: u64) -> Result<(), String> {
             last_error()
         ));
     }
-    let dll_path = fs::canonicalize(dll).map_err(|e| {
-        format!(
-            "canonicalize collector dll path {} failed: {e}",
-            dll.display()
-        )
-    })?;
-    let dll_wide = wide(dll_path.as_os_str());
+    let module_name = dll.module_name()?;
+    let module_name_wide = wide(module_name);
+    if !unsafe { GetModuleHandleW(module_name_wide.as_ptr()) }.is_null() {
+        return Err(format!(
+            "collector module {} was already loaded in worker; mapped bytes are ambiguous",
+            module_name.to_string_lossy()
+        ));
+    }
+    // Last pre-action byte proof on the retained file object. A writable
+    // mapping or other anomalous mutation that survived the share-mode gate
+    // must be detected before its bytes can execute in LoadLibraryW.
+    dll.revalidate_before_load()?;
+    let dll_wide = wide(dll.load_path.as_os_str());
     let module = unsafe { LoadLibraryW(dll_wide.as_ptr()) };
     if module.is_null() {
         return Err(format!("LoadLibraryW failed: {}", last_error()));
+    }
+    if let Err(error) = dll.verify_loaded_module(module) {
+        unsafe { FreeLibrary(module) };
+        return Err(format!("loaded DLL identity verification failed: {error}"));
+    }
+    if let Some(proof) = target_proof {
+        let local_mapped_hash = mapped_immutable_image_sha256(
+            unsafe { GetCurrentProcess() },
+            module as usize,
+            &dll.immutable_layout,
+        )?;
+        proof
+            .expected_mapped_immutable_sha256
+            .set(local_mapped_hash)
+            .map_err(|_| "target mapped-image expectation was already initialized".to_string())?;
+    }
+    // Re-check target residency after local loading and immediately before any
+    // SetWindowsHookExW action. An observed prior module is commitment evidence,
+    // even if a hostile rewrite erased both journal files.
+    process.revalidate_live()?;
+    if let Err(error) = ensure_target_module_absent(process, module_name) {
+        unsafe { FreeLibrary(module) };
+        return Err(error);
     }
     let proc =
         unsafe { GetProcAddress(module, b"Hoi4ReplayGetMsgProc\0".as_ptr() as *const c_char) };
@@ -5259,12 +6013,67 @@ fn attach_hook(pid: Dword, dll: &Path, hold_ms: u64) -> Result<(), String> {
         }
         return Err(format!("GetProcAddress failed: {}", last_error()));
     }
-    let thread_ids = target_thread_ids(pid, thread_id);
+    let thread_ids = match target_thread_ids(pid, thread_id) {
+        Ok(thread_ids) => thread_ids,
+        Err(error) => {
+            unsafe { FreeLibrary(module) };
+            return Err(error);
+        }
+    };
     let mut hooks = Vec::new();
+    let mut thread_authorities = Vec::new();
     for target_thread_id in thread_ids {
-        let hook = unsafe { SetWindowsHookExW(WH_GETMESSAGE, proc, module, target_thread_id) };
+        let thread_authority = match RetainedThreadAuthority::open(target_thread_id, pid) {
+            Ok(authority) => authority,
+            Err(error) => {
+                unsafe {
+                    for (hook, _) in hooks.drain(..) {
+                        UnhookWindowsHookEx(hook);
+                    }
+                    FreeLibrary(module);
+                }
+                return Err(error);
+            }
+        };
+        // The SAME retained process handle that established creation FILETIME
+        // remains live here. Re-check it immediately before every hook action;
+        // holding the handle also prevents PID reuse if the process exits after
+        // this check but before the syscall consumes the thread id.
+        let hook = match run_authorized_process_action(
+            || {
+                process.revalidate_live()?;
+                thread_authority.revalidate_live()?;
+                // Re-sample commitment evidence at the last pre-action seam.
+                // Repeat while no hook has succeeded; once one succeeds, a
+                // matching target module can legitimately be ours.
+                if hooks.is_empty() {
+                    ensure_target_module_absent(process, module_name)?;
+                }
+                Ok(())
+            },
+            || {
+                Ok::<Hhook, String>(unsafe {
+                    SetWindowsHookExW(WH_GETMESSAGE, proc, module, target_thread_id)
+                })
+            },
+        ) {
+            Ok(hook) => hook,
+            Err(error) => {
+                unsafe {
+                    for (hook, _) in hooks.drain(..) {
+                        UnhookWindowsHookEx(hook);
+                    }
+                    FreeLibrary(module);
+                }
+                return Err(error);
+            }
+        };
         if !hook.is_null() {
             hooks.push((hook, target_thread_id));
+            // Keep the thread object alive through hook teardown. If the thread
+            // exits after the last check, Windows cannot reuse its TID for an
+            // unrelated process while this authority handle is retained.
+            thread_authorities.push(thread_authority);
         }
     }
     if hooks.is_empty() {
@@ -5301,35 +6110,803 @@ fn attach_hook(pid: Dword, dll: &Path, hold_ms: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn target_thread_ids(pid: Dword, primary_thread_id: Dword) -> Vec<Dword> {
-    let mut out = vec![primary_thread_id];
+fn process_creation_filetime(handle: Handle, pid: Dword) -> Result<u64, String> {
+    let mut creation = 0u64;
+    let mut exit = 0u64;
+    let mut kernel = 0u64;
+    let mut user = 0u64;
+    if unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+        return Err(format!("GetProcessTimes({pid}) failed: {}", last_error()));
+    }
+    Ok(creation)
+}
+
+fn open_locked_dll(path: &Path) -> Result<fs::File, String> {
+    let mut options = fs::OpenOptions::new();
+    // The loader needs read sharing. Omitting WRITE and DELETE sharing blocks
+    // byte modification, replacement, rename, and deletion for the full
+    // validation-through-hook lifetime.
+    options.read(true).share_mode(FILE_SHARE_READ);
+    options
+        .open(path)
+        .map_err(|e| format!("open retained DLL {}: {e}", path.display()))
+}
+
+fn file_identity(file: &fs::File) -> Result<FileIdentity, String> {
+    let mut info: ByHandleFileInformation = unsafe { core::mem::zeroed() };
+    let handle = file.as_raw_handle() as Handle;
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(format!(
+            "GetFileInformationByHandle failed: {}",
+            last_error()
+        ));
+    }
+    Ok(FileIdentity {
+        volume_serial_number: info.volume_serial_number,
+        file_index: (u64::from(info.file_index_high) << 32) | u64::from(info.file_index_low),
+        file_size: (u64::from(info.file_size_high) << 32) | u64::from(info.file_size_low),
+    })
+}
+
+fn final_path_for_file(file: &fs::File) -> Result<PathBuf, String> {
+    let handle = file.as_raw_handle() as Handle;
+    let mut buffer = vec![0u16; 32_768];
+    loop {
+        let length = unsafe {
+            GetFinalPathNameByHandleW(handle, buffer.as_mut_ptr(), buffer.len() as Dword, 0)
+        };
+        if length == 0 {
+            return Err(format!(
+                "GetFinalPathNameByHandleW failed: {}",
+                last_error()
+            ));
+        }
+        if length as usize >= buffer.len() {
+            buffer.resize(length as usize + 1, 0);
+            continue;
+        }
+        buffer.truncate(length as usize);
+        return Ok(PathBuf::from(OsString::from_wide(&buffer)));
+    }
+}
+
+fn module_path(module: Hmodule) -> Result<PathBuf, String> {
+    let mut buffer = vec![0u16; 32_768];
+    loop {
+        let length =
+            unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as Dword) };
+        if length == 0 {
+            return Err(format!("GetModuleFileNameW failed: {}", last_error()));
+        }
+        if length as usize >= buffer.len() - 1 {
+            let next = buffer.len().checked_mul(2).ok_or_else(|| {
+                "loaded module path length overflow while verifying DLL".to_string()
+            })?;
+            if next > 1 << 20 {
+                return Err("loaded module path exceeded fail-closed bound".to_string());
+            }
+            buffer.resize(next, 0);
+            continue;
+        }
+        buffer.truncate(length as usize);
+        return Ok(PathBuf::from(OsString::from_wide(&buffer)));
+    }
+}
+
+fn wide_buffer_to_os_string(buffer: &[u16]) -> OsString {
+    let length = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    OsString::from_wide(&buffer[..length])
+}
+
+fn target_modules(pid: Dword) -> Result<Vec<TargetModuleObservation>, String> {
+    let snapshot =
+        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) };
+    if snapshot as isize == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "target module snapshot for pid {pid} failed: {}",
+            last_error()
+        ));
+    }
+    let result = (|| {
+        let mut entry: ModuleEntry32W = unsafe { core::mem::zeroed() };
+        entry.dw_size = core::mem::size_of::<ModuleEntry32W>() as Dword;
+        if unsafe { Module32FirstW(snapshot, &mut entry) } == 0 {
+            return Err(format!(
+                "target module enumeration for pid {pid} failed: {}",
+                last_error()
+            ));
+        }
+        let mut modules = Vec::new();
+        loop {
+            if entry.th32_process_id != pid {
+                return Err(format!(
+                    "target module snapshot returned pid {} while retaining {pid}",
+                    entry.th32_process_id
+                ));
+            }
+            let module_name = wide_buffer_to_os_string(&entry.sz_module);
+            let path = PathBuf::from(wide_buffer_to_os_string(&entry.sz_exe_path));
+            if module_name.is_empty()
+                || path.as_os_str().is_empty()
+                || entry.mod_base_addr.is_null()
+                || entry.mod_base_size == 0
+            {
+                return Err("target module snapshot contained incomplete identity data".to_string());
+            }
+            modules.push(TargetModuleObservation {
+                module_name,
+                path,
+                base_address: entry.mod_base_addr as usize,
+                image_size: entry.mod_base_size,
+            });
+            entry.dw_size = core::mem::size_of::<ModuleEntry32W>() as Dword;
+            if unsafe { Module32NextW(snapshot, &mut entry) } == 0 {
+                let error = last_error();
+                if error != ERROR_NO_MORE_FILES {
+                    return Err(format!(
+                        "target module enumeration for pid {pid} stopped with error {error}"
+                    ));
+                }
+                break;
+            }
+        }
+        Ok(modules)
+    })();
+    unsafe { CloseHandle(snapshot) };
+    result
+}
+
+#[derive(Clone, Debug)]
+struct PeRawSection {
+    virtual_address: Dword,
+    virtual_size: Dword,
+    raw_offset: Dword,
+    raw_size: Dword,
+    characteristics: Dword,
+}
+
+fn pe_u16(bytes: &[u8], offset: usize, field: &str) -> Result<u16, String> {
+    let end = offset
+        .checked_add(2)
+        .ok_or_else(|| format!("PE {field} offset overflow"))?;
+    let value = bytes
+        .get(offset..end)
+        .ok_or_else(|| format!("PE {field} lies outside retained file"))?;
+    Ok(u16::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn pe_u32(bytes: &[u8], offset: usize, field: &str) -> Result<u32, String> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| format!("PE {field} offset overflow"))?;
+    let value = bytes
+        .get(offset..end)
+        .ok_or_else(|| format!("PE {field} lies outside retained file"))?;
+    Ok(u32::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn pe_u64(bytes: &[u8], offset: usize, field: &str) -> Result<u64, String> {
+    let end = offset
+        .checked_add(8)
+        .ok_or_else(|| format!("PE {field} offset overflow"))?;
+    let value = bytes
+        .get(offset..end)
+        .ok_or_else(|| format!("PE {field} lies outside retained file"))?;
+    Ok(u64::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn pe_rva_to_file_offset(
+    rva: Dword,
+    length: Dword,
+    size_of_headers: Dword,
+    sections: &[PeRawSection],
+    file_len: usize,
+) -> Result<usize, String> {
+    let end_rva = rva
+        .checked_add(length)
+        .ok_or_else(|| "PE RVA range overflow".to_string())?;
+    if rva < size_of_headers && end_rva <= size_of_headers {
+        let offset = usize::try_from(rva).map_err(|_| "PE header RVA does not fit usize")?;
+        let end = usize::try_from(end_rva).map_err(|_| "PE header end does not fit usize")?;
+        if end <= file_len {
+            return Ok(offset);
+        }
+    }
+    for section in sections {
+        let Some(delta) = rva.checked_sub(section.virtual_address) else {
+            continue;
+        };
+        let Some(delta_end) = delta.checked_add(length) else {
+            continue;
+        };
+        if delta_end > section.raw_size {
+            continue;
+        }
+        let raw = section
+            .raw_offset
+            .checked_add(delta)
+            .ok_or_else(|| "PE raw range overflow".to_string())?;
+        let raw_end = raw
+            .checked_add(length)
+            .ok_or_else(|| "PE raw end overflow".to_string())?;
+        let raw = usize::try_from(raw).map_err(|_| "PE raw offset does not fit usize")?;
+        let raw_end = usize::try_from(raw_end).map_err(|_| "PE raw end does not fit usize")?;
+        if raw_end <= file_len {
+            return Ok(raw);
+        }
+    }
+    Err(format!(
+        "PE RVA range {rva:#x}..{end_rva:#x} has no retained raw-file mapping"
+    ))
+}
+
+/// Build a target-memory proof layout only from the retained, deny-write DLL
+/// file. Writable sections are excluded because DllMain and the collector
+/// legitimately mutate them; every header and non-writable section is hashed.
+/// Loader relocation slots are canonicalized to preferred-base values so
+/// ASLR cannot turn identity proof into a rig-specific address comparison.
+fn pe_immutable_image_layout(
+    file: &mut fs::File,
+    path: &Path,
+) -> Result<ImmutableImageLayout, String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("seek PE image layout {}: {e}", path.display()))?;
+    let file_len_u64 = file
+        .metadata()
+        .map_err(|e| format!("stat PE image layout {}: {e}", path.display()))?
+        .len();
+    let file_len = usize::try_from(file_len_u64)
+        .map_err(|_| format!("PE image {} is too large for this process", path.display()))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(file_len)
+        .map_err(|e| format!("reserve PE image layout {}: {e}", path.display()))?;
+    file.read_to_end(&mut bytes)
+        .map_err(|e| format!("read PE image layout {}: {e}", path.display()))?;
+    if bytes.len() != file_len || bytes.get(0..2) != Some(b"MZ") {
+        return Err(format!(
+            "retained DLL {} has incomplete/invalid DOS image",
+            path.display()
+        ));
+    }
+
+    let pe_offset = usize::try_from(pe_u32(&bytes, 0x3c, "PE offset")?)
+        .map_err(|_| "PE offset does not fit usize".to_string())?;
+    let signature_end = pe_offset
+        .checked_add(4)
+        .ok_or_else(|| "PE signature offset overflow".to_string())?;
+    if bytes.get(pe_offset..signature_end) != Some(b"PE\0\0") {
+        return Err(format!(
+            "retained DLL {} lacks PE signature",
+            path.display()
+        ));
+    }
+    let coff = signature_end;
+    let section_count = usize::from(pe_u16(&bytes, coff + 2, "section count")?);
+    let optional_size = usize::from(pe_u16(&bytes, coff + 16, "optional-header size")?);
+    let optional = coff
+        .checked_add(20)
+        .ok_or_else(|| "PE optional-header offset overflow".to_string())?;
+    let optional_end = optional
+        .checked_add(optional_size)
+        .ok_or_else(|| "PE optional-header end overflow".to_string())?;
+    if optional_size < 64 || optional_end > bytes.len() {
+        return Err("PE optional header is truncated".to_string());
+    }
+    let magic = pe_u16(&bytes, optional, "optional-header magic")?;
+    let (directory_offset, directory_count_offset, preferred_image_base) = match magic {
+        0x10b => (
+            96usize,
+            92usize,
+            u64::from(pe_u32(&bytes, optional + 28, "ImageBase")?),
+        ),
+        0x20b => (
+            112usize,
+            108usize,
+            pe_u64(&bytes, optional + 24, "ImageBase")?,
+        ),
+        other => return Err(format!("unsupported PE optional-header magic {other:#x}")),
+    };
+    let image_size = pe_u32(&bytes, optional + 56, "SizeOfImage")?;
+    let size_of_headers = pe_u32(&bytes, optional + 60, "SizeOfHeaders")?;
+    if image_size == 0 || size_of_headers == 0 || size_of_headers > image_size {
+        return Err("PE image has invalid SizeOfImage/SizeOfHeaders".to_string());
+    }
+
+    let section_table = optional_end;
+    let section_bytes = section_count
+        .checked_mul(40)
+        .ok_or_else(|| "PE section-table size overflow".to_string())?;
+    let section_end = section_table
+        .checked_add(section_bytes)
+        .ok_or_else(|| "PE section-table end overflow".to_string())?;
+    if section_end > bytes.len() {
+        return Err("PE section table is truncated".to_string());
+    }
+    let mut sections = Vec::new();
+    sections
+        .try_reserve_exact(section_count)
+        .map_err(|e| format!("reserve PE sections: {e}"))?;
+    for index in 0..section_count {
+        let offset = section_table + index * 40;
+        let section = PeRawSection {
+            virtual_size: pe_u32(&bytes, offset + 8, "section VirtualSize")?,
+            virtual_address: pe_u32(&bytes, offset + 12, "section VirtualAddress")?,
+            raw_size: pe_u32(&bytes, offset + 16, "section SizeOfRawData")?,
+            raw_offset: pe_u32(&bytes, offset + 20, "section PointerToRawData")?,
+            characteristics: pe_u32(&bytes, offset + 36, "section Characteristics")?,
+        };
+        if section.raw_size != 0 {
+            let raw_end = section
+                .raw_offset
+                .checked_add(section.raw_size)
+                .ok_or_else(|| "PE section raw range overflow".to_string())?;
+            if usize::try_from(raw_end).map_or(true, |end| end > bytes.len()) {
+                return Err("PE section raw range exceeds retained file".to_string());
+            }
+        }
+        sections.push(section);
+    }
+
+    const IMAGE_SCN_MEM_DISCARDABLE: Dword = 0x0200_0000;
+    const IMAGE_SCN_MEM_WRITE: Dword = 0x8000_0000;
+    let mut regions = vec![ImmutableImageRegion {
+        rva: 0,
+        length: size_of_headers,
+    }];
+    for section in &sections {
+        if section.characteristics & (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_DISCARDABLE) != 0 {
+            continue;
+        }
+        // VirtualSize is the loaded extent. Only the PE edge case that leaves
+        // it zero falls back to raw size; file-alignment padding is not mapped
+        // identity evidence and must not cause a short RPM false positive.
+        let length = if section.virtual_size == 0 {
+            section.raw_size
+        } else {
+            section.virtual_size
+        };
+        if length == 0 {
+            continue;
+        }
+        let end = section
+            .virtual_address
+            .checked_add(length)
+            .ok_or_else(|| "PE immutable section range overflow".to_string())?;
+        if end > image_size {
+            return Err("PE immutable section exceeds SizeOfImage".to_string());
+        }
+        regions.push(ImmutableImageRegion {
+            rva: section.virtual_address,
+            length,
+        });
+    }
+    regions.sort_by_key(|region| region.rva);
+    for pair in regions.windows(2) {
+        let left_end = pair[0]
+            .rva
+            .checked_add(pair[0].length)
+            .ok_or_else(|| "PE immutable region overflow".to_string())?;
+        if left_end > pair[1].rva {
+            return Err("PE immutable image regions overlap".to_string());
+        }
+    }
+
+    let directory_count = if optional_size >= directory_count_offset + 4 {
+        pe_u32(
+            &bytes,
+            optional + directory_count_offset,
+            "NumberOfRvaAndSizes",
+        )?
+    } else {
+        0
+    };
+    let mut relocations = Vec::new();
+    if directory_count > 5 {
+        let relocation_directory = optional
+            .checked_add(directory_offset + 5 * 8)
+            .ok_or_else(|| "PE relocation-directory offset overflow".to_string())?;
+        if relocation_directory + 8 > optional_end {
+            return Err("PE relocation directory is outside optional header".to_string());
+        }
+        let relocation_rva = pe_u32(&bytes, relocation_directory, "relocation RVA")?;
+        let relocation_size = pe_u32(&bytes, relocation_directory + 4, "relocation size")?;
+        if (relocation_rva == 0) != (relocation_size == 0) {
+            return Err("PE relocation directory is partially absent".to_string());
+        }
+        if relocation_size != 0 {
+            let relocation_offset = pe_rva_to_file_offset(
+                relocation_rva,
+                relocation_size,
+                size_of_headers,
+                &sections,
+                bytes.len(),
+            )?;
+            let relocation_len = usize::try_from(relocation_size)
+                .map_err(|_| "PE relocation size does not fit usize".to_string())?;
+            let relocation_end = relocation_offset
+                .checked_add(relocation_len)
+                .ok_or_else(|| "PE relocation raw range overflow".to_string())?;
+            let mut cursor = relocation_offset;
+            while cursor < relocation_end {
+                let page_rva = pe_u32(&bytes, cursor, "relocation page RVA")?;
+                let block_size =
+                    usize::try_from(pe_u32(&bytes, cursor + 4, "relocation block size")?)
+                        .map_err(|_| "PE relocation block size does not fit usize".to_string())?;
+                if block_size < 8 || block_size % 2 != 0 {
+                    return Err("PE relocation block has invalid size".to_string());
+                }
+                let block_end = cursor
+                    .checked_add(block_size)
+                    .ok_or_else(|| "PE relocation block end overflow".to_string())?;
+                if block_end > relocation_end {
+                    return Err("PE relocation block exceeds directory".to_string());
+                }
+                let mut entry = cursor + 8;
+                while entry < block_end {
+                    let encoded = pe_u16(&bytes, entry, "relocation entry")?;
+                    let kind = encoded >> 12;
+                    if kind != 0 {
+                        let length = match (magic, kind) {
+                            (0x20b, 10) => 8,
+                            (0x10b, 3) => 4,
+                            _ => {
+                                return Err(format!(
+                                    "unsupported PE relocation type {kind} for magic {magic:#x}"
+                                ))
+                            }
+                        };
+                        let rva = page_rva
+                            .checked_add(Dword::from(encoded & 0x0fff))
+                            .ok_or_else(|| "PE relocation target overflow".to_string())?;
+                        let end = rva
+                            .checked_add(length)
+                            .ok_or_else(|| "PE relocation target end overflow".to_string())?;
+                        if end > image_size {
+                            return Err("PE relocation target exceeds SizeOfImage".to_string());
+                        }
+                        relocations.push(ImmutableImageRelocation { rva, length });
+                    }
+                    entry += 2;
+                }
+                cursor = block_end;
+            }
+        }
+    }
+    relocations.sort_by_key(|relocation| relocation.rva);
+    for pair in relocations.windows(2) {
+        let left_end = pair[0]
+            .rva
+            .checked_add(pair[0].length)
+            .ok_or_else(|| "PE relocation range overflow".to_string())?;
+        if left_end > pair[1].rva {
+            return Err("PE relocation ranges overlap".to_string());
+        }
+    }
+
+    Ok(ImmutableImageLayout {
+        image_size,
+        preferred_image_base,
+        regions,
+        relocations,
+    })
+}
+
+fn mapped_immutable_image_sha256(
+    process: Handle,
+    base_address: usize,
+    layout: &ImmutableImageLayout,
+) -> Result<[u8; 32], String> {
+    if process.is_null() || base_address == 0 || layout.regions.is_empty() {
+        return Err("mapped-image proof lacks process/base/immutable regions".to_string());
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"BATTLE_PLAN_MAPPED_IMMUTABLE_V1");
+    hasher.update(&layout.image_size.to_le_bytes());
+    for region in &layout.regions {
+        let region_end = region
+            .rva
+            .checked_add(region.length)
+            .ok_or_else(|| "mapped immutable region overflow".to_string())?;
+        if region.length == 0 || region_end > layout.image_size {
+            return Err("mapped immutable region lies outside image".to_string());
+        }
+        let length = usize::try_from(region.length)
+            .map_err(|_| "mapped immutable region does not fit usize".to_string())?;
+        let address = base_address
+            .checked_add(
+                usize::try_from(region.rva)
+                    .map_err(|_| "mapped immutable RVA does not fit usize".to_string())?,
+            )
+            .ok_or_else(|| "mapped immutable address overflow".to_string())?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|e| format!("reserve mapped immutable region: {e}"))?;
+        bytes.resize(length, 0);
+        let mut bytes_read = 0usize;
+        let ok = unsafe {
+            ReadProcessMemory(
+                process,
+                address as *const c_void,
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+                &mut bytes_read,
+            )
+        };
+        if ok == 0 || bytes_read != bytes.len() {
+            return Err(format!(
+                "ReadProcessMemory for immutable RVA {:#x} length {} failed/short ({bytes_read}): {}",
+                region.rva,
+                region.length,
+                last_error()
+            ));
+        }
+        for relocation in &layout.relocations {
+            let relocation_end = relocation
+                .rva
+                .checked_add(relocation.length)
+                .ok_or_else(|| "mapped relocation range overflow".to_string())?;
+            let overlap_start = relocation.rva.max(region.rva);
+            let overlap_end = relocation_end.min(region_end);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+            if overlap_start != relocation.rva || overlap_end != relocation_end {
+                return Err("PE relocation crosses an immutable region boundary".to_string());
+            }
+            let start = usize::try_from(relocation.rva - region.rva)
+                .map_err(|_| "mapped relocation start does not fit usize".to_string())?;
+            match relocation.length {
+                8 => {
+                    let end = start + 8;
+                    let relocated = u64::from_le_bytes(bytes[start..end].try_into().unwrap());
+                    let delta = (base_address as u64).wrapping_sub(layout.preferred_image_base);
+                    let canonical = relocated.wrapping_sub(delta);
+                    bytes[start..end].copy_from_slice(&canonical.to_le_bytes());
+                }
+                4 => {
+                    let actual_base = u32::try_from(base_address).map_err(|_| {
+                        "PE32 mapping base does not fit the 32-bit relocation model".to_string()
+                    })?;
+                    let preferred_base = u32::try_from(layout.preferred_image_base)
+                        .map_err(|_| "PE32 preferred image base exceeds 32 bits".to_string())?;
+                    let end = start + 4;
+                    let relocated = u32::from_le_bytes(bytes[start..end].try_into().unwrap());
+                    let delta = actual_base.wrapping_sub(preferred_base);
+                    let canonical = relocated.wrapping_sub(delta);
+                    bytes[start..end].copy_from_slice(&canonical.to_le_bytes());
+                }
+                other => return Err(format!("unsupported mapped relocation width {other}")),
+            }
+        }
+        hasher.update(&region.rva.to_le_bytes());
+        hasher.update(&region.length.to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(hasher.finalize())
+}
+fn pe_image_size(file: &mut fs::File, path: &Path) -> Result<Dword, String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("seek PE DOS header {}: {e}", path.display()))?;
+    let mut dos = [0u8; 64];
+    file.read_exact(&mut dos)
+        .map_err(|e| format!("read PE DOS header {}: {e}", path.display()))?;
+    if &dos[0..2] != b"MZ" {
+        return Err(format!(
+            "retained DLL {} lacks MZ signature",
+            path.display()
+        ));
+    }
+    let pe_offset = u64::from(u32::from_le_bytes(dos[0x3c..0x40].try_into().unwrap()));
+    let minimum_end = pe_offset
+        .checked_add(24 + 60)
+        .ok_or_else(|| "PE header offset overflow".to_string())?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| format!("stat retained DLL {}: {e}", path.display()))?
+        .len();
+    if minimum_end > file_len {
+        return Err(format!(
+            "retained DLL {} has out-of-range PE header",
+            path.display()
+        ));
+    }
+    file.seek(SeekFrom::Start(pe_offset))
+        .map_err(|e| format!("seek PE header {}: {e}", path.display()))?;
+    let mut signature_and_coff = [0u8; 24];
+    file.read_exact(&mut signature_and_coff)
+        .map_err(|e| format!("read PE header {}: {e}", path.display()))?;
+    if &signature_and_coff[0..4] != b"PE\0\0" {
+        return Err(format!(
+            "retained DLL {} lacks PE signature",
+            path.display()
+        ));
+    }
+    let optional_len = u16::from_le_bytes(signature_and_coff[20..22].try_into().unwrap());
+    if optional_len < 60 {
+        return Err(format!(
+            "retained DLL {} optional header is too short",
+            path.display()
+        ));
+    }
+    let mut optional_prefix = [0u8; 60];
+    file.read_exact(&mut optional_prefix)
+        .map_err(|e| format!("read PE optional header {}: {e}", path.display()))?;
+    let magic = u16::from_le_bytes(optional_prefix[0..2].try_into().unwrap());
+    if magic != 0x10b && magic != 0x20b {
+        return Err(format!(
+            "retained DLL {} has unsupported PE optional-header magic {magic:#x}",
+            path.display()
+        ));
+    }
+    let image_size = u32::from_le_bytes(optional_prefix[56..60].try_into().unwrap());
+    if image_size == 0 {
+        return Err(format!(
+            "retained DLL {} declares zero SizeOfImage",
+            path.display()
+        ));
+    }
+    Ok(image_size)
+}
+
+fn hash_open_file_sha256(file: &mut fs::File, path: &Path) -> Result<[u8; 32], String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("seek {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize())
+}
+
+fn target_thread_ids(pid: Dword, primary_thread_id: Dword) -> Result<Vec<Dword>, String> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     if snapshot as isize == INVALID_HANDLE_VALUE {
-        return out;
+        return Err(format!(
+            "target thread snapshot for pid {pid} failed: {}",
+            last_error()
+        ));
     }
-    let mut entry = ThreadEntry32 {
-        dw_size: core::mem::size_of::<ThreadEntry32>() as Dword,
-        cnt_usage: 0,
-        th32_thread_id: 0,
-        th32_owner_process_id: 0,
-        tp_base_pri: 0,
-        tp_delta_pri: 0,
-        dw_flags: 0,
-    };
-    let mut ok = unsafe { Thread32First(snapshot, &mut entry) };
-    while ok != 0 {
-        if entry.th32_owner_process_id == pid
-            && entry.th32_thread_id != 0
-            && !out.contains(&entry.th32_thread_id)
-        {
-            out.push(entry.th32_thread_id);
+    let result = (|| {
+        let mut out = vec![primary_thread_id];
+        let mut entry = ThreadEntry32 {
+            dw_size: core::mem::size_of::<ThreadEntry32>() as Dword,
+            cnt_usage: 0,
+            th32_thread_id: 0,
+            th32_owner_process_id: 0,
+            tp_base_pri: 0,
+            tp_delta_pri: 0,
+            dw_flags: 0,
+        };
+        if unsafe { Thread32First(snapshot, &mut entry) } == 0 {
+            return Err(format!(
+                "target thread enumeration for pid {pid} failed: {}",
+                last_error()
+            ));
         }
-        ok = unsafe { Thread32Next(snapshot, &mut entry) };
+        loop {
+            if entry.th32_owner_process_id == pid
+                && entry.th32_thread_id != 0
+                && !out.contains(&entry.th32_thread_id)
+            {
+                out.push(entry.th32_thread_id);
+            }
+            entry.dw_size = core::mem::size_of::<ThreadEntry32>() as Dword;
+            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                let error = last_error();
+                if error != ERROR_NO_MORE_FILES {
+                    return Err(format!(
+                        "target thread enumeration for pid {pid} stopped with error {error}"
+                    ));
+                }
+                break;
+            }
+        }
+        Ok(out)
+    })();
+    unsafe { CloseHandle(snapshot) };
+    result
+}
+
+struct AutoAttachWorkerContext {
+    pipe_token: String,
+    expected_creation_filetime: u64,
+    control_session: [u8; 16],
+    expectation: recorder_host::auto_attach::proof::ProofExpectation,
+    dll_authority: RetainedDllAuthority,
+}
+
+impl AutoAttachWorkerContext {
+    fn from_env(cfg: &Config) -> Result<Option<Self>, String> {
+        let pipe_token = env::var("BATTLE_PLAN_AUTO_ATTACH_PIPE_TOKEN").or_else(|_| env::var("HOI4_AUTO_ATTACH_PIPE_TOKEN")).ok();
+        let expected = env::var("BATTLE_PLAN_AUTO_ATTACH_EXPECTED_FILETIME").or_else(|_| env::var("HOI4_AUTO_ATTACH_EXPECTED_FILETIME")).ok();
+        let expected_dll = env::var("BATTLE_PLAN_AUTO_ATTACH_EXPECTED_DLL_SHA256").or_else(|_| env::var("HOI4_AUTO_ATTACH_EXPECTED_DLL_SHA256")).ok();
+        let challenge = env::var("BATTLE_PLAN_AUTO_ATTACH_CONTROL_CHALLENGE").or_else(|_| env::var("HOI4_AUTO_ATTACH_CONTROL_CHALLENGE")).ok();
+        if pipe_token.is_none()
+            && expected.is_none()
+            && expected_dll.is_none()
+            && challenge.is_none()
+        {
+            return Ok(None);
+        }
+        let pipe_token = pipe_token
+            .ok_or_else(|| "partial auto-attach worker context: missing pipe token".to_string())?;
+        let expected_creation_filetime = expected
+            .ok_or_else(|| "partial auto-attach worker context: missing FILETIME".to_string())?
+            .parse::<u64>()
+            .map_err(|e| format!("invalid auto-attach FILETIME: {e}"))?;
+        let control_session = recorder_host::auto_attach::proof::decode_hex_16(&pipe_token)
+            .map_err(|e| format!("invalid auto-attach pipe token: {e}"))?;
+        let challenge =
+            recorder_host::auto_attach::proof::decode_hex_16(&challenge.ok_or_else(|| {
+                "partial auto-attach worker context: missing control challenge".to_string()
+            })?)
+            .map_err(|e| format!("invalid auto-attach control challenge: {e}"))?;
+        let expected_dll_sha256 =
+            recorder_host::auto_attach::proof::decode_hex_32(&expected_dll.ok_or_else(|| {
+                "partial auto-attach worker context: missing expected DLL hash".to_string()
+            })?)
+            .map_err(|e| format!("invalid auto-attach expected DLL hash: {e}"))?;
+        // Acquire and retain the DLL authority at worker-context validation.
+        // Its handle denies write/delete sharing until after LoadLibraryW and
+        // hook teardown, so the proof hash cannot outlive the bytes it proves.
+        let dll_authority = RetainedDllAuthority::open(&cfg.dll, Some(expected_dll_sha256))?;
+        let dll_sha256 = dll_authority.sha256;
+        Ok(Some(Self {
+            pipe_token,
+            expected_creation_filetime,
+            control_session,
+            expectation: recorder_host::auto_attach::proof::ProofExpectation {
+                pid: cfg.pid,
+                creation_filetime: expected_creation_filetime,
+                h4cr_version: COMPACT_RECORD_VERSION,
+                dll_sha256,
+                challenge,
+            },
+            dll_authority,
+        }))
     }
-    unsafe {
-        CloseHandle(snapshot);
+
+    fn into_parts(
+        self,
+    ) -> Result<
+        (
+            RetainedDllAuthority,
+            recorder_host::auto_attach::proof::WorkerProofEmitter<std::io::Stdout>,
+        ),
+        String,
+    > {
+        let emitter = recorder_host::auto_attach::proof::WorkerProofEmitter::new(
+            std::io::stdout(),
+            self.control_session,
+            self.expectation,
+        )?;
+        Ok((self.dll_authority, emitter))
     }
-    out
+}
+
+#[cfg(test)]
+fn hash_file_sha256_bytes(path: &Path) -> Result<[u8; 32], String> {
+    let mut file = fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    hash_open_file_sha256(&mut file, path)
+}
+
+fn validate_process_creation_filetime(
+    pid: Dword,
+    expected: u64,
+) -> Result<RetainedProcessAuthority, String> {
+    RetainedProcessAuthority::open(pid, Some(expected))
 }
 
 /// The outcome of a bounded-memory pipe capture: the stream was written straight
@@ -5362,15 +6939,91 @@ fn classify_pipe_read_error(err: Dword, read_deadline_reached: bool) -> PipeRead
     }
 }
 
+fn capture_pipe_name(target_pid: Dword, token: &str) -> Result<String, String> {
+    if token.is_empty()
+        || token.len() > 64
+        || !token
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return Err("capture pipe session token is absent or malformed".to_string());
+    }
+    Ok(format!(
+        r"\\.\pipe\battle-plan_collector_{target_pid}_{token}"
+    ))
+}
+
+fn require_pipe_client_pid(client_pid: Dword, target_pid: Dword) -> Result<(), String> {
+    if client_pid != target_pid {
+        return Err(format!(
+            "named-pipe client pid {client_pid} does not match retained target pid {target_pid}"
+        ));
+    }
+    Ok(())
+}
+
+fn require_pipe_session_binding(
+    bound_pipe_name: &str,
+    target_pid: Dword,
+    expected_token: &str,
+) -> Result<(), String> {
+    let expected_pipe_name = capture_pipe_name(target_pid, expected_token)?;
+    if bound_pipe_name != expected_pipe_name {
+        return Err(
+            "named-pipe stream is not bound to the current attempt session token".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Bind the stream to this attempt and retained PID against external impostors.
+///
+/// Threat-model boundary: arbitrary code already executing inside the game can
+/// read the CSPRNG token from collector_control.json and originate the stream;
+/// truly simultaneous equal-rights external injection can also race the final
+/// module-absence check. Those residuals are explicitly out of threat model and
+/// require an architectural trust boundary or OS code-integrity policy. They
+/// are not fail-closed guarantees and another in-process nonce or HMAC does not
+/// close them.
+fn authenticate_connected_pipe_client(
+    pipe: Handle,
+    bound_pipe_name: &str,
+    expected_token: &str,
+    target: &RetainedProcessAuthority,
+) -> Result<(), String> {
+    require_pipe_session_binding(bound_pipe_name, target.pid, expected_token)?;
+    target.revalidate_live()?;
+    let mut client_pid = 0;
+    if unsafe { GetNamedPipeClientProcessId(pipe, &mut client_pid) } == 0 {
+        return Err(format!(
+            "GetNamedPipeClientProcessId failed before stream acceptance: {}",
+            last_error()
+        ));
+    }
+    require_pipe_client_pid(client_pid, target.pid)?;
+    // A live retained process handle prevents PID reuse while the client PID is
+    // checked. Revalidate the same kernel process object after the query so no
+    // pipe byte is accepted on a stale FILETIME observation.
+    target.revalidate_live()
+}
+
 /// Read the collector pipe and stream every byte directly to `out_path` in bounded
 /// memory (one 64 KiB read buffer + a BufWriter), hashing as we go. Peak memory is
 /// O(1) regardless of how long the capture runs — the defect this replaces held
 /// the entire multi-GB stream in a `Vec<u8>`.
 fn capture_pipe_to_file(
     pipe_name: &str,
+    pipe_session_token: &str,
     timeout_ms: u64,
     out_path: &Path,
     compression: compact_stream::StreamCompression,
+    proof_expected_domain_ids: Vec<u16>,
+    mut proof_emitter: Option<
+        recorder_host::auto_attach::proof::WorkerProofEmitter<std::io::Stdout>,
+    >,
+    target_dll_proof: Option<TargetDllProof>,
+    target_process: std::sync::Arc<RetainedProcessAuthority>,
+    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<PipeCapture, String> {
     let pipe_wide = wide(OsStr::new(pipe_name));
     let handle = unsafe {
@@ -5386,7 +7039,13 @@ fn capture_pipe_to_file(
         )
     };
     if handle as isize == INVALID_HANDLE_VALUE {
-        return Err(format!("CreateNamedPipeW failed: {}", last_error()));
+        let error = format!("CreateNamedPipeW failed: {}", last_error());
+        let _ = ready.send(Err(error.clone()));
+        return Err(error);
+    }
+    if ready.send(Ok(())).is_err() {
+        unsafe { CloseHandle(handle) };
+        return Err("capture pipe listening barrier receiver dropped".to_string());
     }
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
@@ -5409,6 +7068,35 @@ fn capture_pipe_to_file(
         }
         thread::sleep(Duration::from_millis(25));
     }
+    if let Err(error) = authenticate_connected_pipe_client(
+        handle,
+        pipe_name,
+        pipe_session_token,
+        target_process.as_ref(),
+    ) {
+        unsafe { CloseHandle(handle) };
+        return Err(format!(
+            "collector pipe client authentication failed: {error}"
+        ));
+    }
+    if let Some(emitter) = proof_emitter.as_mut() {
+        let proof = target_dll_proof.as_ref().ok_or_else(|| {
+            "auto-attach collector hello lacks target-module authority".to_string()
+        })?;
+        let loaded_dll_sha256 = match verify_target_loaded_dll(proof) {
+            Ok(hash) => hash,
+            Err(e) => {
+                unsafe { CloseHandle(handle) };
+                return Err(format!(
+                    "auto-attach target module proof failed before collector hello: {e}"
+                ));
+            }
+        };
+        if let Err(e) = emitter.report_connected(loaded_dll_sha256) {
+            unsafe { CloseHandle(handle) };
+            return Err(format!("auto-attach collector hello failed: {e}"));
+        }
+    }
 
     let mut writer = match compact_stream::StreamWriter::create(out_path, compression) {
         Ok(writer) => writer,
@@ -5424,6 +7112,8 @@ fn capture_pipe_to_file(
     let read_deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut write_err: Option<String> = None;
     let mut read_err: Option<String> = None;
+    let mut first_record_gate =
+        recorder_host::auto_attach::proof::FirstCompactRecordGate::new(proof_expected_domain_ids);
     loop {
         let mut buf = [0u8; GENERIC_READ_BUFFER];
         let mut got = 0u32;
@@ -5447,6 +7137,26 @@ fn capture_pipe_to_file(
                 break;
             }
             total = total.saturating_add(got as u64);
+            if proof_emitter.is_some() {
+                match first_record_gate.observe(chunk) {
+                    Ok(Some(header)) => {
+                        if let Err(e) = proof_emitter
+                            .as_mut()
+                            .expect("checked")
+                            .report_first_complete_record(header.sequence)
+                        {
+                            read_err = Some(format!("auto-attach proof write failed: {e}"));
+                            break;
+                        }
+                        proof_emitter = None;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        read_err = Some(e);
+                        break;
+                    }
+                }
+            }
             continue;
         }
         let err = last_error();
@@ -5855,95 +7565,54 @@ fn summarize_compact_stream_chunk(
                         .expected_partial_tolerance_hours
                         .insert(game_hour_raw);
                 }
-                track_delta_baseline_for_summary(
-                    summary,
-                    delta_baselines_seen,
-                    domain_id,
-                    payload,
-                );
+                track_delta_baseline_for_summary(summary, delta_baselines_seen, domain_id, payload);
                 match domain_id {
                     10 => decode_compact_fuel_data_payload(offset, payload, summary),
                     11 => decode_compact_production_data_payload(offset, payload, summary),
                     12 => decode_compact_focus_data_payload(offset, payload, summary),
                     13 => decode_compact_tech_data_payload(offset, payload, summary),
                     14 => decode_compact_politics_data_payload(offset, payload, summary),
-                    15 => decode_compact_politics_residuals_data_payload(
-                        offset,
-                        payload,
-                        summary,
-                    ),
+                    15 => decode_compact_politics_residuals_data_payload(offset, payload, summary),
                     16 => decode_compact_decisions_data_payload(offset, payload, summary),
                     17 => decode_compact_diplomacy_data_payload(offset, payload, summary),
-                    18 => {
-                        decode_compact_country_identity_data_payload(offset, payload, summary)
-                    }
+                    18 => decode_compact_country_identity_data_payload(offset, payload, summary),
                     20 => decode_compact_divisions_data_payload(offset, payload, summary),
                     21 => decode_compact_land_combats_data_payload(offset, payload, summary),
                     22 => decode_compact_map_control_data_payload(offset, payload, summary),
                     23 => decode_compact_map_detail_data_payload(offset, payload, summary),
                     24 => decode_compact_weather_data_payload(offset, payload, summary),
-                    26 => decode_compact_division_equipment_data_payload(
-                        offset,
-                        payload,
-                        summary,
-                    ),
+                    26 => decode_compact_division_equipment_data_payload(offset, payload, summary),
                     27 => decode_compact_army_orders_data_payload(offset, payload, summary),
                     28 => decode_compact_oob_command_data_payload(offset, payload, summary),
                     29 => decode_compact_ships_data_payload(offset, payload, summary),
                     30 => decode_compact_air_wings_data_payload(offset, payload, summary),
-                    31 => decode_compact_air_region_activity_data_payload(
-                        offset,
-                        payload,
-                        summary,
-                    ),
-                    32 => {
-                        decode_compact_air_wing_loadouts_data_payload(offset, payload, summary)
+                    31 => decode_compact_air_region_activity_data_payload(offset, payload, summary),
+                    32 => decode_compact_air_wing_loadouts_data_payload(offset, payload, summary),
+                    33 => decode_compact_air_variant_defs_data_payload(offset, payload, summary),
+                    34 => decode_compact_air_base_status_data_payload(offset, payload, summary),
+                    35 => decode_compact_air_variant_stats_data_payload(offset, payload, summary),
+                    36 => {
+                        decode_compact_air_variant_reserves_data_payload(offset, payload, summary)
                     }
-                    33 => {
-                        decode_compact_air_variant_defs_data_payload(offset, payload, summary)
+                    37 => {
+                        decode_compact_stockpile_variant_defs_data_payload(offset, payload, summary)
                     }
-                    34 => {
-                        decode_compact_air_base_status_data_payload(offset, payload, summary)
+                    38 => {
+                        decode_compact_air_superiority_inputs_data_payload(offset, payload, summary)
                     }
-                    35 => {
-                        decode_compact_air_variant_stats_data_payload(offset, payload, summary)
+                    39 => {
+                        decode_compact_air_variant_upgrades_data_payload(offset, payload, summary)
                     }
-                    36 => decode_compact_air_variant_reserves_data_payload(
-                        offset,
-                        payload,
-                        summary,
-                    ),
-                    37 => decode_compact_stockpile_variant_defs_data_payload(
-                        offset,
-                        payload,
-                        summary,
-                    ),
-                    38 => decode_compact_air_superiority_inputs_data_payload(
-                        offset,
-                        payload,
-                        summary,
-                    ),
-                    39 => decode_compact_air_variant_upgrades_data_payload(
-                        offset,
-                        payload,
-                        summary,
-                    ),
                     40 => decode_compact_stockpile_variant_upgrades_data_payload(
-                        offset,
-                        payload,
-                        summary,
+                        offset, payload, summary,
                     ),
                     41 => decode_compact_projects_data_payload(offset, payload, summary),
-                    42 => decode_compact_air_combat_losses_live_data_payload(
-                        offset,
-                        payload,
-                        summary,
-                    ),
+                    42 => {
+                        decode_compact_air_combat_losses_live_data_payload(offset, payload, summary)
+                    }
                     43 => decode_compact_market_trade_data_payload(offset, payload, summary),
                     44 => decode_compact_supply_logistics_attrition_data_payload(
-                        offset,
-                        payload,
-                        summary,
+                        offset, payload, summary,
                     ),
                     COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE => {
                         decode_compact_frd_depth_data_payload(
@@ -5954,150 +7623,100 @@ fn summarize_compact_stream_chunk(
                         )
                     }
                     COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES => {
-                        decode_compact_air_variant_archetypes_data_payload(
-                            offset,
-                            payload,
-                            summary,
-                        )
+                        decode_compact_air_variant_archetypes_data_payload(offset, payload, summary)
                     }
                     COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE => {
                         decode_compact_characters_leaders_cabinet_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE => {
                         decode_compact_construction_buildings_state_damage_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE => {
                         decode_compact_scripted_state_flags_variables_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_OCCUPATION_RESISTANCE_COMPLIANCE_LIVE => {
                         decode_compact_occupation_resistance_compliance_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE => {
                         decode_compact_diplomacy_intel_operatives_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE => {
                         decode_compact_army_battleplans_depth_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE => {
                         decode_compact_land_combat_detail_events_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE => {
                         decode_compact_naval_missions_status_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE => {
                         decode_compact_naval_combat_lifecycle_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE => {
                         decode_compact_naval_combat_members_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE => {
                         decode_compact_session_multiplayer_metadata_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_CAPITULATION_WAR_STATE_LIVE => {
                         decode_compact_capitulation_war_state_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE => {
-                        decode_compact_air_loss_stats_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
-                        )
+                        decode_compact_air_loss_stats_live_data_payload(offset, payload, summary)
                     }
                     COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE => {
-                        decode_compact_hub_motorization_live_data_payload(
-                            offset,
-                            payload,
-                            summary,
-                        )
+                        decode_compact_hub_motorization_live_data_payload(offset, payload, summary)
                     }
                     COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE => {
-                        decode_compact_country_core_scalars_data_payload(
-                            offset,
-                            payload,
-                            summary,
-                        )
+                        decode_compact_country_core_scalars_data_payload(offset, payload, summary)
                     }
                     COMPACT_DOMAIN_DELAYED_EVENTS_LIVE => {
                         decode_compact_delayed_events_data_payload(offset, payload, summary)
                     }
                     COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE => {
                         decode_compact_special_project_programs_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE => {
                         decode_compact_occupation_state_extras_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE => {
                         decode_compact_country_dynamic_modifiers_data_payload(
-                            offset,
-                            payload,
-                            summary,
+                            offset, payload, summary,
                         )
                     }
                     COMPACT_DOMAIN_SESSION_HEADER_LIVE => {
                         decode_compact_session_header_data_payload(offset, payload, summary)
                     }
                     COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE => {
-                        decode_compact_tech_sharing_groups_data_payload(
-                            offset,
-                            payload,
-                            summary,
-                        )
+                        decode_compact_tech_sharing_groups_data_payload(offset, payload, summary)
                     }
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
@@ -18109,10 +19728,7 @@ fn add_compact_domain_perf_diagnostic_unit(
         // the last value; both track {first_hour, last_hour} of incidence —
         // exactly the C0 cross-domain incidence ledger shape.
         if name.starts_with("so_") {
-            let entry = summary
-                .status_origins
-                .entry(name.to_string())
-                .or_default();
+            let entry = summary.status_origins.entry(name.to_string()).or_default();
             if name.ends_with("_sample") {
                 entry.value = value;
             } else {
@@ -18121,10 +19737,16 @@ fn add_compact_domain_perf_diagnostic_unit(
             if game_hour_raw == compact_contract::status_origins::ATTRIBUTION_NO_CLOCK_HOUR {
                 entry.no_clock_observations = entry.no_clock_observations.saturating_add(1);
             } else {
-                entry.first_hour =
-                    Some(entry.first_hour.map_or(game_hour_raw, |h| h.min(game_hour_raw)));
-                entry.last_hour =
-                    Some(entry.last_hour.map_or(game_hour_raw, |h| h.max(game_hour_raw)));
+                entry.first_hour = Some(
+                    entry
+                        .first_hour
+                        .map_or(game_hour_raw, |h| h.min(game_hour_raw)),
+                );
+                entry.last_hour = Some(
+                    entry
+                        .last_hour
+                        .map_or(game_hour_raw, |h| h.max(game_hour_raw)),
+                );
             }
             return;
         }
@@ -18193,24 +19815,20 @@ fn add_compact_lane_wall_unit(summary: &mut CompactSummary, name: &str, value: u
             summary.lane_wall_other_wall_us_total =
                 summary.lane_wall_other_wall_us_total.saturating_add(value);
         }
-        "prefetch_dist_relation" => {
-            match summary.lane_wall_prefetch_dist_relation_applied {
-                None => summary.lane_wall_prefetch_dist_relation_applied = Some(value),
-                Some(prev) if prev != value => {
-                    summary.lane_wall_prefetch_dist_relation_mixed = true;
-                }
-                Some(_) => {}
+        "prefetch_dist_relation" => match summary.lane_wall_prefetch_dist_relation_applied {
+            None => summary.lane_wall_prefetch_dist_relation_applied = Some(value),
+            Some(prev) if prev != value => {
+                summary.lane_wall_prefetch_dist_relation_mixed = true;
             }
-        }
-        "prefetch_dist_candidates" => {
-            match summary.lane_wall_prefetch_dist_candidates_applied {
-                None => summary.lane_wall_prefetch_dist_candidates_applied = Some(value),
-                Some(prev) if prev != value => {
-                    summary.lane_wall_prefetch_dist_candidates_mixed = true;
-                }
-                Some(_) => {}
+            Some(_) => {}
+        },
+        "prefetch_dist_candidates" => match summary.lane_wall_prefetch_dist_candidates_applied {
+            None => summary.lane_wall_prefetch_dist_candidates_applied = Some(value),
+            Some(prev) if prev != value => {
+                summary.lane_wall_prefetch_dist_candidates_mixed = true;
             }
-        }
+            Some(_) => {}
+        },
         _ => {
             if let Some(id) = rest
                 .strip_prefix('d')
@@ -18514,6 +20132,258 @@ fn last_error() -> Dword {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn minimal_test_pe(marker: u8) -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x200];
+        bytes[0..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+        // COFF NumberOfSections + SizeOfOptionalHeader.
+        bytes[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+        bytes[0x94..0x96].copy_from_slice(&0xf0u16.to_le_bytes());
+        // PE32+ magic, SizeOfImage, and SizeOfHeaders.
+        bytes[0x98..0x9a].copy_from_slice(&0x20bu16.to_le_bytes());
+        bytes[0xd0..0xd4].copy_from_slice(&0x2000u32.to_le_bytes());
+        bytes[0xd4..0xd8].copy_from_slice(&0x200u32.to_le_bytes());
+        // One read/execute, non-writable virtual section. The parser hashes its
+        // mapped zero-fill in addition to the retained headers.
+        bytes[0x190..0x194].copy_from_slice(&0x100u32.to_le_bytes());
+        bytes[0x194..0x198].copy_from_slice(&0x1000u32.to_le_bytes());
+        bytes[0x1ac..0x1b0].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        bytes[0x1ff] = marker;
+        bytes
+    }
+
+    #[test]
+    #[ignore = "subprocess helper for retained-process exit test"]
+    fn retained_process_wait_helper() {
+        let ready = env::var_os("BATTLE_PLAN_TEST_PROCESS_READY").or_else(|| env::var_os("HOI4_TEST_PROCESS_READY")).expect("ready path");
+        fs::write(ready, b"ready").unwrap();
+        thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    fn process_exit_after_validation_aborts_before_hook_install() {
+        let ready = env::temp_dir().join(format!(
+            "retained_process_ready_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut child = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::retained_process_wait_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("BATTLE_PLAN_TEST_PROCESS_READY", &ready)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "helper child did not become live");
+
+        // This is the authority-grade handle retained by the production path.
+        // Exit the process only after FILETIME validation, then exercise the
+        // exact last-moment verify/action seam used by SetWindowsHookExW.
+        let authority = RetainedProcessAuthority::open(child.id(), None).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let hook_called = std::cell::Cell::new(false);
+        let result = run_authorized_process_action(
+            || authority.revalidate_live(),
+            || {
+                hook_called.set(true);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(
+            !hook_called.get(),
+            "hook action ran after liveness proof failed"
+        );
+        let _ = fs::remove_file(ready);
+    }
+
+    #[test]
+    fn preexisting_job_membership_is_ambiguous_and_fails_closed() {
+        let error = require_target_not_in_job(1234, true)
+            .expect_err("any prior job membership must block auto-attach");
+        assert!(error.contains("prior injection state"), "{error}");
+        require_target_not_in_job(1234, false).unwrap();
+    }
+
+    #[test]
+    #[ignore = "live-only: requires a target process outside the test harness job"]
+    fn target_job_lease_survives_worker_handle_drop_and_blocks_reinjection() {
+        let ready = env::temp_dir().join(format!(
+            "retained_lease_ready_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        use std::os::windows::process::CommandExt;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        let mut command = std::process::Command::new(env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "tests::retained_process_wait_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("BATTLE_PLAN_TEST_PROCESS_READY", &ready)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB);
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "helper child did not become live");
+
+        let authority = RetainedProcessAuthority::open(child.id(), None).unwrap();
+        let lease = RetainedTargetLease::establish(&authority).unwrap();
+        drop(lease);
+        let error = RetainedTargetLease::establish(&authority)
+            .expect_err("target job membership must outlive the worker's local handle");
+        assert!(error.contains("prior injection state"), "{error}");
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let _ = fs::remove_file(ready);
+    }
+
+    #[test]
+    fn cached_hash_mismatch_with_loaded_module_aborts_injection() {
+        let cached = [0x11; 32];
+        let loaded = [0x22; 32];
+        let hook_called = std::cell::Cell::new(false);
+        let result = run_authorized_process_action(
+            || require_loaded_dll_hash(cached, loaded),
+            || {
+                hook_called.set(true);
+                Ok(())
+            },
+        );
+        assert!(
+            result.is_err(),
+            "cached expectation must not prove another image"
+        );
+        assert!(!hook_called.get(), "hook ran after loaded-image mismatch");
+    }
+
+    #[test]
+    fn live_mapped_image_patch_mismatch_aborts_proof_action() {
+        let mut mapped = vec![0x41u8; 64];
+        let preferred_image_base = 0x1800_0000_0u64;
+        let layout = ImmutableImageLayout {
+            image_size: mapped.len() as Dword,
+            preferred_image_base,
+            regions: vec![ImmutableImageRegion {
+                rva: 0,
+                length: mapped.len() as Dword,
+            }],
+            relocations: vec![ImmutableImageRelocation { rva: 8, length: 8 }],
+        };
+        let canonical_pointer = preferred_image_base + 0x1234;
+        let mapping_delta = (mapped.as_ptr() as u64).wrapping_sub(preferred_image_base);
+        mapped[8..16].copy_from_slice(&canonical_pointer.wrapping_add(mapping_delta).to_le_bytes());
+        let expected = mapped_immutable_image_sha256(
+            unsafe { GetCurrentProcess() },
+            mapped.as_ptr() as usize,
+            &layout,
+        )
+        .unwrap();
+        // Canonicalization removes only the mapping delta. Corrupting the
+        // relocated pointer itself remains authority-relevant evidence.
+        let relocated = u64::from_le_bytes(mapped[8..16].try_into().unwrap());
+        mapped[8..16].copy_from_slice(&relocated.wrapping_add(1).to_le_bytes());
+        let relocated_patch = mapped_immutable_image_sha256(
+            unsafe { GetCurrentProcess() },
+            mapped.as_ptr() as usize,
+            &layout,
+        )
+        .unwrap();
+        assert_ne!(expected, relocated_patch);
+        mapped[8..16].copy_from_slice(&relocated.to_le_bytes());
+        mapped[24] ^= 0xff;
+        let patched = mapped_immutable_image_sha256(
+            unsafe { GetCurrentProcess() },
+            mapped.as_ptr() as usize,
+            &layout,
+        )
+        .unwrap();
+        let proof_action_called = std::cell::Cell::new(false);
+        let result = run_authorized_process_action(
+            || require_mapped_image_hash(expected, patched),
+            || {
+                proof_action_called.set(true);
+                Ok(())
+            },
+        );
+        assert!(result.is_err(), "patched mapped image was accepted");
+        assert!(
+            !proof_action_called.get(),
+            "proof action ran after direct mapped-image mismatch"
+        );
+    }
+
+    #[test]
+    fn validated_dll_bytes_cannot_change_before_load() {
+        let path = std::env::temp_dir().join(format!(
+            "retained_dll_{}_{}.dll",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, minimal_test_pe(0x11)).unwrap();
+        let expected = hash_file_sha256_bytes(&path).unwrap();
+        fs::write(&path, minimal_test_pe(0x22)).unwrap();
+        let mismatch = RetainedDllAuthority::open(&path, Some(expected));
+        assert!(
+            mismatch.is_err(),
+            "bytes changed after cached coordinator hash were accepted"
+        );
+        fs::write(&path, minimal_test_pe(0x11)).unwrap();
+        let authority = RetainedDllAuthority::open(&path, Some(expected)).unwrap();
+        assert_eq!(authority.image_size, 0x2000);
+
+        let rewrite = fs::write(&path, minimal_test_pe(0x33));
+        assert!(
+            rewrite.is_err(),
+            "deny-write/delete retained handle allowed DLL mutation"
+        );
+        drop(authority);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn resident_collector_module_is_committed_injection_evidence() {
+        let observed = TargetModuleObservation {
+            module_name: OsString::from("collector.dll"),
+            path: PathBuf::from(r"C:\staged\collector.dll"),
+            base_address: 0x1000,
+            image_size: 0x2000,
+        };
+        let error = require_no_matching_target_module(&[observed], OsStr::new("COLLECTOR.DLL"))
+            .expect_err("a resident matching module must block another hook action");
+        assert!(error.contains("prior injection"), "{error}");
+    }
     use recorder_host::world_fold::WorldFold;
 
     #[test]
@@ -18599,6 +20469,23 @@ mod tests {
     }
 
     #[test]
+    fn pipe_client_pid_mismatch_is_rejected() {
+        let error = require_pipe_client_pid(4321, 1234)
+            .expect_err("a non-target named-pipe client must fail closed");
+        assert!(error.contains("4321") && error.contains("1234"), "{error}");
+    }
+
+    #[test]
+    fn prior_session_pipe_nonce_is_rejected() {
+        let fresh = capture_pipe_name(1234, "fresh_nonce").unwrap();
+        require_pipe_session_binding(&fresh, 1234, "fresh_nonce").unwrap();
+        let stale = capture_pipe_name(1234, "stale_nonce").unwrap();
+        let error = require_pipe_session_binding(&stale, 1234, "fresh_nonce")
+            .expect_err("a prior-session pipe endpoint must fail closed");
+        assert!(error.contains("session"), "{error}");
+    }
+
+    #[test]
     fn compressed_file_summary_matches_raw_slice_summary() {
         let dir = TmpDir::new("compressed_summary");
         let raw_path = dir.join("raw.bin");
@@ -18633,7 +20520,10 @@ mod tests {
         let actual = summarize_compact_stream_file(&encoded_path).unwrap();
         assert_eq!(actual.total_bytes, expected.total_bytes);
         assert_eq!(actual.record_count, expected.record_count);
-        assert_eq!(actual.frame_end_record_count, expected.frame_end_record_count);
+        assert_eq!(
+            actual.frame_end_record_count,
+            expected.frame_end_record_count
+        );
         assert_eq!(actual.total_payload_bytes, expected.total_payload_bytes);
         assert_eq!(actual.unique_hours, expected.unique_hours);
         assert_eq!(actual.frame_end_hour_counts, expected.frame_end_hour_counts);
@@ -19127,14 +21017,15 @@ mod tests {
         );
 
         let summary = summarize_compact_stream(&raw);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         // Max-aggregation: polls 100_000 (not 90_000), coalesced 60 (not 55).
         assert_eq!(summary.hour_latch.get("observed").copied(), Some(100));
         assert_eq!(summary.hour_latch.get("attempts").copied(), Some(40));
-        assert_eq!(
-            summary.hour_latch.get("emitted_to_sink").copied(),
-            Some(38)
-        );
+        assert_eq!(summary.hour_latch.get("emitted_to_sink").copied(), Some(38));
         assert_eq!(summary.hour_latch.get("coalesced").copied(), Some(60));
         assert_eq!(summary.hour_latch.get("coalesced_flush").copied(), Some(5));
         assert_eq!(summary.hour_latch.get("polls").copied(), Some(100_000));
@@ -25562,7 +27453,10 @@ mod tests {
         // resource).
         let base = frame(
             0,
-            vec![construction_row(77, 5_000_000), construction_row(88, 2_000_000)],
+            vec![
+                construction_row(77, 5_000_000),
+                construction_row(88, 2_000_000),
+            ],
             vec![state_building(0x2fab, 5), state_building(0x3000, 7)],
             vec![resource_row(0x3e03, 2_500_000)],
         );
@@ -25572,7 +27466,10 @@ mod tests {
         //   * full-emission / legacy delta: emit the FULL read set.
         let partial_full = frame(
             COMPACT_STATUS_PARTIAL_DATA,
-            vec![construction_row(77, 6_000_000), construction_row(88, 2_000_000)],
+            vec![
+                construction_row(77, 6_000_000),
+                construction_row(88, 2_000_000),
+            ],
             vec![state_building(0x2fab, 5)],
             Vec::new(),
         );
@@ -25587,7 +27484,10 @@ mod tests {
         // Hour 2 in-game truth == hour 1 projection EXCEPT building 0x2fab -> level 6.
         let full2 = frame(
             0,
-            vec![construction_row(77, 6_000_000), construction_row(88, 2_000_000)],
+            vec![
+                construction_row(77, 6_000_000),
+                construction_row(88, 2_000_000),
+            ],
             vec![state_building(0x2fab, 6), state_building(0x3000, 7)],
             vec![resource_row(0x3e03, 2_500_000)],
         );
@@ -25617,7 +27517,11 @@ mod tests {
 
         for raw in [&full_raw, &legacy_delta_raw, &reduced_delta_raw] {
             let summary = summarize_compact_stream(raw);
-            assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+            assert!(
+                summary.parse_errors.is_empty(),
+                "{:?}",
+                summary.parse_errors
+            );
             assert!(compact_domain_coverage_errors(&summary, &[48]).is_empty());
         }
 
@@ -25670,10 +27574,10 @@ mod tests {
 
         #[derive(Clone, Default)]
         struct WorldState {
-            countries: BTreeMap<u32, i64>,                     // tag -> casualties
-            opinions: BTreeMap<(u32, u32), i32>,               // (src,tgt) -> opinion
-            state_events: BTreeMap<(u32, u32), i64>,           // (owner,obj) -> value
-            subjects: BTreeMap<(u32, u32), u32>,               // (overlord,subject) -> autonomy
+            countries: BTreeMap<u32, i64>,           // tag -> casualties
+            opinions: BTreeMap<(u32, u32), i32>,     // (src,tgt) -> opinion
+            state_events: BTreeMap<(u32, u32), i64>, // (owner,obj) -> value
+            subjects: BTreeMap<(u32, u32), u32>,     // (overlord,subject) -> autonomy
         }
 
         fn country_row(tag: u32, casualties: i64) -> d53c::CountryDiplomacyRow {
@@ -25820,7 +27724,14 @@ mod tests {
                 &test_domain_payload_with_status(500, rc, rc, 0, 0, 0),
             );
             *seq += 1;
-            append_test_compact_record(raw, *seq, hour, 53, COMPACT_RECORD_TYPE_DOMAIN_DATA, payload);
+            append_test_compact_record(
+                raw,
+                *seq,
+                hour,
+                53,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                payload,
+            );
             *seq += 1;
             append_test_compact_record(
                 raw,
@@ -25837,7 +27748,9 @@ mod tests {
         // Hour 0: CLEAN baseline.
         let h0 = WorldState {
             countries: [(1, 100), (2, 200)].into_iter().collect(),
-            opinions: [((1, 2), 5), ((1, 3), 7), ((2, 1), -3)].into_iter().collect(),
+            opinions: [((1, 2), 5), ((1, 3), 7), ((2, 1), -3)]
+                .into_iter()
+                .collect(),
             state_events: [((1, 0xaa), 1000)].into_iter().collect(),
             subjects: [((1, 2), 50)].into_iter().collect(),
         };
@@ -25885,7 +27798,12 @@ mod tests {
             base_hour + 2,
             &encode_full(&h2, COMPACT_STATUS_PARTIAL_DATA),
         );
-        append_hour(&mut full_raw, &mut fseq, base_hour + 3, &encode_full(&h3, 0));
+        append_hour(
+            &mut full_raw,
+            &mut fseq,
+            base_hour + 3,
+            &encode_full(&h3, 0),
+        );
 
         // REDUCED stream: hour 0 is the full clean baseline; hour 1/2 are
         // DELTA|PARTIAL vs the PINNED hour-0 baseline; hour 3 is a plain DELTA
@@ -25895,13 +27813,21 @@ mod tests {
             &mut reduced_raw,
             &mut rseq,
             base_hour + 1,
-            &encode_delta(&h0, &h1, COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA),
+            &encode_delta(
+                &h0,
+                &h1,
+                COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA,
+            ),
         );
         append_hour(
             &mut reduced_raw,
             &mut rseq,
             base_hour + 2,
-            &encode_delta(&h0, &h2, COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA),
+            &encode_delta(
+                &h0,
+                &h2,
+                COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA,
+            ),
         );
         append_hour(
             &mut reduced_raw,
@@ -25912,7 +27838,11 @@ mod tests {
 
         for raw in [&full_raw, &reduced_raw] {
             let summary = summarize_compact_stream(raw);
-            assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+            assert!(
+                summary.parse_errors.is_empty(),
+                "{:?}",
+                summary.parse_errors
+            );
         }
 
         let full_snapshots = fold_compact_snapshots(&full_raw);
@@ -25939,11 +27869,31 @@ mod tests {
             let mut rr = Vec::new();
             let (mut fs, mut rs) = (1u64, 1u64);
             // FULL: empty(partial) baseline, then full partial reads.
-            append_hour(&mut fr, &mut fs, base_hour, &encode_full(&e0, COMPACT_STATUS_PARTIAL_DATA));
-            append_hour(&mut fr, &mut fs, base_hour + 1, &encode_full(&e1, COMPACT_STATUS_PARTIAL_DATA));
-            append_hour(&mut fr, &mut fs, base_hour + 2, &encode_full(&e1, COMPACT_STATUS_PARTIAL_DATA));
+            append_hour(
+                &mut fr,
+                &mut fs,
+                base_hour,
+                &encode_full(&e0, COMPACT_STATUS_PARTIAL_DATA),
+            );
+            append_hour(
+                &mut fr,
+                &mut fs,
+                base_hour + 1,
+                &encode_full(&e1, COMPACT_STATUS_PARTIAL_DATA),
+            );
+            append_hour(
+                &mut fr,
+                &mut fs,
+                base_hour + 2,
+                &encode_full(&e1, COMPACT_STATUS_PARTIAL_DATA),
+            );
             // REDUCED: empty(partial) baseline seeds; then DELTA|PARTIAL vs empty.
-            append_hour(&mut rr, &mut rs, base_hour, &encode_full(&e0, COMPACT_STATUS_PARTIAL_DATA));
+            append_hour(
+                &mut rr,
+                &mut rs,
+                base_hour,
+                &encode_full(&e0, COMPACT_STATUS_PARTIAL_DATA),
+            );
             let dp = COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA;
             append_hour(&mut rr, &mut rs, base_hour + 1, &encode_delta(&e0, &e1, dp));
             append_hour(&mut rr, &mut rs, base_hour + 2, &encode_delta(&e0, &e1, dp));
@@ -25963,7 +27913,10 @@ mod tests {
         struct Rng(u64);
         impl Rng {
             fn next(&mut self) -> u64 {
-                self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                self.0 = self
+                    .0
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 self.0 >> 16
             }
             fn below(&mut self, n: u64) -> u64 {
@@ -26042,7 +27995,11 @@ mod tests {
                 // frame is always emitted in full and seeds the baseline even when
                 // partial (mirrors the collector's deep-war all-partial cold start).
                 let is_partial = rng.below(3) != 0;
-                let full_status = if is_partial { COMPACT_STATUS_PARTIAL_DATA } else { 0 };
+                let full_status = if is_partial {
+                    COMPACT_STATUS_PARTIAL_DATA
+                } else {
+                    0
+                };
                 let full_payload = encode_full(&truth, full_status);
 
                 let reduced_payload = match &baseline {
@@ -26050,7 +28007,11 @@ mod tests {
                     None => encode_full(&truth, full_status),
                     Some(b) => {
                         let status = COMPACT_STATUS_DELTA_DATA
-                            | if is_partial { COMPACT_STATUS_PARTIAL_DATA } else { 0 };
+                            | if is_partial {
+                                COMPACT_STATUS_PARTIAL_DATA
+                            } else {
+                                0
+                            };
                         encode_delta(b, &truth, status)
                     }
                 };
@@ -28453,8 +30414,8 @@ mod tests {
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
             d53_relation_read_mode: D53RelationReadMode::Offsets,
-        prefetch_dist_relation: None,
-        prefetch_dist_candidates: None,
+            prefetch_dist_relation: None,
+            prefetch_dist_candidates: None,
             reader_concurrency: 0,
             pdx_user_dir: None,
             stream_compression: compact_stream::StreamCompression::None,
@@ -28955,8 +30916,7 @@ mod tests {
             "deferred fold-and-repack must produce the exact inline-fold container bytes"
         );
 
-        let container =
-            Container::open(&deferred_replay, &ExpectedIdentity::default()).unwrap();
+        let container = Container::open(&deferred_replay, &ExpectedIdentity::default()).unwrap();
         container.verify_all().unwrap();
         assert_eq!(container.index().snapshots.len(), 1);
         let embedded_manifest = container
@@ -28970,7 +30930,10 @@ mod tests {
 
         let standalone: Value =
             serde_json::from_slice(&fs::read(&deferred_manifest).unwrap()).unwrap();
-        assert_eq!(standalone["host_finalize"]["fold"]["hours_emitted"], json!(1));
+        assert_eq!(
+            standalone["host_finalize"]["fold"]["hours_emitted"],
+            json!(1)
+        );
         assert!(standalone["host_finalize"]["fold"].get("skipped").is_none());
         let spill_dirs = fs::read_dir(&deferred_dir)
             .unwrap()
@@ -29364,8 +31327,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let implicit_json =
-            parse_args(profile_test_args(&dir, &["--hour-latch"])).unwrap_err();
+        let implicit_json = parse_args(profile_test_args(&dir, &["--hour-latch"])).unwrap_err();
         assert!(
             implicit_json.contains("--hour-latch requires --stream-format compact"),
             "unexpected error: {implicit_json}"
@@ -29834,8 +31796,8 @@ mod tests {
             d44_emit_mode: D44EmitMode::Delta,
             d48_emit_mode: D48EmitMode::Delta,
             d53_relation_read_mode: D53RelationReadMode::Offsets,
-        prefetch_dist_relation: None,
-        prefetch_dist_candidates: None,
+            prefetch_dist_relation: None,
+            prefetch_dist_candidates: None,
             reader_concurrency: 0,
             stream_compression: compact_stream::StreamCompression::None,
             compression_profile: CompressionProfile::default(),
@@ -32691,14 +34653,21 @@ mod tests {
             );
         }
         let summary = summarize_compact_stream(&raw);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         let domain = summary.per_domain.get(&69).expect("d69 per_domain entry");
         // Counter: summed (2 frames x 1). Mask: OR'd (still slot 0 = 1).
         assert_eq!(
             domain.data_units_total.get("d69_fail_vtable_mismatch"),
             Some(&2)
         );
-        assert_eq!(domain.data_units_total.get("d69_failed_slot_mask"), Some(&1));
+        assert_eq!(
+            domain.data_units_total.get("d69_failed_slot_mask"),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -32907,8 +34876,7 @@ mod tests {
 
         // Modset re-gate finding 4: a BARE resolved:true (no build hash /
         // provenance / bindings) previously passed — it must now refuse.
-        let bare_resolved =
-            json!({"modset": {"resolved": true, "errors": [], "enabled_mods": []}});
+        let bare_resolved = json!({"modset": {"resolved": true, "errors": [], "enabled_mods": []}});
         assert!(validate_repack_manifest_modset(&bare_resolved)
             .unwrap_err()
             .contains("game build object"));
@@ -33015,15 +34983,18 @@ mod tests {
             .unwrap_err()
             .contains("post-launch content"));
         let mut content_same_second = full(good_mods.clone());
-        content_same_second["modset"]["enabled_mods"][0]["content_fingerprint"]
-            ["max_mtime_unix"] = json!(2i64);
+        content_same_second["modset"]["enabled_mods"][0]["content_fingerprint"]["max_mtime_unix"] =
+            json!(2i64);
         assert!(validate_repack_manifest_modset(&content_same_second).is_ok());
         // Fix-round-3 gate finding 2: the live census is sorted/unique and
         // enabled preserves that order — set-collapse hid duplicated and
         // reordered fabrications.
         let mut dup_installed = full(good_mods.clone());
-        dup_installed["modset"]["dlc"]["installed"] =
-            json!(["dlc/dlc010_a/dlc010.dlc", "dlc/dlc010_a/dlc010.dlc", "dlc/dlc020_b/dlc020.dlc"]);
+        dup_installed["modset"]["dlc"]["installed"] = json!([
+            "dlc/dlc010_a/dlc010.dlc",
+            "dlc/dlc010_a/dlc010.dlc",
+            "dlc/dlc020_b/dlc020.dlc"
+        ]);
         assert!(validate_repack_manifest_modset(&dup_installed)
             .unwrap_err()
             .contains("strictly sorted/unique"));
@@ -33068,17 +35039,18 @@ mod tests {
         // ...an ABSOLUTE descriptor_entry is used as-is (live rule) and must
         // pass with a matching path.
         let mut absolute_entry = full(good_mods.clone());
-        absolute_entry["modset"]["enabled_mods"][0]["descriptor_entry"] =
-            json!("D:/mods/abs.mod");
-        absolute_entry["modset"]["enabled_mods"][0]["descriptor_path"] =
-            json!("D:/mods/abs.mod");
+        absolute_entry["modset"]["enabled_mods"][0]["descriptor_entry"] = json!("D:/mods/abs.mod");
+        absolute_entry["modset"]["enabled_mods"][0]["descriptor_path"] = json!("D:/mods/abs.mod");
         assert!(validate_repack_manifest_modset(&absolute_entry).is_ok());
         // Fix-round-4 gate finding 3: as_json writes CLOSED objects — an
         // unexpected key at ANY level is not a recorder-written shape.
         for (level, mutate) in [
-            ("root", (|v: &mut Value| {
-                v["modset"]["partial_evidence"] = json!({});
-            }) as fn(&mut Value)),
+            (
+                "root",
+                (|v: &mut Value| {
+                    v["modset"]["partial_evidence"] = json!({});
+                }) as fn(&mut Value),
+            ),
             ("game", |v: &mut Value| {
                 v["modset"]["game"]["exe_build_tag"] = json!("x");
             }),
@@ -33157,15 +35129,15 @@ mod tests {
         // Fix-round-2 re-gate finding 1: a disabled entry outside installed
         // is a shape the live resolver fails closed (exact-match rule).
         let mut ghost_disabled = full(good_mods.clone());
-        ghost_disabled["modset"]["dlc"]["disabled"] = json!(["dlc/dlc020_b/dlc020.dlc", "dlc/dlc030_gone/dlc030.dlc"]);
+        ghost_disabled["modset"]["dlc"]["disabled"] =
+            json!(["dlc/dlc020_b/dlc020.dlc", "dlc/dlc030_gone/dlc030.dlc"]);
         assert!(validate_repack_manifest_modset(&ghost_disabled)
             .unwrap_err()
             .contains("outside"));
         // ...an EMPTY installed census (the live resolver fails that closed,
         // so a resolved manifest carrying one is fabricated/legacy)...
         let mut empty_census = full(good_mods.clone());
-        empty_census["modset"]["dlc"] =
-            json!({"installed": [], "enabled": [], "disabled": []});
+        empty_census["modset"]["dlc"] = json!({"installed": [], "enabled": [], "disabled": []});
         assert!(validate_repack_manifest_modset(&empty_census)
             .unwrap_err()
             .contains("dlc.installed is empty"));
@@ -33177,7 +35149,8 @@ mod tests {
             .contains("non-string/empty entry"));
         // ...an enabled list inconsistent with installed − disabled...
         let mut inconsistent = full(good_mods.clone());
-        inconsistent["modset"]["dlc"]["enabled"] = json!(["dlc/dlc010_a/dlc010.dlc", "dlc/dlc020_b/dlc020.dlc"]);
+        inconsistent["modset"]["dlc"]["enabled"] =
+            json!(["dlc/dlc010_a/dlc010.dlc", "dlc/dlc020_b/dlc020.dlc"]);
         assert!(validate_repack_manifest_modset(&inconsistent)
             .unwrap_err()
             .contains("installed minus disabled"));
@@ -33210,7 +35183,9 @@ mod tests {
             exe_path: Some(std::path::PathBuf::from("F:/steam/hoi4.exe")),
             exe_size_bytes: Some(123_456_789),
             exe_sha256: Some("ab".repeat(32)),
-            user_dir: Some(std::path::PathBuf::from("C:/Users/Example/Documents/Paradox/HOI4")),
+            user_dir: Some(std::path::PathBuf::from(
+                "C:/Users/Example/Documents/Paradox/HOI4",
+            )),
             user_dir_source: Some("probed"),
             dlc_load_mtime_unix: Some(1_752_300_000),
             process_start_unix: Some(1_752_300_100),
@@ -33251,7 +35226,10 @@ mod tests {
                     content_location_conflict: false,
                 },
             ],
-            installed_dlcs: vec!["dlc/dlc010_a/dlc010.dlc".to_string(), "dlc/dlc020_b/dlc020.dlc".to_string()],
+            installed_dlcs: vec![
+                "dlc/dlc010_a/dlc010.dlc".to_string(),
+                "dlc/dlc020_b/dlc020.dlc".to_string(),
+            ],
             disabled_dlcs: vec!["dlc/dlc020_b/dlc020.dlc".to_string()],
             enabled_dlcs: vec!["dlc/dlc010_a/dlc010.dlc".to_string()],
         };
@@ -33349,7 +35327,11 @@ mod tests {
         );
         let counter = summary.status_origins["so_d60_source_unavailable"];
         assert_eq!(counter.value, 5);
-        assert_eq!(counter.first_hour, Some(200), "sentinel must not become first_hour");
+        assert_eq!(
+            counter.first_hour,
+            Some(200),
+            "sentinel must not become first_hour"
+        );
         assert_eq!(counter.last_hour, Some(350));
         assert_eq!(counter.no_clock_observations, 1);
         // A row seen ONLY on NO_CLOCK frames reports null hours, never hour 0.

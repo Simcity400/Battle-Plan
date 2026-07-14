@@ -1,9 +1,9 @@
 # Duplex recorder/collector control transport
 
-**Purpose:** Define the fail-closed H4CT duplex control channel shared by auto-attach proof,
-campaign rollover, and Stage-B epoch/declaration handshakes.
-**Completion status:** See `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`; implementation
-claims below are retained as lane evidence, not current status.
+**Lane:** `w12d-duplex-transport`
+
+**Status:** design plus offline transport primitive; live wiring and all three consumers are out
+of fence.
 
 **Hard laws:** fail closed on every uncertainty; never fabricate liveness or rollover; a control
 message can never cause injection or a second DLL load.
@@ -15,8 +15,10 @@ as it is. The recorder creates both listeners before the one permitted hook inst
 collector opens the new pipe read/write after its existing one-time worker guard has won. The new
 pipe carries only framed control traffic. H4CR remains the canonical data artifact.
 
-This transport is the shared prerequisite rather than consumer wiring. The underlying one-way
-data-path premise is visible in code: the host creates the data pipe with `PIPE_ACCESS_INBOUND`
+This is prerequisite 0, not consumer wiring. The current dispatch explicitly says no reverse
+channel exists and that campaign rollover `[O]`, Stage-B handshake `[S]`, and heartbeat proof
+`[A]` all depend on one (`CODEX_DISPATCH_QUEUE.md:2015,2055-2057`). The premise is also visible in
+code: the host creates the data pipe with `PIPE_ACCESS_INBOUND`
 (`recorder_host/src/main.rs:64,5357-5361`), the DLL opens it `GENERIC_WRITE` and only calls
 `WriteFile` (`collector/src/lib.rs:104,45944-45967`), and the fold requires consecutive H4CR
 sequences (`recorder_host/src/stream_fold.rs:93-132`).
@@ -155,16 +157,6 @@ boundary. Timeout/disconnect fails rather than continuing:
 - no `EpochSealAck` → no next epoch opens;
 - bad `EpochTokenEcho` → Stage B stays closed.
 
-#### Campaign rollover data-pipe drain barrier
-
-The control and H4CR data pipes have no cross-pipe ordering. After `RolloverPropose`, the host
-MUST NOT seal the old logical stream or send `RolloverAck` until the data pipe has delivered, and
-the host has validated, every contiguous old-stream H4CR record exactly through the proposal's
-advertised last sequence. The drain has an explicit monotonic deadline. A gap, mismatch,
-validation failure, disconnect, or deadline expiry is terminal failure: retain only a failed
-prefix, never partially seal the old stream, never acknowledge the rollover, and never open the
-new logical stream.
-
 ## 5. Consumer interfaces and exact plug-in points
 
 All consumers bind to the same primitive:
@@ -233,10 +225,10 @@ Concrete plug-in points:
    truncated payload cannot construct it. The collector side opens the second pipe from its
    control block and emits hello/proofs after the existing one-time worker guard. It must not call
    the injector.
-2. **`[O]` campaign-identity rollover.** The current
-   `extractor/documents/CAMPAIGN_IDENTITY_DESIGN.md` requires boundary re-read/roll before B's
-   first record and maps its collector insertion beside `read_compact_session_header` and H4CR
-   framing. The collector pauses after the last A sequence and
+2. **`[O]` campaign-identity rollover.** The historical `CAMPAIGN_IDENTITY_DESIGN.md` requires
+   boundary re-read/roll before B's first record and maps its collector insertion beside
+   `read_compact_session_header` and H4CR framing (lines 234, 274-285 at commit
+   `4637b6dce88080790f127301663969ad1f358777`). The collector pauses after the last A sequence and
    calls `RolloverPropose`; the host pipe-reader/stream owner drains through that sequence, rotates
    physical sinks, then returns `RolloverAck`. `stream_fold.rs`, `world_fold.rs`, and manifests are
    downstream consumers and remain explicitly outside this lane's fence.
@@ -248,11 +240,12 @@ Concrete plug-in points:
    seal ack use H4CT; declaration/frame/seal records themselves remain in the new Stage-B H4CR
    major described by that consumer design.
 
-The commit ids on the absent historical consumer designs keep those citations reproducible.
+Those three historical design files are not present at this branch's base commit; the commit ids
+above make each citation reproducible without copying or editing the consumer designs here.
 
-## 6. Historical proof-of-concept evidence and gates
+## 6. Proof-of-concept scope and gates
 
-The lane implementation recorded:
+Implemented now:
 
 - fixed H4CT v1 encode/decode with magic, version, exact length, closed kind, nonzero session id,
   CRC-32, zero flags/reserved fields, and a 1 MiB cap;
@@ -264,7 +257,7 @@ The lane implementation recorded:
   send sequencing, terminal send failure, unknown/invalid header fields, and rejection of
   same-session reconstruction after accepting sequence zero.
 
-Outside that lane's implementation: Win32 pipe adapter, pipe ACL construction, timers, payload codecs, state
+Not implemented here: Win32 pipe adapter, pipe ACL construction, timers, payload codecs, state
 machines, H4CR boundary records, live collector/recorder wiring, injection changes, or game tests.
 Those omissions are consumer work, not implied success.
 
@@ -298,7 +291,7 @@ Those omissions are consumer work, not implied success.
    prefix, valid-looking header with a truncated payload, or this ack alone is insufficient.
    Continuing liveness expires unless another fresh challenge succeeds.
 
-## Consumer validation requirements
+## Residual risks requiring consumer validation
 
 - Win32 DACL and `GetNamedPipeClientProcessId` behavior across supported Windows versions,
   OneDrive Documents, antivirus, standard-user, and weaker-PC environments is not fake-testable.

@@ -1,3 +1,4 @@
+pub mod auto_attach;
 pub mod campaign_identity;
 pub mod compact_domain_registry;
 pub mod control_transport;
