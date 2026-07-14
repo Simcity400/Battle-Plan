@@ -3389,3 +3389,24 @@ branch @15a817f3e (was 1590-line uncommitted diff). => autoattach is MERGE-READY
 merge wave (with boundary-auth).
 MERGE-READY now: boundary-auth (guards), autoattach (SHIP @15a817f3e).
 IN FLIGHT: facs-wire r5 gate, replay-loader fix4, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 facs-wire r5 gate = REVISE (witness SOUND; sibling-fields still disagree OTHER direction) -> fix6
+CONFIRMED CLOSED no-regression: sound witness R3-F1/F2 (extractor 125/125), R2-F2, map helper
+(Unavailable->None), stream compat, case-(b). fix5 status-gating intact. ONE finding:
+- F1 CRITICAL: the `factions` LIST + faction_roster_status are built from TWO sources -> disagree
+  under MeasuredNonEmpty. Status from d53 faction_members (world.rs:444); list from faction_rows
+  reading countries.*.politics.faction.name (binding.rs:414/419) - a SPARSE projection the fold
+  leaves incomplete (world_fold.rs:3281,3303-3311: writes only leader/is_leader; d53 has only
+  name_hash so politics.faction.name ABSENT). Real roster => MeasuredNonEmpty + factions_available
+  =true + factions=[] = a real nonempty roster shows as ZERO factions = SILENT LOSS. fix5 (gate
+  list on status) can't fix this - under MeasuredNonEmpty the list SOURCE is still empty.
+FIX6 launched (tid threads/i1-facs-wire.tid): SINGLE SOURCE OF TRUTH - derive the `factions` LIST
+from the SAME d53 roster the STATUS comes from (faction_members), NOT politics.faction.name. Co-
+derived => (MeasuredNonEmpty + empty) AND (Unavailable + nonempty) both structurally impossible.
+Authorizes threading the decoded roster members onto DiplomacyView via world.rs if not exposed.
+Test must use a REAL fold where d53 has members but politics.faction.name ABSENT (removes the
+hand-injected "name":"Axis" crutch at diplomacy_binding.rs:198), RED-on-HEAD/GREEN-after. This is
+the DEFINITIVE fix (closes both directions), not another per-direction patch - same "fix the root
+not the symptom" move as autoattach default-deny. ONE fix round for r5.
+IN FLIGHT: facs-wire fix6, replay-loader fix4, foldwave2 fix4, stitching r3. MERGE-READY: boundary-
+auth, autoattach (SHIP @15a817f3e).
