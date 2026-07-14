@@ -14,20 +14,36 @@ This contract holds the normative rules (completion, gate, done-means), the open
 coverage map. If every open item is closed or dispositioned, the extractor has no known missed
 replay-relevant data.
 
-## Current state (2026-07-05)
+## Current state (2026-07-14)
 
-Recent commits land in git; the CRACKED_LEDGER tracks wiring-pending slices. Highlights this session:
-E5 land-combat attribution (domain-55 v3, live-validated 202/202) and D23 map_detail speed (~3x on
-the hot loop) COMMITTED; a 10-agent discovery fan-out cracked ~25 more fields/joins (pending wiring
-packets W1–W5) and promotes RESERVED **domain 59** (division→template_id join). Earlier this session:
-domains **61** (air_loss_stats) + **62** (hub_motorization) scheduled; D43/D53/D56 trailers (MTRF /
-DIAQ / INGR / NSUP), E12 naval OOB fix, E4/D20 division redeploy+manpower+losses — all committed and
-melt-validated. Do **not** call the fan-out "complete": a real fraction came back UNRESOLVED / PARTIAL /
-fixture-blocked — enumerated below.
+The domain coverage below is stable; the active work is the **wave-12→14 correctness-hardening
+pipeline** — every recording-layer domain re-reviewed adversarially for silent-data-loss and
+namespace-safety defects, then serial-merged. See `CODEX_DISPATCH_QUEUE.md` for the blow-by-blow;
+this section is the summary of record.
 
-**Remaining engineering acceptance gate:** a fresh speed-5 end-to-end capture proving every scheduled
-domain emits at <100ms/frame with zero skipped hours (all validation to date is against the PAUSED
-D04 1944.2.11.18 fixture).
+**Fix-pipeline & merge status (integration branch `claude/replay-engine-extraction-18b40f`):**
+- **Merged (clean base):** the 6 core wave-12 lanes + the d57 game-speed reconciliation
+  (`DOMAIN57_MAX_GAME_SPEED` corrected 5→4: the engine setter clamps the raw speed index to
+  `0..=4` = five UI speeds).
+- **SHIP / merge-ready, awaiting the second merge wave:**
+  - `boundary-auth` — 82 bounds-guards across the fold dispatch; truncated records return
+    `Err(InvalidData)`, never panic.
+  - `autoattach` — universal injection lease + pipe-client PID/session binding + **default-deny
+    recording proof** (only d10/d44/d68 can prove a live recording, and only from real material
+    rows; badges/tombstones/delta/all-zero/failure never qualify).
+  - `facs-wire` — d53 FACS faction-roster tri-state (measured-empty / measured-nonempty /
+    unavailable) reaching every consumer; a **sound completeness witness** (fingerprint over every
+    country-table slot, duplicate-tag poisoning, pointer-based member validation, inner-table bound
+    through final approval); UI status flag and factions list **co-derived from one source** so they
+    cannot disagree.
+- **In flight (adversarial re-gate loop):** `replay-loader` (`.battleplan` container/loader
+  Windows-namespace hardening — file-ID sentinels, verify→promote handle binding, canonical-entry
+  hashing, strict manifest decode), `foldwave2`, `stitching`.
+- **Gate before master merge:** an integration-adversary re-run over the fully-merged result.
+
+**Remaining engineering acceptance gate (unchanged, USER-GATED):** a fresh speed-5 end-to-end
+capture proving every scheduled domain emits at <100ms/frame with zero skipped hours. All validation
+to date is against the PAUSED D04 1944.2.11.18 fixture; the combined speed-5 proof needs a live game.
 
 ## OPEN ITEMS REGISTRY — NOT YET CRACKED (single source of truth)
 
@@ -92,6 +108,52 @@ industry_org/instances/id_counter_store/debug_current_ref_id — skip), history/
 collaboration, claims, cores, deployment, reinforcement, upgrades, name_group, external_rules,
 focus_tree/continuous_focus, preferred_tactic, is_top_ic/major/capital/original_capital (session/AI
 context — decide per item).
+
+## Residuals & known limitations (consolidated — 2026-07-14)
+
+The single roll-up of everything not yet closed. Detail lives where noted; nothing here is a silent
+gap.
+
+**USER-GATED — needs a live game, cannot be produced on synthetic fixtures (the only things between
+"code built + unit-verified" and "verified"):**
+- Combined **speed-5 end-to-end proof** — every enabled production domain, hourly cadence, zero
+  skipped hours, no untolerated failures (the standing engineering acceptance gate).
+- **Cross-modset validation matrix** — the first non-vanilla captures ever; validates the modset
+  resolver + all game-file joins against a real modded session.
+- **d57 game-speed root** (registry A3) — a 10s tap at each speed 1–5; and **FACS v2 injected
+  capture** to exercise the d53 tri-state against a live faction roster.
+- The **fixture-blocked backlog A1–A21** in the OPEN ITEMS REGISTRY above (each names its exact
+  fixture + accepting gate).
+
+**Platform (owner-confirmed 2026-07-14): Windows-only.** The `snapshot/dir_store` Linux/macOS code
+is unsupported dead weight (Linux impl is cfg-gated and untested; macOS is a fail-closed stub). It
+is **never** a pre-ship residual; a cleanup task to strip/stub it is filed. Do not re-list
+"Linux/macOS run" as owed work.
+
+**Fix-pipeline residuals (non-blocking, tracked in `CODEX_DISPATCH_QUEUE.md`):**
+- **replay-loader:** the `.battleplan` container/loader is Windows-namespace-hardened; two
+  environment-gated tests remain pre-ship — Windows **Developer Mode** must be enabled for the
+  symlink-rejection capability test, and a real **dehydrated OneDrive** placeholder store is needed
+  for the Files-On-Demand tests. The static "no descendant pathname open" gate (F4) is an accepted
+  **best-effort development lint**, not a runtime security boundary: it catches honest introduction
+  of a pathname open but cannot see renamed FFI beyond `#[link_name]`, macro-expanded, or generated
+  code (out of threat model).
+- **facs-wire:** with no certified `name_hash → display-name` resolver, the UI renders the
+  authoritative **numeric** faction identity (cosmetic only — membership content is fully
+  preserved). An owed **live-map integration test** lands when a production factions-map render
+  consumer is built (none exists in-tree today).
+- **autoattach:** the recording-proof residual is explicitly **out-of-threat-model**, not
+  fail-closed — an in-process compromise or a truly-simultaneous equal-rights external injection is
+  irreducible without an OS-level trust boundary.
+- **c1stageb** (duplex control transport, `C1_STAGEB_REGISTRY_DESIGN.md`): a holistic deadline-model
+  pass is deferred as a design task (stage-B implementation is future; not merge-blocking).
+
+**Largest unbuilt product pillars (`PRODUCT_SESSION_SEMANTICS.md`):** boot-and-play **auto-attach**
+(both launch orders), **save/campaign identity** binding, and **reload/relaunch stitching** (rollback
+segments). Designed/anticipated in the container format; core logic not yet built.
+
+**Deep-crack + derived backlog:** the RE follow-ups **B1–B10** (no fixture, need another RE pass) and
+the **C1–C6** derive-in-the-replay-layer items remain open in the OPEN ITEMS REGISTRY above.
 
 ## Completion Rule
 
