@@ -643,6 +643,14 @@ impl CountryCore {
 pub struct ChannelCoverage {
     pub captured: Leaf<bool>,
     pub domains: Vec<String>,
+    pub problems: Vec<DomainProblem>,
+}
+
+/// One recorder-reported problem tied to a numeric compact domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomainProblem {
+    pub domain: i64,
+    pub problem: String,
 }
 
 /// Per-frame provenance: which domains each channel (collector/memory/save)
@@ -957,9 +965,9 @@ impl WorldFrame {
                 "controller",
                 &mut warnings,
             );
-        let (division_units, division_units_status) =
+        let (division_units, mut division_units_status) =
             build_division_units(&frame.rest, &mut warnings);
-        let (fleets, fleets_status) = build_fleets(&frame.rest, &mut warnings);
+        let (fleets, mut fleets_status) = build_fleets(&frame.rest, &mut warnings);
         let (wings, wings_status) = build_wings(&frame.rest, &mut warnings);
         let divisions = build_divisions(&frame.rest, &mut warnings);
         let combats = build_combats(&frame.rest, &mut warnings);
@@ -973,7 +981,7 @@ impl WorldFrame {
         let snow_mud = build_snow_mud(&frame.rest, &mut warnings);
         let (country_identities, country_identities_status) =
             build_country_identities(&frame.rest, &mut warnings);
-        let diplomacy = build_diplomacy(&frame.rest, &mut warnings);
+        let mut diplomacy = build_diplomacy(&frame.rest, &mut warnings);
         let (topbar_scalars_by_country, topbar_status) =
             build_topbar_scalars(&frame.rest, &mut warnings);
         let (topbar_ratios_by_country, topbar_alerts_by_country, topbar_extras_status) =
@@ -981,13 +989,14 @@ impl WorldFrame {
         let (buildings_by_state, buildings_status) = build_buildings(&frame.rest, &mut warnings);
         let (visibility_by_pov, visibility_status) = build_visibility(&frame.rest, &mut warnings);
         let (research_by_country, research_status) = build_research(&frame.rest, &mut warnings);
-        let (focus_by_country, focus_status) = build_focus(&frame.rest, &mut warnings);
+        let (focus_by_country, mut focus_status) = build_focus(&frame.rest, &mut warnings);
         let (politics_detail_by_country, politics_detail_status) =
             build_politics_detail(&frame.rest, &mut warnings);
-        let (production_by_country, production_status) = build_production(&frame.rest, &mut warnings);
+        let (production_by_country, mut production_status) =
+            build_production(&frame.rest, &mut warnings);
         let (intel_by_country, intel_status) = build_intel(&frame.rest, &mut warnings);
         let (trade_by_country, trade_status) = build_trade(&frame.rest, &mut warnings);
-        let (leaders_by_country, leaders_status) = build_leaders(&frame.rest, &mut warnings);
+        let (leaders_by_country, mut leaders_status) = build_leaders(&frame.rest, &mut warnings);
         let (occupation_by_state, occupation_status) = build_occupation(&frame.rest, &mut warnings);
         let power_balance = build_power_balance(&frame.rest, &mut warnings);
         let designs = build_designs(&frame.rest, &mut warnings);
@@ -995,6 +1004,15 @@ impl WorldFrame {
         let scripted_gui = build_scripted_gui(&frame.rest, &mut warnings);
         let raids = build_raids(&frame.rest, &mut warnings);
         let provenance = build_provenance(&frame.rest, &mut warnings);
+        reconcile_domain_problem_statuses(
+            &frame.rest,
+            &mut production_status,
+            &mut division_units_status,
+            &mut fleets_status,
+            &mut focus_status,
+            &mut leaders_status,
+            &mut diplomacy.status,
+        );
         WorldFrame {
             hour_index: frame.hour_index,
             date: frame.date,
@@ -3087,7 +3105,12 @@ fn read_war_relations(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
 ) -> (Leaf<Vec<WarRelationRow>>, ViewStatus) {
-    match walk_path(rest, &["diplomacy_live", "war_relations"], "snapshot", warnings) {
+    match walk_path(
+        rest,
+        &["diplomacy_live", "war_relations"],
+        "snapshot",
+        warnings,
+    ) {
         Leaf::Absent => (Leaf::Absent, ViewStatus::DomainAbsent),
         Leaf::Unobtained => (Leaf::Unobtained, ViewStatus::DomainUnavailable),
         Leaf::Measured(Value::Array(items)) => {
@@ -3545,7 +3568,11 @@ fn build_topbar_extras(
     let entries = match rest.get("countries") {
         Some(Value::Object(entries)) => entries,
         Some(Value::Null) => {
-            return (BTreeMap::new(), BTreeMap::new(), ViewStatus::DomainUnavailable)
+            return (
+                BTreeMap::new(),
+                BTreeMap::new(),
+                ViewStatus::DomainUnavailable,
+            )
         }
         None => return (BTreeMap::new(), BTreeMap::new(), ViewStatus::DomainAbsent),
         Some(other) => {
@@ -3553,7 +3580,11 @@ fn build_topbar_extras(
                 "countries: present but wrong-typed (expected object, found {}); topbar ratio/alert view unavailable",
                 json_type_name(other)
             ));
-            return (BTreeMap::new(), BTreeMap::new(), ViewStatus::DomainUnavailable);
+            return (
+                BTreeMap::new(),
+                BTreeMap::new(),
+                ViewStatus::DomainUnavailable,
+            );
         }
     };
     let mut ratios = BTreeMap::new();
@@ -4135,11 +4166,17 @@ fn parse_spotted_units(
 fn build_provenance(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> ProvenanceView {
     let prov = match rest.get("provenance") {
         Some(Value::Object(prov)) => prov,
-        Some(Value::Null) | None => return ProvenanceView::default(),
+        None => return ProvenanceView::default(),
+        Some(Value::Null) => {
+            warnings.push(
+                "provenance: present but null; problem-backed typed views unavailable".to_string(),
+            );
+            return ProvenanceView::default();
+        }
         Some(other) => {
             warnings.push(format!(
                 "provenance: present but wrong-typed (expected object, found {}); \
-                 provenance view is empty",
+                 provenance view is empty and problem-backed typed views are unavailable",
                 json_type_name(other)
             ));
             return ProvenanceView::default();
@@ -4150,11 +4187,18 @@ fn build_provenance(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Pr
         match prov.get(channel) {
             None => {}
             Some(Value::Null) => {
+                if channel == "collector" {
+                    warnings.push(
+                        "provenance.collector: present but null; problem-backed typed views unavailable"
+                            .to_string(),
+                    );
+                }
                 channels.insert(
                     channel.to_string(),
                     ChannelCoverage {
                         captured: Leaf::Unobtained,
                         domains: Vec::new(),
+                        problems: Vec::new(),
                     },
                 );
             }
@@ -4181,25 +4225,33 @@ fn build_provenance(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Pr
                         json_type_name(other)
                     )),
                 }
+                let problems = build_domain_problems(obj, &ctx, warnings);
                 channels.insert(
                     channel.to_string(),
                     ChannelCoverage {
                         captured: leaf_bool(obj, &["captured"], &ctx, warnings),
                         domains,
+                        problems,
                     },
                 );
             }
             Some(other) => {
+                let consequence = if channel == "collector" {
+                    "treated as unobtained and problem-backed typed views are unavailable"
+                } else {
+                    "treated as unobtained"
+                };
                 warnings.push(format!(
                     "provenance.{channel}: present but wrong-typed (expected object, \
-                     found {}); treated as unobtained",
-                    json_type_name(other)
+                     found {}); {consequence}",
+                    json_type_name(other),
                 ));
                 channels.insert(
                     channel.to_string(),
                     ChannelCoverage {
                         captured: Leaf::Unobtained,
                         domains: Vec::new(),
+                        problems: Vec::new(),
                     },
                 );
             }
@@ -4226,6 +4278,167 @@ fn build_provenance(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Pr
         )),
     }
     ProvenanceView { channels, notes }
+}
+
+fn build_domain_problems(
+    channel: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<DomainProblem> {
+    match parse_domain_problems(channel.get("domain_problems")) {
+        Ok(None) => Vec::new(),
+        Ok(Some(problems)) => problems,
+        Err(detail) => {
+            warnings.push(format!(
+                "{ctx}.domain_problems: {detail}; problem-backed typed views unavailable"
+            ));
+            Vec::new()
+        }
+    }
+}
+
+/// Parse the recorder's coverage-integrity channel as one atomic value. One
+/// malformed element invalidates the whole array because a skipped element
+/// could name any problem-backed domain.
+fn parse_domain_problems(value: Option<&Value>) -> Result<Option<Vec<DomainProblem>>, String> {
+    let items = match value {
+        None => return Ok(None),
+        Some(Value::Array(items)) => items,
+        Some(Value::Null) => return Err("present but null".to_string()),
+        Some(other) => {
+            return Err(format!(
+                "present but wrong-typed (expected array, found {})",
+                json_type_name(other)
+            ));
+        }
+    };
+
+    let mut problems = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let entry = item.as_object().ok_or_else(|| {
+            format!(
+                "element [{i}] is wrong-typed (expected object, found {})",
+                json_type_name(item)
+            )
+        })?;
+        let domain_value = entry
+            .get("domain_id")
+            .ok_or_else(|| format!("element [{i}].domain_id is absent"))?;
+        let domain = domain_value.as_i64().ok_or_else(|| {
+            format!(
+                "element [{i}].domain_id is not an integer (found {})",
+                json_type_name(domain_value)
+            )
+        })?;
+        if !(0..=i64::from(u16::MAX)).contains(&domain) {
+            return Err(format!(
+                "element [{i}].domain_id {domain} is outside the recorder u16 range"
+            ));
+        }
+        let problem_value = entry
+            .get("problem")
+            .ok_or_else(|| format!("element [{i}].problem is absent"))?;
+        let problem = problem_value.as_str().ok_or_else(|| {
+            format!(
+                "element [{i}].problem is not a string (found {})",
+                json_type_name(problem_value)
+            )
+        })?;
+        if problem.trim().is_empty() {
+            return Err(format!("element [{i}].problem is blank"));
+        }
+        problems.push(DomainProblem {
+            domain,
+            problem: problem.to_string(),
+        });
+    }
+    Ok(Some(problems))
+}
+
+#[derive(Clone, Copy)]
+enum ProblemBackedView {
+    Production,
+    DivisionUnits,
+    Fleets,
+    Focus,
+    Leaders,
+    Diplomacy,
+}
+
+const DOMAIN_PROBLEM_VIEW_MAP: &[(i64, ProblemBackedView)] = &[
+    (11, ProblemBackedView::Production),
+    (26, ProblemBackedView::DivisionUnits),
+    (28, ProblemBackedView::Fleets),
+    (45, ProblemBackedView::Focus),
+    (47, ProblemBackedView::Leaders),
+    (53, ProblemBackedView::Diplomacy),
+];
+
+fn reconcile_domain_problem_statuses(
+    rest: &Map<String, Value>,
+    production_status: &mut ViewStatus,
+    division_units_status: &mut ViewStatus,
+    fleets_status: &mut ViewStatus,
+    focus_status: &mut ViewStatus,
+    leaders_status: &mut ViewStatus,
+    diplomacy_status: &mut ViewStatus,
+) {
+    // This enforcing consumer deliberately re-derives coverage from raw JSON;
+    // it does not trust build_provenance's presentation-oriented problem list.
+    let problems = match rederive_collector_domain_problems(rest) {
+        Ok(None) => return,
+        Ok(Some(problems)) => problems,
+        Err(()) => {
+            for status in [
+                production_status,
+                division_units_status,
+                fleets_status,
+                focus_status,
+                leaders_status,
+                diplomacy_status,
+            ] {
+                downgrade_present_status(status);
+            }
+            return;
+        }
+    };
+    for problem in &problems {
+        for (_, view) in DOMAIN_PROBLEM_VIEW_MAP
+            .iter()
+            .filter(|(domain, _)| *domain == problem.domain)
+        {
+            match view {
+                ProblemBackedView::Production => downgrade_present_status(production_status),
+                ProblemBackedView::DivisionUnits => downgrade_present_status(division_units_status),
+                ProblemBackedView::Fleets => downgrade_present_status(fleets_status),
+                ProblemBackedView::Focus => downgrade_present_status(focus_status),
+                ProblemBackedView::Leaders => downgrade_present_status(leaders_status),
+                ProblemBackedView::Diplomacy => downgrade_present_status(diplomacy_status),
+            }
+        }
+    }
+}
+
+fn rederive_collector_domain_problems(
+    rest: &Map<String, Value>,
+) -> Result<Option<Vec<DomainProblem>>, ()> {
+    let provenance = match rest.get("provenance") {
+        None => return Ok(None),
+        Some(Value::Object(provenance)) => provenance,
+        Some(_) => return Err(()),
+    };
+    let collector = match provenance.get("collector") {
+        None => return Ok(None),
+        Some(Value::Object(collector)) => collector,
+        Some(_) => return Err(()),
+    };
+    parse_domain_problems(collector.get("domain_problems")).map_err(|_| ())
+}
+
+fn downgrade_present_status(status: &mut ViewStatus) {
+    if *status == ViewStatus::Present {
+        *status = ViewStatus::DomainUnavailable;
+    }
 }
 
 // ===========================================================================
@@ -4854,7 +5067,11 @@ fn leaf_obj_field_list(
         Leaf::Measured(Value::Array(items)) => {
             let mut out = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
-                match item.as_object().and_then(|o| o.get(field)).and_then(Value::as_str) {
+                match item
+                    .as_object()
+                    .and_then(|o| o.get(field))
+                    .and_then(Value::as_str)
+                {
                     Some(s) => out.push(s.to_string()),
                     None => {
                         warnings.push(format!(
@@ -4888,28 +5105,35 @@ fn build_research(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
 ) -> (BTreeMap<String, ResearchView>, ViewStatus) {
-    country_map(rest, warnings, ResearchView::all_unobtained, |obj, ctx, w| ResearchView {
-        tech_count: leaf_i64(obj, &["research", "tech_count"], ctx, w),
-        research_slots: leaf_i64(obj, &["research", "research_slots"], ctx, w),
-        in_progress: leaf_rows(obj, &["research", "in_progress"], ctx, w, |o, c, w| {
-            ResearchProgressRow {
-                name: leaf_string(o, &["name"], c, w),
-                progress_pct: leaf_f64(o, &["progress_pct"], c, w),
-            }
-        }),
-    })
+    country_map(
+        rest,
+        warnings,
+        ResearchView::all_unobtained,
+        |obj, ctx, w| ResearchView {
+            tech_count: leaf_i64(obj, &["research", "tech_count"], ctx, w),
+            research_slots: leaf_i64(obj, &["research", "research_slots"], ctx, w),
+            in_progress: leaf_rows(obj, &["research", "in_progress"], ctx, w, |o, c, w| {
+                ResearchProgressRow {
+                    name: leaf_string(o, &["name"], c, w),
+                    progress_pct: leaf_f64(o, &["progress_pct"], c, w),
+                }
+            }),
+        },
+    )
 }
 
 fn build_focus(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
 ) -> (BTreeMap<String, FocusView>, ViewStatus) {
-    country_map(rest, warnings, FocusView::all_unobtained, |obj, ctx, w| FocusView {
-        focus_tree: leaf_string(obj, &["focus", "focus_tree"], ctx, w),
-        current: leaf_string(obj, &["focus", "current"], ctx, w),
-        completed_count: leaf_i64(obj, &["focus", "completed_count"], ctx, w),
-        progress: leaf_f64(obj, &["focus", "progress"], ctx, w),
-        completed: leaf_string_list(obj, &["focus", "completed"], ctx, w),
+    country_map(rest, warnings, FocusView::all_unobtained, |obj, ctx, w| {
+        FocusView {
+            focus_tree: leaf_string(obj, &["focus", "focus_tree"], ctx, w),
+            current: leaf_string(obj, &["focus", "current"], ctx, w),
+            completed_count: leaf_i64(obj, &["focus", "completed_count"], ctx, w),
+            progress: leaf_f64(obj, &["focus", "progress"], ctx, w),
+            completed: leaf_string_list(obj, &["focus", "completed"], ctx, w),
+        }
     })
 }
 
@@ -4938,32 +5162,37 @@ fn build_production(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
 ) -> (BTreeMap<String, ProductionView>, ViewStatus) {
-    country_map(rest, warnings, ProductionView::all_unobtained, |obj, ctx, w| ProductionView {
-        stockpile_total: leaf_f64(obj, &["production", "stockpile_total"], ctx, w),
-        stockpile: leaf_f64_map(obj, &["production", "stockpile"], ctx, w),
-        construction_queue: leaf_rows(
-            obj,
-            &["production", "construction_queue"],
-            ctx,
-            w,
-            |o, c, w| ProductionLineRow {
-                id: leaf_i64(o, &["id"], c, w),
-                active_factories: leaf_i64(o, &["active_factories"], c, w),
-                produced: leaf_f64(o, &["produced"], c, w),
-                cost: leaf_f64(o, &["cost"], c, w),
-            },
-        ),
-        equipment_stockpile: leaf_rows(
-            obj,
-            &["military", "equipment_stockpile"],
-            ctx,
-            w,
-            |o, c, w| EquipmentStock {
-                archetype: leaf_string(o, &["archetype"], c, w),
-                amount: leaf_f64(o, &["amount"], c, w),
-            },
-        ),
-    })
+    country_map(
+        rest,
+        warnings,
+        ProductionView::all_unobtained,
+        |obj, ctx, w| ProductionView {
+            stockpile_total: leaf_f64(obj, &["production", "stockpile_total"], ctx, w),
+            stockpile: leaf_f64_map(obj, &["production", "stockpile"], ctx, w),
+            construction_queue: leaf_rows(
+                obj,
+                &["production", "construction_queue"],
+                ctx,
+                w,
+                |o, c, w| ProductionLineRow {
+                    id: leaf_i64(o, &["id"], c, w),
+                    active_factories: leaf_i64(o, &["active_factories"], c, w),
+                    produced: leaf_f64(o, &["produced"], c, w),
+                    cost: leaf_f64(o, &["cost"], c, w),
+                },
+            ),
+            equipment_stockpile: leaf_rows(
+                obj,
+                &["military", "equipment_stockpile"],
+                ctx,
+                w,
+                |o, c, w| EquipmentStock {
+                    archetype: leaf_string(o, &["archetype"], c, w),
+                    amount: leaf_f64(o, &["amount"], c, w),
+                },
+            ),
+        },
+    )
 }
 
 fn build_intel(
@@ -4974,26 +5203,41 @@ fn build_intel(
         // `intel.operations` is an object in the deepened schema, but legacy
         // base rows park it as an empty array; only read `.running` when it is
         // genuinely an object (an array/absent yields Absent, not a warning).
-        let operations_running = match obj.get("intel").and_then(Value::as_object).and_then(|i| i.get("operations")) {
-            Some(Value::Object(_)) => leaf_rows(obj, &["intel", "operations", "running"], ctx, w, |o, c, w| {
-                OperationRow {
+        let operations_running = match obj
+            .get("intel")
+            .and_then(Value::as_object)
+            .and_then(|i| i.get("operations"))
+        {
+            Some(Value::Object(_)) => leaf_rows(
+                obj,
+                &["intel", "operations", "running"],
+                ctx,
+                w,
+                |o, c, w| OperationRow {
                     op_id: leaf_i64(o, &["op_id"], c, w),
                     op_type: leaf_string(o, &["type"], c, w),
                     target: leaf_string(o, &["target"], c, w),
-                }
-            }),
+                },
+            ),
             Some(Value::Null) => Leaf::Unobtained,
             _ => Leaf::Absent,
         };
         IntelView {
             agency_name: leaf_string(obj, &["intel", "agency", "name"], ctx, w),
             agency_created: leaf_bool(obj, &["intel", "agency", "is_created"], ctx, w),
-            agency_upgrade_progress: leaf_f64(obj, &["intel", "agency", "upgrade_progress"], ctx, w),
-            operatives: leaf_rows(obj, &["intel", "operatives"], ctx, w, |o, c, w| OperativeRow {
-                op_id: leaf_i64(o, &["op_id"], c, w),
-                name: leaf_string(o, &["name"], c, w),
-                state: leaf_string(o, &["state"], c, w),
-                captured: leaf_bool(o, &["captured"], c, w),
+            agency_upgrade_progress: leaf_f64(
+                obj,
+                &["intel", "agency", "upgrade_progress"],
+                ctx,
+                w,
+            ),
+            operatives: leaf_rows(obj, &["intel", "operatives"], ctx, w, |o, c, w| {
+                OperativeRow {
+                    op_id: leaf_i64(o, &["op_id"], c, w),
+                    name: leaf_string(o, &["name"], c, w),
+                    state: leaf_string(o, &["state"], c, w),
+                    captured: leaf_bool(o, &["captured"], c, w),
+                }
             }),
             operations_running,
         }
@@ -5004,17 +5248,19 @@ fn build_trade(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
 ) -> (BTreeMap<String, TradeView>, ViewStatus) {
-    country_map(rest, warnings, TradeView::all_unobtained, |obj, ctx, w| TradeView {
-        produced: leaf_f64_map(obj, &["economy", "resources", "produced"], ctx, w),
-        exported: leaf_f64_map(obj, &["economy", "resources", "exported"], ctx, w),
-        to_export: leaf_f64_map(obj, &["economy", "resources", "to_export"], ctx, w),
-        contracts: leaf_rows(obj, &["diplomacy", "lend_lease"], ctx, w, |o, c, w| {
-            TradeContractRow {
-                counterpart: leaf_string(o, &["counterpart"], c, w),
-                direction: leaf_string(o, &["direction"], c, w),
-                convoys_assigned: leaf_i64(o, &["convoys", "assigned"], c, w),
-            }
-        }),
+    country_map(rest, warnings, TradeView::all_unobtained, |obj, ctx, w| {
+        TradeView {
+            produced: leaf_f64_map(obj, &["economy", "resources", "produced"], ctx, w),
+            exported: leaf_f64_map(obj, &["economy", "resources", "exported"], ctx, w),
+            to_export: leaf_f64_map(obj, &["economy", "resources", "to_export"], ctx, w),
+            contracts: leaf_rows(obj, &["diplomacy", "lend_lease"], ctx, w, |o, c, w| {
+                TradeContractRow {
+                    counterpart: leaf_string(o, &["counterpart"], c, w),
+                    direction: leaf_string(o, &["direction"], c, w),
+                    convoys_assigned: leaf_i64(o, &["convoys", "assigned"], c, w),
+                }
+            }),
+        }
     })
 }
 
@@ -5022,22 +5268,33 @@ fn build_leaders(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
 ) -> (BTreeMap<String, LeaderRosterView>, ViewStatus) {
-    country_map(rest, warnings, LeaderRosterView::all_unobtained, |obj, ctx, w| {
-        let leader_row = |o: &Map<String, Value>, c: &str, w: &mut Vec<String>| LeaderRow {
-            name: leaf_string(o, &["name"], c, w),
-            token: leaf_string(o, &["token"], c, w),
-            level: leaf_i64(o, &["level"], c, w),
-            traits: leaf_string_list(o, &["traits"], c, w),
-            assignment: leaf_string(o, &["assignment", "name"], c, w),
-        };
-        LeaderRosterView {
-            country_leader_name: leaf_string(obj, &["commanders", "leader", "name"], ctx, w),
-            field_marshals: leaf_rows(obj, &["commanders", "field_marshals"], ctx, w, leader_row),
-            generals: leaf_rows(obj, &["commanders", "generals"], ctx, w, leader_row),
-            admirals: leaf_rows(obj, &["commanders", "admirals"], ctx, w, leader_row),
-            roster_size: leaf_i64(obj, &["commanders", "counts", "roster_size"], ctx, w),
-        }
-    })
+    country_map(
+        rest,
+        warnings,
+        LeaderRosterView::all_unobtained,
+        |obj, ctx, w| {
+            let leader_row = |o: &Map<String, Value>, c: &str, w: &mut Vec<String>| LeaderRow {
+                name: leaf_string(o, &["name"], c, w),
+                token: leaf_string(o, &["token"], c, w),
+                level: leaf_i64(o, &["level"], c, w),
+                traits: leaf_string_list(o, &["traits"], c, w),
+                assignment: leaf_string(o, &["assignment", "name"], c, w),
+            };
+            LeaderRosterView {
+                country_leader_name: leaf_string(obj, &["commanders", "leader", "name"], ctx, w),
+                field_marshals: leaf_rows(
+                    obj,
+                    &["commanders", "field_marshals"],
+                    ctx,
+                    w,
+                    leader_row,
+                ),
+                generals: leaf_rows(obj, &["commanders", "generals"], ctx, w, leader_row),
+                admirals: leaf_rows(obj, &["commanders", "admirals"], ctx, w, leader_row),
+                roster_size: leaf_i64(obj, &["commanders", "counts", "roster_size"], ctx, w),
+            }
+        },
+    )
 }
 
 fn build_occupation(
@@ -5064,7 +5321,9 @@ fn build_occupation(
             Ok(id) => id,
             Err(_) => continue,
         };
-        let Some(obj) = value.as_object() else { continue };
+        let Some(obj) = value.as_object() else {
+            continue;
+        };
         match obj.get("occupation") {
             Some(Value::Object(occ)) => {
                 let ctx = format!("states.{key}.occupation");
@@ -5081,7 +5340,12 @@ fn build_occupation(
                             &ctx,
                             warnings,
                         ),
-                        operational_status: leaf_string(occ, &["operational_status"], &ctx, warnings),
+                        operational_status: leaf_string(
+                            occ,
+                            &["operational_status"],
+                            &ctx,
+                            warnings,
+                        ),
                         occupation_law: leaf_string(
                             obj,
                             &["occupation_law"],
@@ -5309,5 +5573,892 @@ fn build_raids(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> RaidSta
         status: ViewStatus::Present,
         priorities,
         next_target,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const RECORD_MAGIC: &[u8; 4] = b"H4CR";
+    const RECORD_VERSION: u16 = 1;
+    const RECORD_HEADER_LEN: u16 = 32;
+    const RECORD_TYPE_FRAME_END: u16 = 2;
+    const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+    const DATE_EPOCH_CONST: i32 = 43_799_999;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(label: &str) -> TestDir {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "replay_core_{label}_{}_{}",
+                std::process::id(),
+                unique
+            ));
+            fs::create_dir_all(&path).expect("create test directory");
+            TestDir(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn push_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        domain_id: u16,
+        record_type: u16,
+        payload: &[u8],
+    ) {
+        out.extend_from_slice(RECORD_MAGIC);
+        out.extend_from_slice(&RECORD_VERSION.to_le_bytes());
+        out.extend_from_slice(&RECORD_HEADER_LEN.to_le_bytes());
+        out.extend_from_slice(&sequence.to_le_bytes());
+        out.extend_from_slice(&game_hour_raw.to_le_bytes());
+        out.extend_from_slice(&domain_id.to_le_bytes());
+        out.extend_from_slice(&record_type.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(payload);
+    }
+
+    fn frame_end_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn push_compact_string(payload: &mut Vec<u8>, value: &str) {
+        payload.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        payload.extend_from_slice(value.as_bytes());
+    }
+
+    fn focus_depth_payload(tag_db_id: u32) -> Vec<u8> {
+        const HEADER_LEN: usize = 48;
+        const FOCUS_COMPLETED_COUNT_INCREASED: u32 = 1;
+        const FOCUS_CURRENT_STARTED: u32 = 2;
+
+        let mut payload = vec![0u8; HEADER_LEN];
+        payload[8..12].copy_from_slice(&1u32.to_le_bytes()); // depth_status_flags
+        payload[12..16].copy_from_slice(&2u32.to_le_bytes()); // focus_count
+        payload[28..32].copy_from_slice(&2u32.to_le_bytes()); // observed_focus_count
+
+        for value in [tag_db_id, FOCUS_COMPLETED_COUNT_INCREASED, 0, 0, 3, 4] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.extend_from_slice(&500i32.to_le_bytes());
+        payload.extend_from_slice(&750i32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        push_compact_string(&mut payload, "");
+        push_compact_string(&mut payload, "");
+        push_compact_string(&mut payload, "focus_done");
+
+        for value in [tag_db_id, FOCUS_CURRENT_STARTED, 0, 0, 4, 4] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        push_compact_string(&mut payload, "");
+        push_compact_string(&mut payload, "focus_current");
+        push_compact_string(&mut payload, "");
+
+        payload
+    }
+
+    fn country_identity_payload(tag_db_id: u32, tag: &str) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&(tag.len() as u16).to_le_bytes());
+        payload.extend_from_slice(tag.as_bytes());
+        payload.push(1); // cosmetic tag is measured null
+        payload
+    }
+
+    fn production_payload(declared_country_count: u32, keyed_tag: Option<u32>) -> Vec<u8> {
+        let keyed_count = u32::from(keyed_tag.is_some());
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&declared_country_count.to_le_bytes());
+        payload.extend_from_slice(&declared_country_count.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&100_000u32.to_le_bytes());
+        payload.extend_from_slice(&keyed_count.to_le_bytes());
+        payload.extend_from_slice(&keyed_count.to_le_bytes());
+        payload.extend_from_slice(&keyed_count.to_le_bytes());
+        payload.extend_from_slice(&keyed_count.to_le_bytes());
+
+        if let Some(tag) = keyed_tag {
+            payload.extend_from_slice(&tag.to_le_bytes());
+            payload.extend_from_slice(&(10_000 + tag).to_le_bytes());
+            payload.extend_from_slice(&100_000i64.to_le_bytes());
+
+            for kind in [1u32, 2u32] {
+                payload.extend_from_slice(&tag.to_le_bytes());
+                payload.extend_from_slice(&kind.to_le_bytes());
+                payload.extend_from_slice(&(tag as i32).to_le_bytes());
+                payload.extend_from_slice(&1i32.to_le_bytes());
+                payload.extend_from_slice(&0i32.to_le_bytes());
+                payload.extend_from_slice(&0i32.to_le_bytes());
+                payload.extend_from_slice(&0i32.to_le_bytes());
+                payload.extend_from_slice(&0i32.to_le_bytes());
+            }
+
+            payload.extend_from_slice(&tag.to_le_bytes());
+            payload.extend_from_slice(&(20_000 + tag).to_le_bytes());
+            payload.extend_from_slice(&(30_000 + tag).to_le_bytes());
+            payload.extend_from_slice(&1i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn raw_frame_from_snapshot(path: &Path) -> RawFrame {
+        let mut root = serde_json::from_slice::<Value>(&fs::read(path).expect("read snapshot"))
+            .expect("snapshot json")
+            .as_object()
+            .expect("snapshot root object")
+            .clone();
+        RawFrame {
+            hour_index: root
+                .remove("hour_index")
+                .and_then(|value| value.as_i64())
+                .expect("snapshot hour_index"),
+            date: root
+                .remove("date")
+                .and_then(|value| value.as_str().map(str::to_string)),
+            save_version: root
+                .remove("save_version")
+                .and_then(|value| value.as_str().map(str::to_string)),
+            schema_version: root.remove("schema_version"),
+            rest: root,
+        }
+    }
+
+    fn world_frame_from_json(root: Value) -> WorldFrame {
+        let encoded = serde_json::to_vec(&root).expect("encode JSON frame");
+        let mut root = serde_json::from_slice::<Value>(&encoded)
+            .expect("parse JSON frame")
+            .as_object()
+            .expect("JSON frame root object")
+            .clone();
+        WorldFrame::from_raw(RawFrame {
+            hour_index: root
+                .remove("hour_index")
+                .and_then(|value| value.as_i64())
+                .expect("JSON frame hour_index"),
+            date: root
+                .remove("date")
+                .and_then(|value| value.as_str().map(str::to_string)),
+            save_version: root
+                .remove("save_version")
+                .and_then(|value| value.as_str().map(str::to_string)),
+            schema_version: root.remove("schema_version"),
+            rest: root,
+        })
+    }
+
+    fn carried_problem_backed_json(domain_problems: Option<Value>) -> Value {
+        let mut collector = serde_json::Map::from_iter([
+            ("captured".to_string(), Value::Bool(true)),
+            (
+                "domains".to_string(),
+                serde_json::json!([
+                    "production_live",
+                    "division_equipment_live",
+                    "oob_command_live",
+                    "characters_leaders_cabinet_live",
+                    "diplomacy_intel_operatives_live"
+                ]),
+            ),
+        ]);
+        if let Some(domain_problems) = domain_problems {
+            collector.insert("domain_problems".to_string(), domain_problems);
+        }
+        serde_json::json!({
+            "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "production": {
+                        "stockpile_total": 120.0,
+                        "stockpile": {"1001": 120.0}
+                    },
+                    "focus": {
+                        "current": "carried_focus",
+                        "completed_count": 4
+                    },
+                    "commanders": {
+                        "leader": {"name": "Carried Leader"},
+                        "counts": {"roster_size": 3}
+                    },
+                    "politics": {
+                        "faction": {"name": "Axis", "is_leader": true}
+                    },
+                    "diplomacy": {
+                        "guarantees": ["ITA"],
+                        "relation_flags": {"ITA": ["guarantee"]}
+                    }
+                }
+            },
+            "divisions": [{
+                "div_id": 7,
+                "owner": "GER",
+                "equipment": [{
+                    "archetype": "infantry_equipment",
+                    "equip_id": 1001,
+                    "amount": 120.0
+                }]
+            }],
+            "order_of_battle": {
+                "fleets": [{
+                    "id": 3,
+                    "owner": "GER",
+                    "task_forces": [{
+                        "id": 31,
+                        "owner": "GER",
+                        "location_province": 42,
+                        "ships": []
+                    }]
+                }]
+            },
+            "diplomacy_live": {
+                "war_relations": [],
+                "faction_members": {"1": ["GER", "ITA"]}
+            },
+            "provenance": {
+                "collector": Value::Object(collector)
+            }
+        })
+    }
+
+    fn assert_all_problem_backed_views_unavailable(label: &str, frame: &WorldFrame) {
+        assert_eq!(
+            frame.production_status(),
+            ViewStatus::DomainUnavailable,
+            "{label}: production must fail closed"
+        );
+        assert_eq!(
+            frame.division_units_status(),
+            ViewStatus::DomainUnavailable,
+            "{label}: division equipment must fail closed"
+        );
+        assert_eq!(
+            frame.fleets_status(),
+            ViewStatus::DomainUnavailable,
+            "{label}: fleets must fail closed"
+        );
+        assert_eq!(
+            frame.focus_status(),
+            ViewStatus::DomainUnavailable,
+            "{label}: focus must fail closed"
+        );
+        assert_eq!(
+            frame.leaders_status(),
+            ViewStatus::DomainUnavailable,
+            "{label}: leaders must fail closed"
+        );
+        assert_eq!(
+            frame.diplomacy().status,
+            ViewStatus::DomainUnavailable,
+            "{label}: diplomacy must fail closed"
+        );
+    }
+
+    #[test]
+    fn provenance_parses_well_formed_domain_problems() {
+        let rest = serde_json::json!({
+            "provenance": {
+                "collector": {
+                    "captured": true,
+                    "domains": ["production_live"],
+                    "domain_problems": [
+                        {
+                            "domain_id": 11,
+                            "domain": "production_live",
+                            "problem": "production_count_uncovered"
+                        },
+                        {
+                            "domain_id": 11,
+                            "domain": "production_live",
+                            "problem": "compact_status_failure"
+                        }
+                    ]
+                }
+            }
+        });
+        let mut warnings = Vec::new();
+        let provenance = build_provenance(
+            rest.as_object().expect("provenance fixture object"),
+            &mut warnings,
+        );
+
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        let collector = provenance
+            .channels
+            .get("collector")
+            .expect("collector coverage");
+        assert_eq!(collector.captured, Leaf::Measured(true));
+        assert_eq!(collector.domains, vec!["production_live"]);
+        assert_eq!(
+            collector.problems,
+            vec![
+                DomainProblem {
+                    domain: 11,
+                    problem: "production_count_uncovered".to_string(),
+                },
+                DomainProblem {
+                    domain: 11,
+                    problem: "compact_status_failure".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn domain_problems_malformed_fail_closed_for_carried_production() {
+        let clean = world_frame_from_json(carried_problem_backed_json(None));
+        assert_eq!(clean.production_status(), ViewStatus::Present);
+        let carried = clean.raw()["countries"]["GER"]["production"].clone();
+        let malformed = [
+            (
+                "wrong outer type",
+                serde_json::json!({"domain_id": 11, "problem": "partial_data"}),
+            ),
+            ("null", Value::Null),
+            (
+                "one malformed element",
+                serde_json::json!([
+                    {"domain_id": 11, "problem": "partial_data"},
+                    "not-an-object"
+                ]),
+            ),
+            (
+                "missing problem string",
+                serde_json::json!([{"domain_id": 11}]),
+            ),
+            (
+                "wrong-typed problem string",
+                serde_json::json!([{"domain_id": 11, "problem": 7}]),
+            ),
+            (
+                "blank problem string",
+                serde_json::json!([{"domain_id": 11, "problem": " \t"}]),
+            ),
+            (
+                "negative domain id",
+                serde_json::json!([{"domain_id": -1, "problem": "partial_data"}]),
+            ),
+            (
+                "out-of-u16 domain id",
+                serde_json::json!([{"domain_id": 65_536, "problem": "partial_data"}]),
+            ),
+            (
+                "non-integer domain id",
+                serde_json::json!([{"domain_id": 11.5, "problem": "partial_data"}]),
+            ),
+        ];
+
+        for (label, domain_problems) in malformed {
+            let frame = world_frame_from_json(carried_problem_backed_json(Some(domain_problems)));
+            assert_eq!(
+                frame.raw()["countries"]["GER"]["production"],
+                carried,
+                "{label}: raw carried production must remain available"
+            );
+            assert_eq!(
+                frame.production_status(),
+                ViewStatus::DomainUnavailable,
+                "{label}: malformed coverage must fail closed"
+            );
+            assert_eq!(
+                frame.division_units_status(),
+                ViewStatus::DomainUnavailable,
+                "{label}: malformed coverage must poison division equipment"
+            );
+            assert_eq!(
+                frame.fleets_status(),
+                ViewStatus::DomainUnavailable,
+                "{label}: malformed coverage must poison fleets"
+            );
+            assert_eq!(
+                frame.leaders_status(),
+                ViewStatus::DomainUnavailable,
+                "{label}: malformed coverage must poison leaders"
+            );
+            assert_eq!(
+                frame.diplomacy().status,
+                ViewStatus::DomainUnavailable,
+                "{label}: malformed coverage must poison diplomacy"
+            );
+            assert_eq!(
+                frame.focus_status(),
+                ViewStatus::DomainUnavailable,
+                "{label}: malformed coverage must poison focus"
+            );
+            assert!(
+                frame
+                    .coverage_warnings()
+                    .iter()
+                    .any(|warning| warning.contains("domain_problems")),
+                "{label}: malformed coverage must retain a warning breadcrumb"
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_metadata_absent_at_each_level_keeps_carried_views_present() {
+        let mut absent_provenance = carried_problem_backed_json(None);
+        absent_provenance
+            .as_object_mut()
+            .expect("frame object")
+            .remove("provenance");
+        let mut absent_collector = carried_problem_backed_json(None);
+        absent_collector["provenance"]
+            .as_object_mut()
+            .expect("provenance object")
+            .remove("collector");
+
+        for (label, root) in [
+            ("provenance absent", absent_provenance),
+            ("collector absent", absent_collector),
+            ("domain_problems absent", carried_problem_backed_json(None)),
+        ] {
+            let frame = world_frame_from_json(root);
+            assert_eq!(frame.production_status(), ViewStatus::Present, "{label}");
+            assert_eq!(
+                frame.division_units_status(),
+                ViewStatus::Present,
+                "{label}"
+            );
+            assert_eq!(frame.fleets_status(), ViewStatus::Present, "{label}");
+            assert_eq!(frame.focus_status(), ViewStatus::Present, "{label}");
+            assert_eq!(frame.leaders_status(), ViewStatus::Present, "{label}");
+            assert_eq!(frame.diplomacy().status, ViewStatus::Present, "{label}");
+            assert_eq!(
+                frame
+                    .production("GER")
+                    .expect("typed production")
+                    .stockpile_total,
+                Leaf::Measured(120.0),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn provenance_envelope_present_but_malformed_fails_closed() {
+        for (label, provenance) in [
+            ("provenance null", Value::Null),
+            (
+                "provenance wrong type",
+                Value::String("not-an-object".to_string()),
+            ),
+        ] {
+            let mut root = carried_problem_backed_json(Some(serde_json::json!([])));
+            root["provenance"] = provenance;
+            let frame = world_frame_from_json(root);
+
+            assert_all_problem_backed_views_unavailable(label, &frame);
+            assert_eq!(
+                frame.raw()["countries"]["GER"]["focus"]["current"],
+                "carried_focus",
+                "{label}: raw carried focus must remain diagnostic"
+            );
+            assert!(
+                frame
+                    .coverage_warnings()
+                    .iter()
+                    .any(|warning| warning.contains("provenance")),
+                "{label}: malformed envelope needs a warning breadcrumb"
+            );
+        }
+    }
+
+    #[test]
+    fn collector_envelope_present_but_malformed_fails_closed() {
+        for (label, collector) in [
+            ("collector null", Value::Null),
+            (
+                "collector wrong type refutation",
+                serde_json::json!(["not-an-object"]),
+            ),
+        ] {
+            let mut root = carried_problem_backed_json(Some(serde_json::json!([])));
+            root["provenance"]["collector"] = collector;
+            let frame = world_frame_from_json(root);
+
+            assert_all_problem_backed_views_unavailable(label, &frame);
+            assert_eq!(
+                frame.raw()["countries"]["GER"]["focus"]["completed_count"],
+                4,
+                "{label}: raw carried focus must remain diagnostic"
+            );
+            assert!(
+                frame
+                    .coverage_warnings()
+                    .iter()
+                    .any(|warning| warning.contains("provenance.collector")),
+                "{label}: malformed envelope needs a warning breadcrumb"
+            );
+        }
+    }
+
+    #[test]
+    fn domain_problems_well_formed_downgrade_all_problem_backed_typed_views() {
+        let clean = world_frame_from_json(carried_problem_backed_json(Some(serde_json::json!([]))));
+        assert_eq!(clean.production_status(), ViewStatus::Present);
+        assert_eq!(clean.division_units_status(), ViewStatus::Present);
+        assert_eq!(clean.fleets_status(), ViewStatus::Present);
+        assert_eq!(clean.leaders_status(), ViewStatus::Present);
+        assert_eq!(clean.diplomacy().status, ViewStatus::Present);
+        assert_eq!(clean.division_units().len(), 1);
+        assert_eq!(clean.fleets().len(), 1);
+        assert_eq!(
+            clean
+                .leaders("GER")
+                .expect("typed leaders")
+                .country_leader_name,
+            Leaf::Measured("Carried Leader".to_string())
+        );
+        assert_eq!(
+            clean.diplomacy().countries["GER"].faction_is_leader,
+            Leaf::Measured(true)
+        );
+        assert_eq!(
+            clean.diplomacy().faction_members,
+            Leaf::Measured(BTreeMap::from([(
+                "1".to_string(),
+                vec!["GER".to_string(), "ITA".to_string()]
+            )]))
+        );
+
+        let division_equipment = world_frame_from_json(carried_problem_backed_json(Some(
+            serde_json::json!([{"domain_id": 26, "problem": "partial_data"}]),
+        )));
+        assert_eq!(
+            division_equipment.division_units_status(),
+            ViewStatus::DomainUnavailable
+        );
+        assert_eq!(
+            division_equipment.raw()["divisions"],
+            clean.raw()["divisions"],
+            "domain 26 raw carried divisions/equipment must remain available"
+        );
+
+        let fleets = world_frame_from_json(carried_problem_backed_json(Some(
+            serde_json::json!([{"domain_id": 28, "problem": "partial_data"}]),
+        )));
+        assert_eq!(fleets.fleets_status(), ViewStatus::DomainUnavailable);
+        assert_eq!(
+            fleets.raw()["order_of_battle"]["fleets"],
+            clean.raw()["order_of_battle"]["fleets"],
+            "domain 28 raw carried fleets must remain available"
+        );
+
+        let leaders = world_frame_from_json(carried_problem_backed_json(Some(
+            serde_json::json!([{"domain_id": 47, "problem": "failure_status"}]),
+        )));
+        assert_eq!(leaders.leaders_status(), ViewStatus::DomainUnavailable);
+        assert_eq!(
+            leaders.raw()["countries"]["GER"]["commanders"],
+            clean.raw()["countries"]["GER"]["commanders"],
+            "domain 47 raw carried leaders must remain available"
+        );
+
+        let diplomacy = world_frame_from_json(carried_problem_backed_json(Some(
+            serde_json::json!([{"domain_id": 53, "problem": "partial_data"}]),
+        )));
+        assert_eq!(diplomacy.diplomacy().status, ViewStatus::DomainUnavailable);
+        assert_eq!(
+            diplomacy.diplomacy().countries["GER"].faction_is_leader,
+            Leaf::Measured(true),
+            "domain 53 status guards the retained country-diplomacy projection"
+        );
+        assert_eq!(
+            diplomacy.diplomacy().faction_members,
+            clean.diplomacy().faction_members,
+            "domain 53 status guards the retained faction projection"
+        );
+        assert_eq!(
+            diplomacy.raw()["diplomacy_live"],
+            clean.raw()["diplomacy_live"],
+            "domain 53 raw carried diplomacy must remain available"
+        );
+
+        let focus = world_frame_from_json(carried_problem_backed_json(Some(
+            serde_json::json!([{"domain_id": 45, "problem": "malformed_payload"}]),
+        )));
+        assert_eq!(focus.focus_status(), ViewStatus::DomainUnavailable);
+        assert_eq!(
+            focus.focus("GER").expect("typed focus").completed_count,
+            Leaf::Measured(4),
+            "domain 45 status guards the retained focus projection"
+        );
+        assert_eq!(
+            focus.raw()["countries"]["GER"]["focus"],
+            clean.raw()["countries"]["GER"]["focus"],
+            "domain 45 raw carried focus must remain available"
+        );
+    }
+
+    #[test]
+    fn folded_malformed_d45_without_d12_is_unavailable_to_typed_consumer() {
+        const HOUR_A: i64 = 16_959_360;
+        const HOUR_B: i64 = HOUR_A + 1;
+        let raw_a = DATE_EPOCH_CONST + HOUR_A as i32;
+        let raw_b = DATE_EPOCH_CONST + HOUR_B as i32;
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            raw_a,
+            18,
+            RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(1, "GER"),
+        );
+        push_record(
+            &mut stream,
+            2,
+            raw_a,
+            45,
+            RECORD_TYPE_DOMAIN_DATA,
+            &focus_depth_payload(1),
+        );
+        push_record(
+            &mut stream,
+            3,
+            raw_a,
+            1000,
+            RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        push_record(
+            &mut stream,
+            4,
+            raw_b,
+            45,
+            RECORD_TYPE_DOMAIN_DATA,
+            b"malformed-d45",
+        );
+        push_record(
+            &mut stream,
+            5,
+            raw_b,
+            1000,
+            RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+
+        let temp = TestDir::new("folded_malformed_d45");
+        let stream_path = temp.0.join("collector_stream.bin");
+        let snapshots_path = temp.0.join("snapshots");
+        fs::write(&stream_path, stream).expect("write compact stream");
+        fs::create_dir_all(&snapshots_path).expect("create snapshot directory");
+
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let extractor_manifest = repo_root.join("extractor/native/Cargo.toml");
+        let output = Command::new(env!("CARGO"))
+            .arg("run")
+            .arg("--quiet")
+            .arg("--manifest-path")
+            .arg(extractor_manifest)
+            .arg("-p")
+            .arg("recorder_host")
+            .arg("--bin")
+            .arg("stream_fold")
+            .arg("--")
+            .arg(&stream_path)
+            .arg(&snapshots_path)
+            .arg("--game-id")
+            .arg("typed_d45_status_regression")
+            .arg("--workers")
+            .arg("1")
+            .output()
+            .expect("run d45 stream fold");
+        assert!(
+            output.status.success(),
+            "stream_fold failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let current = WorldFrame::from_raw(raw_frame_from_snapshot(
+            &snapshots_path.join(format!("{HOUR_A:012}.snapshot.json")),
+        ));
+        let malformed = WorldFrame::from_raw(raw_frame_from_snapshot(
+            &snapshots_path.join(format!("{HOUR_B:012}.snapshot.json")),
+        ));
+
+        assert_eq!(current.focus_status(), ViewStatus::Present);
+        assert_eq!(
+            current.focus("GER").expect("current typed focus").current,
+            Leaf::Measured("focus_current".to_string())
+        );
+        assert_eq!(
+            current
+                .focus("GER")
+                .expect("current typed focus")
+                .completed_count,
+            Leaf::Measured(4)
+        );
+        assert!(malformed.provenance().channels["collector"]
+            .problems
+            .iter()
+            .any(|problem| problem.domain == 45 && problem.problem == "malformed_payload"));
+        assert_eq!(
+            malformed.focus_status(),
+            ViewStatus::DomainUnavailable,
+            "carried D45 focus with a malformed D45 problem must not remain Present"
+        );
+        for key in [
+            "current",
+            "completed_count",
+            "_r2_depth_current",
+            "_r2_depth_completed_count",
+        ] {
+            assert_eq!(
+                malformed.raw()["countries"]["GER"]["focus"][key],
+                current.raw()["countries"]["GER"]["focus"][key],
+                "malformed D45 must retain carried raw focus metric {key} for diagnostics"
+            );
+        }
+    }
+
+    #[test]
+    fn folded_undercovered_production_is_unavailable_to_typed_consumer() {
+        const HOUR_A: i64 = 16_959_360;
+        const HOUR_B: i64 = HOUR_A + 1;
+        let raw_a = DATE_EPOCH_CONST + HOUR_A as i32;
+        let raw_b = DATE_EPOCH_CONST + HOUR_B as i32;
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            raw_a,
+            18,
+            RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(1, "GER"),
+        );
+        push_record(
+            &mut stream,
+            2,
+            raw_a,
+            11,
+            RECORD_TYPE_DOMAIN_DATA,
+            &production_payload(1, Some(1)),
+        );
+        push_record(
+            &mut stream,
+            3,
+            raw_a,
+            1000,
+            RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        push_record(
+            &mut stream,
+            4,
+            raw_b,
+            11,
+            RECORD_TYPE_DOMAIN_DATA,
+            &production_payload(1, None),
+        );
+        push_record(
+            &mut stream,
+            5,
+            raw_b,
+            1000,
+            RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+
+        let temp = TestDir::new("folded_undercovered_production");
+        let stream_path = temp.0.join("collector_stream.bin");
+        let snapshots_path = temp.0.join("snapshots");
+        fs::write(&stream_path, stream).expect("write compact stream");
+        fs::create_dir_all(&snapshots_path).expect("create snapshot directory");
+
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let extractor_manifest = repo_root.join("extractor/native/Cargo.toml");
+        let output = Command::new(env!("CARGO"))
+            .arg("run")
+            .arg("--quiet")
+            .arg("--manifest-path")
+            .arg(extractor_manifest)
+            .arg("-p")
+            .arg("recorder_host")
+            .arg("--bin")
+            .arg("stream_fold")
+            .arg("--")
+            .arg(&stream_path)
+            .arg(&snapshots_path)
+            .arg("--game-id")
+            .arg("typed_status_regression")
+            .arg("--workers")
+            .arg("1")
+            .output()
+            .expect("run production stream fold");
+        assert!(
+            output.status.success(),
+            "stream_fold failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let current = WorldFrame::from_raw(raw_frame_from_snapshot(
+            &snapshots_path.join(format!("{HOUR_A:012}.snapshot.json")),
+        ));
+        let undercovered = WorldFrame::from_raw(raw_frame_from_snapshot(
+            &snapshots_path.join(format!("{HOUR_B:012}.snapshot.json")),
+        ));
+
+        assert_eq!(current.production_status(), ViewStatus::Present);
+        assert!(
+            undercovered.provenance().channels["collector"]
+                .problems
+                .iter()
+                .any(|problem| problem.domain == 11
+                    && problem.problem == "production_count_uncovered")
+        );
+        assert_eq!(
+            undercovered.production_status(),
+            ViewStatus::DomainUnavailable,
+            "carried production with a d11 domain_problem must not remain Present"
+        );
+        assert_eq!(
+            undercovered.raw()["countries"]["GER"]["production"],
+            current.raw()["countries"]["GER"]["production"],
+            "raw carried production remains available for diagnostics"
+        );
     }
 }

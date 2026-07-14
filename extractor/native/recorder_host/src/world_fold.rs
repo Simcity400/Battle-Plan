@@ -5645,6 +5645,14 @@ impl WorldFold {
     // --- DOMAIN 11 production_live (full each frame) -----------------------
     fn fold_production(&mut self, payload: &[u8]) -> Result<(), String> {
         need(payload, 40, "production header")?;
+        let status_flags = read_u32(payload, 16);
+        // D11 is a full-replacement domain with no expected-partial tolerance.
+        // Reject every failure-mask payload before parsing rows or touching a
+        // country: a readable subset from a torn frame must never replace the
+        // last complete production block.
+        if self.handle_compact_failure(11, "production_live", status_flags) {
+            return Ok(());
+        }
         let country_count = read_u32(payload, 8) as usize;
         let stockpile_count = read_u32(payload, 24) as usize;
         let military_count = read_u32(payload, 28) as usize;
@@ -5660,22 +5668,30 @@ impl WorldFold {
                 payload.len()
             ));
         }
-        let _ = country_count;
-
         // clear any prior production block for every country we touch this frame
         // by building fresh per-tag accumulators; full-replace semantics.
         let mut per_tag: BTreeMap<u32, ProductionAccum> = BTreeMap::new();
 
         let mut cursor = 40usize;
-        for _ in 0..stockpile_count {
+        for row_index in 0..stockpile_count {
             let tag = read_u32(payload, cursor);
             let variant_id = read_u32(payload, cursor + 4);
             let amount = read_i64(payload, cursor + 8) as f64 / PRODUCTION_SCALE;
-            per_tag.entry(tag).or_default().stockpile.push(json!({
-                "id": variant_id.to_string(),
-                "amount": amount,
-            }));
             cursor += 16;
+            let accum = per_tag.entry(tag).or_default();
+            // schema §3.6: `stockpile` is a variant-id -> amount MAP. The live
+            // production manager keys its stockpile by equipment-variant id, so a
+            // variant appears at most once per country per frame. A duplicate key
+            // is a torn read (two rows collapsing onto one slot would silently
+            // drop an amount), so fail the fold closed rather than lose data.
+            let key = variant_id.to_string();
+            if accum.stockpile.contains_key(&key) {
+                return Err(format!(
+                    "production stockpile row {row_index} duplicates variant {variant_id} for tag {tag}"
+                ));
+            }
+            accum.stockpile.insert(key, json!(amount));
+            accum.stockpile_total += amount;
         }
         for _ in 0..line_count {
             let tag = read_u32(payload, cursor);
@@ -5697,8 +5713,10 @@ impl WorldFold {
             let accum = per_tag.entry(tag).or_default();
             if kind == 2 {
                 accum.naval_lines.push(row);
+                accum.naval_factories += active_factories as i64;
             } else {
                 accum.military_lines.push(row);
+                accum.military_factories += active_factories as i64;
             }
             cursor += 32;
         }
@@ -5740,24 +5758,66 @@ impl WorldFold {
             }
         }
 
+        // `country_count` counts every collector CountryProductionRow, including
+        // countries whose readable production object serialized zero leaf rows.
+        // Those countries have no tag on the legacy wire unless a PLIC trailer
+        // happens to key them. Retain their carried accumulators for continuity,
+        // but badge the hour: otherwise a clean all-zero frame is a silent no-op
+        // that makes stale production indistinguishable from a current measure.
+        let keyed_country_count = per_tag.len();
+        if country_count > keyed_country_count {
+            let uncovered_country_count = country_count - keyed_country_count;
+            self.record_domain_problem(11, "production_count_uncovered");
+            self.note(format!(
+                "production_live country coverage ambiguous: declared={country_count} keyed={keyed_country_count} uncovered={uncovered_country_count}"
+            ));
+        }
+
+        let mut ambiguous_leaves = Vec::new();
         for (tag, accum) in per_tag {
-            let country = self.country_mut(tag);
+            let mut production = Map::new();
+            if accum.stockpile.is_empty() {
+                ambiguous_leaves.push(format!("{tag}:stockpile"));
+            } else {
+                production.insert("stockpile".into(), Value::Object(accum.stockpile));
+                production.insert("stockpile_total".into(), json!(accum.stockpile_total));
+            }
+            if accum.military_lines.is_empty() {
+                ambiguous_leaves.push(format!("{tag}:military_lines"));
+            } else {
+                production.insert("military_lines".into(), Value::Array(accum.military_lines));
+                production.insert("military_factories".into(), json!(accum.military_factories));
+            }
+            if accum.naval_lines.is_empty() {
+                ambiguous_leaves.push(format!("{tag}:naval_lines"));
+            } else {
+                production.insert("naval_lines".into(), Value::Array(accum.naval_lines));
+                production.insert("naval_factories".into(), json!(accum.naval_factories));
+            }
+            if accum.construction_queue.is_empty() {
+                ambiguous_leaves.push(format!("{tag}:construction_queue"));
+            } else {
+                production.insert(
+                    "construction_queue".into(),
+                    Value::Array(accum.construction_queue),
+                );
+            }
             let licenses_value = match accum.licenses {
                 Some(ids) => {
                     Value::Array(ids.into_iter().map(|id| json!(id.to_string())).collect())
                 }
                 None => Value::Null,
             };
-            country.insert(
-                "production".into(),
-                json!({
-                    "stockpile": accum.stockpile,
-                    "military_lines": accum.military_lines,
-                    "naval_lines": accum.naval_lines,
-                    "construction_queue": accum.construction_queue,
-                    "production_licenses": licenses_value,
-                }),
-            );
+            production.insert("production_licenses".into(), licenses_value);
+            self.country_mut(tag)
+                .insert("production".into(), Value::Object(production));
+        }
+        if !ambiguous_leaves.is_empty() {
+            self.record_domain_problem(11, "production_leaf_presence_ambiguous");
+            self.note(format!(
+                "production_live omitted zero-row vector leaves and their aggregates because d11 has no per-country presence/completeness witness: {}",
+                ambiguous_leaves.join(",")
+            ));
         }
         Ok(())
     }
@@ -8017,6 +8077,15 @@ impl WorldFold {
         }
 
         self.clear_domain47_country_fields();
+
+        // `counts.roster_size` is the full d47 Character roster, matching
+        // parse_characters, not the unit-leader subset. Canonical admiral rows
+        // stay withheld pending schema-owner approval of the exact live shape
+        // and a verified experience scale; all carried fields remain lossless in
+        // the domain-owned sidecar below.
+        let mut roster_size: BTreeMap<u32, u64> = BTreeMap::new();
+        let mut withheld_navy_leaders = 0usize;
+
         for row in decoded.rows {
             match row {
                 domain47::DecodedDomain47Row::Character {
@@ -8025,6 +8094,7 @@ impl WorldFold {
                     name,
                     token,
                 } => {
+                    *roster_size.entry(country_tag_db_id).or_default() += 1;
                     let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
                     ensure_json_array_mut(sidecar, "characters").push(json!({
                         "char_id": char_id,
@@ -8048,6 +8118,9 @@ impl WorldFold {
                     token,
                     name,
                 } => {
+                    if leader_kind == domain47::UNIT_LEADER_NAVY {
+                        withheld_navy_leaders += 1;
+                    }
                     let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
                     ensure_json_array_mut(sidecar, "unit_leaders").push(json!({
                         "unit_leader_id": unit_leader_id,
@@ -8162,6 +8235,24 @@ impl WorldFold {
             }
         }
 
+        // The Character rows are the complete parse_characters roster. Emit only
+        // the count that this live contract proves; role-specific counts and
+        // arrays stay absent until their canonical live row is approved.
+        for (country_tag_db_id, total) in &roster_size {
+            let commanders =
+                ensure_json_object_mut(self.country_mut(*country_tag_db_id), "commanders");
+            commanders.insert("counts".into(), json!({"roster_size": total}));
+        }
+        if withheld_navy_leaders != 0 {
+            self.record_domain_problem(
+                CHARACTERS_LEADERS_CABINET_DOMAIN_ID,
+                "canonical_admiral_projection_incomplete",
+            );
+            self.note(format!(
+                "characters_leaders_cabinet_live retained {withheld_navy_leaders} navy leader row(s) in extra.{DOMAIN47_R2_KEY}; canonical commanders.admirals withheld pending schema-owner live-row approval and a verified experience scale"
+            ));
+        }
+
         self.mark_fold_domain_success(CHARACTERS_LEADERS_CABINET_DOMAIN_ID);
         Ok(())
     }
@@ -8170,6 +8261,10 @@ impl WorldFold {
         for country in self.countries.values_mut() {
             if let Some(Value::Object(commanders)) = country.get_mut("commanders") {
                 commanders.remove("leader");
+                // Full-replace the canonical §3.10 roster this domain owns each
+                // frame, alongside `leader`.
+                commanders.remove("admirals");
+                commanders.remove("counts");
                 if commanders.is_empty() {
                     country.remove("commanders");
                 }
@@ -12770,9 +12865,20 @@ const DIVISION_FLAG_TEMPLATE: u32 = 1 << 13;
 
 #[derive(Default)]
 struct ProductionAccum {
-    stockpile: Vec<Value>,
+    /// Live production-manager stockpile as a schema §3.6 map: equipment-variant
+    /// id string -> signed amount. A map (not a list) is the shape the replay
+    /// `ProductionView.stockpile` consumer reads (`leaf_f64_map`).
+    stockpile: Map<String, Value>,
+    /// Running sum of the measured `stockpile` amounts (schema §3.6
+    /// `stockpile_total`). Kept alongside the map so the total is the exact sum
+    /// of the same measured values, never a re-derivation from a different pass.
+    stockpile_total: f64,
     military_lines: Vec<Value>,
     naval_lines: Vec<Value>,
+    /// Sum of `active_factories` over the measured military / naval production
+    /// lines (schema §3.6 `military_factories` / `naval_factories`).
+    military_factories: i64,
+    naval_factories: i64,
     construction_queue: Vec<Value>,
     /// Wave-4 production licensing: `Some(ids)` when this country carried a
     /// measured license set in the `PLIC` trailer (proven-empty is `Some([])`);

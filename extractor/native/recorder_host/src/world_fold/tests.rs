@@ -2593,11 +2593,16 @@ fn folds_two_hours_full_then_delta_with_delete() {
     assert!((c["fuel"]["max"].as_f64().unwrap() - 456.25).abs() < 1e-6);
     assert!((c["fuel"]["cost"].as_f64().unwrap() - (-1.0)).abs() < 1e-6);
 
-    // production folded
+    // production folded: stockpile is a schema §3.6 variant-id -> amount MAP
+    // (the shape the replay `ProductionView.stockpile` consumer reads), with the
+    // derived `stockpile_total` sum and per-branch active-factory sums.
     let prod = &c["production"];
-    assert!((prod["stockpile"][0]["amount"].as_f64().unwrap() - 55.0).abs() < 1e-6);
+    assert!((prod["stockpile"]["101"].as_f64().unwrap() - 55.0).abs() < 1e-6);
+    assert!((prod["stockpile_total"].as_f64().unwrap() - 55.0).abs() < 1e-6);
     assert_eq!(prod["military_lines"][0]["active_factories"], json!(3));
-    assert_eq!(prod["naval_lines"].as_array().unwrap().len(), 0);
+    assert_eq!(prod["military_factories"], json!(3));
+    assert!(prod.as_object().unwrap().get("naval_lines").is_none());
+    assert!(prod.as_object().unwrap().get("naval_factories").is_none());
     assert_eq!(prod["construction_queue"][0]["template_id"], json!(20013));
 
     // divisions: two present, keyed by uid, owner as stringified tag_db_id
@@ -3464,6 +3469,184 @@ fn domain47_folds_active_ruler_and_r2_sidecar_after_tag_rekey() {
         }])
     );
     assert!(country.as_object().unwrap().get("politics").is_none());
+    // The canonical full-roster count includes this character, while the
+    // unapproved live admiral projection stays absent. generals /
+    // field_marshals stay absent because the army split is payload-blocked.
+    assert!(country["commanders"]
+        .as_object()
+        .unwrap()
+        .get("admirals")
+        .is_none());
+    assert_eq!(country["commanders"]["counts"], json!({"roster_size": 1}));
+    assert!(country["commanders"]
+        .as_object()
+        .unwrap()
+        .get("generals")
+        .is_none());
+    assert!(country["commanders"]
+        .as_object()
+        .unwrap()
+        .get("field_marshals")
+        .is_none());
+}
+
+#[test]
+fn domain47_navy_leaders_stay_sidecar_when_canonical_projection_is_incomplete() {
+    // The full character roster contains one non-unit-leader plus one army and
+    // two navy unit-leaders. Until the schema owner approves the exact live
+    // admiral row and the experience scale is verified, the canonical admiral
+    // bucket stays absent and the complete carried rows remain in the sidecar.
+    // `roster_size` is the full four-character roster, not the three unit leaders.
+    let raw = raw_for(16_959_360);
+    let rows = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 2000,
+            name: Some("Civilian Character"),
+            token: Some("POR_civilian"),
+        }),
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 2001,
+            name: Some("Army General"),
+            token: Some("POR_army_gen"),
+        }),
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 2002,
+            name: Some("Admiral Alpha"),
+            token: Some("POR_adm_a"),
+        }),
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 2003,
+            name: Some("Admiral Bravo"),
+            token: Some("POR_adm_b"),
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeader(domain47_lane::UnitLeaderRow {
+            country_tag_db_id: 47,
+            unit_leader_id: 10,
+            char_id: 2001,
+            leader_kind: domain47_lane::UNIT_LEADER_ARMY,
+            skill: Some(6),
+            experience_raw: Some(50),
+            attack: Some(2),
+            defense: Some(3),
+            planning: Some(1),
+            logistics: Some(2),
+            maneuvering: None,
+            coordination: None,
+            token: Some("POR_army_gen"),
+            name: Some("Army General"),
+            trait_count: 0,
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeader(domain47_lane::UnitLeaderRow {
+            country_tag_db_id: 47,
+            unit_leader_id: 21,
+            char_id: 2002,
+            leader_kind: domain47_lane::UNIT_LEADER_NAVY,
+            skill: Some(5),
+            experience_raw: Some(777),
+            attack: Some(9),
+            defense: Some(10),
+            planning: None,
+            logistics: None,
+            maneuvering: Some(7),
+            coordination: Some(8),
+            token: Some("POR_adm_a"),
+            name: Some("Admiral Alpha"),
+            trait_count: 2,
+        }),
+        // Traits deliberately out of ordinal order to prove ordinal sort.
+        domain47_lane::CharacterLaneRow::UnitLeaderTrait(domain47_lane::UnitLeaderTraitRow {
+            unit_leader_id: 21,
+            ordinal: 1,
+            trait_token: "spotter",
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeaderTrait(domain47_lane::UnitLeaderTraitRow {
+            unit_leader_id: 21,
+            ordinal: 0,
+            trait_token: "bold",
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeader(domain47_lane::UnitLeaderRow {
+            country_tag_db_id: 47,
+            unit_leader_id: 22,
+            char_id: 2003,
+            leader_kind: domain47_lane::UNIT_LEADER_NAVY,
+            skill: Some(3),
+            experience_raw: Some(0),
+            attack: None,
+            defense: None,
+            planning: None,
+            logistics: None,
+            maneuvering: Some(1),
+            coordination: Some(2),
+            token: Some("POR_adm_b"),
+            name: Some("Admiral Bravo"),
+            trait_count: 0,
+        }),
+    ];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &rows),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_admirals");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let snap = parse(&snaps[0].2);
+    let country = &snap["countries"]["POR"];
+    let commanders = &snap["countries"]["POR"]["commanders"];
+    assert!(commanders.as_object().unwrap().get("admirals").is_none());
+    assert_eq!(commanders["counts"], json!({"roster_size": 4}));
+
+    let sidecar = &country["extra"]["_r2_characters_leaders_cabinet_live"];
+    let alpha = sidecar["unit_leaders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["unit_leader_id"] == json!(21))
+        .unwrap();
+    assert_eq!(alpha["experience_raw"], json!(777));
+    assert_eq!(alpha["attack"], json!(9));
+    assert_eq!(alpha["defense"], json!(10));
+    assert_eq!(alpha["maneuvering"], json!(7));
+    assert_eq!(alpha["coordination"], json!(8));
+    assert_eq!(
+        sidecar["unit_leader_traits"],
+        json!([
+            {"unit_leader_id": 21, "ordinal": 1, "trait_token": "spotter"},
+            {"unit_leader_id": 21, "ordinal": 0, "trait_token": "bold"},
+        ])
+    );
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(47)
+            && problem["problem"] == json!("canonical_admiral_projection_incomplete")));
 }
 
 #[test]
@@ -9911,6 +10094,18 @@ fn chunk2_d11_production_license_trailer_folds_per_country() {
         snap["countries"]["ROM"]["production"]["production_licenses"],
         json!([])
     );
+    let rom_production = snap["countries"]["ROM"]["production"].as_object().unwrap();
+    assert_eq!(
+        rom_production.len(),
+        1,
+        "a PLIC-only tag must not turn unavailable production vectors into measured empties"
+    );
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("production_leaf_presence_ambiguous")));
     // GER: no production block at all this frame (it had no base production
     // rows and no license trailer row), so no production object is created.
     assert!(snap["countries"]
@@ -9932,6 +10127,371 @@ fn chunk2_d11_production_without_license_trailer_folds_null() {
         snap["countries"]["LAT"]["production"]["production_licenses"],
         Value::Null
     );
+}
+
+/// Build a d11 production payload with arbitrary stockpile rows and production
+/// lines for one tag (schema §3.6 fold-shape coverage). `stockpile` is a list of
+/// `(variant_id, amount_raw)`; `lines` is `(kind, active_factories)` where
+/// `kind == 2` is naval. No construction rows, no PLIC trailer.
+fn production_aggregates_payload(
+    tag: u32,
+    stockpile: &[(u32, i64)],
+    lines: &[(u32, i32)],
+) -> Vec<u8> {
+    let military = lines.iter().filter(|(k, _)| *k != 2).count() as u32;
+    let naval = lines.iter().filter(|(k, _)| *k == 2).count() as u32;
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    p.extend_from_slice(&1u32.to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    p.extend_from_slice(&(stockpile.len() as u32).to_le_bytes()); // stockpile_count
+    p.extend_from_slice(&military.to_le_bytes()); // military_line_count
+    p.extend_from_slice(&naval.to_le_bytes()); // naval_line_count
+    p.extend_from_slice(&0u32.to_le_bytes()); // construction_count
+    for (variant_id, amount_raw) in stockpile {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&variant_id.to_le_bytes());
+        p.extend_from_slice(&amount_raw.to_le_bytes());
+    }
+    for (line_index, (kind, active_factories)) in lines.iter().enumerate() {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&kind.to_le_bytes());
+        p.extend_from_slice(&(line_index as i32).to_le_bytes()); // line_id
+        p.extend_from_slice(&active_factories.to_le_bytes());
+        p.extend_from_slice(&0i32.to_le_bytes()); // cost
+        p.extend_from_slice(&0i32.to_le_bytes()); // speed
+        p.extend_from_slice(&0i32.to_le_bytes()); // produced
+        p.extend_from_slice(&0i32.to_le_bytes()); // amount
+    }
+    p
+}
+
+/// Build a clean d11 payload whose keyed countries each carry at least one row
+/// for every non-PLIC production leaf. `declared_country_count` is independent
+/// of `keyed_tags` so coverage-mismatch regressions can exercise the wire's
+/// declared count without fabricating a tag for an uncovered country.
+fn production_country_coverage_payload(declared_country_count: u32, keyed_tags: &[u32]) -> Vec<u8> {
+    let keyed_count = keyed_tags.len() as u32;
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&declared_country_count.to_le_bytes()); // country_count
+    p.extend_from_slice(&declared_country_count.to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    p.extend_from_slice(&keyed_count.to_le_bytes()); // stockpile_count
+    p.extend_from_slice(&keyed_count.to_le_bytes()); // military_line_count
+    p.extend_from_slice(&keyed_count.to_le_bytes()); // naval_line_count
+    p.extend_from_slice(&keyed_count.to_le_bytes()); // construction_count
+
+    for tag in keyed_tags {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(10_000 + tag).to_le_bytes()); // variant_id
+        p.extend_from_slice(&100_000i64.to_le_bytes()); // amount = 1.0
+    }
+    for tag in keyed_tags {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes()); // military
+        p.extend_from_slice(&(*tag as i32).to_le_bytes()); // line_id
+        p.extend_from_slice(&1i32.to_le_bytes()); // active_factories
+        p.extend_from_slice(&0i32.to_le_bytes()); // cost
+        p.extend_from_slice(&0i32.to_le_bytes()); // speed
+        p.extend_from_slice(&0i32.to_le_bytes()); // produced
+        p.extend_from_slice(&0i32.to_le_bytes()); // amount
+    }
+    for tag in keyed_tags {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&2u32.to_le_bytes()); // naval
+        p.extend_from_slice(&(*tag as i32).to_le_bytes()); // line_id
+        p.extend_from_slice(&1i32.to_le_bytes()); // active_factories
+        p.extend_from_slice(&0i32.to_le_bytes()); // cost
+        p.extend_from_slice(&0i32.to_le_bytes()); // speed
+        p.extend_from_slice(&0i32.to_le_bytes()); // produced
+        p.extend_from_slice(&0i32.to_le_bytes()); // amount
+    }
+    for tag in keyed_tags {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(20_000 + tag).to_le_bytes()); // line_id
+        p.extend_from_slice(&(30_000 + tag).to_le_bytes()); // template_id
+        p.extend_from_slice(&1i32.to_le_bytes()); // active_factories
+        p.extend_from_slice(&0i32.to_le_bytes()); // cost
+        p.extend_from_slice(&0i32.to_le_bytes()); // produced
+        p.extend_from_slice(&0u32.to_le_bytes()); // priority
+        p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    }
+    p
+}
+
+#[test]
+fn chunk2_d11_production_stockpile_map_total_and_factory_sums() {
+    // Two stockpile variants and two military + one naval production line fold to
+    // the schema §3.6 shape: `stockpile` is a variant-id -> amount MAP, with the
+    // derived `stockpile_total` sum and per-branch active-factory sums.
+    let prod = production_aggregates_payload(
+        1,
+        &[
+            (101, (12.5 * 100_000.0) as i64),
+            (202, (7.5 * 100_000.0) as i64),
+        ],
+        &[(1, 4), (1, 2), (2, 3)],
+    );
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (11, prod),
+    ]);
+    let prod = &snap["countries"]["GER"]["production"];
+    // stockpile is a map keyed by variant-id string.
+    assert!((prod["stockpile"]["101"].as_f64().unwrap() - 12.5).abs() < 1e-6);
+    assert!((prod["stockpile"]["202"].as_f64().unwrap() - 7.5).abs() < 1e-6);
+    assert!(prod["stockpile"].as_object().unwrap().len() == 2);
+    // stockpile_total is the exact sum of the measured amounts.
+    assert!((prod["stockpile_total"].as_f64().unwrap() - 20.0).abs() < 1e-6);
+    // factory sums split by branch (military = kind != 2, naval = kind == 2).
+    assert_eq!(prod["military_factories"], json!(6));
+    assert_eq!(prod["naval_factories"], json!(3));
+    assert_eq!(prod["military_lines"].as_array().unwrap().len(), 2);
+    assert_eq!(prod["naval_lines"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn chunk2_d11_zero_row_leaves_are_absent_not_measured_empty() {
+    // A military-line row proves this tag exists, but the wire carries no
+    // per-country presence/completeness bits for the other production vectors.
+    // Their zero rows are therefore ambiguous, not measured-empty values.
+    let prod = production_aggregates_payload(1, &[], &[(1, 4)]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (11, prod),
+    ]);
+    let production = snap["countries"]["GER"]["production"].as_object().unwrap();
+    assert_eq!(production["military_factories"], json!(4));
+    assert_eq!(production["military_lines"].as_array().unwrap().len(), 1);
+    for absent in [
+        "stockpile",
+        "stockpile_total",
+        "naval_lines",
+        "naval_factories",
+        "construction_queue",
+    ] {
+        assert!(
+            !production.contains_key(absent),
+            "ambiguous zero-row leaf {absent} must stay absent"
+        );
+    }
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("production_leaf_presence_ambiguous")));
+}
+
+#[test]
+fn chunk2_d11_partial_subset_retains_complete_prior_production() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let full = production_aggregates_payload(
+        1,
+        &[(101, 5 * 100_000), (202, 9 * 100_000)],
+        &[(1, 3), (2, 2)],
+    );
+    let mut partial = production_aggregates_payload(1, &[(101, 1 * 100_000)], &[(1, 1)]);
+    partial[16..20].copy_from_slice(&COMPACT_STATUS_PARTIAL_DATA.to_le_bytes());
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &full,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &partial,
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d11_full_then_partial");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["production"], frame1["countries"]["GER"]["production"],
+        "a PARTIAL d11 subset must retain the complete prior production block"
+    );
+    assert!(frame2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk2_d11_country_coverage_unkeyed_all_zero_badges_retained() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let full = production_country_coverage_payload(1, &[1]);
+    // Collector-valid legacy/no-trailer shape: one CountryProductionRow was
+    // counted, but it serialized no stockpile, line, or construction rows.
+    let unkeyed_all_zero = production_country_coverage_payload(1, &[]);
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &full,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &unkeyed_all_zero,
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d11_full_then_unkeyed_all_zero");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["production"], frame1["countries"]["GER"]["production"],
+        "an uncovered clean d11 country must retain prior production for continuity"
+    );
+    assert!(frame2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("production_count_uncovered")));
+    assert!(frame2["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("declared=1 keyed=0 uncovered=1")));
+}
+
+#[test]
+fn chunk2_d11_country_coverage_under_keyed_badges_counts() {
+    let prod = production_country_coverage_payload(2, &[1]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ITA")])),
+        (11, prod),
+    ]);
+
+    assert!(snap["countries"]["GER"]["production"].is_object());
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("production_count_uncovered")));
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("declared=2 keyed=1 uncovered=1")));
+}
+
+#[test]
+fn chunk2_d11_country_coverage_matching_stays_clean() {
+    let prod = production_country_coverage_payload(2, &[1, 2]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ITA")])),
+        (11, prod),
+    ]);
+
+    assert!(snap["countries"]["GER"]["production"].is_object());
+    assert!(snap["countries"]["ITA"]["production"].is_object());
+    assert!(!snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)));
+}
+
+#[test]
+fn chunk2_d11_production_rejects_duplicate_stockpile_variant() {
+    // Two stockpile rows for the same variant on one country is a torn read
+    // (map collapse would silently drop an amount) -> the fold fails closed and
+    // emits no production block, rather than lose the second amount.
+    let prod = production_aggregates_payload(1, &[(101, 5 * 100_000), (101, 9 * 100_000)], &[]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (11, prod),
+    ]);
+    assert!(snap["countries"]
+        .get("GER")
+        .and_then(|c| c.get("production"))
+        .is_none());
 }
 
 #[test]
