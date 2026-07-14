@@ -3520,3 +3520,23 @@ full standard met. PRESERVED: committed fix3-6 + test-path on the lane branch @1
 => facs-wire MERGE-READY, joins the 2nd merge wave.
 MERGE-READY now: boundary-auth (guards), autoattach (SHIP @15a817f3e), facs-wire (SHIP @1da8812b8).
 IN FLIGHT: replay-loader fix5, foldwave2 fix4, stitching r3.
+
+## 2026-07-14 replay-loader fix5 verified GREEN -> r5 gate launched
+All 4 r4 findings addressed (verified worktree directly incl F3 which grep flagged - confirmed
+read_session_manifest_bytes_validated main.rs:4848 + pre-pack finalize 4864 BOTH use
+snapshot::parse_json_strict): F1 deny-share continuity = temp create_new(true)+share_mode(FILE_
+SHARE_READ only) at main.rs:5204-5, original handle held through pack/sync/verify/handle-promotion
+in all 3 finalizers (4322/4509/4697), create_new = first appearance so no earlier writable mapping;
+test 28937 concurrent write/delete fails. F2 canonical-entry = exactly one collector_compact_stream
+role at payload/<game>/collector_raw/collector_stream.bin, zero/dup/non-canonical FAIL before hash,
+sole hash from canonical path not iteration order (stream_verify.rs:196-213); test 1068 decoy
+rejected. F3 strict recorder manifest via parse_json_strict; test 18837 dup-nested-modset rejected.
+F4 extern/link_name detection (source.rs:1158) + accepted-limitation note (1647) per orchestrator
+ruling; test 1810. ORCHESTRATOR-VERIFIED: snapshot 72/0 (Dev-Mode symlink skipped), recorder_host
+200 lib/202 bin(2 ign) 0-fail incl all new tests (RmStartSession flakes didn't reproduce),
+replay_core 72/0. Scope: snapshot/stream_verify + replay_core/source + recorder_host/main
+(finalization). regate-replayloader-r5 LAUNCHED (attacks any creation->promotion substitution/
+mutation window incl CreateFileMapping-needs-write, canonical-path normalization tricks, remaining
+serde_json on embedded manifest, + full regression). F4 = accept documented lint limitation.
+IN FLIGHT: replay-loader r5 gate, foldwave2 fix4, stitching r3. MERGE-READY: boundary-auth,
+autoattach (SHIP @15a817f3e), facs-wire (SHIP @1da8812b8).
