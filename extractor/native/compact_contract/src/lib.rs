@@ -4,8 +4,10 @@
 //!
 //! The collector DLL, the recorder host, and every lane crate must consume
 //! these definitions instead of keeping local copies. Domain IDs are assigned
-//! in `extractor/documents/DOMAIN_REGISTRY.md`; the `ASSIGNED_COMPACT_DOMAINS`
-//! table below must stay in sync with that registry.
+//! in `extractor/native/domain_registry.json`; the `ASSIGNED_COMPACT_DOMAINS`
+//! table below is the code-authoritative mirror and must stay in sync with that
+//! registry. (The old `DOMAIN_REGISTRY.md` was retired 2026-07-05 — now a
+//! routing stub.)
 
 pub mod bound_trips;
 pub mod build_profile;

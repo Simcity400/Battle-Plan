@@ -45,6 +45,14 @@ closure. Wave 0 restored the completion authority and workspace baseline; Wave 1
 identified correctness repairs with synthetic/targeted gates. Neither wave supplies a live speed-5
 acceptance proof.
 
+**Wave-0 gate (2026-07-16):** the inherited WIP snapshot `0a3eadfe` (160 modified + 68 untracked
+files from the prior extractor session — static bundle v2, campaign-identity/CID1, duplex/auto-attach,
+production capture scripts, W13-W15 dossiers) was gated before merge: 7 adversarial subsystem reviews
+plus the full workspace battery (incl. `collector` 395/0). Two confirmed majors were fixed and the
+snapshot merged to master @`2069d17b`. The `hoi4_lanes/EXTRACTOR_SESSION_UNSHIPPED_WORK.md` worktree
+audit is **RESOLVED** — of the flagged extractor-session worktrees, 8 are merged and 5 superseded;
+nothing remains unshipped, so that audit does not need re-mining.
+
 - **Authority/build:** the master table mechanically matches all 31 non-legacy/non-infrastructure
   registry rows. The three F1a Cargo surfaces and seven dependency-free H4CR parsers are directly
   certified (F1a/F1c), and the maintained production-script suite executes all three package gates
@@ -273,24 +281,54 @@ need an evidence-backed `crack-if-cheap`, `redundant`, `derived`, or `skip` disp
 - [x] E9. `instances` id counter — skip allocator state
 - [x] E10. `id_counter_store` — skip allocator implementation state
 - [x] E11. `debug_current_ref_id` — skip debug-only allocator state
-- [ ] E12. `history` — decide whether any rows are not already covered by event/stat domains
-- [ ] E13. `history_queue` — decide whether this contains unique replay-relevant transitions
-- [ ] E14. `tokens` — enumerate token families and bind each to live/static coverage or rejection
-- [ ] E15. `collaboration` — determine whether it represents observable occupation/diplomacy state
-- [ ] E16. `claims` — reconcile against map/country claim coverage
-- [ ] E17. `cores` — reconcile against map/country core coverage
-- [ ] E18. `deployment` — reconcile against production/deployment queue work in X4
-- [ ] E19. `reinforcement` — determine whether it adds reason/state beyond division equipment deltas
-- [ ] E20. `upgrades` — reconcile against equipment/variant upgrade domains
-- [ ] E21. `name_group` — decide static-definition join vs omit
-- [ ] E22. `external_rules` — identify user-visible semantics or reject as engine configuration
-- [ ] E23. `focus_tree` — reconcile static tree identity against live focus rows
-- [ ] E24. `continuous_focus` — decide whether current selection/state is already captured
-- [ ] E25. `preferred_tactic` — determine whether it is UI-visible player intent
-- [ ] E26. `is_top_ic` — decide derived/session-context treatment
-- [ ] E27. `major` — reconcile current dynamic major status with country/session rows
-- [ ] E28. `capital` — reconcile against authoritative country/state ownership
-- [ ] E29. `original_capital` — determine whether unique historical state must be captured
+Dispositions below are reconciled against the authoritative per-datum census in
+`coverage_audit/memory_manifest.json` (cited by row path + `status`/`gap`); nested-block references
+cite `coverage_audit/recursive_paths_country.txt`.
+
+- [ ] E12. `history` — NOT a skip. Manifest `history` row = `needs-wartime-save`
+  (`gap: GAP-save-not-live`): the save/memory schema exists, but the 1936 peacetime oracle frame carries
+  zero closing-relevant instances (e.g. `history.sunk_ship` needs a naval combat where a ship was sunk),
+  so closing empty would be a false closure. Deferred to a wartime/eventful paused save — live-gated,
+  not silently dropped.
+- [ ] E13. `history_queue` — no independent disposition; subsumed by E12. It is the nested block
+  `countries.<id>.history.history_queue` (`recursive_paths_country.txt:505`, under
+  `countries.<id>.history` at :504) and adds no replay-relevant transition beyond the `history` family,
+  so it rides E12's `needs-wartime-save` deferral. Not a skip.
+- [x] E14. `tokens` — skip. Manifest `countries.*.tokens` = `excluded` / `excluded-by-scope`
+  (`source_class: engine-internal`; script/idea tokens).
+- [x] E15. `collaboration` — covered. Manifest `countries.*.collaboration` = `closed-by-reader` /
+  `covered` (collaboration-present flag, Measured-save).
+- [x] E16. `claims` — covered. Manifest `countries.*.claims` = `closed-by-reader` / `covered`
+  (LIVE claims inverted from per-state claiming-country vectors; 9/9 EXACT, 0 false positives).
+- [x] E17. `cores` — covered. Manifest `countries.*.cores` = `closed-by-reader` / `covered`
+  (LIVE cores inverted from per-state coring-country vectors; 63/63 core-having countries EXACT vs melt).
+- [x] E18. `deployment` — covered. Manifest `countries.*.deployment` = `closed-by-reader` / `covered`
+  (deploying-division conveyor, Measured-save).
+- [x] E19. `reinforcement` — covered. Manifest `countries.*.reinforcement` = `closed-by-reader` /
+  `covered` (Measured-save).
+- [ ] E20. `upgrades` — NOT a skip. Manifest `countries.*.upgrades` = `open-live-extractable`
+  (`gap: GAP-save-not-live`; also listed in `coverage_audit/COVERAGE_REPORT.md` §5.2 "Open live/static
+  work not fixture-blocked"): structurally present but EMPTY `{}` for most countries in the 1936 frame,
+  and the allocated-container offset is not yet pinned; a hard-coded `{}` would be a fabrication. Left
+  open, live-extractable.
+- [x] E21. `name_group` — skip. Manifest `countries.*.name_group` = `excluded` / `excluded-by-scope`
+  (`source_class: engine-internal`; name-gen group cursor).
+- [x] E22. `external_rules` — skip. Manifest `countries.*.external_rules` = `excluded` /
+  `excluded-by-scope` (`source_class: engine-internal`; empty `{}` rule permissions).
+- [x] E23. `focus_tree` — covered. Manifest `countries.*.focus_tree` = `closed-by-reader` / `covered`
+  (tree id 20/20 EXACT).
+- [x] E24. `continuous_focus` — covered. Manifest `countries.*.continuous_focus_palette` =
+  `closed-by-reader` / `covered` (Measured-save).
+- [x] E25. `preferred_tactic` — skip. Manifest `countries.*.preferred_tactic` = `excluded` /
+  `excluded-by-scope` (`source_class: engine-internal`; AI combat tactic id).
+- [x] E26. `is_top_ic` — skip. Manifest `countries.*.is_top_ic_country` = `excluded` /
+  `excluded-by-scope` (`source_class: engine-internal`; derived flag, derivable from economy).
+- [x] E27. `major` — covered. Manifest `countries.*.major` = `closed-by-reader` / `covered`
+  (Measured-save).
+- [x] E28. `capital` — covered. Manifest `countries.*.capital` = `closed-by-reader` / `covered`
+  (Measured-save).
+- [x] E29. `original_capital` — covered. Manifest `countries.*.original_capital` = `closed-by-reader` /
+  `covered` (LIVE cracked + validated 140/140 vs content-matched USA-1936 melt; state id, None if 0).
 
 ### F. BUILD, VALIDATION, AND OPERATIONS
 
