@@ -62,14 +62,32 @@ def status(report: dict[str, Any], *path: str) -> Any:
     return value
 
 
-def replay_ok(replay_proof: dict[str, Any]) -> bool:
-    return bool(replay_proof.get("hoi4replay_verified")) and not replay_proof.get(
-        "parse_errors"
+def container_integrity_ok(replay_proof: dict[str, Any]) -> bool:
+    return (
+        replay_proof.get("container_integrity_verified") is True
+        and replay_proof.get("stream_entry_byte_identity_verified") is True
+        and replay_proof.get("production_certifying") is False
+        and replay_proof.get("source_capture_verified") is False
+        and not replay_proof.get("parse_errors")
+    )
+
+
+def production_stream_certified(replay_proof: dict[str, Any]) -> bool:
+    hourly = replay_proof.get("hourly_requirement")
+    return (
+        replay_proof.get("production_certifying") is True
+        and replay_proof.get("source_capture_verified") is True
+        and replay_proof.get("extraction_perf_gate") is True
+        and isinstance(hourly, dict)
+        and hourly.get("required") is True
+        and hourly.get("met") is True
+        and not replay_proof.get("parse_errors")
+        and not replay_proof.get("ordering_errors")
     )
 
 
 def compact_state_ok(replay_proof: dict[str, Any]) -> bool:
-    if not replay_ok(replay_proof):
+    if not container_integrity_ok(replay_proof):
         return False
     return int(replay_proof.get("domain_id") or 0) == DOMAIN_ID and int(
         replay_proof.get("data_rows_total") or 0
@@ -386,7 +404,9 @@ def build_surface_report(
                         "compact_operative_lifecycle_rows": replay_data_unit_count(
                             replay_proof, "operative_lifecycle_rows"
                         ),
-                        "compact_replay_verified": replay_ok(replay_proof),
+                        "compact_container_integrity_verified": container_integrity_ok(
+                            replay_proof
+                        ),
                     }
                     if operative_lifecycle_groups_ok or operative_lifecycle_compact_ok
                     else None
@@ -583,7 +603,9 @@ def build_surface_report(
                                     replay_proof,
                                     "compact_state_event_country_faction_group_rows",
                                 ),
-                                "replay_verified": replay_ok(replay_proof),
+                                "container_integrity_verified": container_integrity_ok(
+                                    replay_proof
+                                ),
                             }
                             if compact_state_events_ok
                             else None
@@ -782,7 +804,9 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         for row in surfaces
         if row["status"] in ("blocked", "validated_slice")
     ]
-    production_complete = build_gate_ok and not incomplete
+    production_complete = (
+        build_gate_ok and not incomplete and production_stream_certified(replay_proof)
+    )
 
     report = {
         "schema": "battle-plan.diplomacy_intel_operatives.full_slice_closure.v1",
@@ -922,14 +946,15 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             if row["status"] in ("blocked", "validated_slice")
         ],
         "dll_only": "no",
-        "compact_stream": "lane-local state snapshot yes; full event/state stream no",
+        "compact_stream": "lane-local synthetic state fixture yes; production event/state stream no",
         "rust_decoded": "lane-local yes; shared recorder no",
-        "hoi4replay_verified": replay_ok(replay_proof),
+        "replay_container_integrity_verified": container_integrity_ok(replay_proof),
+        "production_stream_certified": production_stream_certified(replay_proof),
         "speed_five_current_equivalent_hourly_or_lower": "no",
         "zero_skipped_hours": (
             bool(status(replay_proof, "skipped_game_hours") == 0)
             if "skipped_game_hours" in replay_proof
-            else "lane-local single-record only"
+            else "lane-local synthetic single-hour stream; no source cadence claim"
         ),
         "partial_source_worker_bridge_failures": "no in lane-local proof; no shared DLL proof",
     }

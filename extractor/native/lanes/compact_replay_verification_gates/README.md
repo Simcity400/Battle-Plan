@@ -15,11 +15,19 @@ cargo run --manifest-path extractor\native\lanes\compact_replay_verification_gat
   --write-report extractor\native\runs\compact_replay_verification_gates_20260701_v1\gate_report.json
 ```
 
-The gate reads `native_session_manifest.json`, scans `collector_stream.bin`
-independently at the compact-record header layer, opens
-`native_session.battleplan` through the existing `snapshot::Container`, runs
-`verify_all`, and byte-compares the container's `collector_compact_stream`
-against the raw compact stream.
+The gate requires an explicit positive `--min-game-hours N` and treats it as an exact advancement
+contract: the manifest must report exactly `N` requested/advanced game hours and the physical stream
+must contain exactly `N + 1` consecutive closed frames spanning exactly `N` hours. It opens the replay
+container first, and treats its unique `recorder_manifest` entry as the
+authority. The disk manifest must be byte-identical to that embedded manifest.
+It then decodes the manifest-declared raw/zstd stream, independently scans the
+decoded H4CR records, and compares those decoded bytes with the container's
+unique `collector_compact_stream` entry. Stored and decoded lengths/hashes are
+reported separately.
+
+Production admission also requires all-domain canonical DATA decoding, exact DATA/PERF and
+FRAME_END authority, and the exact seven-role static bundle across the bundle report, production
+profile, packaging manifest, index, container entries, canonical paths, bytes, and hashes.
 
 ## What It Rejects
 
@@ -30,12 +38,17 @@ against the raw compact stream.
 - missing per-hour typed domain data records;
 - skipped game hours;
 - failed hourly requirement;
-- worker-panic, bridge-unavailable, source-unavailable, or partial-data flags;
+- every canonical global failure flag after domain-local status normalization;
+  `--allow-partial-or-source-failure` permits only those two named flags and
+  never worker panic, bridge failure, invalid control, missing clock, or other failures;
 - bridge row counters in a DLL-only proof;
 - dirty root-source/debt fields for scheduled root-owning domains;
 - byte volume above configured limits;
 - stream byte count mismatches;
 - missing, corrupt, or byte-mismatched `.battleplan` container output.
+- replay/container game-id, role, declared-layout, or manifest identity drift;
+- absolute, traversal, symlink-escaped, or missing stream/replay paths;
+- `--skip-replay-verify` and other non-certifying weakening profiles.
 
 ## Integration Checklist
 

@@ -43,6 +43,30 @@ Python, save files, and external memory-reader scripts are development tools.
 They can validate, probe, and help reverse-engineer the game, but they are not
 part of the production recording loop.
 
+## Production Capture Scope
+
+The production replay records the authoritative multiplayer world, not a recording of the host's
+desktop or local client session. The default inclusion rule is:
+
+- every datum serialized by the save game is in scope for semantic coverage;
+- authoritative host-side simulation state and events that affect or explain the shared world are
+  in scope even when they are transient or omitted from the save; and
+- stable identities, ownership, relationships, timing, provenance, and completeness witnesses
+  needed to interpret that state are in scope.
+
+In-scope does not mean copying every value verbatim every hour. Stable facts may be carried by
+static catalogs or one-time records, changing facts may be delta encoded, and transient changes may
+be represented as events. The replay must preserve the authoritative meaning while remaining
+compact enough for a full multiplayer campaign.
+
+Host-local presentation state is permanently outside the production recording scope, even when it
+is technically reachable in the host process. This includes camera and viewport state, selections,
+hover targets, open screens or dialogs, map-mode and layer toggles, outliner state, local tooltips,
+drag state, and other mouse/keyboard/UI preferences. A multiplayer host does not possess a useful
+authoritative record of every remote player's local UI, and the host's own UI is not shared game
+state. The replay interface owns its camera and selections and populates HOI4-like panels, map modes,
+tooltips, and alerts from captured world facts as if observing the real game.
+
 ## Replay Fidelity Goal
 
 A good replay should answer the questions players naturally ask after a game:
@@ -60,9 +84,10 @@ A good replay should answer the questions players naturally ask after a game:
 - What changed hour by hour, and what can be reconstructed exactly versus what
   must be badged as inferred, unavailable, rejected, or blocked?
 
-The ambition is maximal replay coverage. If the game exposes replay-relevant
-state in memory and it can be captured safely and reliably, it belongs in the
-recording backlog until it is captured or conclusively blocked.
+The ambition is maximal authoritative replay coverage. Save-serialized state and authoritative
+host simulation state belong in the recording backlog until captured or conclusively blocked.
+Merely existing in the host process is insufficient: local presentation state is explicitly
+excluded and must not be treated as an extraction or reverse-engineering gap.
 
 ## Design Principles
 

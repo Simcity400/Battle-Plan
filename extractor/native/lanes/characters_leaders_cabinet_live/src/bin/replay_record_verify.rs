@@ -1,8 +1,13 @@
 use characters_leaders_cabinet_live_lane::domain47_characters_leaders_cabinet_live as compact;
 use characters_leaders_cabinet_live_lane::extractor::validate_registry_assignment;
+use characters_leaders_cabinet_live_lane::stream_gate::{
+    encode_domain47_proof_stream, verify_domain47_stream,
+};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const NON_CERTIFYING_RESULT: &str = "container_integrity_verified_non_certifying";
 
 fn main() {
     if let Err(err) = run() {
@@ -40,11 +45,15 @@ fn run() -> Result<(), String> {
         ));
     }
 
-    let stream = if source.wrapped_record {
-        input_bytes.clone()
-    } else {
-        compact::encode_compact_data_record(1, source.game_hour_raw, source.payload)
-    };
+    let proof_hour = source.game_hour_raw.unwrap_or(0);
+    let stream = encode_domain47_proof_stream(proof_hour, source.payload)?;
+    let stream_gate = verify_domain47_stream(&stream);
+    if !stream_gate.parse_errors.is_empty() {
+        return Err(format!(
+            "domain47 proof stream gate failed: {:?}",
+            stream_gate.parse_errors
+        ));
+    }
     let game_id = "characters_leaders_cabinet_live_domain47_record";
     let stream_path = "collector_raw/collector_stream.bin";
     let manifest_path = "recorder/native_session_manifest.json";
@@ -54,16 +63,22 @@ fn run() -> Result<(), String> {
     fs::write(&stream_fs_path, &stream).map_err(|err| format!("write stream failed: {err}"))?;
 
     let manifest = format!(
-        "{{\n  \"schema\": \"characters_leaders_cabinet_live.domain47.record_manifest.v1\",\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"stream_format\": \"compact\",\n  \"record_type\": \"DOMAIN_DATA\",\n  \"scheduled_domains\": [\"{}\"],\n  \"source_record\": \"{}\",\n  \"wrapped_input_record\": {},\n  \"sequence\": {},\n  \"game_hour_raw\": {},\n  \"compact\": {{\n    \"payload_bytes\": {},\n    \"record_bytes\": {},\n    \"row_count_total\": {},\n    \"character_rows\": {},\n    \"unit_leader_rows\": {},\n    \"unit_leader_trait_rows\": {},\n    \"country_leader_role_rows\": {},\n    \"active_ruler_rows\": {},\n    \"advisor_roster_rows\": {},\n    \"appointed_advisor_rows\": {},\n    \"character_portrait_rows\": {},\n    \"status_flags_or\": {},\n    \"schema_flags_or\": {}\n  }},\n  \"source\": \"lane-local existing domain-47 compact record, not shared recorder capture\"\n}}\n",
+        "{{\n  \"schema\": \"characters_leaders_cabinet_live.domain47.record_fragment_manifest.v3\",\n  \"artifact_kind\": \"record_fragment_synthetic_envelope\",\n  \"production_certifying\": false,\n  \"source_capture_verified\": false,\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"stream_format\": \"compact\",\n  \"synthetic_record_types\": [\"DOMAIN_PERF\", \"DOMAIN_DATA\", \"FRAME_END\"],\n  \"synthetic_scheduled_domains\": [\"{}\"],\n  \"source_record\": \"{}\",\n  \"wrapped_input_record\": {},\n  \"source_sequence\": {},\n  \"source_game_hour_raw\": {},\n  \"source_ordering_claimed\": false,\n  \"synthetic_proof_game_hour_raw\": {},\n  \"synthetic_envelope\": {{\n    \"payload_bytes\": {},\n    \"stream_bytes\": {},\n    \"record_count\": {},\n    \"domain_perf_record_count\": {},\n    \"domain_data_record_count\": {},\n    \"frame_end_record_count\": {},\n    \"closed_game_hours\": {:?},\n    \"row_count_total\": {},\n    \"character_rows\": {},\n    \"unit_leader_rows\": {},\n    \"unit_leader_trait_rows\": {},\n    \"country_leader_role_rows\": {},\n    \"active_ruler_rows\": {},\n    \"advisor_roster_rows\": {},\n    \"appointed_advisor_rows\": {},\n    \"character_portrait_rows\": {},\n    \"status_flags_or\": {},\n    \"schema_flags_or\": {}\n  }},\n  \"proof_scope\": \"record-fragment decode plus synthetic envelope and container integrity only; source ordering and production capture are not certified\"\n}}\n",
         compact::DOMAIN_NAME,
         compact::DOMAIN_ID,
         compact::DOMAIN_NAME,
         json_path(&input),
         source.wrapped_record,
-        source.sequence,
-        source.game_hour_raw,
+        json_optional_u64(source.sequence),
+        json_optional_i32(source.game_hour_raw),
+        proof_hour,
         source.payload.len(),
         stream.len(),
+        stream_gate.record_count,
+        stream_gate.domain_perf_record_count,
+        stream_gate.domain_data_record_count,
+        stream_gate.frame_end_record_count,
+        stream_gate.closed_game_hours,
         summary.row_count_total,
         summary.character_rows,
         summary.unit_leader_rows,
@@ -144,19 +159,26 @@ fn run() -> Result<(), String> {
     }
 
     let report = format!(
-        "{{\n  \"result\": \"verified\",\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"source_record\": \"{}\",\n  \"wrapped_input_record\": {},\n  \"sequence\": {},\n  \"game_hour_raw\": {},\n  \"hoi4replay_path\": \"{}\",\n  \"collector_stream_path\": \"{}\",\n  \"manifest_path\": \"{}\",\n  \"hoi4replay_bytes\": {},\n  \"collector_stream_bytes\": {},\n  \"payload_bytes\": {},\n  \"row_count_total\": {},\n  \"character_rows\": {},\n  \"unit_leader_rows\": {},\n  \"unit_leader_trait_rows\": {},\n  \"country_leader_role_rows\": {},\n  \"active_ruler_rows\": {},\n  \"advisor_roster_rows\": {},\n  \"appointed_advisor_rows\": {},\n  \"character_portrait_rows\": {},\n  \"schema_flags_or\": {},\n  \"status_flags_or\": {},\n  \"container_game_id\": \"{}\",\n  \"verified_stream_entry\": \"{}\",\n  \"verified_stream_bytes\": {},\n  \"parse_errors\": []\n}}\n",
+        "{{\n  \"result\": \"{}\",\n  \"artifact_kind\": \"record_fragment_synthetic_envelope\",\n  \"production_certifying\": false,\n  \"source_capture_verified\": false,\n  \"container_integrity_verified\": true,\n  \"stream_entry_byte_identity_verified\": true,\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"source_record\": \"{}\",\n  \"wrapped_input_record\": {},\n  \"source_sequence\": {},\n  \"source_game_hour_raw\": {},\n  \"source_ordering_claimed\": false,\n  \"synthetic_proof_game_hour_raw\": {},\n  \"hoi4replay_path\": \"{}\",\n  \"collector_stream_path\": \"{}\",\n  \"manifest_path\": \"{}\",\n  \"hoi4replay_bytes\": {},\n  \"synthetic_stream_bytes\": {},\n  \"payload_bytes\": {},\n  \"synthetic_record_count\": {},\n  \"synthetic_domain_perf_record_count\": {},\n  \"synthetic_domain_data_record_count\": {},\n  \"synthetic_frame_end_record_count\": {},\n  \"synthetic_closed_game_hours\": {:?},\n  \"row_count_total\": {},\n  \"character_rows\": {},\n  \"unit_leader_rows\": {},\n  \"unit_leader_trait_rows\": {},\n  \"country_leader_role_rows\": {},\n  \"active_ruler_rows\": {},\n  \"advisor_roster_rows\": {},\n  \"appointed_advisor_rows\": {},\n  \"character_portrait_rows\": {},\n  \"schema_flags_or\": {},\n  \"status_flags_or\": {},\n  \"container_game_id\": \"{}\",\n  \"verified_stream_entry\": \"{}\",\n  \"verified_stream_bytes\": {},\n  \"proof_scope\": \"record-fragment decode plus synthetic envelope and container integrity only; source ordering and production capture are not certified\",\n  \"parse_errors\": []\n}}\n",
+        NON_CERTIFYING_RESULT,
         compact::DOMAIN_NAME,
         compact::DOMAIN_ID,
         json_path(&input),
         source.wrapped_record,
-        source.sequence,
-        source.game_hour_raw,
+        json_optional_u64(source.sequence),
+        json_optional_i32(source.game_hour_raw),
+        proof_hour,
         json_path(&replay_path),
         json_path(&stream_fs_path),
         json_path(&manifest_fs_path),
         packed.len(),
         stream.len(),
         source.payload.len(),
+        stream_gate.record_count,
+        stream_gate.domain_perf_record_count,
+        stream_gate.domain_data_record_count,
+        stream_gate.frame_end_record_count,
+        stream_gate.closed_game_hours,
         summary.row_count_total,
         summary.character_rows,
         summary.unit_leader_rows,
@@ -181,94 +203,68 @@ fn run() -> Result<(), String> {
 struct PayloadSource<'a> {
     payload: &'a [u8],
     wrapped_record: bool,
-    sequence: u64,
-    game_hour_raw: i32,
+    sequence: Option<u64>,
+    game_hour_raw: Option<i32>,
 }
 
 fn payload_from_input(bytes: &[u8]) -> Result<PayloadSource<'_>, String> {
-    if bytes.len() >= compact::COMPACT_RECORD_HEADER_LEN
-        && &bytes[0..4] == compact::COMPACT_RECORD_MAGIC
-    {
-        let version = read_u16(bytes, 4);
-        let header_len = read_u16(bytes, 6) as usize;
-        let sequence = read_u64(bytes, 8);
-        let game_hour_raw = read_i32(bytes, 16);
-        let domain_id = read_u16(bytes, 20);
-        let record_type = read_u16(bytes, 22);
-        let payload_len = read_u32(bytes, 24) as usize;
-        if version != compact::COMPACT_RECORD_VERSION {
-            return Err(format!("unsupported compact record version {version}"));
-        }
-        if header_len != compact::COMPACT_RECORD_HEADER_LEN {
+    if bytes.starts_with(compact::COMPACT_RECORD_MAGIC) {
+        let header = compact_contract::parse_compact_record_header(bytes)
+            .map_err(|err| format!("invalid compact record header: {err}"))?;
+        if header.domain_id != compact::DOMAIN_ID {
             return Err(format!(
-                "header_len {header_len} != {}",
-                compact::COMPACT_RECORD_HEADER_LEN
+                "domain_id {} != {}",
+                header.domain_id,
+                compact::DOMAIN_ID
             ));
         }
-        if domain_id != compact::DOMAIN_ID {
-            return Err(format!("domain_id {domain_id} != {}", compact::DOMAIN_ID));
-        }
-        if record_type != compact::COMPACT_RECORD_TYPE_DOMAIN_DATA {
+        if header.record_type != compact::COMPACT_RECORD_TYPE_DOMAIN_DATA {
             return Err(format!(
-                "record_type {record_type} != {}",
+                "record_type {} != {}",
+                header.record_type,
                 compact::COMPACT_RECORD_TYPE_DOMAIN_DATA
             ));
         }
-        if bytes.len() != header_len + payload_len {
+        if header.sequence == 0 {
+            return Err("sequence 0 is not canonical H4CR record authority".to_string());
+        }
+        if bytes.len() != header.record_len() {
             return Err(format!(
-                "record payload length {payload_len} plus header {header_len} != file bytes {}",
+                "record payload length {} plus header {} != file bytes {}",
+                header.payload_len,
+                compact::COMPACT_RECORD_HEADER_LEN,
                 bytes.len()
             ));
         }
+        compact_contract::validate_compact_record_semantics(
+            header.domain_id,
+            header.record_type,
+            header.record_flags,
+            &bytes[compact::COMPACT_RECORD_HEADER_LEN..],
+        )
+        .map_err(|error| format!("invalid compact record semantics: {error}"))?;
         return Ok(PayloadSource {
-            payload: &bytes[header_len..],
+            payload: &bytes[compact::COMPACT_RECORD_HEADER_LEN..],
             wrapped_record: true,
-            sequence,
-            game_hour_raw,
+            sequence: Some(header.sequence),
+            game_hour_raw: Some(header.game_hour_raw),
         });
     }
 
     Ok(PayloadSource {
         payload: bytes,
         wrapped_record: false,
-        sequence: 1,
-        game_hour_raw: 0,
+        sequence: None,
+        game_hour_raw: None,
     })
 }
 
-fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+fn json_optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "null".to_string(), |value| value.to_string())
 }
 
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
-}
-
-fn read_i32(bytes: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-        bytes[offset + 4],
-        bytes[offset + 5],
-        bytes[offset + 6],
-        bytes[offset + 7],
-    ])
+fn json_optional_i32(value: Option<i32>) -> String {
+    value.map_or_else(|| "null".to_string(), |value| value.to_string())
 }
 
 fn json_path(path: &Path) -> String {
@@ -289,4 +285,42 @@ fn json_escape(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wrapped_record() -> Vec<u8> {
+        let payload = compact::encode_payload(0, 0, compact::SCHEMA_ROOTS_VALIDATED, &[]);
+        compact::encode_compact_data_record(7, 123, &payload)
+    }
+
+    #[test]
+    fn wrapped_fragment_requires_canonical_data_record_semantics() {
+        let valid = wrapped_record();
+        let source = payload_from_input(&valid).unwrap();
+        assert_eq!(source.sequence, Some(7));
+        assert_eq!(source.game_hour_raw, Some(123));
+
+        let mut flags = valid.clone();
+        flags[28..32].copy_from_slice(&1u32.to_le_bytes());
+        assert!(payload_from_input(&flags).is_err());
+
+        let mut record_type = valid;
+        record_type[22..24].copy_from_slice(&99u16.to_le_bytes());
+        assert!(payload_from_input(&record_type).is_err());
+
+        let mut zero_sequence = wrapped_record();
+        zero_sequence[8..16].copy_from_slice(&0u64.to_le_bytes());
+        assert!(payload_from_input(&zero_sequence).is_err());
+    }
+
+    #[test]
+    fn result_vocabulary_is_explicitly_non_certifying() {
+        assert_eq!(
+            NON_CERTIFYING_RESULT,
+            "container_integrity_verified_non_certifying"
+        );
+    }
 }

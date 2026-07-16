@@ -4,11 +4,13 @@ use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 
 use crate::control_transport::{
-    ControlChannel, ControlIo, MessageKind, SessionCapability, CONTROL_VERSION,
+    claim_session_capability, ControlCapabilities, ControlChannel, ControlIo, MessageKind,
+    CONTROL_VERSION,
 };
 
 const PAYLOAD_SCHEMA: u16 = 1;
 const COLLECTOR_HELLO_LEN: usize = 68;
+const COLLECTOR_HELLO_WITH_CAPABILITIES_LEN: usize = 72;
 const HEARTBEAT_PROOF_LEN: usize = 32;
 const HEARTBEAT_STATE_PRODUCING: u16 = 2;
 
@@ -87,6 +89,45 @@ pub fn validate_collector_hello(
     Ok(())
 }
 
+/// Encode the dormant duplex hello form whose final word is the collector's
+/// closed H4CT capability claim.  The existing stdout proof adapter continues
+/// to use the historical 68-byte form; only the not-yet-activated combined
+/// H4CR/H4CT worker consumes this exact 72-byte product-admission form.
+pub fn collector_hello_with_capabilities_payload(
+    expectation: &ProofExpectation,
+    capabilities: ControlCapabilities,
+) -> Vec<u8> {
+    let mut payload = collector_hello_payload(expectation);
+    payload.reserve_exact(COLLECTOR_HELLO_WITH_CAPABILITIES_LEN - payload.len());
+    payload.extend_from_slice(&capabilities.bits().to_le_bytes());
+    payload
+}
+
+/// Decode and bind a collector-originated hello to the retained attempt facts.
+/// Capabilities are never accepted as an out-of-band caller argument: the
+/// exact bytes authenticated by H4CT framing are the only source of the claim.
+pub fn decode_collector_hello_capabilities(
+    payload: &[u8],
+    expectation: &ProofExpectation,
+) -> Result<ControlCapabilities, String> {
+    if payload.len() != COLLECTOR_HELLO_WITH_CAPABILITIES_LEN {
+        return Err(format!(
+            "collector hello length {} != {}",
+            payload.len(),
+            COLLECTOR_HELLO_WITH_CAPABILITIES_LEN
+        ));
+    }
+    if payload[..COLLECTOR_HELLO_LEN] != collector_hello_payload(expectation) {
+        return Err("collector hello did not exactly match expected attempt".to_string());
+    }
+    let bits = u32::from_le_bytes(
+        payload[COLLECTOR_HELLO_LEN..COLLECTOR_HELLO_WITH_CAPABILITIES_LEN]
+            .try_into()
+            .expect("fixed capability word"),
+    );
+    ControlCapabilities::from_bits(bits).map_err(|error| error.to_string())
+}
+
 pub fn heartbeat_proof_payload(expectation: &ProofExpectation, sequence: u64) -> Vec<u8> {
     let mut payload = Vec::with_capacity(HEARTBEAT_PROOF_LEN);
     payload.extend_from_slice(&PAYLOAD_SCHEMA.to_le_bytes());
@@ -147,7 +188,7 @@ pub fn recorder_channel<R: Read>(
     reader: R,
     session_id: [u8; 16],
 ) -> Result<ControlChannel<ReadControlIo<R>>, String> {
-    let capability = SessionCapability::claim(session_id).map_err(|e| e.to_string())?;
+    let capability = claim_session_capability(session_id).map_err(|e| e.to_string())?;
     Ok(ControlChannel::new(
         ReadControlIo(reader),
         crate::control_transport::EndpointRole::Recorder,
@@ -168,7 +209,7 @@ impl<W: Write> WorkerProofEmitter<W> {
         session_id: [u8; 16],
         expectation: ProofExpectation,
     ) -> Result<Self, String> {
-        let capability = SessionCapability::claim(session_id).map_err(|e| e.to_string())?;
+        let capability = claim_session_capability(session_id).map_err(|e| e.to_string())?;
         Ok(Self {
             channel: ControlChannel::new(
                 WriteControlIo(writer),
@@ -240,6 +281,48 @@ struct DomainPerfEvidence {
     status_flags: u32,
 }
 
+/// Opaque authority that a complete H4CR PERF/DATA pair passed the production
+/// first-world-record gate. It is deliberately non-`Clone`: the duplex state
+/// transition consumes the one proof produced by the stream validator.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ValidatedCompactRecordProof {
+    header: compact_contract::CompactRecordHeader,
+    confirmed_hour: i64,
+}
+
+impl ValidatedCompactRecordProof {
+    pub const fn sequence(&self) -> u64 {
+        self.header.sequence
+    }
+
+    pub const fn game_hour_raw(&self) -> i32 {
+        self.header.game_hour_raw
+    }
+
+    pub const fn confirmed_hour(&self) -> i64 {
+        self.confirmed_hour
+    }
+
+    pub const fn domain_id(&self) -> u16 {
+        self.header.domain_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(game_hour_raw: i32) -> Self {
+        Self {
+            header: compact_contract::CompactRecordHeader {
+                sequence: 1,
+                game_hour_raw,
+                domain_id: 10,
+                record_type: compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                payload_len: 0,
+                record_flags: 0,
+            },
+            confirmed_hour: i64::from(game_hour_raw),
+        }
+    }
+}
+
 const FIRST_PROOF_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
 
 /// Incremental, bounded gate for the first semantically valid world record.
@@ -284,10 +367,7 @@ impl FirstCompactRecordGate {
         }
     }
 
-    pub fn observe(
-        &mut self,
-        chunk: &[u8],
-    ) -> Result<Option<compact_contract::CompactRecordHeader>, String> {
+    pub fn observe(&mut self, chunk: &[u8]) -> Result<Option<ValidatedCompactRecordProof>, String> {
         let buffer_limit = compact_contract::COMPACT_MAX_PAYLOAD_LEN as usize
             + compact_contract::COMPACT_RECORD_HEADER_LEN
             + 65_536;
@@ -315,21 +395,48 @@ impl FirstCompactRecordGate {
                     header.game_hour_raw
                 ));
             }
-            if let Some(previous) = self.last_sequence {
-                if header.sequence != previous.saturating_add(1) {
+            match self.last_sequence {
+                None if header.sequence != 1 => {
                     return Err(format!(
-                        "first world-record proof rejected sequence {} after {}",
-                        header.sequence, previous
+                        "first world-record proof rejected initial sequence {}; expected 1",
+                        header.sequence
                     ));
                 }
+                Some(previous) => {
+                    let expected = previous.checked_add(1).ok_or_else(|| {
+                        "first world-record proof rejected exhausted sequence space".to_string()
+                    })?;
+                    if header.sequence != expected {
+                        return Err(format!(
+                            "first world-record proof rejected sequence {} after {}",
+                            header.sequence, previous
+                        ));
+                    }
+                }
+                None => {}
             }
             let remaining = self.buffered.split_off(record_len);
             let record = std::mem::replace(&mut self.buffered, remaining);
             let payload = &record[compact_contract::COMPACT_RECORD_HEADER_LEN..];
+            compact_contract::validate_compact_record_semantics(
+                header.domain_id,
+                header.record_type,
+                header.record_flags,
+                payload,
+            )
+            .map_err(|error| {
+                format!("first world-record proof rejected record semantics: {error}")
+            })?;
             let proof = self.observe_complete_record(header, payload)?;
             self.last_sequence = Some(header.sequence);
             if proof {
-                return Ok(Some(header));
+                let confirmed_hour =
+                    compact_contract::calendar::hour_index_from_raw(header.game_hour_raw)
+                        .expect("plausible clock checked before proof construction");
+                return Ok(Some(ValidatedCompactRecordProof {
+                    header,
+                    confirmed_hour,
+                }));
             }
         }
     }
@@ -352,7 +459,7 @@ impl FirstCompactRecordGate {
                 };
                 if evidence.header.domain_id != header.domain_id
                     || evidence.header.game_hour_raw != header.game_hour_raw
-                    || evidence.header.sequence.saturating_add(1) != header.sequence
+                    || evidence.header.sequence.checked_add(1) != Some(header.sequence)
                 {
                     return Ok(false);
                 }
@@ -936,7 +1043,7 @@ mod tests {
     fn torn_first_record_never_proves_recording() {
         let hour = plausible_game_hour();
         let perf = compact_record(
-            9,
+            1,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -944,7 +1051,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         );
         let data = compact_record(
-            10,
+            2,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -958,8 +1065,8 @@ mod tests {
             gate.observe(&data[data.len() - 1..])
                 .unwrap()
                 .unwrap()
-                .sequence,
-            10
+                .sequence(),
+            2
         );
     }
 
@@ -970,7 +1077,7 @@ mod tests {
         header[4..6].copy_from_slice(&compact_contract::COMPACT_RECORD_VERSION.to_le_bytes());
         header[6..8]
             .copy_from_slice(&(compact_contract::COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
-        header[8..16].copy_from_slice(&10u64.to_le_bytes());
+        header[8..16].copy_from_slice(&1u64.to_le_bytes());
         header[16..20].copy_from_slice(&plausible_game_hour().to_le_bytes());
         let err = FirstCompactRecordGate::default()
             .observe(&header)
@@ -988,7 +1095,7 @@ mod tests {
         record[4..6].copy_from_slice(&compact_contract::COMPACT_RECORD_VERSION.to_le_bytes());
         record[6..8]
             .copy_from_slice(&(compact_contract::COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
-        record[8..16].copy_from_slice(&11u64.to_le_bytes());
+        record[8..16].copy_from_slice(&1u64.to_le_bytes());
         record[16..20].copy_from_slice(&plausible_game_hour().to_le_bytes());
         record[20..22].copy_from_slice(&10u16.to_le_bytes());
         record[22..24]
@@ -1005,7 +1112,7 @@ mod tests {
     fn real_fuel_baseline_with_world_root_proves_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1013,7 +1120,7 @@ mod tests {
             &domain_perf_payload(2, 2, 2, 2, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1025,8 +1132,8 @@ mod tests {
             .observe(&stream)
             .unwrap()
             .expect("a real rooted world baseline must prove recording");
-        assert_eq!(proof.sequence, 12);
-        assert_eq!(proof.domain_id, 10);
+        assert_eq!(proof.sequence(), 2);
+        assert_eq!(proof.domain_id(), 10);
     }
 
     #[test]
@@ -1096,15 +1203,15 @@ mod tests {
             .observe(&stream)
             .unwrap()
             .unwrap();
-        assert_eq!(proof.sequence, 12);
-        assert_eq!(proof.domain_id, 10);
+        assert_eq!(proof.sequence(), 2);
+        assert_eq!(proof.domain_id(), 10);
     }
 
     #[test]
     fn round5_d68_delta_data_does_not_prove_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             68,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1120,7 +1227,7 @@ mod tests {
             ),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             68,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1141,7 +1248,7 @@ mod tests {
     fn round5_d44_badge_only_data_does_not_prove_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             44,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1149,7 +1256,7 @@ mod tests {
             &domain_perf_payload(2, 5, 5, 5, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             44,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1170,7 +1277,7 @@ mod tests {
     fn round5_d10_invalid_data_record_flags_do_not_prove_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1178,7 +1285,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1186,20 +1293,17 @@ mod tests {
             &fuel_payload(&[47], 0),
         ));
 
-        assert!(
-            FirstCompactRecordGate::new([10])
-                .observe(&stream)
-                .unwrap()
-                .is_none(),
-            "a PERF-only record flag is invalid on d10 DATA"
-        );
+        let error = FirstCompactRecordGate::new([10])
+            .observe(&stream)
+            .expect_err("a PERF-only record flag is invalid on d10 DATA");
+        assert!(error.contains("record flags"), "{error}");
     }
 
     #[test]
     fn round5_domain_without_explicit_material_predicate_is_default_denied() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             11,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1207,7 +1311,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             11,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1228,7 +1332,7 @@ mod tests {
     fn round5_d68_full_nonzero_material_still_proves_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             68,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1236,7 +1340,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             68,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1248,15 +1352,15 @@ mod tests {
             .observe(&stream)
             .unwrap()
             .expect("a clean full d68 record with a real nonzero DLC field must prove recording");
-        assert_eq!(proof.sequence, 12);
-        assert_eq!(proof.domain_id, 68);
+        assert_eq!(proof.sequence(), 2);
+        assert_eq!(proof.domain_id(), 68);
     }
 
     #[test]
     fn d68_present_but_zero_scalar_does_not_prove_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             68,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1264,7 +1368,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             68,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1281,7 +1385,7 @@ mod tests {
     fn d44_badges_cannot_be_relabelled_as_entity_rows_for_proof() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             44,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1289,7 +1393,7 @@ mod tests {
             &domain_perf_payload(2, 5, 5, 5, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             44,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1306,7 +1410,7 @@ mod tests {
     fn d44_tombstone_only_entity_rows_do_not_prove_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             44,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1314,7 +1418,7 @@ mod tests {
             &domain_perf_payload(2, 6, 6, 6, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             44,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1346,6 +1450,102 @@ mod tests {
     }
 
     #[test]
+    fn first_record_sequence_is_exactly_one() {
+        let hour = plausible_game_hour();
+        for sequence in [0, 2, u64::MAX] {
+            let record = compact_record(
+                sequence,
+                hour,
+                10,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &domain_perf_payload(1, 1, 1, 1, 0),
+            );
+            let error = FirstCompactRecordGate::new([10])
+                .observe(&record)
+                .expect_err("an arbitrary initial sequence must fail closed");
+            assert!(error.contains("initial sequence"), "{error}");
+        }
+    }
+
+    #[test]
+    fn exhausted_sequence_space_never_saturates_to_an_adjacent_duplicate() {
+        let hour = plausible_game_hour();
+        let record = compact_record(
+            u64::MAX,
+            hour,
+            10,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &domain_perf_payload(1, 1, 1, 1, 0),
+        );
+        let mut gate = FirstCompactRecordGate::new([10]);
+        gate.last_sequence = Some(u64::MAX);
+        let error = gate
+            .observe(&record)
+            .expect_err("u64::MAX must exhaust sequence space, not self-adjoin");
+        assert!(error.contains("exhausted sequence space"), "{error}");
+    }
+
+    #[test]
+    fn forward_sequence_gap_fails_before_perf_data_pairing() {
+        let hour = plausible_game_hour();
+        let mut gate = FirstCompactRecordGate::new([10]);
+        let perf = compact_record(
+            1,
+            hour,
+            10,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &domain_perf_payload(1, 1, 1, 1, 0),
+        );
+        assert!(gate.observe(&perf).unwrap().is_none());
+        let data = compact_record(
+            3,
+            hour,
+            10,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &fuel_payload(&[47], 0),
+        );
+        let error = gate
+            .observe(&data)
+            .expect_err("a forward sequence gap must fail closed");
+        assert!(error.contains("sequence 3 after 1"), "{error}");
+    }
+
+    #[test]
+    fn frame_end_must_pass_canonical_record_semantics() {
+        let payload = [0; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN];
+        for (domain_id, record_flags, payload) in [
+            (
+                compact_contract::COMPACT_DOMAIN_FRAME,
+                0,
+                &payload[..payload.len() - 1],
+            ),
+            (999, 0, &payload[..]),
+            (
+                compact_contract::COMPACT_DOMAIN_FRAME,
+                compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+                &payload[..],
+            ),
+        ] {
+            let record = compact_record(
+                1,
+                plausible_game_hour(),
+                domain_id,
+                compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+                record_flags,
+                payload,
+            );
+            let error = FirstCompactRecordGate::new([10])
+                .observe(&record)
+                .expect_err("a noncanonical FRAME_END must fail before state dispatch");
+            assert!(error.contains("record semantics"), "{error}");
+        }
+    }
+
+    #[test]
     fn failure_or_delta_status_cannot_seed_recording_proof() {
         for status in [
             compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE,
@@ -1373,7 +1573,7 @@ mod tests {
             malformed
         }] {
             let mut stream = compact_record(
-                11,
+                1,
                 hour,
                 10,
                 compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1381,7 +1581,7 @@ mod tests {
                 &domain_perf_payload(1, 1, 1, 1, 0),
             );
             stream.extend_from_slice(&compact_record(
-                12,
+                2,
                 hour,
                 10,
                 compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1399,7 +1599,7 @@ mod tests {
     fn perf_and_data_must_be_an_ordered_same_domain_pair() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1407,7 +1607,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             11,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1424,7 +1624,7 @@ mod tests {
     fn source_unavailable_supply_data_does_not_prove_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             44,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1432,7 +1632,7 @@ mod tests {
             &domain_perf_payload(2, 1, 1, 1, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             44,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1458,7 +1658,7 @@ mod tests {
     fn empty_land_combat_snapshot_does_not_prove_recording() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             21,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1466,7 +1666,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             21,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1484,7 +1684,7 @@ mod tests {
     fn contradictory_data_counters_are_skipped_until_a_genuine_pair_arrives() {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1492,7 +1692,7 @@ mod tests {
             &domain_perf_payload(2, 2, 2, 2, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1500,7 +1700,7 @@ mod tests {
             &fuel_payload(&[47], 0),
         ));
         stream.extend_from_slice(&compact_record(
-            13,
+            3,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1508,7 +1708,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         ));
         stream.extend_from_slice(&compact_record(
-            14,
+            4,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1520,7 +1720,7 @@ mod tests {
             .observe(&stream)
             .unwrap()
             .expect("the later genuine PERF/DATA pair must still prove recording");
-        assert_eq!(proof.sequence, 14);
+        assert_eq!(proof.sequence(), 4);
     }
 
     #[test]
@@ -1569,7 +1769,7 @@ mod tests {
     fn fuel_world_stream(game_hour_raw: i32, status_flags: u32, roots: &[u32]) -> Vec<u8> {
         let row_count = roots.len() as u32;
         let mut stream = compact_record(
-            11,
+            1,
             game_hour_raw,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1577,7 +1777,7 @@ mod tests {
             &domain_perf_payload(row_count, row_count, row_count, row_count, status_flags),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             game_hour_raw,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1609,7 +1809,7 @@ mod tests {
     fn d10_stream_with_single_row(payload: Vec<u8>) -> Vec<u8> {
         let hour = plausible_game_hour();
         let mut stream = compact_record(
-            11,
+            1,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1617,7 +1817,7 @@ mod tests {
             &domain_perf_payload(1, 1, 1, 1, 0),
         );
         stream.extend_from_slice(&compact_record(
-            12,
+            2,
             hour,
             10,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,

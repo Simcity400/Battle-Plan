@@ -148,6 +148,9 @@ pub struct CompactStreamSummary {
     pub parse_errors: Vec<String>,
     pub ordering_errors: Vec<String>,
     pub coverage_errors: Vec<String>,
+    pub frame_hour_counts: BTreeMap<i32, u64>,
+    pub per_hour_perf_domain_counts: BTreeMap<i32, BTreeMap<u16, u64>>,
+    pub per_hour_data_domain_counts: BTreeMap<i32, BTreeMap<u16, u64>>,
     pub per_domain: BTreeMap<u16, DomainRecordSummary>,
     pub payloads: Vec<CounterPayloadSummary>,
 }
@@ -441,27 +444,14 @@ pub fn append_compact_record(
 
 pub fn gate_counter_stream(raw: &[u8], min_game_hours: usize) -> CounterGate {
     let mut summary = summarize_compact_stream(raw);
-    if summary.domain_data_records == 0 {
-        summary
-            .coverage_errors
-            .push("no_country_economy_counters_live_data_records".to_string());
-    }
+    add_frame_shape_errors(&mut summary, &[DOMAIN_ID]);
     if summary.unique_game_hours < min_game_hours {
         summary.coverage_errors.push(format!(
             "unique_game_hours {} < required {min_game_hours}",
             summary.unique_game_hours
         ));
     }
-    let ok = summary.parse_errors.is_empty()
-        && summary.ordering_errors.is_empty()
-        && summary.coverage_errors.is_empty()
-        && summary.skipped_game_hours.is_empty()
-        && summary.status_flags_or
-            & (STATUS_WORKER_PANIC
-                | STATUS_BRIDGE_UNAVAILABLE
-                | STATUS_SOURCE_UNAVAILABLE
-                | STATUS_PARTIAL_DATA)
-            == 0;
+    let ok = gate_summary_ok(&summary);
     CounterGate {
         ok,
         expected_domains: vec![DOMAIN_ID],
@@ -471,60 +461,8 @@ pub fn gate_counter_stream(raw: &[u8], min_game_hours: usize) -> CounterGate {
 
 pub fn summarize_source_stream(raw: &[u8], expected_domains: &[u16]) -> CounterGate {
     let mut summary = summarize_compact_stream(raw);
-    let mut hours_by_domain: BTreeMap<u16, BTreeSet<i32>> = BTreeMap::new();
-    let mut frame_hours = BTreeSet::new();
-    let mut offset = 0usize;
-    while offset + COMPACT_RECORD_HEADER_LEN <= raw.len() {
-        let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
-        let payload_len = read_u32_le(header, 24) as usize;
-        let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
-        if offset.saturating_add(record_len) > raw.len() {
-            break;
-        }
-        let hour = read_i32_le(header, 16);
-        let domain_id = read_u16_le(header, 20);
-        let record_type = read_u16_le(header, 22);
-        if record_type == RECORD_TYPE_FRAME_END {
-            frame_hours.insert(hour);
-        } else if record_type == RECORD_TYPE_DOMAIN_DATA && expected_domains.contains(&domain_id) {
-            hours_by_domain.entry(domain_id).or_default().insert(hour);
-        }
-        offset += record_len;
-    }
-
-    if !summary.skipped_game_hours.is_empty() {
-        summary.coverage_errors.push(format!(
-            "skipped_game_hours {}",
-            summary.skipped_game_hours.len()
-        ));
-    }
-    for domain_id in expected_domains {
-        let domain = summary.per_domain.get(domain_id);
-        if domain.map_or(0, |d| d.data_records) == 0 {
-            summary.coverage_errors.push(format!(
-                "expected source domain {} had no data records",
-                domain_name(*domain_id)
-            ));
-        }
-        let source_hours = hours_by_domain.get(domain_id).cloned().unwrap_or_default();
-        for hour in &frame_hours {
-            if !source_hours.contains(hour) {
-                summary.coverage_errors.push(format!(
-                    "game_hour_raw {hour}: missing {} source data record",
-                    domain_name(*domain_id)
-                ));
-            }
-        }
-    }
-    let ok = summary.parse_errors.is_empty()
-        && summary.ordering_errors.is_empty()
-        && summary.coverage_errors.is_empty()
-        && summary.status_flags_or
-            & (STATUS_WORKER_PANIC
-                | STATUS_BRIDGE_UNAVAILABLE
-                | STATUS_SOURCE_UNAVAILABLE
-                | STATUS_PARTIAL_DATA)
-            == 0;
+    add_frame_shape_errors(&mut summary, expected_domains);
+    let ok = gate_summary_ok(&summary);
     CounterGate {
         ok,
         expected_domains: expected_domains.to_vec(),
@@ -539,45 +477,56 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
     };
     let mut offset = 0usize;
     let mut previous_sequence = None::<u64>;
-    let mut hours = BTreeSet::new();
-    let mut data_hours = BTreeSet::new();
+    let mut pending_perf_hour = None::<i32>;
+    let mut open_frame_hour = None::<i32>;
+    let mut last_closed_hour = None::<i32>;
+    let mut final_record_is_clean_frame_end = false;
 
     while offset < raw.len() {
-        if raw.len().saturating_sub(offset) < COMPACT_RECORD_HEADER_LEN {
-            summary.parse_errors.push(format!(
-                "offset {offset}: trailing bytes shorter than compact header"
-            ));
-            break;
-        }
-        let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
-        if &header[0..4] != COMPACT_RECORD_MAGIC {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: bad compact magic"));
-            break;
-        }
-        let version = read_u16_le(header, 4);
-        let header_len = read_u16_le(header, 6) as usize;
-        let sequence = read_u64_le(header, 8);
-        let game_hour_raw = read_i32_le(header, 16);
-        let domain_id = read_u16_le(header, 20);
-        let record_type = read_u16_le(header, 22);
-        let payload_len = read_u32_le(header, 24) as usize;
-        if version != COMPACT_RECORD_VERSION || header_len != COMPACT_RECORD_HEADER_LEN {
-            summary.parse_errors.push(format!(
-                "offset {offset}: unsupported compact header version {version} len {header_len}"
-            ));
-            break;
-        }
-        if let Some(prev) = previous_sequence {
-            if sequence <= prev {
-                summary
-                    .ordering_errors
-                    .push(format!("offset {offset}: sequence {sequence} after {prev}"));
+        let header = match compact_contract::parse_compact_record_header(&raw[offset..]) {
+            Ok(header) => header,
+            Err(compact_contract::RecordFramingError::TruncatedHeader(_)) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: trailing bytes shorter than compact header"
+                ));
+                break;
             }
+            Err(compact_contract::RecordFramingError::BadMagic) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: bad compact magic"));
+                break;
+            }
+            Err(error) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {error}"));
+                break;
+            }
+        };
+        let sequence = header.sequence;
+        let game_hour_raw = header.game_hour_raw;
+        let domain_id = header.domain_id;
+        let record_type = header.record_type;
+        let payload_len = header.payload_len;
+        match previous_sequence {
+            None if sequence != 1 => summary.ordering_errors.push(format!(
+                "offset {offset}: sequence {sequence} does not start at 1 (stream prefix is missing)"
+            )),
+            Some(previous) => match previous.checked_add(1) {
+                Some(expected) if sequence != expected => summary.ordering_errors.push(format!(
+                    "offset {offset}: sequence discontinuity {previous} -> {sequence} (expected {expected})"
+                )),
+                None => summary.ordering_errors.push(format!(
+                    "offset {offset}: sequence space exhausted after {previous}; got {sequence} (wrapping is not allowed)"
+                )),
+                _ => {}
+            },
+            _ => {}
         }
         previous_sequence = Some(sequence);
-        let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+        final_record_is_clean_frame_end = false;
+        let record_len = header.record_len();
         if offset.saturating_add(record_len) > raw.len() {
             summary.parse_errors.push(format!(
                 "offset {offset}: record length {record_len} exceeds stream length"
@@ -586,21 +535,54 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
         }
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
         let payload = &raw[payload_start..payload_start + payload_len];
+        let semantics_ok = match compact_contract::validate_compact_record_semantics(
+            domain_id,
+            record_type,
+            header.record_flags,
+            payload,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {error}"));
+                false
+            }
+        };
         summary.record_count = summary.record_count.saturating_add(1);
-        hours.insert(game_hour_raw);
-        let domain = summary
-            .per_domain
-            .entry(domain_id)
-            .or_insert_with(|| DomainRecordSummary {
-                domain_id,
-                name: domain_name(domain_id),
-                ..DomainRecordSummary::default()
-            });
 
         match record_type {
             RECORD_TYPE_DOMAIN_PERF => {
+                if semantics_ok {
+                    observe_perf_hour(
+                        &mut summary,
+                        &mut pending_perf_hour,
+                        open_frame_hour,
+                        last_closed_hour,
+                        game_hour_raw,
+                        offset,
+                    );
+                    increment_hour_domain(
+                        &mut summary.per_hour_perf_domain_counts,
+                        game_hour_raw,
+                        domain_id,
+                    );
+                }
+                // Payloads for domains this lane does not own remain opaque.
+                let status_flags =
+                    (semantics_ok && domain_id == DOMAIN_ID).then(|| read_u32_le(payload, 32));
+                if let Some(status_flags) = status_flags {
+                    validate_status_flags(
+                        offset,
+                        "country_economy_counters_live PERF",
+                        status_flags,
+                        &mut summary.parse_errors,
+                    );
+                    summary.status_flags_or |= status_flags;
+                }
+                let domain = domain_summary_entry(&mut summary, domain_id);
                 domain.perf_records = domain.perf_records.saturating_add(1);
-                if payload.len() >= 32 {
+                if semantics_ok && domain_id == DOMAIN_ID {
                     domain.row_count_total = domain
                         .row_count_total
                         .saturating_add(read_u32_le(payload, 16) as u64);
@@ -610,49 +592,358 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                     domain.unit_count_total = domain
                         .unit_count_total
                         .saturating_add(read_u32_le(payload, 24) as u64);
-                    domain.status_flags_or |= read_u32_le(payload, 28);
-                    summary.status_flags_or |= read_u32_le(payload, 28);
+                    domain.status_flags_or |= status_flags.expect("target PERF status");
                 }
             }
             RECORD_TYPE_FRAME_END => {
+                let _ = domain_summary_entry(&mut summary, domain_id);
                 summary.frame_end_records = summary.frame_end_records.saturating_add(1);
-                if payload.len() >= 28 {
-                    summary.status_flags_or |= read_u32_le(payload, 24);
+                let mut clean = semantics_ok;
+                if semantics_ok {
+                    let status_flags = read_u32_le(payload, 24);
+                    validate_status_flags(
+                        offset,
+                        "FRAME_END",
+                        status_flags,
+                        &mut summary.parse_errors,
+                    );
+                    summary.status_flags_or |= status_flags;
+                }
+                match open_frame_hour {
+                    Some(open) if open == game_hour_raw => {}
+                    Some(open) => {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_END hour {game_hour_raw} does not close open DATA frame hour {open}"
+                        ));
+                    }
+                    None => {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_END hour {game_hour_raw} has no open DATA frame"
+                        ));
+                    }
+                }
+                if let Some(closed) = last_closed_hour {
+                    match closed.checked_add(1) {
+                        Some(expected) if game_hour_raw == expected => {}
+                        Some(expected) => {
+                            clean = false;
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: FRAME_END hour {game_hour_raw} does not follow closed frame hour {closed} (expected {expected})"
+                            ));
+                        }
+                        None => {
+                            clean = false;
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: closed frame hour {closed} exhausted; another frame is forbidden"
+                            ));
+                        }
+                    }
+                }
+                if clean {
+                    *summary.frame_hour_counts.entry(game_hour_raw).or_default() += 1;
+                    open_frame_hour = None;
+                    pending_perf_hour = None;
+                    last_closed_hour = Some(game_hour_raw);
+                    final_record_is_clean_frame_end = true;
                 }
             }
             RECORD_TYPE_DOMAIN_DATA => {
-                domain.data_records = domain.data_records.saturating_add(1);
-                data_hours.insert(game_hour_raw);
-                if domain_id == DOMAIN_ID {
-                    summary.domain_data_records = summary.domain_data_records.saturating_add(1);
-                    let payload_summary = decode_counter_payload(offset, payload);
+                if semantics_ok {
+                    observe_data_hour(
+                        &mut summary,
+                        pending_perf_hour,
+                        &mut open_frame_hour,
+                        last_closed_hour,
+                        game_hour_raw,
+                        offset,
+                    );
+                    increment_hour_domain(
+                        &mut summary.per_hour_data_domain_counts,
+                        game_hour_raw,
+                        domain_id,
+                    );
+                }
+                // Payloads for domains this lane does not own remain opaque.
+                let payload_summary = if semantics_ok && domain_id == DOMAIN_ID {
+                    Some(decode_counter_payload(offset, payload))
+                } else {
+                    None
+                };
+                if let Some(payload_summary) = payload_summary.as_ref() {
                     summary.status_flags_or |= payload_summary.status_flags;
-                    domain.row_count_total = domain
-                        .row_count_total
-                        .saturating_add(payload_summary.row_count as u64);
-                    domain.changed_rows_total = domain
-                        .changed_rows_total
-                        .saturating_add(payload_summary.changed_rows as u64);
-                    domain.status_flags_or |= payload_summary.status_flags;
+                }
+                if semantics_ok && domain_id == DOMAIN_ID {
+                    summary.domain_data_records = summary.domain_data_records.saturating_add(1);
+                    let payload_summary = payload_summary.expect("target DATA payload");
                     summary
                         .parse_errors
                         .extend(payload_summary.parse_errors.iter().cloned());
+                    {
+                        let domain = domain_summary_entry(&mut summary, domain_id);
+                        domain.data_records = domain.data_records.saturating_add(1);
+                        domain.row_count_total = domain
+                            .row_count_total
+                            .saturating_add(payload_summary.row_count as u64);
+                        domain.changed_rows_total = domain
+                            .changed_rows_total
+                            .saturating_add(payload_summary.changed_rows as u64);
+                        domain.status_flags_or |= payload_summary.status_flags;
+                    }
                     summary.payloads.push(payload_summary);
+                } else {
+                    let domain = domain_summary_entry(&mut summary, domain_id);
+                    domain.data_records = domain.data_records.saturating_add(1);
                 }
             }
-            other => summary.parse_errors.push(format!(
-                "offset {offset}: unknown compact record type {other}"
-            )),
+            _ => {
+                let _ = domain_summary_entry(&mut summary, domain_id);
+            }
         }
         offset += record_len;
     }
 
-    let all_hours: BTreeSet<i32> = hours.union(&data_hours).copied().collect();
-    summary.first_game_hour_raw = all_hours.first().copied();
-    summary.last_game_hour_raw = all_hours.last().copied();
-    summary.unique_game_hours = all_hours.len();
-    summary.skipped_game_hours = skipped_hours(&all_hours);
+    if let Some(open) = open_frame_hour {
+        summary
+            .parse_errors
+            .push(format!("stream ended with open DATA frame hour {open}"));
+    }
+    if !final_record_is_clean_frame_end {
+        summary
+            .parse_errors
+            .push("stream is not closed by a final canonical FRAME_END record".to_string());
+    }
+
+    let closed_hours = summary
+        .frame_hour_counts
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    summary.first_game_hour_raw = closed_hours.first().copied();
+    summary.last_game_hour_raw = closed_hours.last().copied();
+    summary.unique_game_hours = closed_hours.len();
+    summary.skipped_game_hours = skipped_hours(&closed_hours);
     summary
+}
+
+fn gate_summary_ok(summary: &CompactStreamSummary) -> bool {
+    summary.parse_errors.is_empty()
+        && summary.ordering_errors.is_empty()
+        && summary.coverage_errors.is_empty()
+        && summary.skipped_game_hours.is_empty()
+        && compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+            DOMAIN_ID,
+            summary.status_flags_or,
+        ) == 0
+}
+
+fn add_frame_shape_errors(summary: &mut CompactStreamSummary, expected_domains: &[u16]) {
+    if !summary.skipped_game_hours.is_empty() {
+        summary.coverage_errors.push(format!(
+            "skipped_game_hours {}",
+            summary.skipped_game_hours.len()
+        ));
+    }
+
+    for (&hour, &frame_count) in &summary.frame_hour_counts {
+        if frame_count != 1 {
+            summary.coverage_errors.push(format!(
+                "game_hour_raw {hour}: frame_end_count {frame_count} != 1"
+            ));
+        }
+        for &domain_id in expected_domains {
+            let perf_count =
+                hour_domain_count(&summary.per_hour_perf_domain_counts, hour, domain_id);
+            if perf_count != 1 {
+                summary.coverage_errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} perf_record_count {perf_count} != 1",
+                    domain_name(domain_id)
+                ));
+            }
+            let data_count =
+                hour_domain_count(&summary.per_hour_data_domain_counts, hour, domain_id);
+            if data_count != 1 {
+                summary.coverage_errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} data_record_count {data_count} != 1",
+                    domain_name(domain_id)
+                ));
+            }
+        }
+    }
+
+    for (&hour, domains) in &summary.per_hour_perf_domain_counts {
+        if summary.frame_hour_counts.contains_key(&hour) {
+            continue;
+        }
+        for &domain_id in expected_domains {
+            let count = domains.get(&domain_id).copied().unwrap_or(0);
+            if count != 0 {
+                summary.coverage_errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} has {count} PERF record(s) on a non-certified frame hour",
+                    domain_name(domain_id)
+                ));
+            }
+        }
+    }
+    for (&hour, domains) in &summary.per_hour_data_domain_counts {
+        if summary.frame_hour_counts.contains_key(&hour) {
+            continue;
+        }
+        for &domain_id in expected_domains {
+            let count = domains.get(&domain_id).copied().unwrap_or(0);
+            if count != 0 {
+                summary.coverage_errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} has {count} DATA record(s) on a non-certified frame hour",
+                    domain_name(domain_id)
+                ));
+            }
+        }
+    }
+}
+
+fn hour_domain_count(counts: &BTreeMap<i32, BTreeMap<u16, u64>>, hour: i32, domain_id: u16) -> u64 {
+    counts
+        .get(&hour)
+        .and_then(|domains| domains.get(&domain_id))
+        .copied()
+        .unwrap_or(0)
+}
+
+fn increment_hour_domain(
+    counts: &mut BTreeMap<i32, BTreeMap<u16, u64>>,
+    hour: i32,
+    domain_id: u16,
+) {
+    let count = counts
+        .entry(hour)
+        .or_default()
+        .entry(domain_id)
+        .or_default();
+    *count = count.saturating_add(1);
+}
+
+fn validate_next_frame_hour(
+    summary: &mut CompactStreamSummary,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    record_label: &str,
+    offset: usize,
+) {
+    let Some(closed) = last_closed_hour else {
+        return;
+    };
+    match closed.checked_add(1) {
+        Some(expected) if game_hour_raw == expected => {}
+        Some(expected) => summary.parse_errors.push(format!(
+            "offset {offset}: {record_label} hour {game_hour_raw} follows closed frame hour {closed}; expected {expected}"
+        )),
+        None => summary.parse_errors.push(format!(
+            "offset {offset}: closed frame hour {closed} exhausted; another record is forbidden"
+        )),
+    }
+}
+
+fn observe_perf_hour(
+    summary: &mut CompactStreamSummary,
+    pending_perf_hour: &mut Option<i32>,
+    open_frame_hour: Option<i32>,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    offset: usize,
+) {
+    match open_frame_hour {
+        Some(open) if open != game_hour_raw => summary.parse_errors.push(format!(
+            "offset {offset}: DOMAIN_PERF hour {game_hour_raw} does not match open DATA frame hour {open}"
+        )),
+        Some(_) => {}
+        None => {
+            validate_next_frame_hour(
+                summary,
+                last_closed_hour,
+                game_hour_raw,
+                "DOMAIN_PERF",
+                offset,
+            );
+            match *pending_perf_hour {
+                Some(pending) if pending != game_hour_raw => summary.parse_errors.push(format!(
+                    "offset {offset}: DOMAIN_PERF hour {game_hour_raw} conflicts with pending frame hour {pending}"
+                )),
+                Some(_) => {}
+                None => *pending_perf_hour = Some(game_hour_raw),
+            }
+        }
+    }
+}
+
+fn observe_data_hour(
+    summary: &mut CompactStreamSummary,
+    pending_perf_hour: Option<i32>,
+    open_frame_hour: &mut Option<i32>,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    offset: usize,
+) {
+    match *open_frame_hour {
+        Some(open) if open != game_hour_raw => summary.parse_errors.push(format!(
+            "offset {offset}: DOMAIN_DATA hour {game_hour_raw} encountered before FRAME_END closed open frame hour {open}"
+        )),
+        Some(_) => {}
+        None => {
+            validate_next_frame_hour(
+                summary,
+                last_closed_hour,
+                game_hour_raw,
+                "DOMAIN_DATA",
+                offset,
+            );
+            if let Some(pending) = pending_perf_hour {
+                if pending != game_hour_raw {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: DOMAIN_DATA hour {game_hour_raw} conflicts with pending PERF hour {pending}"
+                    ));
+                }
+            }
+            *open_frame_hour = Some(game_hour_raw);
+        }
+    }
+}
+
+fn domain_summary_entry(
+    summary: &mut CompactStreamSummary,
+    domain_id: u16,
+) -> &mut DomainRecordSummary {
+    summary
+        .per_domain
+        .entry(domain_id)
+        .or_insert_with(|| DomainRecordSummary {
+            domain_id,
+            name: domain_name(domain_id),
+            ..DomainRecordSummary::default()
+        })
+}
+
+fn validate_status_flags(offset: usize, label: &str, status_flags: u32, errors: &mut Vec<String>) {
+    const KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE
+        | compact_contract::COMPACT_STATUS_PROFILE_MISMATCH
+        | compact_contract::COMPACT_STATUS_NO_CLOCK
+        | compact_contract::COMPACT_STATUS_NO_SCALAR_SOURCE
+        | compact_contract::COMPACT_STATUS_WAR_BRIDGE_APPLIED
+        | compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE
+        | compact_contract::COMPACT_STATUS_WORKER_PANIC
+        | compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE
+        | compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
+        | compact_contract::COMPACT_STATUS_PARTIAL_DATA
+        | compact_contract::COMPACT_STATUS_DELTA_DATA
+        | compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET
+        | compact_contract::COMPACT_STATUS_CONTROL_INVALID
+        | compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT;
+    let unknown = status_flags & !KNOWN_STATUS_MASK;
+    if unknown != 0 {
+        errors.push(format!(
+            "offset {offset}: {label} status flags {status_flags:#010x} contain unknown bits {unknown:#010x}"
+        ));
+    }
 }
 
 pub fn decode_counter_payload(offset: usize, payload: &[u8]) -> CounterPayloadSummary {
@@ -674,6 +965,23 @@ pub fn decode_counter_payload(offset: usize, payload: &[u8]) -> CounterPayloadSu
     summary.source_blocked_rows = read_u32_le(payload, 36);
     summary.owned_elsewhere_rows = read_u32_le(payload, 40);
     summary.market_excluded_rows = read_u32_le(payload, 44);
+    validate_status_flags(
+        offset,
+        "country_economy_counters_live DATA",
+        summary.status_flags,
+        &mut summary.parse_errors,
+    );
+    if summary.changed_rows > summary.row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: changed_rows {} exceeds row_count {}",
+            summary.changed_rows, summary.row_count
+        ));
+    }
+    if read_u32_le(payload, 48) != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: counter payload reserved word is nonzero"
+        ));
+    }
     if summary.schema_version != COUNTER_SCHEMA_VERSION {
         summary.parse_errors.push(format!(
             "offset {offset}: unsupported counter schema {}",
@@ -832,16 +1140,8 @@ pub fn skipped_hours(hours: &BTreeSet<i32>) -> Vec<i32> {
     missing
 }
 
-fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("u16 range"))
-}
-
 fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 range"))
-}
-
-fn read_i32_le(bytes: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("i32 range"))
 }
 
 fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
@@ -930,7 +1230,7 @@ mod tests {
             100,
             DOMAIN_FRAME,
             RECORD_TYPE_FRAME_END,
-            &[],
+            &frame_payload(0),
         );
 
         let gate = gate_counter_stream(&stream, 1);
@@ -956,7 +1256,461 @@ mod tests {
             .any(|err| err.contains("duplicate counter_id")));
     }
 
+    #[test]
+    fn gate_rejects_non_one_start_and_sequence_gap() {
+        let rows = counter_badge_rows(&economy_counter_badges());
+        let mut non_one = Vec::new();
+        append_compact_record(
+            &mut non_one,
+            2,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(rows.len() as u32, rows.len() as u32),
+        );
+        append_compact_record(
+            &mut non_one,
+            3,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
+        );
+        append_compact_record(
+            &mut non_one,
+            4,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = gate_counter_stream(&non_one, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("does not start at 1")));
+
+        let mut gap = Vec::new();
+        append_compact_record(
+            &mut gap,
+            1,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(rows.len() as u32, rows.len() as u32),
+        );
+        append_compact_record(
+            &mut gap,
+            3,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
+        );
+        append_compact_record(
+            &mut gap,
+            4,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = gate_counter_stream(&gap, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 1 -> 3")));
+
+        let mut wrapping = Vec::new();
+        append_compact_record(
+            &mut wrapping,
+            u64::MAX,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(rows.len() as u32, rows.len() as u32),
+        );
+        append_compact_record(
+            &mut wrapping,
+            0,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
+        );
+        append_compact_record(
+            &mut wrapping,
+            1,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = gate_counter_stream(&wrapping, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence space exhausted")));
+    }
+
+    #[test]
+    fn gate_rejects_data_without_frame_closure_and_trailing_records() {
+        let rows = counter_badge_rows(&economy_counter_badges());
+        let mut open = Vec::new();
+        append_compact_record(
+            &mut open,
+            1,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(rows.len() as u32, rows.len() as u32),
+        );
+        append_compact_record(
+            &mut open,
+            2,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
+        );
+        let gate = gate_counter_stream(&open, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("open DATA frame hour 100")));
+
+        let mut trailing = Vec::new();
+        let next = append_target_frame(&mut trailing, 1, 100, STATUS_LANE_LOCAL_PROOF);
+        append_compact_record(
+            &mut trailing,
+            next,
+            101,
+            DOMAIN_FUEL_LIVE,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 0, 0),
+        );
+        let gate = gate_counter_stream(&trailing, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("final canonical FRAME_END")));
+    }
+
+    #[test]
+    fn unrelated_frame_cannot_inflate_counter_duration() {
+        let mut stream = Vec::new();
+        let mut sequence = append_target_frame(&mut stream, 1, 100, STATUS_LANE_LOCAL_PROOF);
+        append_compact_record(
+            &mut stream,
+            sequence,
+            101,
+            DOMAIN_FUEL_LIVE,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 0, 0),
+        );
+        sequence += 1;
+        append_compact_record(
+            &mut stream,
+            sequence,
+            101,
+            DOMAIN_FUEL_LIVE,
+            RECORD_TYPE_DOMAIN_DATA,
+            &[0xde, 0xad, 0xbe, 0xef],
+        );
+        sequence += 1;
+        append_compact_record(
+            &mut stream,
+            sequence,
+            101,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+
+        let gate = gate_counter_stream(&stream, 2);
+        assert!(!gate.ok);
+        assert!(gate.summary.coverage_errors.iter().any(|error| {
+            error.contains("game_hour_raw 101") && error.contains("data_record_count 0")
+        }));
+    }
+
+    #[test]
+    fn gate_requires_exactly_one_counter_perf_and_data_per_frame() {
+        let rows = counter_badge_rows(&economy_counter_badges());
+
+        let mut duplicate_data = Vec::new();
+        append_compact_record(
+            &mut duplicate_data,
+            1,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(rows.len() as u32, rows.len() as u32),
+        );
+        for sequence in [2, 3] {
+            append_compact_record(
+                &mut duplicate_data,
+                sequence,
+                100,
+                DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_DATA,
+                &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
+            );
+        }
+        append_compact_record(
+            &mut duplicate_data,
+            4,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = gate_counter_stream(&duplicate_data, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .coverage_errors
+            .iter()
+            .any(|error| error.contains("data_record_count 2 != 1")));
+
+        let mut duplicate_perf = Vec::new();
+        for sequence in [1, 2] {
+            append_compact_record(
+                &mut duplicate_perf,
+                sequence,
+                100,
+                DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_PERF,
+                &perf_payload(rows.len() as u32, rows.len() as u32),
+            );
+        }
+        append_compact_record(
+            &mut duplicate_perf,
+            3,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
+        );
+        append_compact_record(
+            &mut duplicate_perf,
+            4,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = gate_counter_stream(&duplicate_perf, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .coverage_errors
+            .iter()
+            .any(|error| error.contains("perf_record_count 2 != 1")));
+
+        let mut missing_perf = Vec::new();
+        append_compact_record(
+            &mut missing_perf,
+            1,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
+        );
+        append_compact_record(
+            &mut missing_perf,
+            2,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = gate_counter_stream(&missing_perf, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .coverage_errors
+            .iter()
+            .any(|error| error.contains("perf_record_count 0 != 1")));
+
+        let mut missing_data = Vec::new();
+        append_compact_record(
+            &mut missing_data,
+            1,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(rows.len() as u32, rows.len() as u32),
+        );
+        append_compact_record(
+            &mut missing_data,
+            2,
+            100,
+            DOMAIN_FUEL_LIVE,
+            RECORD_TYPE_DOMAIN_DATA,
+            &[1],
+        );
+        append_compact_record(
+            &mut missing_data,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = gate_counter_stream(&missing_data, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .coverage_errors
+            .iter()
+            .any(|error| error.contains("data_record_count 0 != 1")));
+    }
+
+    #[test]
+    fn gate_rejects_wrong_perf_hour_and_nonconsecutive_or_reordered_closures() {
+        let rows = counter_badge_rows(&economy_counter_badges());
+        let mut wrong_perf = Vec::new();
+        append_compact_record(
+            &mut wrong_perf,
+            1,
+            101,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(rows.len() as u32, rows.len() as u32),
+        );
+        append_compact_record(
+            &mut wrong_perf,
+            2,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
+        );
+        append_compact_record(
+            &mut wrong_perf,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = gate_counter_stream(&wrong_perf, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("conflicts with pending PERF hour 101")));
+
+        for second_hour in [102, 99] {
+            let mut stream = Vec::new();
+            let next = append_target_frame(&mut stream, 1, 100, STATUS_LANE_LOCAL_PROOF);
+            append_target_frame(&mut stream, next, second_hour, STATUS_LANE_LOCAL_PROOF);
+            let gate = gate_counter_stream(&stream, 2);
+            assert!(!gate.ok, "second hour {second_hour} was accepted");
+            assert!(gate.summary.parse_errors.iter().any(|error| {
+                error.contains("closed frame hour 100") && error.contains("expected 101")
+            }));
+        }
+    }
+
+    #[test]
+    fn gate_rejects_bad_record_flags_and_statuses() {
+        let mut bad_flags = Vec::new();
+        append_target_frame(&mut bad_flags, 1, 100, STATUS_LANE_LOCAL_PROOF);
+        let data_offset =
+            COMPACT_RECORD_HEADER_LEN + compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN;
+        bad_flags[data_offset + 28..data_offset + 32].copy_from_slice(
+            &compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER.to_le_bytes(),
+        );
+        let gate = gate_counter_stream(&bad_flags, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("rejected bits")));
+
+        let mut fatal = Vec::new();
+        append_target_frame(
+            &mut fatal,
+            1,
+            100,
+            compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE,
+        );
+        let gate = gate_counter_stream(&fatal, 1);
+        assert!(!gate.ok);
+        assert!(gate.summary.parse_errors.is_empty(), "{:?}", gate.summary);
+
+        let mut unknown = Vec::new();
+        append_target_frame(&mut unknown, 1, 100, 1 << 31);
+        let gate = gate_counter_stream(&unknown, 1);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unknown bits")));
+    }
+
+    #[test]
+    fn source_gate_ignores_unowned_payloads_but_validates_their_envelopes() {
+        let mut stream = Vec::new();
+        let mut opaque_perf = perf_payload_with_status(0, 0, 1 << 31);
+        opaque_perf[36..40].copy_from_slice(&0u32.to_le_bytes());
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_FUEL_LIVE,
+            RECORD_TYPE_DOMAIN_PERF,
+            &opaque_perf,
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            100,
+            DOMAIN_FUEL_LIVE,
+            RECORD_TYPE_DOMAIN_DATA,
+            &[0xde, 0xad],
+        );
+        append_compact_record(
+            &mut stream,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        let gate = summarize_source_stream(&stream, &[DOMAIN_FUEL_LIVE]);
+        assert!(gate.ok, "{:?}", gate.summary);
+
+        stream[28..32].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        let gate = summarize_source_stream(&stream, &[DOMAIN_FUEL_LIVE]);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("rejected bits")));
+    }
+
     fn perf_payload(rows: u32, units: u32) -> Vec<u8> {
+        perf_payload_with_status(rows, units, STATUS_LANE_LOCAL_PROOF)
+    }
+
+    fn perf_payload_with_status(rows: u32, units: u32, status_flags: u32) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
         payload.extend_from_slice(&1u64.to_le_bytes());
@@ -964,7 +1718,53 @@ mod tests {
         payload.extend_from_slice(&rows.to_le_bytes());
         payload.extend_from_slice(&units.to_le_bytes());
         payload.extend_from_slice(&units.to_le_bytes());
-        payload.extend_from_slice(&STATUS_LANE_LOCAL_PROOF.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
         payload
+    }
+
+    fn frame_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload
+    }
+
+    fn append_target_frame(
+        stream: &mut Vec<u8>,
+        first_sequence: u64,
+        hour: i32,
+        status_flags: u32,
+    ) -> u64 {
+        let rows = counter_badge_rows(&economy_counter_badges());
+        append_compact_record(
+            stream,
+            first_sequence,
+            hour,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(rows.len() as u32, rows.len() as u32, status_flags),
+        );
+        append_compact_record(
+            stream,
+            first_sequence + 1,
+            hour,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_counter_payload(1, status_flags, &rows),
+        );
+        append_compact_record(
+            stream,
+            first_sequence + 2,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        first_sequence + 3
     }
 }

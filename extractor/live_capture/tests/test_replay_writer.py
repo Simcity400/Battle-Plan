@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.normpath(os.path.join(_HERE, os.pardir, os.pardir))
@@ -37,6 +38,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from live_capture import replay_writer as rw  # noqa: E402
+from live_capture.capture import CaptureLoop, CaptureResult  # noqa: E402
 from live_capture.durable_store import DurableCaptureStore  # noqa: E402
 from live_capture import assembler as asm  # noqa: E402
 from live_capture import registry as reg  # noqa: E402
@@ -585,6 +587,114 @@ class TestCrashSafety(unittest.TestCase):
         with open(self.out + ".tmp", "wb") as fh:
             fh.write(b"PK\x03\x04 garbage")
         self.assertTrue(rw._verify_container(self.out))
+
+    def test_rejected_candidate_preserves_prior_published_container(self):
+        rec = self._rec()
+        self._write(rec, 1)
+        rec.finalize()
+        prior = _read_bytes(self.out)
+        self._write(rec, 1)
+
+        real_verify = rw._verify_container
+
+        def reject_candidate(path):
+            if os.fspath(path).endswith(".tmp"):
+                raise ValueError("adversarial candidate rejection")
+            return real_verify(path)
+
+        with mock.patch.object(rw, "_verify_container",
+                               side_effect=reject_candidate):
+            with self.assertRaisesRegex(ValueError, "candidate rejection"):
+                rec.finalize()
+
+        self.assertEqual(_read_bytes(self.out), prior)
+        self.assertTrue(rw._verify_container(self.out))
+        self.assertFalse(os.path.exists(self.out + ".tmp"))
+
+    def test_rejected_first_candidate_leaves_no_normal_artifact(self):
+        rec = self._rec()
+        self._write(rec, 1)
+        with mock.patch.object(
+                rw, "_verify_container",
+                side_effect=ValueError("adversarial candidate rejection")):
+            with self.assertRaisesRegex(ValueError, "candidate rejection"):
+                rec.finalize()
+
+        self.assertFalse(os.path.exists(self.out))
+        self.assertFalse(os.path.exists(self.out + ".tmp"))
+
+    def test_replace_failure_preserves_prior_and_removes_candidate(self):
+        rec = self._rec()
+        self._write(rec, 1)
+        rec.finalize()
+        prior = _read_bytes(self.out)
+        self._write(rec, 1)
+
+        with mock.patch.object(
+                os, "replace", side_effect=OSError("replace denied")):
+            with self.assertRaisesRegex(OSError, "replace denied"):
+                rec.finalize()
+
+        self.assertEqual(_read_bytes(self.out), prior)
+        self.assertTrue(rw._verify_container(self.out))
+        self.assertFalse(os.path.exists(self.out + ".tmp"))
+
+    def test_cleanup_failure_is_surfaced_with_retained_candidate_path(self):
+        rec = self._rec()
+        self._write(rec, 1)
+        rec.finalize()
+        prior = _read_bytes(self.out)
+        self._write(rec, 1)
+
+        with mock.patch.object(
+                rw, "_verify_container",
+                side_effect=ValueError("candidate rejection")), \
+                mock.patch.object(
+                    os, "remove", side_effect=PermissionError(
+                        "candidate locked")):
+            with self.assertRaisesRegex(
+                    RuntimeError,
+                    "candidate cleanup failed; candidate may remain") as ctx:
+                rec.finalize()
+
+        self.assertIn(self.out + ".tmp", str(ctx.exception))
+        self.assertIn("candidate rejection", str(ctx.exception))
+        self.assertEqual(_read_bytes(self.out), prior)
+        self.assertTrue(rw._verify_container(self.out))
+        self.assertTrue(os.path.exists(self.out + ".tmp"))
+
+    def test_capture_loop_propagates_final_publication_failure(self):
+        class _Store:
+            def lock_path(_self, game_id):
+                return os.path.join(self.tmp, game_id + ".lock")
+
+        class _Proc:
+            def close(_self):
+                pass
+
+        class _FailingRecorder:
+            def finalize(_self):
+                raise ValueError("candidate verification failed")
+
+        loop = object.__new__(CaptureLoop)
+        loop.game_id = "publication_failure"
+        loop.store = _Store()
+        loop.open_proc = _Proc
+        loop._recorder = _FailingRecorder()
+        loop._finalize_every = 1
+        loop._captures_since_finalize = 0
+        loop.last_finalize_error = None
+        loop.capture_once = lambda **_kwargs: CaptureResult(
+            written_path="snapshot.json", snapshot={}, domains_captured=[],
+            tags={}, canonical=True)
+
+        with self.assertRaisesRegex(RuntimeError,
+                                    "replay finalization failed"):
+            loop.run(interval_s=0.0, max_captures=1)
+        self.assertEqual(loop.last_finalize_error,
+                         "candidate verification failed")
+        self.assertFalse(os.path.exists(
+            os.path.join(self.tmp, "publication_failure.lock")))
 
 
 # --------------------------------------------------------------------------

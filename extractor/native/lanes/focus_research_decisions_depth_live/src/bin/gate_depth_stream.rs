@@ -14,6 +14,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut input: Option<PathBuf> = None;
     let mut out_dir: Option<PathBuf> = None;
+    let mut commanded_game_hour_advancements: Option<i64> = None;
     let args = env::args().skip(1).collect::<Vec<_>>();
     let mut idx = 0usize;
     while idx < args.len() {
@@ -26,6 +27,18 @@ fn run() -> Result<(), String> {
                 idx += 1;
                 out_dir = args.get(idx).map(PathBuf::from);
             }
+            "--game-hours" => {
+                idx += 1;
+                let raw = args
+                    .get(idx)
+                    .ok_or_else(|| "--game-hours requires a positive integer".to_string())?;
+                let parsed = raw
+                    .parse::<i64>()
+                    .map_err(|_| format!("invalid --game-hours value: {raw}"))?;
+                if commanded_game_hour_advancements.replace(parsed).is_some() {
+                    return Err("--game-hours may only be specified once".to_string());
+                }
+            }
             "--help" | "-h" => {
                 print_usage();
                 return Ok(());
@@ -37,8 +50,11 @@ fn run() -> Result<(), String> {
 
     let input = input.ok_or_else(|| "--input is required".to_string())?;
     let out_dir = out_dir.ok_or_else(|| "--out-dir is required".to_string())?;
+    let commanded_game_hour_advancements = commanded_game_hour_advancements.ok_or_else(|| {
+        "--game-hours is required and means exact positive game-hour advancements; N advancements require exactly N+1 closed frames".to_string()
+    })?;
     let raw = fs::read(&input).map_err(|err| format!("read {}: {err}", input.display()))?;
-    let summary = gate_existing_depth_stream(&raw);
+    let summary = gate_existing_depth_stream(&raw, commanded_game_hour_advancements);
     fs::create_dir_all(&out_dir).map_err(|err| format!("create {}: {err}", out_dir.display()))?;
     let manifest = format!(
         concat!(
@@ -46,6 +62,16 @@ fn run() -> Result<(), String> {
             "  \"lane\": \"{lane}\",\n",
             "  \"source_stream\": {source_stream},\n",
             "  \"data_records\": {data_records},\n",
+            "  \"perf_records\": {perf_records},\n",
+            "  \"frame_end_records\": {frame_end_records},\n",
+            "  \"certified_hours\": {certified_hours},\n",
+            "  \"first_game_hour_raw\": {first_game_hour_raw},\n",
+            "  \"last_game_hour_raw\": {last_game_hour_raw},\n",
+            "  \"game_hours_advanced\": {game_hours_advanced},\n",
+            "  \"commanded_game_hour_advancements\": {commanded_game_hour_advancements},\n",
+            "  \"required_closed_frames\": {required_closed_frames},\n",
+            "  \"status_flags_or\": {status_flags_or},\n",
+            "  \"fatal_status_flags\": {fatal_status_flags},\n",
             "  \"focus_event_rows\": {focus_event_rows},\n",
             "  \"focus_completed_exact_rows\": {focus_completed_exact_rows},\n",
             "  \"focus_completed_inferred_rows\": {focus_completed_inferred_rows},\n",
@@ -67,6 +93,16 @@ fn run() -> Result<(), String> {
         lane = DOMAIN_NAME,
         source_stream = json_str(&input.display().to_string()),
         data_records = summary.data_records,
+        perf_records = summary.perf_records,
+        frame_end_records = summary.frame_end_records,
+        certified_hours = summary.certified_hours,
+        first_game_hour_raw = json_optional_i32(summary.first_game_hour_raw),
+        last_game_hour_raw = json_optional_i32(summary.last_game_hour_raw),
+        game_hours_advanced = summary.game_hours_advanced,
+        commanded_game_hour_advancements = summary.commanded_game_hour_advancements,
+        required_closed_frames = summary.required_closed_frames,
+        status_flags_or = summary.status_flags_or,
+        fatal_status_flags = summary.fatal_status_flags,
         focus_event_rows = summary.focus_event_rows,
         focus_completed_exact_rows = summary.focus_completed_exact_rows,
         focus_completed_inferred_rows = summary.focus_completed_inferred_rows,
@@ -114,7 +150,13 @@ fn run() -> Result<(), String> {
 }
 
 fn print_usage() {
-    println!("gate_depth_stream --input <collector_stream.bin> --out-dir <lane-proof-dir>");
+    println!("gate_depth_stream --input <collector_stream.bin> --out-dir <lane-proof-dir> --game-hours <exact positive advancements>");
+}
+
+fn json_optional_i32(value: Option<i32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn json_string_array(values: &[String]) -> String {

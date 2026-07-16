@@ -29,7 +29,21 @@ from replay import schema  # noqa: E402
 from live_capture import assembler as asm  # noqa: E402
 
 ORACLE_OUT = os.path.join(_REPO, "save_oracle", "output")
-HAVE_FIXTURES = os.path.isfile(os.path.join(ORACLE_OUT, "world.json"))
+REQUIRED_FIXTURES = (
+    "meta.json",
+    "country_snapshot.json",
+    "supply.json",
+    "strategic_air.json",
+    "world.json",
+    "events.json",
+    "country_extra.json",
+    "players.json",
+)
+MISSING_FIXTURES = tuple(
+    name for name in REQUIRED_FIXTURES
+    if not os.path.isfile(os.path.join(ORACLE_OUT, name))
+)
+HAVE_COMPLETE_FIXTURES = not MISSING_FIXTURES
 
 
 def _scratch_root():
@@ -142,7 +156,10 @@ class TestExtractFold(unittest.TestCase):
             self.assertNotIn(n, blob, n)
 
 
-@unittest.skipUnless(HAVE_FIXTURES, "EXTRACT fixtures not present")
+@unittest.skipUnless(
+    HAVE_COMPLETE_FIXTURES,
+    "EXTRACT fixture output incomplete; missing: " + ", ".join(MISSING_FIXTURES),
+)
 class TestRealFixtureFold(unittest.TestCase):
     def test_real_fold_validates_and_carries_domains(self):
         snap = asm.assemble_snapshot({}, game_id="g", date="1946.5.19.9")

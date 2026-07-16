@@ -35,7 +35,9 @@ import parse_localisation
 import parse_idea_tech_loc
 import parse_decisions
 import parse_ship_definitions
+import parse_technology_sharing
 import gfx_icon_manifest_gate
+from static_artifact_common import mods_from_arg
 
 GFX_MIN_SPRITES = 1
 
@@ -57,10 +59,19 @@ def main():
                     help="the game user-data dir used by GFX asset DLC/mod resolution.")
     ap.add_argument("--out", default=str(_HERE / "out"))
     args = ap.parse_args()
-    mods = args.mods.split(",") if args.mods else None
+    mods = mods_from_arg(args.mods)
 
     t0 = time.time()
-    layers = R.build_layers(vanilla=args.vanilla, mods=mods, userdata=args.userdata)
+    parse_technology_sharing.validate_implicit_active_modset(mods)
+    layers = R.build_layers(
+        vanilla=args.vanilla,
+        mods=mods,
+        userdata=args.userdata,
+        # The implicit active modset is just as authoritative as an explicit
+        # --mods list.  Never emit a mixed catalog after warning away an
+        # unresolved active-manifest entry.
+        strict_mods=True,
+    )
     loc = R.load_loc(layers)
     print(f"layers={[ly.label for ly in layers]}  loc_keys={len(loc)}")
 
@@ -81,6 +92,10 @@ def main():
         ("idea_tech_loc_keys", lambda: parse_idea_tech_loc.parse_idea_tech_loc_keys(layers)),
         ("decisions", lambda: parse_decisions.parse_decisions(layers)),
         ("ship_definitions", lambda: parse_ship_definitions.parse_ship_definitions(layers)),
+        (
+            "technology_sharing",
+            lambda: parse_technology_sharing.parse_technology_sharing(layers),
+        ),
         (
             "gfx_icon_manifest",
             lambda: gfx_icon_manifest_gate.build_catalog(

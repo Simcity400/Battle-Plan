@@ -202,12 +202,8 @@ const SESSION_HEADER_MAX_STRING_LEN: usize = 128;
 // Fail-closed ceiling on the player tag_db_id (matches the collector guard).
 const SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
 
-// W6 domain 69 tech_sharing_groups_live: 16-byte header (elapsed_wall_ms u64,
-// group_count u32, status_flags u32), then group_count fixed 12-byte rows
-// (id_token u32, member_count u32, member_blob_offset u32 in u32 units), then a
-// single concatenated blob of u32 tag_db_ids.
-const TECH_SHARING_GROUPS_HEADER_LEN: usize = 16;
-const TECH_SHARING_GROUPS_ROW_LEN: usize = 12;
+// W6 domain 69 tech_sharing_groups_live consumes only the explicit TSG2 v2
+// member/dynamic-bonus contract from compact_contract.
 const TECH_SHARING_GROUPS_DOMAIN_ID: u16 = 69;
 // Fail-closed ceiling on the number of groups. Tied to the collector's own
 // vector-size ceiling (build_profile DOMAIN69_TECH_SHARING_MAX_GROUPS): the
@@ -586,9 +582,11 @@ const SPECIAL_PROJECTS_PROJECT_STATE_DELETED: u32 = 1 << 31;
 const SPECIAL_PROJECTS_BREAKTHROUGH_DELETED: u32 = 1 << 31;
 
 const FRD_HEADER_LEN_V1: usize = 48;
-const FRD_HEADER_LEN: usize = 56;
+const FRD_HEADER_LEN_V2: usize = 56;
+const FRD_HEADER_LEN: usize = 60;
 const FRD_SCHEMA_MAGIC: &[u8; 4] = b"FRD2";
-const FRD_SCHEMA_VERSION: u16 = 2;
+const FRD_SCHEMA_VERSION_V2: u16 = 2;
+const FRD_SCHEMA_VERSION: u16 = 3;
 const FRD_FOCUS_ROW_FIXED_LEN: usize = 36;
 const FRD_RESEARCH_ROW_LEN: usize = 80;
 const FRD_DECISION_STATUS_ROW_LEN: usize = 28;
@@ -823,7 +821,7 @@ struct SnapshotEmitPipeline {
 const SNAPSHOT_EMIT_QUEUE_DEPTH: usize = 2;
 
 impl SnapshotEmitPipeline {
-    fn spawn() -> SnapshotEmitPipeline {
+    fn spawn() -> std::io::Result<SnapshotEmitPipeline> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<SnapshotEmitJob>(SNAPSHOT_EMIT_QUEUE_DEPTH);
         let results = std::sync::Arc::new(std::sync::Mutex::new(SnapshotEmitResults::default()));
         let worker_results = std::sync::Arc::clone(&results);
@@ -861,13 +859,12 @@ impl SnapshotEmitPipeline {
                         }
                     }
                 }
-            })
-            .expect("spawn world-fold emit worker");
-        SnapshotEmitPipeline {
+            })?;
+        Ok(SnapshotEmitPipeline {
             tx: Some(tx),
             handle: Some(handle),
             results,
-        }
+        })
     }
 
     /// Hand a closed hour to the worker. Blocks only if the bounded channel is
@@ -1345,13 +1342,20 @@ struct SessionHeaderFoldState {
     version: Option<String>,
 }
 
-/// W6 D69 one tech-sharing group's folded membership: the group id token and
-/// the (sorted) member tag_db_id set. The static group id STRING is not decoded
-/// (the replay resolves the token via installed content).
+/// W6 D69 one technology-sharing member and its same-index signed fixed5
+/// dynamic adjustment. Pairing is established before any canonical sorting.
+#[derive(Clone)]
+struct TechSharingMemberBonusFoldState {
+    member_tag_db_id: u32,
+    dynamic_bonus_raw_fixed5: i64,
+}
+
+/// W6 D69 one technology-sharing group. `id_token` is an opaque sequential
+/// runtime intern ordinal, not a hash and not lawfully joinable to static ids.
 #[derive(Clone)]
 struct TechSharingGroupFoldState {
     id_token: u32,
-    member_tag_db_ids: Vec<u32>,
+    members: Vec<TechSharingMemberBonusFoldState>,
 }
 
 impl WorldFold {
@@ -1476,7 +1480,7 @@ impl WorldFold {
         let mut fold = Self::new(game_id);
         fold.file_sink = Some(SnapshotFileSink {
             dir,
-            pipeline: SnapshotEmitPipeline::spawn(),
+            pipeline: SnapshotEmitPipeline::spawn()?,
             stride: 1,
             stride_offset: 0,
         });
@@ -2366,20 +2370,44 @@ impl WorldFold {
         let rows: Vec<Value> = groups
             .iter()
             .map(|group| {
-                let member_tags: Vec<String> = group
-                    .member_tag_db_ids
+                let member_tag_db_ids: Vec<u32> = group
+                    .members
                     .iter()
-                    .map(|id| self.resolve_country_key(&id.to_string(), unresolved))
+                    .map(|member| member.member_tag_db_id)
+                    .collect();
+                let member_tags: Vec<String> = group
+                    .members
+                    .iter()
+                    .map(|member| {
+                        self.resolve_country_key(&member.member_tag_db_id.to_string(), unresolved)
+                    })
+                    .collect();
+                let member_bonuses: Vec<Value> = group
+                    .members
+                    .iter()
+                    .zip(member_tags.iter())
+                    .map(|(member, country_tag)| {
+                        json!({
+                            "member_tag_db_id": member.member_tag_db_id,
+                            "country_tag": country_tag,
+                            "dynamic_bonus_raw_fixed5": member.dynamic_bonus_raw_fixed5,
+                            "dynamic_bonus": member.dynamic_bonus_raw_fixed5 as f64
+                                / compact_contract::tech_sharing_groups::TECH_SHARING_BONUS_FIXED5_SCALE as f64,
+                        })
+                    })
                     .collect();
                 json!({
                     "id_token": group.id_token,
-                    "member_tag_db_ids": group.member_tag_db_ids,
+                    "runtime_ordinal": group.id_token,
+                    "member_tag_db_ids": member_tag_db_ids,
                     "members": member_tags,
+                    "member_bonuses": member_bonuses,
                 })
             })
             .collect();
         Some(json!({
             "count": rows.len(),
+            "dynamic_bonus_fixed5_scale": compact_contract::tech_sharing_groups::TECH_SHARING_BONUS_FIXED5_SCALE,
             "groups": rows,
         }))
     }
@@ -5409,7 +5437,8 @@ impl WorldFold {
     // member_blob_offset u32 in u32 units), then a single concatenated blob of
     // u32 tag_db_ids. Windows must be contiguous and cover the blob exactly. Any
     // bounds/torn failure returns Err (frame folds closed, prior set retained).
-    fn fold_tech_sharing_groups(&mut self, payload: &[u8]) -> Result<(), String> {
+    #[cfg(any())]
+    fn fold_tech_sharing_groups_legacy(&mut self, payload: &[u8]) -> Result<(), String> {
         need(
             payload,
             TECH_SHARING_GROUPS_HEADER_LEN,
@@ -5502,6 +5531,65 @@ impl WorldFold {
 
         // A proven frame with zero groups is a genuine empty set (distinct from
         // unknown). Full-replace the carried set.
+        self.tech_sharing_groups = Some(groups);
+        self.mark_fold_domain_success(TECH_SHARING_GROUPS_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_tech_sharing_groups(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = compact_contract::tech_sharing_groups::decode_payload_with_bonuses(payload)
+            .map_err(|error| format!("tech_sharing_groups TSG2 invalid: {error}"))?;
+        if decoded.rows.len() > TECH_SHARING_GROUP_MAX_GROUPS {
+            return Err(format!(
+                "tech_sharing_groups group_count {} exceeds {TECH_SHARING_GROUP_MAX_GROUPS}",
+                decoded.rows.len()
+            ));
+        }
+        for (row_index, row) in decoded.rows.iter().enumerate() {
+            if row.members.len() > TECH_SHARING_GROUP_MAX_MEMBERS as usize {
+                return Err(format!(
+                    "tech_sharing_groups row {row_index} member_count {} out of range",
+                    row.members.len()
+                ));
+            }
+            if let Some(member) = row
+                .members
+                .iter()
+                .find(|member| member.member_tag_db_id > TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID)
+            {
+                return Err(format!(
+                    "tech_sharing_groups row {row_index} member tag_db_id {} out of range",
+                    member.member_tag_db_id
+                ));
+            }
+        }
+        if self.handle_compact_failure(
+            TECH_SHARING_GROUPS_DOMAIN_ID,
+            "tech_sharing_groups",
+            decoded.status_flags,
+        ) {
+            return Ok(());
+        }
+
+        let mut groups = Vec::with_capacity(decoded.rows.len());
+        for row in decoded.rows {
+            let mut members: Vec<TechSharingMemberBonusFoldState> = row
+                .members
+                .into_iter()
+                .map(|member| TechSharingMemberBonusFoldState {
+                    member_tag_db_id: member.member_tag_db_id,
+                    dynamic_bonus_raw_fixed5: member.dynamic_bonus_raw_fixed5,
+                })
+                .collect();
+            // Canonicalize only after pairing. Sorting the legacy id vector
+            // independently would silently attach bonuses to the wrong member.
+            members.sort_unstable_by_key(|member| member.member_tag_db_id);
+            groups.push(TechSharingGroupFoldState {
+                id_token: row.id_token,
+                members,
+            });
+        }
+        groups.sort_unstable_by_key(|group| group.id_token);
         self.tech_sharing_groups = Some(groups);
         self.mark_fold_domain_success(TECH_SHARING_GROUPS_DOMAIN_ID);
         Ok(())
@@ -10908,6 +10996,23 @@ impl WorldFold {
         self.naval_combat_lifecycle_known_this_hour = false;
         let (status_flags, rows) =
             naval4950::decode_lifecycle_rows(payload).map_err(|errors| errors.join("; "))?;
+        if let Err(reason) =
+            crate::domain_data_authority::validate_d49_promoted_location_region(status_flags, &rows)
+        {
+            // Structural boundary validation must reject this payload so the
+            // streaming fold takes its normal malformed-domain degradation
+            // path. Direct production folding must reach the same fail-closed
+            // state without mutating or publishing the carried combat map.
+            if self.boundary_validation {
+                return Err(reason.to_string());
+            }
+            self.mark_fold_domain_unknown(
+                NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID,
+                "location_region_promotion_incomplete",
+                format!("{reason}; naval combat lifecycle unknown this hour, accumulator retained"),
+            );
+            return Ok(());
+        }
         // handle_compact_failure strips domain 49's lane-local bit 11 before the
         // failure-mask check, so the location-candidate badge is never confused
         // with COMPACT_STATUS_TRANSITION_BASELINE_RESET. On a real failure the
@@ -15913,21 +16018,29 @@ fn parse_frd_depth_header(payload: &[u8], record_flags: u32) -> Result<FrdDepthH
     if record_flags & COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2 != 0 {
         need(
             payload,
-            FRD_HEADER_LEN,
-            "focus_research_decisions_depth v2 header",
+            FRD_HEADER_LEN_V2,
+            "focus_research_decisions_depth versioned header",
         )?;
         if payload.get(0..4) != Some(FRD_SCHEMA_MAGIC.as_slice()) {
             return Err(
-                "focus_research_decisions_depth v2 header is missing FRD2 sanity marker"
+                "focus_research_decisions_depth versioned header is missing FRD2 sanity marker"
                     .to_string(),
             );
         }
         let version = read_u16(payload, 4);
         let header_len = read_u16(payload, 6) as usize;
-        if version != FRD_SCHEMA_VERSION || header_len != FRD_HEADER_LEN {
-            return Err(format!(
-                "focus_research_decisions_depth v2 header has version {version} and len {header_len}"
-            ));
+        match (version, header_len) {
+            (FRD_SCHEMA_VERSION_V2, FRD_HEADER_LEN_V2) => {}
+            (FRD_SCHEMA_VERSION, FRD_HEADER_LEN) => need(
+                payload,
+                FRD_HEADER_LEN,
+                "focus_research_decisions_depth v3 header",
+            )?,
+            _ => {
+                return Err(format!(
+                    "focus_research_decisions_depth versioned header has version {version} and len {header_len}"
+                ));
+            }
         }
         return Ok(FrdDepthHeader {
             header_len,

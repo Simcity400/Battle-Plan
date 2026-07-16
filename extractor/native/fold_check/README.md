@@ -5,17 +5,19 @@
 — bulk-read collapse, delta emission, the `--profile production` switch, codec
 changes — must prove it did not change the *decoded* game state. This tool is the
 one-command check: it decodes a collector compact stream, runs the **production
-fold**, and emits a canonical per-game-hour hash. Two streams that fold to the
-same hashes are certified fold-identical.
+fold**, and emits a canonical per-game-hour hash. Certification additionally
+binds every hour to the caller-selected production roster; a stream's own
+`FRAME_END emitted == scheduled` claim is never treated as its coverage authority.
 
 ## Why it is trustworthy
 
-There is exactly **one** decode+fold in the codebase, and this tool reuses it:
-`recorder_host::world_fold::WorldFold`. `fold_check` only frames the 32-byte
-`H4CR` record envelope (a stable wire contract in `compact_contract`) and hands
-each record to `WorldFold::ingest_record` — the identical dispatch the recorder
-host performs in `ingest_stream`. `DOMAIN_PERF` and read-probe records carry no
-folded state and are ignored, exactly as the host ignores them. The hash is over
+There is exactly **one** domain decode+fold in the codebase, and this tool reuses
+it through `replay_decoder`: H4CR framing comes from `compact_contract`, logical
+hour closure comes from the production `stream_fold::BoundaryTracker`, payload
+exactness comes from the production structural validator, and state is applied
+by `recorder_host::world_fold::WorldFold`. `DOMAIN_PERF` carries no folded state,
+but its exact once-per-expected-domain presence and normalized status are part of
+certification identity; unassigned diagnostic probes remain outside that identity. The hash is over
 the shipped snapshot bytes, which are canonical by construction (the fold's
 accumulators are all `BTreeMap`/`BTreeSet`, and `serde_json` — with no
 `preserve_order` — writes object keys sorted), so identical input yields
@@ -27,9 +29,16 @@ production fold; reusing the real one is the whole point.
 ## Usage
 
 ```
-fold_check hash    <input> [--out report.json]
-fold_check compare <a> <b> [--out report.json] [--sample N]
+fold_check hash    <input> --expected-profile production [--out report.json]
+fold_check compare <a> <b> --expected-profile production [--out report.json] [--sample N]
 ```
+
+`--expected-profile production` is mandatory. Its roster comes from the shared
+`compact_contract` production descriptor registry, independently of the bytes
+being checked. For every closed hour, the FRAME_END emitted and scheduled counts
+must both equal that roster's size, every expected domain must have exactly one
+PERF record, every domain marked `requires_data_record` must have exactly one DATA
+record, and no assigned domain outside the roster may appear.
 
 `<input>` is a `collector_stream.bin` **or** a `.battleplan` container. The kind
 is auto-detected from leading bytes. Raw H4CR, zstd-compressed H4CR, and
@@ -37,23 +46,28 @@ is auto-detected from leading bytes. Raw H4CR, zstd-compressed H4CR, and
 manifest-verified `collector_compact_stream`
 entry is extracted and folded. Standalone inputs are decoded in bounded chunks, so
 even a legacy multi-GB raw stream never resides fully in memory (only the fold's working world
-state, plus one hour's snapshot at a time, is held). Streams that end mid-hour
-are handled gracefully: complete hours are reported and the incomplete tail is
-noted in `totals.truncated_tail_bytes`.
+state, plus one hour's snapshot at a time, is held). The general decoder can
+recover complete prefix hours for diagnostics, but this certification tool
+fails closed for a framing stop, truncated/corrupt tail, malformed DOMAIN_DATA
+payload, or non-closed hour boundary.
 
 ### `hash`
 
 Prints a deterministic JSON report:
 
 - `totals` — stream/folded byte counts, record counts by type (`perf_records_ignored`
-  is counted but not folded), `hours_emitted`, and `truncated_tail_bytes`.
+  is counted but not folded), `malformed_payload_records`, `hours_emitted`, and
+  `ends_at_frame_end`. A successful report has a clean certification verdict.
 - `hour_range` — `[first, last]` folded `hour_index`.
 - `per_domain` — DOMAIN_DATA record count per domain id (record-level accounting).
 - `hours[]` — per game-hour: `hour_index`, `date`, `snapshot_hash` (SHA-256 of the
   folded snapshot), `snapshot_bytes`, and the per-domain data-record counts that
   fed the hour.
-- `chain_hash` — a single SHA-256 over the ordered `(hour_index, snapshot_hash)`
-  pairs. Its equality implies identical hour range **and** identical per-hour state.
+- `expected_roster` — the external profile name and exact domain requirements
+  used for certification.
+- `chain_hash` — a single SHA-256 over the ordered snapshot hashes plus normalized
+  per-hour completeness. Its equality implies identical hour range, folded state,
+  and observed record/status evidence under the same required roster.
 
 ### `compare`
 
@@ -69,7 +83,8 @@ For an A/B/A shadow run (old collector vs optimized collector on the same live
 game, same-state bracketed), fold both captures and:
 
 ```
-fold_check compare old_run/collector_stream.bin new_run/collector_stream.bin
+fold_check compare old_run/collector_stream.bin new_run/collector_stream.bin \
+  --expected-profile production
 ```
 
 Exit 0 is the pass. This is what "no lever ships without G1" means in the plan.
@@ -77,7 +92,8 @@ Exit 0 is the pass. This is what "no lever ships without G1" means in the plan.
 ## Tests
 
 `cargo test -p fold_check` builds a small synthetic `H4CR` stream in memory
-(a few domains, three game-hours, including a `frame_end` and a `perf` record
-that must be ignored) and asserts stable hashing, PERF-record ignoring, that a
-single mutated payload byte changes the hash of exactly its hour, and that a
-truncated tail yields only the complete hours.
+(a few domains, three game-hours, including a `frame_end` and a `perf` record)
+and asserts stable hashing, folded-state independence from PERF, that a
+single mutated payload byte changes the hash of exactly its hour, and that torn
+tails, malformed payloads, open hours, obsolete boundary grammar, and forged
+self-consistent FRAME_END counts with a missing expected domain fail closed.

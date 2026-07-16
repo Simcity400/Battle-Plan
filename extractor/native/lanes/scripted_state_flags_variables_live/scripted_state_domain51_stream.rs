@@ -1,20 +1,56 @@
 #[path = "scripted_state_domain51_collector.rs"]
 pub mod collector;
+#[allow(dead_code)]
+#[path = "../../compact_contract/src/build_profile.rs"]
+mod compact_build_profile;
+#[path = "../../compact_contract/src/record_header.rs"]
+mod compact_record_header;
+#[path = "../../compact_contract/src/record_semantics.rs"]
+mod compact_record_semantics;
+#[path = "../../compact_contract/src/status_flags_base.rs"]
+mod compact_status_flags;
 #[path = "scripted_state_domain51_gate.rs"]
 pub mod gate;
+
+extern crate self as compact_contract;
+pub use compact_status_flags::*;
+
+pub mod build_profile {
+    pub use crate::compact_build_profile::*;
+}
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::Path;
 
-pub const H4CR_MAGIC: &[u8; 4] = b"H4CR";
-pub const H4CR_VERSION: u16 = 1;
-pub const H4CR_HEADER_LEN: usize = 32;
+use compact_record_header::{parse_compact_record_header, RecordFramingError};
+pub use compact_record_header::{
+    COMPACT_RECORD_HEADER_LEN as H4CR_HEADER_LEN, COMPACT_RECORD_MAGIC as H4CR_MAGIC,
+    COMPACT_RECORD_VERSION as H4CR_VERSION,
+};
+#[cfg(test)]
+use compact_record_semantics::COMPACT_DOMAIN_PERF_BASE_LEN as DOMAIN_PERF_PAYLOAD_LEN;
+use compact_record_semantics::{
+    validate_compact_record_semantics, COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+};
+#[cfg(test)]
+const RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 = COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER;
 pub const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 pub const RECORD_TYPE_FRAME_END: u16 = 2;
 pub const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 pub const DOMAIN_FRAME: u16 = 1000;
+pub const DOMAIN_DIAGNOSTIC_PROBE: u16 = 250;
+
+const STATUS_FAILURE_MASK: u32 = compact_status_flags::COMPACT_STATUS_STATE_UNAVAILABLE
+    | compact_status_flags::COMPACT_STATUS_PROFILE_MISMATCH
+    | compact_status_flags::COMPACT_STATUS_NO_CLOCK
+    | compact_status_flags::COMPACT_STATUS_NO_SCALAR_SOURCE
+    | compact_status_flags::COMPACT_STATUS_WORKER_PANIC
+    | compact_status_flags::COMPACT_STATUS_BRIDGE_UNAVAILABLE
+    | compact_status_flags::COMPACT_STATUS_SOURCE_UNAVAILABLE
+    | compact_status_flags::COMPACT_STATUS_PARTIAL_DATA
+    | compact_status_flags::COMPACT_STATUS_CONTROL_INVALID;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct H4crRecord {
@@ -49,13 +85,17 @@ pub struct Domain51StreamReport {
     pub domains_seen: Vec<u16>,
     pub unique_hours: Vec<i32>,
     pub skipped_hours: u32,
+    pub minimum_game_hour_advancements: i64,
+    pub required_closed_hours: u64,
+    pub certified_game_hour_advancements: i64,
+    pub terminal_frame_end_authoritative: bool,
     pub per_hour_domain51_perf: BTreeMap<i32, u32>,
     pub per_hour_domain51_data: BTreeMap<i32, u32>,
     pub per_hour_frame_end: BTreeMap<i32, u32>,
 }
 
 impl Domain51StreamReport {
-    fn new(total_bytes: usize) -> Self {
+    fn new(total_bytes: usize, minimum_game_hour_advancements: i64) -> Self {
         Self {
             ok: false,
             errors: Vec::new(),
@@ -77,6 +117,13 @@ impl Domain51StreamReport {
             domains_seen: Vec::new(),
             unique_hours: Vec::new(),
             skipped_hours: 0,
+            minimum_game_hour_advancements,
+            required_closed_hours: minimum_game_hour_advancements
+                .checked_add(1)
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or(0),
+            certified_game_hour_advancements: 0,
+            terminal_frame_end_authoritative: false,
             per_hour_domain51_perf: BTreeMap::new(),
             per_hour_domain51_data: BTreeMap::new(),
             per_hour_frame_end: BTreeMap::new(),
@@ -113,6 +160,10 @@ impl Domain51StreamReport {
                 "\"domains_seen\":{},",
                 "\"unique_hours\":{},",
                 "\"skipped_hours\":{},",
+                "\"minimum_game_hour_advancements\":{},",
+                "\"required_closed_hours\":{},",
+                "\"certified_game_hour_advancements\":{},",
+                "\"terminal_frame_end_authoritative\":{},",
                 "\"per_hour_domain51_perf\":{},",
                 "\"per_hour_domain51_data\":{},",
                 "\"per_hour_frame_end\":{}",
@@ -138,6 +189,10 @@ impl Domain51StreamReport {
             u16_vec_json(&self.domains_seen),
             i32_vec_json(&self.unique_hours),
             self.skipped_hours,
+            self.minimum_game_hour_advancements,
+            self.required_closed_hours,
+            self.certified_game_hour_advancements,
+            self.terminal_frame_end_authoritative,
             i32_u32_map_json(&self.per_hour_domain51_perf),
             i32_u32_map_json(&self.per_hour_domain51_data),
             i32_u32_map_json(&self.per_hour_frame_end),
@@ -171,10 +226,10 @@ pub fn build_domain51_h4cr_stream(frames: &[(i32, collector::Domain51CollectedFr
     let mut sequence = 1u64;
     for (game_hour_raw, frame) in frames {
         let perf = domain_perf_payload(
-            frame.row_count,
-            frame.row_count,
             frame.observed_scopes,
-            frame.measured_scopes,
+            frame.row_count,
+            frame.row_count,
+            frame.row_count,
             frame.status_flags,
         );
         append_h4cr_record(
@@ -186,7 +241,9 @@ pub fn build_domain51_h4cr_stream(frames: &[(i32, collector::Domain51CollectedFr
             0,
             &perf,
         );
-        sequence = sequence.saturating_add(1);
+        sequence = sequence
+            .checked_add(1)
+            .expect("domain51 stream sequence overflow");
 
         append_h4cr_record(
             &mut out,
@@ -197,9 +254,17 @@ pub fn build_domain51_h4cr_stream(frames: &[(i32, collector::Domain51CollectedFr
             0,
             &frame.payload,
         );
-        sequence = sequence.saturating_add(1);
+        sequence = sequence
+            .checked_add(1)
+            .expect("domain51 stream sequence overflow");
 
-        let frame_end = frame_end_payload(frame.status_flags);
+        // FRAME_END status is frame-global authority. Preserve canonical
+        // global statuses such as DELTA_DATA while stripping only D51's
+        // lane-local opaque-root/name badges.
+        let frame_end = frame_end_payload(status_for_global_interpretation(
+            collector::compact::DOMAIN_ID,
+            frame.status_flags,
+        ));
         append_h4cr_record(
             &mut out,
             sequence,
@@ -209,7 +274,9 @@ pub fn build_domain51_h4cr_stream(frames: &[(i32, collector::Domain51CollectedFr
             0,
             &frame_end,
         );
-        sequence = sequence.saturating_add(1);
+        sequence = sequence
+            .checked_add(1)
+            .expect("domain51 stream sequence overflow");
     }
     out
 }
@@ -287,6 +354,7 @@ pub fn sample_domain51_frames() -> Vec<(i32, collector::Domain51CollectedFrame)>
                         entries: Vec::new(),
                     },
                 ],
+                delayed_event_rows: Vec::new(),
                 delayed_events: collector::OpaqueRootState::UnresolvedFixtureBlocked,
                 scripted_gui_open_state: collector::OpaqueRootState::UnresolvedFixtureBlocked,
             }),
@@ -346,6 +414,7 @@ pub fn sample_domain51_frames() -> Vec<(i32, collector::Domain51CollectedFrame)>
                         entries: Vec::new(),
                     },
                 ],
+                delayed_event_rows: Vec::new(),
                 delayed_events: collector::OpaqueRootState::UnresolvedFixtureBlocked,
                 scripted_gui_open_state: collector::OpaqueRootState::UnresolvedFixtureBlocked,
             }),
@@ -357,61 +426,119 @@ pub fn build_sample_domain51_h4cr_stream() -> Vec<u8> {
     build_domain51_h4cr_stream(&sample_domain51_frames())
 }
 
-pub fn verify_domain51_h4cr_stream(raw: &[u8]) -> Domain51StreamReport {
-    let mut report = Domain51StreamReport::new(raw.len());
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PerfAuthority {
+    observed_rows: u64,
+    changed_rows: u64,
+    units: u64,
+    changed_units: u64,
+    status: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DataAuthority {
+    rows: u64,
+    changed_rows: u64,
+    status: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct OwnedHourAuthority {
+    perf_count: u32,
+    data_count: u32,
+    perf: Option<PerfAuthority>,
+    data: Option<DataAuthority>,
+    scheduled_perf_record_count: u32,
+    scheduled_data_record_count: u32,
+    scheduled_perf_domains: BTreeSet<u16>,
+    scheduled_data_domains: BTreeSet<u16>,
+    global_perf_status_or: u32,
+}
+
+/// Verify domain 51 inside a complete collector stream.
+///
+/// `minimum_game_hour_advancements` is explicit certification authority: `N`
+/// advancements require `N + 1` consecutive, healthy closed hours. The gate
+/// never derives that requirement from a mutable manifest or from the stream.
+pub fn verify_domain51_h4cr_stream(
+    raw: &[u8],
+    minimum_game_hour_advancements: i64,
+) -> Domain51StreamReport {
+    let mut report = Domain51StreamReport::new(raw.len(), minimum_game_hour_advancements);
+    if minimum_game_hour_advancements <= 0 {
+        report.errors.push(format!(
+            "minimum_game_hour_advancements must be explicitly positive, got {minimum_game_hour_advancements}"
+        ));
+    } else if minimum_game_hour_advancements.checked_add(1).is_none() {
+        report.errors.push(format!(
+            "minimum_game_hour_advancements {minimum_game_hour_advancements} cannot be converted to an inclusive closed-hour requirement"
+        ));
+    }
     let mut offset = 0usize;
-    let mut previous_sequence = None;
+    let mut previous_sequence: Option<u64> = None;
+    let mut pending_hour: Option<i32> = None;
+    let mut open_hour: Option<i32> = None;
+    let mut last_closed_hour: Option<i32> = None;
+    let mut saw_frame_end = false;
+    let mut terminal_frame_end_authoritative = false;
+    let mut owned = OwnedHourAuthority::default();
     let mut domains_seen = BTreeSet::new();
-    let mut unique_hours = BTreeSet::new();
 
     while offset < raw.len() {
+        // Any bytes after a previously authoritative FRAME_END make that
+        // record non-terminal, even if the trailing bytes do not frame.
+        terminal_frame_end_authoritative = false;
         let remaining = raw.len().saturating_sub(offset);
-        if remaining < H4CR_HEADER_LEN {
-            report.errors.push(format!(
-                "offset {offset}: truncated H4CR header with {remaining} byte(s) remaining"
-            ));
-            break;
-        }
-        let header = &raw[offset..offset + H4CR_HEADER_LEN];
-        if &header[0..4] != H4CR_MAGIC {
-            report
-                .errors
-                .push(format!("offset {offset}: invalid H4CR magic"));
-            break;
-        }
-        let version = read_u16_le(header, 4);
-        let header_len = read_u16_le(header, 6) as usize;
-        if version != H4CR_VERSION {
-            report.errors.push(format!(
-                "offset {offset}: unsupported H4CR version {version}"
-            ));
-            break;
-        }
-        if header_len != H4CR_HEADER_LEN {
-            report.errors.push(format!(
-                "offset {offset}: unsupported H4CR header length {header_len}"
-            ));
-            break;
-        }
+        let header = match parse_compact_record_header(&raw[offset..]) {
+            Ok(header) => header,
+            Err(RecordFramingError::TruncatedHeader(actual)) => {
+                report.errors.push(format!(
+                    "offset {offset}: truncated H4CR header with {actual} byte(s) remaining"
+                ));
+                break;
+            }
+            Err(RecordFramingError::BadMagic) => {
+                report
+                    .errors
+                    .push(format!("offset {offset}: invalid H4CR magic"));
+                break;
+            }
+            Err(RecordFramingError::UnsupportedVersion(version)) => {
+                report.errors.push(format!(
+                    "offset {offset}: unsupported H4CR version {version}"
+                ));
+                break;
+            }
+            Err(RecordFramingError::UnsupportedHeaderLen(header_len)) => {
+                report.errors.push(format!(
+                    "offset {offset}: unsupported H4CR header length {header_len}"
+                ));
+                break;
+            }
+            Err(RecordFramingError::PayloadTooLarge(payload_len)) => {
+                report.errors.push(format!(
+                    "offset {offset}: payload length {payload_len} exceeds canonical H4CR bound"
+                ));
+                break;
+            }
+        };
         let record = H4crRecord {
             offset,
-            sequence: read_u64_le(header, 8),
-            game_hour_raw: read_i32_le(header, 16),
-            domain_id: read_u16_le(header, 20),
-            record_type: read_u16_le(header, 22),
-            payload_len: read_u32_le(header, 24) as usize,
-            flags: read_u32_le(header, 28),
+            sequence: header.sequence,
+            game_hour_raw: header.game_hour_raw,
+            domain_id: header.domain_id,
+            record_type: header.record_type,
+            payload_len: header.payload_len,
+            flags: header.record_flags,
         };
-        if let Some(previous) = previous_sequence {
-            if record.sequence <= previous {
-                report.errors.push(format!(
-                    "offset {offset}: sequence {} did not advance past {previous}",
-                    record.sequence
-                ));
-            }
-        }
+        validate_sequence(
+            &mut report.errors,
+            previous_sequence,
+            record.sequence,
+            offset,
+        );
         previous_sequence = Some(record.sequence);
-        let record_len = H4CR_HEADER_LEN.saturating_add(record.payload_len);
+        let record_len = header.record_len();
         if record_len > remaining {
             report.errors.push(format!(
                 "offset {offset}: payload length {} exceeds remaining stream bytes",
@@ -422,40 +549,81 @@ pub fn verify_domain51_h4cr_stream(raw: &[u8]) -> Domain51StreamReport {
         let payload_start = offset + H4CR_HEADER_LEN;
         let payload_end = payload_start + record.payload_len;
         let payload = &raw[payload_start..payload_end];
+        let semantics_valid = match validate_compact_record_semantics(
+            record.domain_id,
+            record.record_type,
+            record.flags,
+            payload,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                report.errors.push(format!("offset {offset}: {error}"));
+                false
+            }
+        };
 
         report.record_count = report.record_count.saturating_add(1);
         domains_seen.insert(record.domain_id);
-        unique_hours.insert(record.game_hour_raw);
 
         match record.record_type {
-            RECORD_TYPE_DOMAIN_PERF => {
+            RECORD_TYPE_DOMAIN_PERF if semantics_valid => {
+                observe_perf_hour(
+                    &mut report.errors,
+                    &mut pending_hour,
+                    open_hour,
+                    last_closed_hour,
+                    record.game_hour_raw,
+                    offset,
+                );
                 report.domain_perf_records = report.domain_perf_records.saturating_add(1);
+                let perf_status = read_u32_le(payload, 32);
+                if record.domain_id != DOMAIN_DIAGNOSTIC_PROBE {
+                    owned.scheduled_perf_record_count =
+                        owned.scheduled_perf_record_count.saturating_add(1);
+                    owned.scheduled_perf_domains.insert(record.domain_id);
+                    owned.global_perf_status_or |=
+                        status_for_global_interpretation(record.domain_id, perf_status);
+                } else if record.flags & COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER == 0 {
+                    report.errors.push(format!(
+                        "offset {offset}: diagnostic probe domain 250 PERF lacks the canonical PDU1 trailer flag"
+                    ));
+                }
+                validate_domain_status(&mut report.errors, record.domain_id, perf_status, offset);
                 if record.domain_id == collector::compact::DOMAIN_ID {
                     report.domain51_perf_records = report.domain51_perf_records.saturating_add(1);
                     *report
                         .per_hour_domain51_perf
                         .entry(record.game_hour_raw)
                         .or_default() += 1;
-                }
-                if payload.len() < 40 {
-                    report.errors.push(format!(
-                        "offset {offset}: domain perf payload is {} byte(s), expected at least 40",
-                        payload.len()
-                    ));
-                } else {
-                    let status_flags = read_u32_le(payload, 32);
-                    report.status_flags_or |= status_flags;
-                    update_status_bools(&mut report, status_flags);
+                    owned.perf_count = owned.perf_count.saturating_add(1);
+                    let authority = decode_perf_authority(payload);
+                    report.status_flags_or |= authority.status;
+                    update_status_bools(&mut report, authority.status);
+                    if owned.perf.is_none() {
+                        owned.perf = Some(authority);
+                    }
                 }
             }
-            RECORD_TYPE_DOMAIN_DATA => {
+            RECORD_TYPE_DOMAIN_DATA if semantics_valid => {
+                observe_data_hour(
+                    &mut report.errors,
+                    pending_hour,
+                    &mut open_hour,
+                    last_closed_hour,
+                    record.game_hour_raw,
+                    offset,
+                );
                 report.domain_data_records = report.domain_data_records.saturating_add(1);
-                if record.domain_id != collector::compact::DOMAIN_ID {
+                if record.domain_id == DOMAIN_DIAGNOSTIC_PROBE {
                     report.errors.push(format!(
-                        "offset {offset}: unsupported domain data payload for domain {}",
-                        record.domain_id
+                        "offset {offset}: diagnostic probe domain 250 is PERF-only; DATA is forbidden"
                     ));
                 } else {
+                    owned.scheduled_data_record_count =
+                        owned.scheduled_data_record_count.saturating_add(1);
+                    owned.scheduled_data_domains.insert(record.domain_id);
+                }
+                if record.domain_id == collector::compact::DOMAIN_ID {
                     report.domain51_data_records = report.domain51_data_records.saturating_add(1);
                     report.domain51_payload_bytes = report
                         .domain51_payload_bytes
@@ -464,6 +632,7 @@ pub fn verify_domain51_h4cr_stream(raw: &[u8]) -> Domain51StreamReport {
                         .per_hour_domain51_data
                         .entry(record.game_hour_raw)
                         .or_default() += 1;
+                    owned.data_count = owned.data_count.saturating_add(1);
                     let verdict = gate::gate_domain51_payload(offset, payload);
                     report.status_flags_or |= verdict.summary.status_flags_or;
                     update_status_bools(&mut report, verdict.summary.status_flags_or);
@@ -476,44 +645,88 @@ pub fn verify_domain51_h4cr_stream(raw: &[u8]) -> Domain51StreamReport {
                     report.domain51_changed_rows_total = report
                         .domain51_changed_rows_total
                         .saturating_add(verdict.summary.data_changed_rows_total);
+                    if owned.data.is_none() {
+                        owned.data = Some(DataAuthority {
+                            rows: verdict.summary.data_rows_total,
+                            changed_rows: verdict.summary.data_changed_rows_total,
+                            status: verdict.summary.status_flags_or,
+                        });
+                    }
                     if !verdict.accepted {
                         report.errors.extend(verdict.summary.parse_errors);
                     }
                 }
             }
             RECORD_TYPE_FRAME_END => {
+                saw_frame_end = true;
                 report.frame_end_records = report.frame_end_records.saturating_add(1);
                 *report
                     .per_hour_frame_end
                     .entry(record.game_hour_raw)
                     .or_default() += 1;
-                if record.domain_id != DOMAIN_FRAME {
-                    report.errors.push(format!(
-                        "offset {offset}: frame-end domain {} != {DOMAIN_FRAME}",
-                        record.domain_id
-                    ));
-                }
-                if payload.len() < 32 {
-                    report.errors.push(format!(
-                        "offset {offset}: frame-end payload is {} byte(s), expected at least 32",
-                        payload.len()
-                    ));
-                } else {
-                    let status_flags = read_u32_le(payload, 24);
-                    report.status_flags_or |= status_flags;
-                    update_status_bools(&mut report, status_flags);
+                let structurally_closed = validate_frame_end(
+                    &mut report.errors,
+                    semantics_valid,
+                    open_hour,
+                    last_closed_hour,
+                    record.game_hour_raw,
+                    offset,
+                );
+                if structurally_closed {
+                    let errors_before = report.errors.len();
+                    let frame_status =
+                        validate_frame_end_payload(&mut report.errors, payload, offset, &owned);
+                    validate_owned_authority(
+                        &mut report.errors,
+                        record.game_hour_raw,
+                        offset,
+                        &owned,
+                    );
+                    report.status_flags_or |= frame_status;
+                    update_status_bools(&mut report, frame_status);
+                    report.unique_hours.push(record.game_hour_raw);
+                    open_hour = None;
+                    pending_hour = None;
+                    last_closed_hour = Some(record.game_hour_raw);
+                    terminal_frame_end_authoritative = report.errors.len() == errors_before;
+                    owned = OwnedHourAuthority::default();
                 }
             }
-            other => report
-                .errors
-                .push(format!("offset {offset}: unknown H4CR record type {other}")),
+            _ => {}
         }
         offset = offset.saturating_add(record_len);
     }
 
+    if !raw.is_empty() {
+        if !saw_frame_end {
+            report
+                .errors
+                .push("stream has no frame-end record".to_string());
+        }
+        if let Some(open) = open_hour {
+            report
+                .errors
+                .push(format!("stream ended with open data hour {open}"));
+        }
+        if let Some(pending) = pending_hour.filter(|_| open_hour.is_none()) {
+            report.errors.push(format!(
+                "stream ended with pending perf hour {pending} without data/frame-end"
+            ));
+        }
+        if !terminal_frame_end_authoritative {
+            report
+                .errors
+                .push("stream does not end at a healthy authoritative terminal FRAME_END with no trailing records".to_string());
+        }
+    }
+
     report.domains_seen = domains_seen.into_iter().collect();
-    report.unique_hours = unique_hours.into_iter().collect();
-    report.skipped_hours = skipped_hours(&report.unique_hours);
+    let observed_frame_end_hours = report
+        .per_hour_frame_end
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    report.skipped_hours = skipped_hours(&observed_frame_end_hours);
     if report.skipped_hours != 0 {
         report
             .errors
@@ -551,11 +764,305 @@ pub fn verify_domain51_h4cr_stream(raw: &[u8]) -> Domain51StreamReport {
             ));
         }
     }
+    report.certified_game_hour_advancements = match (
+        report.unique_hours.first().copied(),
+        report.unique_hours.last().copied(),
+    ) {
+        (Some(first), Some(last)) => i64::from(last) - i64::from(first),
+        _ => 0,
+    };
+    if minimum_game_hour_advancements > 0 {
+        let actual_closed_hours = report.unique_hours.len() as u64;
+        if actual_closed_hours < report.required_closed_hours {
+            report.errors.push(format!(
+                "closed hour count {actual_closed_hours} is below required {} for {minimum_game_hour_advancements} advancements",
+                report.required_closed_hours
+            ));
+        }
+        if report.certified_game_hour_advancements < minimum_game_hour_advancements {
+            report.errors.push(format!(
+                "certified game-hour advancements {} is below required {minimum_game_hour_advancements}",
+                report.certified_game_hour_advancements
+            ));
+        }
+    }
+    report.terminal_frame_end_authoritative = terminal_frame_end_authoritative;
     report.ok = report.errors.is_empty()
         && report.domain51_data_records > 0
         && !report.partial_failure_seen
-        && !report.source_unavailable_seen;
+        && !report.source_unavailable_seen
+        && report.terminal_frame_end_authoritative;
     report
+}
+
+fn decode_perf_authority(payload: &[u8]) -> PerfAuthority {
+    PerfAuthority {
+        observed_rows: read_u32_le(payload, 16) as u64,
+        changed_rows: read_u32_le(payload, 20) as u64,
+        units: read_u32_le(payload, 24) as u64,
+        changed_units: read_u32_le(payload, 28) as u64,
+        status: read_u32_le(payload, 32),
+    }
+}
+
+fn validate_sequence(errors: &mut Vec<String>, previous: Option<u64>, current: u64, offset: usize) {
+    match previous {
+        None if current != 1 => errors.push(format!(
+            "offset {offset}: first sequence is {current}, expected 1"
+        )),
+        Some(previous) => match previous.checked_add(1) {
+            Some(expected) if current != expected => errors.push(format!(
+                "offset {offset}: sequence discontinuity: expected {expected}, got {current}"
+            )),
+            None => errors.push(format!(
+                "offset {offset}: sequence cannot advance after {previous} without overflow"
+            )),
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+fn validate_next_hour(
+    errors: &mut Vec<String>,
+    last_closed: Option<i32>,
+    hour: i32,
+    label: &str,
+    offset: usize,
+) {
+    let Some(last) = last_closed else { return };
+    match last.checked_add(1) {
+        Some(expected) if hour == expected => {}
+        Some(expected) => errors.push(format!(
+            "offset {offset}: {label} hour {hour} follows closed hour {last}; expected {expected}"
+        )),
+        None => errors.push(format!(
+            "offset {offset}: closed hour {last} exhausted; another record is forbidden"
+        )),
+    }
+}
+
+fn observe_perf_hour(
+    errors: &mut Vec<String>,
+    pending: &mut Option<i32>,
+    open: Option<i32>,
+    last_closed: Option<i32>,
+    hour: i32,
+    offset: usize,
+) {
+    if let Some(open) = open {
+        if open != hour {
+            errors.push(format!(
+                "offset {offset}: domain perf hour {hour} does not match open data hour {open}"
+            ));
+        }
+        return;
+    }
+    validate_next_hour(errors, last_closed, hour, "domain perf", offset);
+    match *pending {
+        Some(existing) if existing != hour => errors.push(format!(
+            "offset {offset}: domain perf hour {hour} conflicts with pending hour {existing}"
+        )),
+        None => *pending = Some(hour),
+        _ => {}
+    }
+}
+
+fn observe_data_hour(
+    errors: &mut Vec<String>,
+    pending: Option<i32>,
+    open: &mut Option<i32>,
+    last_closed: Option<i32>,
+    hour: i32,
+    offset: usize,
+) {
+    match *open {
+        Some(existing) if existing != hour => errors.push(format!(
+            "offset {offset}: data hour {hour} encountered before frame-end closed hour {existing}"
+        )),
+        Some(_) => {}
+        None => {
+            validate_next_hour(errors, last_closed, hour, "domain data", offset);
+            if let Some(pending) = pending {
+                if pending != hour {
+                    errors.push(format!(
+                        "offset {offset}: domain data hour {hour} conflicts with pending perf hour {pending}"
+                    ));
+                }
+            }
+            *open = Some(hour);
+        }
+    }
+}
+
+fn validate_frame_end(
+    errors: &mut Vec<String>,
+    semantics_valid: bool,
+    open: Option<i32>,
+    last_closed: Option<i32>,
+    hour: i32,
+    offset: usize,
+) -> bool {
+    let mut clean = semantics_valid;
+    match open {
+        Some(existing) if existing == hour => {}
+        Some(existing) => {
+            clean = false;
+            errors.push(format!(
+                "offset {offset}: frame-end hour {hour} does not close open hour {existing}"
+            ));
+        }
+        None => {
+            clean = false;
+            errors.push(format!(
+                "offset {offset}: frame-end hour {hour} has no open data hour"
+            ));
+        }
+    }
+    if let Some(last) = last_closed {
+        if last.checked_add(1) != Some(hour) {
+            clean = false;
+        }
+    }
+    clean
+}
+
+fn validate_domain_status(errors: &mut Vec<String>, domain_id: u16, status: u32, offset: usize) {
+    let unknown = compact_status_flags::compact_status_unknown_flags_v1(status);
+    if unknown != 0 {
+        errors.push(format!(
+            "offset {offset}: domain {domain_id} PERF status contains unknown v1 bits {unknown:#010x}"
+        ));
+    }
+    let fatal = status_for_global_interpretation(domain_id, status) & STATUS_FAILURE_MASK;
+    if fatal != 0 {
+        errors.push(format!(
+            "offset {offset}: domain {domain_id} PERF status contains fatal bits {fatal:#010x}"
+        ));
+    }
+}
+
+const fn status_for_global_interpretation(domain_id: u16, status: u32) -> u32 {
+    let lane_local_mask = match domain_id {
+        49 => 1 << 11,
+        51 => compact_status_flags::DOMAIN51_LANE_LOCAL_STATUS_MASK,
+        _ => 0,
+    };
+    status & !lane_local_mask
+}
+
+fn validate_frame_end_payload(
+    errors: &mut Vec<String>,
+    payload: &[u8],
+    offset: usize,
+    owned: &OwnedHourAuthority,
+) -> u32 {
+    let emitted = read_u32_le(payload, 16);
+    let scheduled = read_u32_le(payload, 20);
+    let status = read_u32_le(payload, 24);
+    let reserved = read_u32_le(payload, 28);
+    if emitted == 0 || emitted != scheduled {
+        errors.push(format!(
+            "offset {offset}: frame-end emitted/scheduled counts {emitted}/{scheduled} are not equal and nonzero"
+        ));
+    }
+    if owned.scheduled_perf_domains != owned.scheduled_data_domains {
+        errors.push(format!(
+            "offset {offset}: frame domain roster mismatch: PERF={:?} DATA={:?}",
+            owned.scheduled_perf_domains, owned.scheduled_data_domains
+        ));
+    }
+    let observed_domains = owned.scheduled_perf_domains.len().min(u32::MAX as usize) as u32;
+    if emitted != observed_domains {
+        errors.push(format!(
+            "offset {offset}: frame-end emitted count {emitted} != independently observed paired-domain count {observed_domains}"
+        ));
+    }
+    if owned.scheduled_perf_record_count != observed_domains {
+        errors.push(format!(
+            "offset {offset}: non-probe PERF record count {} != distinct scheduled-domain count {observed_domains}",
+            owned.scheduled_perf_record_count
+        ));
+    }
+    if owned.scheduled_data_record_count != observed_domains {
+        errors.push(format!(
+            "offset {offset}: non-probe DATA record count {} != distinct scheduled-domain count {observed_domains}",
+            owned.scheduled_data_record_count
+        ));
+    }
+    if reserved != 0 {
+        errors.push(format!(
+            "offset {offset}: frame-end reserved word is nonzero"
+        ));
+    }
+    let unknown = compact_status_flags::compact_status_unknown_flags_v1(status);
+    if unknown != 0 {
+        errors.push(format!(
+            "offset {offset}: frame-end status contains unknown v1 bits {unknown:#010x}"
+        ));
+    }
+    let fatal = status & STATUS_FAILURE_MASK;
+    if fatal != 0 {
+        errors.push(format!(
+            "offset {offset}: frame-end status contains fatal bits {fatal:#010x}"
+        ));
+    }
+    if status != owned.global_perf_status_or {
+        errors.push(format!(
+            "offset {offset}: frame-end status {status:#010x} does not equal closed-frame PERF status aggregate {:#010x}",
+            owned.global_perf_status_or
+        ));
+    }
+    status
+}
+
+fn validate_owned_authority(
+    errors: &mut Vec<String>,
+    hour: i32,
+    offset: usize,
+    owned: &OwnedHourAuthority,
+) {
+    if owned.perf_count != 1 {
+        errors.push(format!(
+            "offset {offset}: hour {hour} domain 51 perf_record_count {} != 1",
+            owned.perf_count
+        ));
+    }
+    if owned.data_count != 1 {
+        errors.push(format!(
+            "offset {offset}: hour {hour} domain 51 data_record_count {} != 1",
+            owned.data_count
+        ));
+    }
+    if let (1, 1, Some(perf), Some(data)) =
+        (owned.perf_count, owned.data_count, owned.perf, owned.data)
+    {
+        // `observed_rows` is scope-read work and can legitimately exceed the
+        // emitted DATA rows. The other three counters are DATA authority and
+        // must retain their delta semantics exactly.
+        let matches = perf.changed_rows == data.changed_rows
+            && perf.units == data.rows
+            && perf.changed_units == data.changed_rows
+            && perf.status == data.status;
+        if !matches {
+            errors.push(format!(
+                "offset {offset}: hour {hour} domain 51 PERF/DATA cardinality or status mismatch: perf={perf:?} data={data:?}"
+            ));
+        }
+        let unknown = compact_status_flags::compact_status_unknown_flags_v1(data.status);
+        if unknown != 0 {
+            errors.push(format!(
+                "offset {offset}: hour {hour} domain 51 status contains unknown v1 bits {unknown:#010x}"
+            ));
+        }
+        let fatal = (data.status & !compact_status_flags::DOMAIN51_LANE_LOCAL_STATUS_MASK)
+            & STATUS_FAILURE_MASK;
+        if fatal != 0 {
+            errors.push(format!(
+                "offset {offset}: hour {hour} domain 51 status contains fatal bits {fatal:#010x}"
+            ));
+        }
+    }
 }
 
 fn domain_perf_payload(
@@ -609,38 +1116,12 @@ fn skipped_hours(hours: &[i32]) -> u32 {
     skipped
 }
 
-fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
-}
-
 fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes([
         bytes[offset],
         bytes[offset + 1],
         bytes[offset + 2],
         bytes[offset + 3],
-    ])
-}
-
-fn read_i32_le(bytes: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
-}
-
-fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-        bytes[offset + 4],
-        bytes[offset + 5],
-        bytes[offset + 6],
-        bytes[offset + 7],
     ])
 }
 
@@ -706,9 +1187,31 @@ fn write_sample_json(path: &str) -> Result<String, String> {
     ))
 }
 
-fn verify_json(path: &str) -> Result<String, String> {
+fn verify_json(path: &str, minimum_game_hour_advancements: i64) -> Result<String, String> {
     let raw = fs::read(path).map_err(|err| format!("read stream failed: {err}"))?;
-    Ok(verify_domain51_h4cr_stream(&raw).to_json())
+    let report = verify_domain51_h4cr_stream(&raw, minimum_game_hour_advancements);
+    let json = report.to_json();
+    if report.ok {
+        Ok(json)
+    } else {
+        Err(json)
+    }
+}
+
+fn parse_minimum_game_hour_advancements(raw: Option<&String>) -> Result<i64, String> {
+    let raw = raw.ok_or_else(|| {
+        "--min-game-hours is required explicitly; mutable manifest fallback is forbidden"
+            .to_string()
+    })?;
+    let value = raw
+        .parse::<i64>()
+        .map_err(|_| format!("--min-game-hours needs an integer, got {raw:?}"))?;
+    if value <= 0 {
+        return Err(format!(
+            "--min-game-hours must be explicitly positive, got {value}"
+        ));
+    }
+    Ok(value)
 }
 
 fn main() {
@@ -728,15 +1231,20 @@ fn main() {
             let path = match args.get(2) {
                 Some(path) => path,
                 None => {
-                    eprintln!("usage: scripted_state_domain51_stream --verify-json <stream.bin>");
+                    eprintln!("usage: scripted_state_domain51_stream --verify-json <stream.bin> --min-game-hours <positive advancements>");
                     std::process::exit(2);
                 }
             };
-            verify_json(path)
+            if args.get(3).map(String::as_str) != Some("--min-game-hours") || args.len() != 5 {
+                Err("usage: scripted_state_domain51_stream --verify-json <stream.bin> --min-game-hours <positive advancements>".to_string())
+            } else {
+                parse_minimum_game_hour_advancements(args.get(4))
+                    .and_then(|minimum| verify_json(path, minimum))
+            }
         }
         _ => {
             eprintln!(
-                "usage:\n  scripted_state_domain51_stream --write-sample <stream.bin>\n  scripted_state_domain51_stream --verify-json <stream.bin>"
+                "usage:\n  scripted_state_domain51_stream --write-sample <stream.bin>\n  scripted_state_domain51_stream --verify-json <stream.bin> --min-game-hours <positive advancements>"
             );
             std::process::exit(2);
         }
@@ -755,12 +1263,98 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn offsets(bytes: &[u8]) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+        while cursor < bytes.len() {
+            out.push(cursor);
+            let header = parse_compact_record_header(&bytes[cursor..]).unwrap();
+            cursor += header.record_len();
+        }
+        out
+    }
+
+    fn append_domain51_hour(
+        out: &mut Vec<u8>,
+        sequence: &mut u64,
+        hour: i32,
+        frame: &collector::Domain51CollectedFrame,
+    ) {
+        let perf = domain_perf_payload(
+            frame.observed_scopes,
+            frame.row_count,
+            frame.row_count,
+            frame.row_count,
+            frame.status_flags,
+        );
+        append_h4cr_record(
+            out,
+            *sequence,
+            hour,
+            collector::compact::DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf,
+        );
+        *sequence += 1;
+        append_h4cr_record(
+            out,
+            *sequence,
+            hour,
+            collector::compact::DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &frame.payload,
+        );
+        *sequence += 1;
+        append_h4cr_record(
+            out,
+            *sequence,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(status_for_global_interpretation(
+                collector::compact::DOMAIN_ID,
+                frame.status_flags,
+            )),
+        );
+        *sequence += 1;
+    }
+
+    fn repeated_frame_stream(frame: &collector::Domain51CollectedFrame) -> Vec<u8> {
+        let mut stream = Vec::new();
+        let mut sequence = 1;
+        append_domain51_hour(&mut stream, &mut sequence, 100, frame);
+        append_domain51_hour(&mut stream, &mut sequence, 101, frame);
+        stream
+    }
+
+    fn delta_frame() -> collector::Domain51CollectedFrame {
+        let mut frame = sample_domain51_frames()[0].1.clone();
+        frame.rows.truncate(1);
+        frame.row_count = 1;
+        frame.status_flags = collector::compact::STATUS_DELTA_DATA;
+        frame.payload = collector::compact::encode_payload(
+            &collector::compact::ScriptedStateHeader {
+                elapsed_wall_ms: frame.elapsed_wall_ms,
+                status_flags: frame.status_flags,
+                changed_rows: 1,
+                observed_scopes: frame.observed_scopes,
+                measured_scopes: frame.measured_scopes,
+                rejected_scopes: frame.rejected_scopes,
+            },
+            &frame.rows,
+        );
+        frame
+    }
+
     #[test]
     fn sample_stream_is_h4cr_domain51_with_frame_end_records() {
         let stream = build_sample_domain51_h4cr_stream();
         assert_eq!(&stream[0..4], H4CR_MAGIC);
 
-        let report = verify_domain51_h4cr_stream(&stream);
+        let report = verify_domain51_h4cr_stream(&stream, 1);
 
         assert!(report.ok, "{:?}", report.errors);
         assert_eq!(report.domain51_perf_records, 2);
@@ -772,12 +1366,15 @@ mod tests {
         );
         assert_eq!(report.unique_hours, vec![43_800_024, 43_800_025]);
         assert_eq!(report.skipped_hours, 0);
+        assert_eq!(report.required_closed_hours, 2);
+        assert_eq!(report.certified_game_hour_advancements, 1);
+        assert!(report.terminal_frame_end_authoritative);
     }
 
     #[test]
     fn unresolved_opaque_roots_are_badges_not_partial_or_source_failures() {
         let stream = build_sample_domain51_h4cr_stream();
-        let report = verify_domain51_h4cr_stream(&stream);
+        let report = verify_domain51_h4cr_stream(&stream, 1);
 
         assert!(report.ok, "{:?}", report.errors);
         assert!(report.unresolved_delayed_events_badged);
@@ -787,13 +1384,41 @@ mod tests {
     }
 
     #[test]
+    fn certification_duration_is_explicit_positive_and_inclusive() {
+        let stream = build_sample_domain51_h4cr_stream();
+        let absent = verify_domain51_h4cr_stream(&stream, 0);
+        assert!(absent
+            .errors
+            .iter()
+            .any(|error| error
+                .contains("minimum_game_hour_advancements must be explicitly positive")));
+
+        let too_short = verify_domain51_h4cr_stream(&stream, 2);
+        assert!(too_short
+            .errors
+            .iter()
+            .any(|error| error.contains("closed hour count 2 is below required 3")));
+        assert!(too_short
+            .errors
+            .iter()
+            .any(|error| error.contains("advancements 1 is below required 2")));
+
+        assert!(parse_minimum_game_hour_advancements(None).is_err());
+        assert!(parse_minimum_game_hour_advancements(Some(&"0".to_string())).is_err());
+        assert_eq!(
+            parse_minimum_game_hour_advancements(Some(&"48".to_string())).unwrap(),
+            48
+        );
+    }
+
+    #[test]
     fn stream_gate_rejects_skipped_hour() {
         let frames = sample_domain51_frames();
         let stream = build_domain51_h4cr_stream(&[
             frames[0].clone(),
             (frames[1].0 + 2, frames[1].1.clone()),
         ]);
-        let report = verify_domain51_h4cr_stream(&stream);
+        let report = verify_domain51_h4cr_stream(&stream, 1);
 
         assert_eq!(report.skipped_hours, 2);
         assert!(!report.ok);
@@ -803,9 +1428,450 @@ mod tests {
     fn stream_gate_rejects_bad_magic() {
         let mut stream = build_sample_domain51_h4cr_stream();
         stream[0] = b'X';
-        let report = verify_domain51_h4cr_stream(&stream);
+        let report = verify_domain51_h4cr_stream(&stream, 1);
 
         assert!(!report.ok);
         assert!(report.errors.iter().any(|error| error.contains("magic")));
+    }
+
+    #[test]
+    fn stream_gate_rejects_sequence_flags_lengths_and_unclean_tail() {
+        let frames = sample_domain51_frames();
+        let frame = &frames[0].1;
+        let mut stream = Vec::new();
+        append_h4cr_record(
+            &mut stream,
+            2,
+            100,
+            collector::compact::DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            1 << 31,
+            &frame.payload,
+        );
+        append_h4cr_record(
+            &mut stream,
+            3,
+            100,
+            collector::compact::DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &[0; 39],
+        );
+        append_h4cr_record(
+            &mut stream,
+            4,
+            101,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &[0; 31],
+        );
+        append_h4cr_record(
+            &mut stream,
+            5,
+            101,
+            collector::compact::DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &[0; DOMAIN_PERF_PAYLOAD_LEN],
+        );
+
+        let report = verify_domain51_h4cr_stream(&stream, 1);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("expected 1")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("record flags")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("shorter than 40")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("is not 32")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("has no open data hour")));
+        assert!(report.errors.iter().any(|error| error
+            .contains("healthy authoritative terminal FRAME_END with no trailing records")));
+    }
+
+    #[test]
+    fn stream_gate_validates_announced_perf_trailer_envelopes() {
+        fn stream_with_perf(flags: u32, perf: &[u8]) -> Domain51StreamReport {
+            let frames = sample_domain51_frames();
+            let frame = &frames[0].1;
+            let mut stream = Vec::new();
+            let mut sequence = 1;
+            for hour in [100, 101] {
+                append_h4cr_record(
+                    &mut stream,
+                    sequence,
+                    hour,
+                    collector::compact::DOMAIN_ID,
+                    RECORD_TYPE_DOMAIN_PERF,
+                    flags,
+                    perf,
+                );
+                sequence += 1;
+                append_h4cr_record(
+                    &mut stream,
+                    sequence,
+                    hour,
+                    collector::compact::DOMAIN_ID,
+                    RECORD_TYPE_DOMAIN_DATA,
+                    0,
+                    &frame.payload,
+                );
+                sequence += 1;
+                append_h4cr_record(
+                    &mut stream,
+                    sequence,
+                    hour,
+                    DOMAIN_FRAME,
+                    RECORD_TYPE_FRAME_END,
+                    0,
+                    &frame_end_payload(0),
+                );
+                sequence += 1;
+            }
+            verify_domain51_h4cr_stream(&stream, 1)
+        }
+
+        let frame = &sample_domain51_frames()[0].1;
+        let base = domain_perf_payload(
+            frame.observed_scopes,
+            frame.row_count,
+            frame.row_count,
+            frame.row_count,
+            frame.status_flags,
+        );
+        let trailer = pdu1_perf_payload(base.clone());
+        assert!(
+            stream_with_perf(RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &trailer)
+                .errors
+                .is_empty()
+        );
+        assert!(stream_with_perf(RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &base)
+            .errors
+            .iter()
+            .any(|error| error.contains("trailer header is truncated")));
+        assert!(stream_with_perf(0, &trailer)
+            .errors
+            .iter()
+            .any(|error| error.contains("unannounced trailer")));
+    }
+
+    fn pdu1_perf_payload(mut payload: Vec<u8>) -> Vec<u8> {
+        payload.extend_from_slice(b"PDU1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload
+    }
+
+    #[test]
+    fn full_stream_allows_unrelated_domains_but_requires_one_d51_pair_per_hour() {
+        let frame = &sample_domain51_frames()[0].1;
+        let mut stream = Vec::new();
+        let mut sequence = 1u64;
+        for hour in [100, 101] {
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                77,
+                RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &domain_perf_payload(1, 1, 1, 1, 0),
+            );
+            sequence += 1;
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                77,
+                RECORD_TYPE_DOMAIN_DATA,
+                0,
+                b"unrelated",
+            );
+            sequence += 1;
+            let perf = domain_perf_payload(
+                frame.observed_scopes,
+                frame.row_count,
+                frame.row_count,
+                frame.row_count,
+                frame.status_flags,
+            );
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                collector::compact::DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &perf,
+            );
+            sequence += 1;
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                collector::compact::DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_DATA,
+                0,
+                &frame.payload,
+            );
+            sequence += 1;
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                DOMAIN_DIAGNOSTIC_PROBE,
+                RECORD_TYPE_DOMAIN_PERF,
+                RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+                &pdu1_perf_payload(domain_perf_payload(0, 0, 0, 0, 0)),
+            );
+            sequence += 1;
+            let mut frame_end = frame_end_payload(0);
+            frame_end[16..20].copy_from_slice(&2u32.to_le_bytes());
+            frame_end[20..24].copy_from_slice(&2u32.to_le_bytes());
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                0,
+                &frame_end,
+            );
+            sequence += 1;
+        }
+
+        let report = verify_domain51_h4cr_stream(&stream, 1);
+        assert!(report.ok, "{:?}", report.errors);
+        assert_eq!(
+            report.domains_seen,
+            vec![51, 77, DOMAIN_DIAGNOSTIC_PROBE, DOMAIN_FRAME]
+        );
+
+        let mut fatal_partial = stream.clone();
+        let partial_offsets = offsets(&fatal_partial);
+        fatal_partial[partial_offsets[0] + 20..partial_offsets[0] + 22]
+            .copy_from_slice(&26u16.to_le_bytes());
+        fatal_partial[partial_offsets[1] + 20..partial_offsets[1] + 22]
+            .copy_from_slice(&26u16.to_le_bytes());
+        let first_partial_perf = partial_offsets[0] + H4CR_HEADER_LEN;
+        fatal_partial[first_partial_perf + 32..first_partial_perf + 36]
+            .copy_from_slice(&collector::compact::STATUS_PARTIAL_DATA.to_le_bytes());
+        let partial_report = verify_domain51_h4cr_stream(&fatal_partial, 1);
+        assert!(!partial_report.ok);
+        assert!(partial_report.errors.iter().any(|error| {
+            error.contains("domain 26 PERF status contains fatal bits")
+                && error.contains("0x00000200")
+        }));
+
+        let mut forbidden_probe_data = stream.clone();
+        let first_other_data = offsets(&forbidden_probe_data)[1];
+        forbidden_probe_data[first_other_data + 20..first_other_data + 22]
+            .copy_from_slice(&DOMAIN_DIAGNOSTIC_PROBE.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&forbidden_probe_data, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("domain 250 is PERF-only; DATA is forbidden")));
+
+        let mut forged_count = stream.clone();
+        let first_frame = offsets(&forged_count)[5] + H4CR_HEADER_LEN;
+        forged_count[first_frame + 16..first_frame + 20].copy_from_slice(&1u32.to_le_bytes());
+        forged_count[first_frame + 20..first_frame + 24].copy_from_slice(&1u32.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&forged_count, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("paired-domain count 2")));
+
+        let mut unrelated_fatal = stream;
+        let first_other_perf = offsets(&unrelated_fatal)[0] + H4CR_HEADER_LEN;
+        unrelated_fatal[first_other_perf + 32..first_other_perf + 36]
+            .copy_from_slice(&collector::compact::STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&unrelated_fatal, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("domain 77 PERF status contains fatal bits")));
+    }
+
+    #[test]
+    fn diagnostic_probe_requires_canonical_pdu1_perf_and_never_counts_as_scheduled() {
+        let frame = &sample_domain51_frames()[0].1;
+        let mut stream = repeated_frame_stream(frame);
+        let insert_at = offsets(&stream)[2];
+        let mut bare_probe = Vec::new();
+        append_h4cr_record(
+            &mut bare_probe,
+            3,
+            100,
+            DOMAIN_DIAGNOSTIC_PROBE,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &domain_perf_payload(0, 0, 0, 0, 0),
+        );
+        stream.splice(insert_at..insert_at, bare_probe);
+        for (index, offset) in offsets(&stream).into_iter().enumerate() {
+            stream[offset + 8..offset + 16].copy_from_slice(&(1 + index as u64).to_le_bytes());
+        }
+        assert!(verify_domain51_h4cr_stream(&stream, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("domain 250 PERF lacks the canonical PDU1")));
+    }
+
+    #[test]
+    fn rejects_duplicate_or_missing_domain51_authority() {
+        let frame = &sample_domain51_frames()[0].1;
+        let mut duplicate = repeated_frame_stream(frame);
+        let record_offsets = offsets(&duplicate);
+        let first_perf_end = record_offsets[1];
+        let first_perf = duplicate[..first_perf_end].to_vec();
+        duplicate.splice(first_perf_end..first_perf_end, first_perf);
+        for (index, offset) in offsets(&duplicate).into_iter().enumerate() {
+            duplicate[offset + 8..offset + 16].copy_from_slice(&(1 + index as u64).to_le_bytes());
+        }
+        assert!(verify_domain51_h4cr_stream(&duplicate, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("perf_record_count 2 != 1")));
+
+        let mut missing = repeated_frame_stream(frame);
+        let first_data = offsets(&missing)[1];
+        missing[first_data + 20..first_data + 22].copy_from_slice(&77u16.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&missing, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("data_record_count 0 != 1")));
+    }
+
+    #[test]
+    fn rejects_unhealthy_or_non_authoritative_frame_end() {
+        let frame = &sample_domain51_frames()[0].1;
+        let valid = repeated_frame_stream(frame);
+        let frame_offset = offsets(&valid)[2] + H4CR_HEADER_LEN;
+
+        let mut counts = valid.clone();
+        counts[frame_offset + 20..frame_offset + 24].copy_from_slice(&2u32.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&counts, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("not equal and nonzero")));
+
+        let mut reserved = valid.clone();
+        reserved[frame_offset + 28..frame_offset + 32].copy_from_slice(&1u32.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&reserved, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("reserved word")));
+
+        let mut fatal = valid;
+        fatal[frame_offset + 24..frame_offset + 28]
+            .copy_from_slice(&collector::compact::STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&fatal, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("fatal bits")));
+
+        let mut aggregate_mismatch = repeated_frame_stream(frame);
+        let first_perf_payload = offsets(&aggregate_mismatch)[0] + H4CR_HEADER_LEN;
+        aggregate_mismatch[first_perf_payload + 32..first_perf_payload + 36]
+            .copy_from_slice(&collector::compact::STATUS_DELTA_DATA.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&aggregate_mismatch, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("does not equal closed-frame PERF status aggregate")));
+
+        let mut frame_flags = repeated_frame_stream(frame);
+        let first_frame_record = offsets(&frame_flags)[2];
+        frame_flags[first_frame_record + 28..first_frame_record + 32]
+            .copy_from_slice(&1u32.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&frame_flags, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("record flags")));
+    }
+
+    #[test]
+    fn rejects_trailing_record_or_unframed_bytes_after_terminal_frame_end() {
+        let frame = &sample_domain51_frames()[0].1;
+        let mut trailing_record = repeated_frame_stream(frame);
+        append_h4cr_record(
+            &mut trailing_record,
+            7,
+            101,
+            77,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            b"tail",
+        );
+        assert!(verify_domain51_h4cr_stream(&trailing_record, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("no trailing records")));
+
+        let mut trailing_bytes = repeated_frame_stream(frame);
+        trailing_bytes.extend_from_slice(b"tail");
+        let errors = verify_domain51_h4cr_stream(&trailing_bytes, 1).errors;
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("truncated H4CR header")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("no trailing records")));
+    }
+
+    #[test]
+    fn delta_rows_retain_data_perf_authority_without_full_frame_assumptions() {
+        let frame = delta_frame();
+        let stream = repeated_frame_stream(&frame);
+        let report = verify_domain51_h4cr_stream(&stream, 1);
+        assert!(report.ok, "{:?}", report.errors);
+        assert_eq!(report.domain51_rows_total, 2);
+        assert_eq!(report.domain51_changed_rows_total, 2);
+        assert_ne!(
+            report.status_flags_or & collector::compact::STATUS_DELTA_DATA,
+            0
+        );
+
+        let mut mismatched = stream;
+        let first_perf = offsets(&mismatched)[0] + H4CR_HEADER_LEN;
+        mismatched[first_perf + 20..first_perf + 24].copy_from_slice(&0u32.to_le_bytes());
+        assert!(verify_domain51_h4cr_stream(&mismatched, 1)
+            .errors
+            .iter()
+            .any(|error| error.contains("PERF/DATA cardinality or status mismatch")));
+    }
+
+    #[test]
+    fn every_nonempty_short_header_preserves_the_lane_diagnostic() {
+        for len in 1..H4CR_HEADER_LEN {
+            let report = verify_domain51_h4cr_stream(&vec![0; len], 1);
+
+            assert!(!report.ok, "length {len} unexpectedly passed");
+            assert_eq!(
+                report.errors.first(),
+                Some(&format!(
+                    "offset 0: truncated H4CR header with {len} byte(s) remaining"
+                )),
+                "length {len}: {:?}",
+                report.errors
+            );
+        }
+
+        let empty = verify_domain51_h4cr_stream(&[], 1);
+        assert!(!empty.ok);
+        assert!(empty
+            .errors
+            .iter()
+            .any(|error| error.contains("closed hour count 0 is below required 2")));
     }
 }

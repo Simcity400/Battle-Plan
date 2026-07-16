@@ -288,7 +288,7 @@ def build_report(run_dir: Path) -> dict:
                 f"game_hours_advanced={manifest['game_hours_advanced']}; skipped_game_hours={manifest['skipped_game_hours']}; domain51_data_records={per_domain['data_record_count']}; partial/source/worker/bridge failure=false",
             ),
             command_result(
-                "domain51_stream_verify --verify-json <run>/shared_live_refresh/collector_stream.bin",
+                '& "$env:TEMP\\scripted_state_domain51_stream.exe" --verify-json <run>/shared_live_refresh/collector_stream.bin',
                 f"ok={stream_gate['ok']}; domain51_data_records={stream_gate['domain51_data_records']}; skipped_hours={stream_gate['skipped_hours']}; partial_failure_seen={stream_gate['partial_failure_seen']}; source_unavailable_seen={stream_gate['source_unavailable_seen']}",
             ),
             command_result(

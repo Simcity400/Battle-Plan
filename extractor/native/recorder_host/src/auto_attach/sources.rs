@@ -9,9 +9,9 @@
 //! deliberately carries no `windows`/`windows-sys` dependency (that Cargo change
 //! is design §9, outside this lane's fence; see the dossier).
 
-/// Real WMI `Win32_ProcessTrace` push source (design §2). Drop-in replacement
-/// for [`SnapshotOnlyEventSource`] in production wiring; see the dossier
-/// `W12C_HEARTBEAT_WMI.md` for the one-line `run_supervisor` swap.
+/// Real standard-user WMI process-event source (design §2), selected by the
+/// production `run_supervisor`. [`SnapshotOnlyEventSource`] remains the explicit
+/// degraded/fake source used by tests and fallback compositions.
 pub mod wmi;
 
 use std::path::PathBuf;

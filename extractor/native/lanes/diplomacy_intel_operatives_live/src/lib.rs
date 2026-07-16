@@ -6,5 +6,6 @@ pub mod compact;
 pub mod decoder_gate;
 pub mod extractor;
 pub mod replay_verify;
+pub mod stream_gate;
 
 pub use compact::DOMAIN_ID_PROPOSED as DOMAIN_ID;

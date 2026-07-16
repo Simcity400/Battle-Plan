@@ -12,9 +12,16 @@ stamped into every stream before reload/relaunch stitching can be enabled
 
 Use the engine-persisted pair **(`game_unique_id`, `game_unique_seed`)** as the version-1
 campaign identity source. Preserve both raw components and derive the external `campaign_id`
-from their canonical representation. Neither value is currently wired or offset-proven, so
-this is a **chosen design, not a validated live identity**. Pillar 3 remains fail-closed until
-the validation matrix below passes.
+from their canonical representation. Current-build serializer/deserializer RE proves
+`game_unique_seed` as signed `i32[CGameState+0x720]` and `game_unique_id` as the MSVC
+`std::string` object at `CGameState+0x728` for executable SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`; see
+[`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). This is
+**static representation proof, not a validated live identity**. The CID1 codec, shared explicit-mode
+stateful validator, CFA1 codec, durable receipt ordering, and recorder-main manifest gate are now
+offline-green. Pillar 3 remains fail-closed: production `Known` is impossible until the collector
+producer barrier, live L0 acceptance, durable failure/rollover accounting, and the complete matrix
+below pass.
 
 The current d68 `session` scalar, start date, scenario/bookmark, modset, and human-country
 roster are witnesses only. They must never be substituted when either chosen component is
@@ -81,10 +88,11 @@ UUID-shaped `game_unique_id="a4b17fed-ed12-4361-9064-fb6576638110"`, and
 atlas audit calls these unwired one-read scalars off game-state/session roots, not live fields
 whose offsets are already established (`extractor/documents/EXTRACTION_ATLAS.md:38-55`).
 
-This proves that an engine-persisted UUID-shaped candidate exists in saves. It does not prove
-its live address, in-memory representation, load stability, or new-campaign uniqueness. No
-`game_unique_*` field appears in the current d68 profile
-(`extractor/native/compact_contract/src/build_profile.rs:349-401`).
+The save census proves that an engine-persisted UUID-shaped candidate exists. W15's hash-bound
+serializer/deserializer route now also proves both current-build member addresses and
+representations. It does **not** prove a guarded live read, load stability, cross-client equality,
+or new-campaign uniqueness, and no `game_unique_*` field is admitted in the current d68 build
+profile (`extractor/native/compact_contract/src/build_profile.rs:349-401`).
 
 The older continuity harness exposes the gap: it prefers a caller-supplied save seed but
 otherwise uses a process-instance id stable only for one `hoi4.exe`
@@ -96,9 +104,9 @@ It cannot distinguish a new campaign loaded into the same process without a live
 
 | Rank | Candidate | Stability and distinctness | Disposition |
 | ---: | --- | --- | --- |
-| 1 | `game_unique_id` + `game_unique_seed` | Both are top-level save scalars; the first is UUID-shaped (`extractor/documents/EXTRACTION_ATLAS.md:166-167`). Persistence, cross-client equality, and different-new-game distinctness still require measurement. A copied save intentionally remains one lineage. | **Chosen, gated; both mandatory.** |
-| 2 | `game_unique_id` alone | Strongest named field and likely high-cardinality, but name/shape is not proof of load stability or uniqueness. | Retain raw; no v1 activation alone. |
-| 3 | `game_unique_seed` alone | Could persist, but no reload/relaunch pair proves it; width/sign and collisions remain open. | Retain raw; never use alone. |
+| 1 | `game_unique_id` + `game_unique_seed` | Both are top-level save scalars with hash-bound current-build members/representations. Persistence, cross-client equality, and different-new-game distinctness still require measurement. A copied save intentionally remains one lineage. | **Chosen, gated; both mandatory.** |
+| 2 | `game_unique_id` alone | Current-build MSVC-string representation is statically proven, but representation/name do not prove load stability or uniqueness. | Retain raw; no v1 activation alone. |
+| 3 | `game_unique_seed` alone | Current-build signed-i32 representation is statically proven, but no reload/relaunch pair proves its campaign semantics or collision behavior. | Retain raw; never use alone. |
 | 4 | `multiplayer_random_seed` | Save scalar (`extractor/documents/EXTRACTION_ATLAS.md:168`), but may be mutable determinism state. Save-scumming, continued play, or session creation may change it; no evidence settles this. | Diagnostic witness only. |
 | 5 | start date + scenario/bookmark + selection hash | Start date has a proven offset (`extractor/native/compact_contract/src/build_profile.rs:363-364`, `extractor/native/compact_contract/src/build_profile.rs:383-384`). Scenario/initial-selection immutable roots are not accepted. Many games share a bookmark; roster changes on hotjoin, tag switch, drop, observer, and rehost. | Compatibility witness; never fallback identity. |
 | 6 | d68 `session` at `CGameState+0x490` | One live value matched one save and is explicitly provisional (`extractor/native/runs/crack_fanout/D3_session_tension/EVIDENCE.md:105-114`). It is categorized as a session snapshot (`extractor/native/runs/crack_fanout/D3_session_tension/EVIDENCE.md:257-262`), and one weak u32 is not distinctive (`extractor/native/runs/crack_fanout/D3_session_tension/EVIDENCE.md:286-297`). | Segment/session witness only. |
@@ -114,12 +122,12 @@ incompatible witness is a loud conflict requiring adjudication, not a silently d
 
 ## Version-1 identity contract
 
-The future reader must independently validate:
+The future reader must independently validate the statically proven current-build members:
 
-1. `game_unique_id`: canonical lowercase `8-4-4-4-12` ASCII. If memory stores 16 binary bytes,
-   byte order is accepted only after exact same-tick save-oracle comparison.
-2. `game_unique_seed`: exact engine integer whose signedness and width are established by
-   same-tick save comparisons. No guessed cast or truncation is allowed.
+1. `game_unique_id`: decode the guarded MSVC `std::string` at `CGameState+0x728`, then require
+   canonical lowercase `8-4-4-4-12` ASCII. Malformed size/capacity/pointer state fails closed.
+2. `game_unique_seed`: load the exact signed `i32` at `CGameState+0x720` and preserve its signed
+   base-10 representation. No unsigned reinterpretation, guessed cast, or truncation is allowed.
 
 Canonical preimage:
 
@@ -175,6 +183,13 @@ payload     = CID1, schema_version=1,
               presence/status flags, raw compatibility witnesses
 ```
 
+The CID1 v1 payload byte table is now frozen in
+`dossiers/W15_CID1_STATIC_CONTRACT.md` and implemented by
+`compact_contract::campaign_identity`. Its 96-byte fixed header, bounded suffix
+order, flag assignments, and text limits are protocol policy; the UUID and
+signed-i32 seed representations are the static engine evidence. This offline
+contract closure does not activate identity or waive any live gate below.
+
 All following records begin at sequence 1. Exactly one header is allowed and it must be first.
 Unknown schema, malformed raw fields, digest mismatch, duplicate header, domain 0 on another
 record type, or data before the header is a hard decode/pack failure. Legacy streams remain
@@ -183,9 +198,9 @@ readable as identity-unavailable and cannot be stitched automatically across ses
 `Known` is not admitted merely because the pair is canonical. The CID1 decoder must have two
 complete matching observations bracketing admission, a calendar-valid `game_hour_raw`, a
 non-empty control-free build-profile id, and a SHA-256 recomputed over the complete validated
-CID1 payload. The manifest carries that payload hash. If any prerequisite is absent, including
-at the current revision where CID1 does not exist, state remains `unavailable` and no digest is
-authorized for stitching.
+CID1 payload. The manifest carries that payload hash. If any prerequisite is absent—including on
+the active Legacy capture path, which still emits no CID1—state remains `unavailable` and no digest
+is authorized for stitching.
 
 ### Stateful rollover on the duplex control transport
 
@@ -229,9 +244,26 @@ stale nonce, non-contiguous logical id, or hash mismatch poisons the channel. Th
 control frame retains the session-id, direction, checksum, maximum-length, and monotonic-sequence
 checks already implemented by `recorder_host::control_transport`.
 
-`FirstCompactFrameAck` payload (`CFA1`, exactly 48 bytes): magic `[u8;4]` at 0, version `u16=1`
-at 4, length `u16=48` at 6, logical-stream id `u64` at 8, and recomputed complete CID1 payload
-SHA-256 `[u8;32]` at 16.
+`FirstCompactFrameAck` uses the one canonical 104-byte `CFA1` payload shared with
+`DUPLEX_CONTROL_TRANSPORT.md`:
+
+| Offset | Type | Meaning |
+| ---: | --- | --- |
+| 0 | `[u8;4]` | `CFA1` |
+| 4 / 6 | `u16 / u16` | version 1 / total length 104 |
+| 8 | `u64` | logical-stream id; `u64::MAX` rejects |
+| 16 | `u64` | first complete H4CR sequence |
+| 24 | `i32` | calendar-valid H4CR `game_hour_raw` |
+| 28 / 30 | `u16 / u16` | H4CR domain id / record type |
+| 32 | `u32` | exact complete H4CR header-plus-payload byte length |
+| 36 | `u32` | reserved zero |
+| 40 | `[u8;32]` | SHA-256 of the exact complete H4CR header plus payload |
+| 72 | `[u8;32]` | SHA-256 of the exact H4CR payload bytes |
+
+For identity-v1 the acknowledged first record must be `(sequence, domain, type) = (0, 0, 4)` and
+the payload hash must equal the committed CID1 hash. A legacy identity-unavailable stream may ack
+only its first sequence-1 known record. There is no second ack for the later PERF/DATA pair that
+establishes local `Recording`; the obsolete 48-byte CID-only form is invalid.
 
 `RolloverPropose` payload (`CRP1`, exactly 104 bytes, collector to recorder):
 
@@ -256,8 +288,10 @@ proving the actual CID1 bytes matched before world data resumes.
 #### Identity failure records
 
 Failures use the reliable control stream so they can be recorded before any CID1 and never break
-header-first H4CR ordering. Add closed message kinds `IdentityFailure = 14` (collector sender) and
-`IdentityFailureAck = 15` (recorder sender).
+header-first H4CR ordering. Implemented message ids 14/15 remain the authoritative sink setup and
+terminal failure reports. The proven-unused adjacent ids are `IdentityFailure = 16` (collector
+sender) and `IdentityFailureAck = 17` (recorder sender); both require the distinct
+`CAMPAIGN_IDENTITY = 1 << 5` capability.
 
 `IdentityFailure` (`CIF1`) has a 116-byte fixed header followed by exactly
 `uuid_len + seed_len + profile_len` raw bytes; malformed raw bytes are preserved:
@@ -294,23 +328,23 @@ stream at its next H4CR sequence; a stable pair change must use both rollover ba
 
 ### One stateful validator for every H4CR walker
 
-The earlier claim that every walker used the shared parser was false. Production
-`recorder_host/src/main.rs` summarization, recorder fold paths, replay/fold-check tools, and lane
-gates contain local H4CR loops/decoders. Before CID1 activation, `compact_contract` must own a
-`StatefulStreamValidator` tracking first-record/header state, domain-0 reservation, logical
-sequence, duplicate CID1, and explicit legacy mode. Every walker—including `compact_stream`,
-production main summarization/packing, recorder-host stream/world folds, `replay_decoder`,
-`fold_check`, and every lane-local gate walker—must feed each parsed header to it before payload
-dispatch. CI must census `H4CR` magic and `parse_compact_record_header` call sites; any unenumerated
-or unmigrated walker blocks CID1-aware/known output. The validator rejects data before CID1, CID1
-not at sequence/domain `(0,0)`, duplicate CID1 in one logical stream, any other domain-0 record,
-and non-contiguous sequence. Legacy mode is explicit and always identity-unavailable.
+`compact_contract::StatefulStreamValidator` now tracks explicit IdentityV1/Legacy mode,
+first-record/header state, domain-0 reservation, logical sequence, duplicate CID1, terminal failure,
+and retained opaque `ValidatedCid1`. Recorder main validates before dispatch in its dormant
+IdentityV1 path, excludes CID1 from ordinary counts, and gates manifest `Known` on that token.
+
+Activation still requires every remaining H4CR walker—including `compact_stream`, recorder-host
+stream/world folds, `fold_check`, `replay_decoder`, and every lane-local gate walker—to validate
+before payload dispatch. CI must census `H4CR` magic and `parse_compact_record_header` call sites;
+any unenumerated or unmigrated walker blocks CID1-aware/known output. Legacy mode remains explicit
+and always identity-unavailable.
 
 ### Recorder/replay manifest
 
-`compact_stream_manifest_json` currently records framing, counts, status, coverage, and status
-origins (`extractor/native/recorder_host/src/main.rs:17730-17816`). Add this sibling object to
-the native-session and embedded replay manifests:
+Recorder main now permits a native-session `known` identity only when explicit IdentityV1
+pre-dispatch validation retained `ValidatedCid1`; it cannot derive authority from d68 or a parallel
+struct. The active capture path remains Legacy, so production output is still identity-unavailable.
+The eventual native-session and embedded replay representation is:
 
 ```json
 {
@@ -342,11 +376,13 @@ digest, and payload-hash equality. The manifest never overrides stream bytes.
 
 ## Validation plan
 
-First locate both fields from validated `CCurrentGameState`/session-manager roots using
-serializer xrefs or same-tick value search. Record RTTI owner, full chain, representation, and
-guards; never infer adjacency from save order. Prove exact live/save equality on at least two
-same-tick pairs with different UUIDs/seeds, including multiplayer. If either field lacks a
-structurally guarded root, pillar 3 remains unavailable. Revalidate after every game patch.
+Static location/representation discovery is complete for the pinned current executable: signed
+`i32 +0x720` and MSVC string `+0x728` under `CGameState`. The first live step is the W15 L0 gate:
+hash/root admission, same-hour bracketing, one coherent guarded `+0x720..+0x747` read, exact D-0-4
+oracle equality, and two complete equal observations bracketing first admission. Then prove exact
+live/save equality on at least two same-tick pairs with different UUIDs/seeds, including
+multiplayer. Any missing guard, hash mismatch, or game patch keeps pillar 3 unavailable and requires
+fresh static revalidation.
 
 Each capture pair retains both streams/manifests, same-tick melted-save values,
 build/modset/process provenance, role, and first/last stable identity observations.
@@ -392,20 +428,20 @@ The design requires coordinated changes in these components:
 
 ```diff
 extractor/native/compact_contract/src/lib.rs
-  after COMPACT_RECORD_TYPE_DOMAIN_DATA:
-+ pub const COMPACT_RECORD_TYPE_STREAM_HEADER: u16 = 4;
-  add CID1 payload parser/tests; enforce domain_id=0/type=4 only as first record.
+  CID1 payload/parser, explicit-mode stateful validation, and dependency-neutral CFA1 codec exist.
 
 extractor/native/compact_contract/src/build_profile.rs
   in the d68/top-level CGameState section:
 + DOMAIN_CAMPAIGN_ID_* owner/offset/representation constants
-  only after same-tick serializer/RTTI proof; never guess from save order.
+  using the W15-proven i32 +0x720 / MSVC-string +0x728 only after L0 live acceptance;
+  never promote static evidence alone into a production fallback.
 
 extractor/native/collector/src/lib.rs
   beside read_compact_session_header and H4CR framing:
 + guarded stable readers for game_unique_id + game_unique_seed;
 + CID1 emission before any frame/domain record;
 + boundary re-read, reason-tagged failure/conflict telemetry, and rollover signal.
+  These collector seams remain unapplied; the active path starts in Legacy mode.
 
 extractor/native/recorder_host/src/stream_fold.rs
 extractor/native/replay_decoder/src/*
@@ -414,9 +450,8 @@ extractor/native/replay_decoder/src/*
 
 extractor/native/recorder_host/src/main.rs
   in compact_stream_manifest_json/native-session packaging:
-+ decode campaign_identity from first record;
-+ write raw fields/digest/witnesses/stream_header_sha256;
-+ fail pack/repack on mismatch or identity transition without rollover.
+  Explicit-mode pre-dispatch validation, opaque ValidatedCid1 retention, and Known gating exist
+  dormant/offline-green; live duplex receipt/durable sink composition and rollover remain open.
 
 extractor/native/recorder_host/src/world_fold.rs
 + carry campaign/segment provenance without using d68 session/start_date as fallback;
@@ -425,7 +460,14 @@ extractor/native/recorder_host/src/world_fold.rs
 
 ## Open items
 
-- No live offset, RTTI owner, representation, or guard is proven for either chosen field.
+- Static offset and representation discovery is complete for the pinned executable, but the L0
+  guarded same-hour D-0-4 read and exact oracle comparison have not run; there is no authorized
+  production reader or build-profile fallback.
+- CID1 payload/parser/stateful validation, explicit-mode CFA1, durable receipt ordering, and
+  recorder-main manifest gating are offline-green. Collector sequence-0 emission/CFA1 blocking,
+  live durable-sink/control-channel composition, remaining-walker migration, durable
+  identity-failure accounting, and acknowledged rollover ledger/state machine remain open. Until
+  all pass, production `campaign_identity.state="known"` is impossible.
 - No capture pair proves reload/relaunch/hotjoin/observer/rehost stability or distinctness
   across two new campaigns.
 - Independent campaigns cloned from one save cannot be distinguished by passive persisted

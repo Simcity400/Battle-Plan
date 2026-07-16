@@ -91,7 +91,8 @@ def _modfiles_from_manifest(manifest_path: Path, userdata: Path) -> list[Path]:
 def build_layers(vanilla: str | None = None,
                  mods: list[str] | None = None,
                  modset_json: str | Path | None = None,
-                 userdata: str | Path | None = None) -> list:
+                 userdata: str | Path | None = None,
+                 strict_mods: bool = False) -> list:
     """Return the ordered Layer list [vanilla, mod1, ...] for the active set.
 
     * ``mods``  : explicit ordered list of .mod descriptor paths/tokens (wins).
@@ -106,7 +107,7 @@ def build_layers(vanilla: str | None = None,
     ud = Path(userdata).resolve() if userdata else DEFAULT_USERDATA
 
     mod_files: list[Path] = []
-    if mods:
+    if mods is not None:
         for tok in mods:
             tok = tok.strip().replace("\\", "/")
             p = Path(tok)
@@ -120,6 +121,9 @@ def build_layers(vanilla: str | None = None,
         # else: vanilla-only (valid)
 
     layers, warnings = _ex.build_modset_layers(v, mod_files, ud)
+    if strict_mods and (warnings or len(layers) != 1 + len(mod_files)):
+        detail = "; ".join(str(warning) for warning in warnings) or "layer count mismatch"
+        raise RuntimeError(f"strict mod resolution failed: {detail}")
     for w in warnings:
         print(f"[resolver] WARN: {w}", file=sys.stderr)
     return layers

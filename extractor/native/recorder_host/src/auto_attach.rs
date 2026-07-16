@@ -25,6 +25,7 @@
 //! deviation and the live-validation matrix.
 
 pub mod coordinator;
+pub mod duplex_worker;
 pub mod identity;
 pub mod journal;
 pub mod policy;
@@ -35,6 +36,8 @@ pub mod singleton;
 pub mod sources;
 pub mod staging;
 pub mod state;
+#[cfg(windows)]
+pub mod windows_combined_backend;
 
 pub use coordinator::{Coordinator, CoordinatorConfig, CoordinatorDeps};
 pub use identity::{ProcessIdentity, ProcessKey};
@@ -233,6 +236,7 @@ mod live {
                 "--dll",
                 "--out-dir",
                 "--session-id",
+                "--capture-id",
                 "--stream-format",
             ];
             if let Some(arg) = self
@@ -264,6 +268,8 @@ mod live {
                 .arg(&spec.out_dir)
                 .arg("--session-id")
                 .arg(&spec.session_id)
+                .arg("--capture-id")
+                .arg(&spec.attempt_id)
                 .arg("--stream-format")
                 .arg("compact")
                 .env("BATTLE_PLAN_AUTO_ATTACH_PIPE_TOKEN", &spec.payload.pipe_token)
@@ -278,6 +284,11 @@ mod live {
                 .env(
                     "BATTLE_PLAN_AUTO_ATTACH_CONTROL_CHALLENGE",
                     super::proof::encode_hex(&spec.control_challenge),
+                )
+                .env("BATTLE_PLAN_AUTO_ATTACH_ATTEMPT_ID", &spec.attempt_id)
+                .env(
+                    "BATTLE_PLAN_AUTO_ATTACH_SOURCE_DLL_SHA256",
+                    &spec.payload.source_sha256,
                 )
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped());

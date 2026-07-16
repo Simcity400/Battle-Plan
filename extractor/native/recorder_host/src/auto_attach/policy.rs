@@ -23,6 +23,24 @@ pub const DEGRADED_RECONCILE_MS: u64 = 2_000;
 /// attempt fails loudly and retains diagnostics.
 pub const HANDSHAKE_DEADLINE_MS: u64 = 30_000;
 
+/// Once the initial hello succeeds, the recorder solicits a fresh H4CT proof
+/// every five seconds. A proof never extends another operation's deadline.
+pub const HEARTBEAT_INTERVAL_MS: u64 = 5_000;
+
+/// Three missed heartbeat intervals are terminal. This is an explicit product
+/// liveness policy, not a rig-derived timeout.
+pub const HEARTBEAT_LIVENESS_MS: u64 = 15_000;
+
+/// Maximum time a successfully admitted collector may remain attached without
+/// producing one semantically validated world record. Fresh heartbeats prove
+/// process liveness but deliberately do not extend this five-minute product
+/// deadline.
+pub const FIRST_FRAME_DEADLINE_MS: u64 = 300_000;
+
+/// Graceful worker finalization budget before the disabled future activation
+/// path may classify the worker failed. It never authorizes reinjection.
+pub const GRACEFUL_STOP_DEADLINE_MS: u64 = 30_000;
+
 /// Readiness backoff for `WaitingForIdentity` / `WaitingForWindow`
 /// (design §4): 250 ms, 500 ms, 1 s, then every 2 s while the process lives.
 pub const READINESS_BACKOFF_MS: [u64; 3] = [250, 500, 1_000];
@@ -98,5 +116,13 @@ mod tests {
             900,
             "degraded: 900 reconciliations at the 2 s cadence"
         );
+    }
+
+    #[test]
+    fn heartbeat_and_graceful_stop_policy_is_versioned_and_nonzero() {
+        assert!(HEARTBEAT_INTERVAL_MS > 0);
+        assert!(HEARTBEAT_LIVENESS_MS >= HEARTBEAT_INTERVAL_MS * 3);
+        assert!(FIRST_FRAME_DEADLINE_MS > HEARTBEAT_LIVENESS_MS);
+        assert!(GRACEFUL_STOP_DEADLINE_MS > 0);
     }
 }

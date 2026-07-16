@@ -1,15 +1,14 @@
 //! Real WMI `ProcessEventSource` (design §2 "Watcher: WMI plus bounded
 //! reconciliation").
 //!
-//! This is the low-latency push half of the dual-order watcher. It subscribes to
-//! the extrinsic `Win32_ProcessTrace` event class via
-//! `IWbemServices::ExecNotificationQuery` — the STRICT superset of exactly
-//! `Win32_ProcessStartTrace` + `Win32_ProcessStopTrace` (both derive from it), so
-//! a single subscription delivers both start and stop and the `__CLASS` system
-//! property distinguishes them. Design §2 names the two leaf classes; subscribing
-//! to their common parent is equivalent (the parent is never instantiated
-//! directly) and needs one enumerator instead of two. This is a real extrinsic
-//! event, NOT the forbidden `__InstanceCreationEvent WITHIN N` provider polling.
+//! This is the lower-latency half of the dual-order watcher. It subscribes to
+//! standard-user `__InstanceCreationEvent` and `__InstanceDeletionEvent` queries
+//! via `IWbemServices::ExecNotificationQuery`, each restricted to a
+//! `TargetInstance` that is a `Win32_Process`. Two enumerators deliver start and
+//! stop hints and the embedded target supplies the PID and executable name. The
+//! privileged `Win32_ProcessTrace` provider is deliberately not used because it
+//! returns `WBEM_E_ACCESS_DENIED` for a normal user on the supported host.
+//! Bounded process reconciliation remains authoritative.
 //!
 //! ## No new dependency
 //!
@@ -104,15 +103,15 @@ pub trait WmiEventPump {
     fn poll(&mut self, timeout_ms: u32) -> WmiPoll;
 }
 
-/// Map a raw `Win32_ProcessTrace` event to a coordinator event by its `__CLASS`.
+/// Map a raw WMI process event to a coordinator event by its `__CLASS`.
 /// Pure and cross-platform so it is unit-tested directly.
 pub(crate) fn classify_process_trace(class: &str, pid: u32, name: &str) -> Option<RawProcessEvent> {
     match class {
-        "Win32_ProcessStartTrace" => Some(RawProcessEvent::Start {
+        "Win32_ProcessStartTrace" | "__InstanceCreationEvent" => Some(RawProcessEvent::Start {
             pid,
             name: name.to_string(),
         }),
-        "Win32_ProcessStopTrace" => Some(RawProcessEvent::Stop {
+        "Win32_ProcessStopTrace" | "__InstanceDeletionEvent" => Some(RawProcessEvent::Stop {
             pid,
             name: name.to_string(),
         }),
@@ -301,7 +300,7 @@ impl WmiProcessEventSource {
         })
     }
 
-    /// Production constructor: the real COM `Win32_ProcessTrace` subscription.
+    /// Production constructor: the real standard-user COM process subscriptions.
     #[cfg(windows)]
     pub fn new() -> Self {
         Self::spawn_thread(|shared, cancel, ready| com::run_com_watcher(shared, cancel, ready))
@@ -362,6 +361,7 @@ mod com {
     const VT_I2: u16 = 2;
     const VT_I4: u16 = 3;
     const VT_BSTR: u16 = 8;
+    const VT_UNKNOWN: u16 = 13;
     const VT_UI2: u16 = 18;
     const VT_UI4: u16 = 19;
     const VT_INT: u16 = 22;
@@ -613,7 +613,9 @@ mod com {
     struct ComProcessTracePump {
         loc: *mut IWbemLocator,
         svc: *mut IWbemServices,
-        en: *mut IEnumWbemClassObject,
+        start_en: *mut IEnumWbemClassObject,
+        stop_en: *mut IEnumWbemClassObject,
+        poll_start_next: bool,
     }
 
     impl ComProcessTracePump {
@@ -621,14 +623,44 @@ mod com {
             Self {
                 loc: std::ptr::null_mut(),
                 svc: std::ptr::null_mut(),
-                en: std::ptr::null_mut(),
+                start_en: std::ptr::null_mut(),
+                stop_en: std::ptr::null_mut(),
+                poll_start_next: true,
+            }
+        }
+
+        unsafe fn subscribe(
+            svc: *mut IWbemServices,
+            query_text: &str,
+        ) -> *mut IEnumWbemClassObject {
+            let lang = SysAllocString(wide("WQL").as_ptr());
+            let query = SysAllocString(wide(query_text).as_ptr());
+            let mut enumerator: *mut IEnumWbemClassObject = std::ptr::null_mut();
+            let hr = ((*(*svc).vtbl).exec_notification_query)(
+                svc,
+                lang,
+                query,
+                WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                std::ptr::null_mut(),
+                &mut enumerator,
+            );
+            SysFreeString(lang);
+            SysFreeString(query);
+            if hr < 0 {
+                std::ptr::null_mut()
+            } else {
+                enumerator
             }
         }
 
         unsafe fn teardown(&mut self) {
-            if !self.en.is_null() {
-                ((*(*self.en).vtbl).release)(self.en);
-                self.en = std::ptr::null_mut();
+            if !self.start_en.is_null() {
+                ((*(*self.start_en).vtbl).release)(self.start_en);
+                self.start_en = std::ptr::null_mut();
+            }
+            if !self.stop_en.is_null() {
+                ((*(*self.stop_en).vtbl).release)(self.stop_en);
+                self.stop_en = std::ptr::null_mut();
             }
             if !self.svc.is_null() {
                 ((*(*self.svc).vtbl).release)(self.svc);
@@ -638,6 +670,7 @@ mod com {
                 ((*(*self.loc).vtbl).release)(self.loc);
                 self.loc = std::ptr::null_mut();
             }
+            self.poll_start_next = true;
         }
     }
 
@@ -698,36 +731,40 @@ mod com {
                     return false;
                 }
 
-                let lang = SysAllocString(wide("WQL").as_ptr());
-                let query = SysAllocString(wide("SELECT * FROM Win32_ProcessTrace").as_ptr());
-                let mut en: *mut IEnumWbemClassObject = std::ptr::null_mut();
-                let hr = ((*(*svc).vtbl).exec_notification_query)(
+                self.start_en = Self::subscribe(
                     svc,
-                    lang,
-                    query,
-                    WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
-                    std::ptr::null_mut(),
-                    &mut en,
+                    "SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'",
                 );
-                SysFreeString(lang);
-                SysFreeString(query);
-                if hr < 0 || en.is_null() {
+                if self.start_en.is_null() {
                     return false;
                 }
-                self.en = en;
+                self.stop_en = Self::subscribe(
+                    svc,
+                    "SELECT * FROM __InstanceDeletionEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'",
+                );
+                if self.stop_en.is_null() {
+                    return false;
+                }
+                self.poll_start_next = true;
                 true
             }
         }
 
         fn poll(&mut self, timeout_ms: u32) -> WmiPoll {
-            if self.en.is_null() {
+            if self.start_en.is_null() || self.stop_en.is_null() {
                 return WmiPoll::Lost;
             }
             unsafe {
+                let enumerator = if self.poll_start_next {
+                    self.start_en
+                } else {
+                    self.stop_en
+                };
+                self.poll_start_next = !self.poll_start_next;
                 let mut obj: *mut IWbemClassObject = std::ptr::null_mut();
                 let mut returned: u32 = 0;
-                let hr = ((*(*self.en).vtbl).next)(
-                    self.en,
+                let hr = ((*(*enumerator).vtbl).next)(
+                    enumerator,
                     timeout_ms as i32,
                     1,
                     &mut obj,
@@ -743,8 +780,22 @@ mod com {
                     return WmiPoll::Timeout;
                 }
                 let class = get_string(obj, "__CLASS").unwrap_or_default();
-                let pid = get_u32(obj, "ProcessID").unwrap_or(0);
-                let name = get_string(obj, "ProcessName").unwrap_or_default();
+                let mut target = match get_variant(obj, "TargetInstance") {
+                    Some(value) => value,
+                    None => {
+                        ((*(*obj).vtbl).release)(obj);
+                        return WmiPoll::Lost;
+                    }
+                };
+                if target.vt != VT_UNKNOWN || target.val0 == 0 {
+                    VariantClear(&mut target);
+                    ((*(*obj).vtbl).release)(obj);
+                    return WmiPoll::Lost;
+                }
+                let target_obj = target.val0 as *mut IWbemClassObject;
+                let pid = get_u32(target_obj, "ProcessId").unwrap_or(0);
+                let name = get_string(target_obj, "Name").unwrap_or_default();
+                VariantClear(&mut target);
                 ((*(*obj).vtbl).release)(obj);
                 WmiPoll::Event { class, pid, name }
             }
@@ -812,6 +863,20 @@ mod tests {
             classify_process_trace("Win32_ProcessStopTrace", 42, "hoi4.exe"),
             Some(RawProcessEvent::Stop {
                 pid: 42,
+                name: "hoi4.exe".into()
+            })
+        );
+        assert_eq!(
+            classify_process_trace("__InstanceCreationEvent", 43, "hoi4.exe"),
+            Some(RawProcessEvent::Start {
+                pid: 43,
+                name: "hoi4.exe".into()
+            })
+        );
+        assert_eq!(
+            classify_process_trace("__InstanceDeletionEvent", 43, "hoi4.exe"),
+            Some(RawProcessEvent::Stop {
+                pid: 43,
                 name: "hoi4.exe".into()
             })
         );
@@ -1020,24 +1085,68 @@ mod tests {
 
     // ---- live smoke (manual only) ------------------------------------
 
-    /// Live COM smoke test: subscribe to the real `Win32_ProcessTrace` and poll
-    /// for a few seconds. `#[ignore]`d — run manually on a Windows box with WMI
-    /// available: `cargo test -p recorder_host wmi_live_smoke -- --ignored`.
-    /// Launch/close any process during the window to observe events.
+    /// Live COM gate: the standard-user subscriptions must become healthy and
+    /// deliver both sides of a real child-process lifecycle. Run manually with
+    /// `cargo test -p recorder_host wmi_live_smoke -- --ignored --nocapture`.
     #[cfg(windows)]
     #[test]
     #[ignore]
     fn wmi_live_smoke() {
         let mut source = WmiProcessEventSource::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(6);
-        let mut seen = 0usize;
-        while std::time::Instant::now() < deadline {
-            for ev in source.drain_events() {
-                seen += 1;
-                eprintln!("wmi event: {ev:?}");
+        assert_eq!(source.health(), WatcherHealth::Healthy);
+
+        let mut child = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 10",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("launch WMI lifecycle fixture");
+        let child_pid = child.id();
+
+        let start_deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let mut saw_start = false;
+        while std::time::Instant::now() < start_deadline && !saw_start {
+            for event in source.drain_events() {
+                eprintln!("wmi event: {event:?}");
+                if matches!(event, RawProcessEvent::Start { pid, ref name } if pid == child_pid && name.eq_ignore_ascii_case("powershell.exe"))
+                {
+                    saw_start = true;
+                }
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        eprintln!("wmi health: {:?}, events seen: {seen}", source.health());
+
+        child.kill().expect("terminate WMI lifecycle fixture");
+        child.wait().expect("reap WMI lifecycle fixture");
+
+        let stop_deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let mut saw_stop = false;
+        while std::time::Instant::now() < stop_deadline && !saw_stop {
+            for event in source.drain_events() {
+                eprintln!("wmi event: {event:?}");
+                if matches!(event, RawProcessEvent::Stop { pid, ref name } if pid == child_pid && name.eq_ignore_ascii_case("powershell.exe"))
+                {
+                    saw_stop = true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        assert_eq!(source.health(), WatcherHealth::Healthy);
+        assert!(
+            saw_start,
+            "WMI did not deliver fixture start for PID {child_pid}"
+        );
+        assert!(
+            saw_stop,
+            "WMI did not deliver fixture stop for PID {child_pid}"
+        );
     }
 }

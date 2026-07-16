@@ -5,10 +5,11 @@ use session_multiplayer_metadata_live::collector_module::{
 use session_multiplayer_metadata_live::{
     append_compact_record, gate_compact_stream, PlayerCountryRow, SessionEventKind,
     SessionEventRow, EVENT_FLAG_DIRECT_CAPTURE, EVENT_FLAG_HOST_COMMAND, EVENT_FLAG_TEXT_PRESENT,
-    EVENT_FLAG_UI_VISIBLE, PLAYER_FLAG_CONNECTED, PLAYER_FLAG_HOST, PLAYER_FLAG_HUMAN,
-    RECORD_TYPE_FRAME_END, SOURCE_FLAG_COMMAND_HOOK_VALIDATED, SOURCE_FLAG_DLL_NATIVE,
-    SOURCE_FLAG_MESSAGE_HOOK_VALIDATED, SOURCE_FLAG_NOTIFICATION_HOOK_VALIDATED,
-    SOURCE_FLAG_PROOF_FIXTURE, SOURCE_FLAG_SESSION_ROOT_VALIDATED,
+    EVENT_FLAG_UI_VISIBLE, FRAME_END_PAYLOAD_LEN, PLAYER_FLAG_CONNECTED, PLAYER_FLAG_HOST,
+    PLAYER_FLAG_HUMAN, RECORD_TYPE_FRAME_END, SOURCE_FLAG_COMMAND_HOOK_VALIDATED,
+    SOURCE_FLAG_DLL_NATIVE, SOURCE_FLAG_MESSAGE_HOOK_VALIDATED,
+    SOURCE_FLAG_NOTIFICATION_HOOK_VALIDATED, SOURCE_FLAG_PROOF_FIXTURE,
+    SOURCE_FLAG_SESSION_ROOT_VALIDATED,
 };
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::env;
@@ -47,7 +48,7 @@ fn main() -> Result<(), String> {
         frame0.frame.game_hour_raw,
         1000,
         RECORD_TYPE_FRAME_END,
-        &[],
+        &[0u8; FRAME_END_PAYLOAD_LEN],
     );
     append_compact_record(
         &mut stream,
@@ -63,7 +64,7 @@ fn main() -> Result<(), String> {
         frame1.frame.game_hour_raw,
         1000,
         RECORD_TYPE_FRAME_END,
-        &[],
+        &[0u8; FRAME_END_PAYLOAD_LEN],
     );
 
     let gate = gate_compact_stream(&stream);

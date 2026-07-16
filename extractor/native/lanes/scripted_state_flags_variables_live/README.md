@@ -174,6 +174,40 @@ Domain-51 lane-owned mini stack:
 `scripted_state_domain51_collector.rs`, `scripted_state_compact.rs`,
 `scripted_state_domain51_gate.rs`, and `scripted_state_domain51_stream.rs`.
 
+The stream verifier remains a dependency-free, direct-`rustc` binary. It uses
+source-relative `#[path]` modules for the canonical H4CR parser, base status
+flags, and build-profile bounds under `../../compact_contract/src`, so these
+commands work from the repository root without Cargo or `--extern`:
+
+```powershell
+$source = 'extractor\native\lanes\scripted_state_flags_variables_live\scripted_state_domain51_stream.rs'
+$verifier = Join-Path $env:TEMP 'scripted_state_domain51_stream.exe'
+$tests = Join-Path $env:TEMP 'scripted_state_domain51_stream_tests.exe'
+rustc --edition=2021 $source -o $verifier
+& $verifier --verify-json 'C:\path\to\collector_stream.bin' --min-game-hours 48
+rustc --edition=2021 --test $source -o $tests
+& $tests --nocapture
+```
+
+The lane-local unresolved delayed-event and scripted-GUI bits remain badges;
+the shared framing parser does not reinterpret those domain-51 status flags.
+Certification duration is explicit and inclusive: `--min-game-hours N` means
+the raw stream must contain `N + 1` consecutive healthy closed hours. The gate
+accepts unrelated canonical domains in the complete collector stream, but
+requires exactly one domain-51 PERF/DATA pair in every closed hour, preserves
+the DATA payload's delta row counts/status as PERF authority, and requires the
+physical final record to be a healthy authoritative `FRAME_END` with no
+trailing record or unframed bytes. `FRAME_END` emitted/scheduled counts must
+also equal the independently observed non-probe PERF/DATA domain roster;
+reserved diagnostic domain 250 PERF records require a canonical PDU1 trailer
+and do not inflate that roster, while domain-250 DATA is forbidden. Unrelated
+domain PERF status contributes to the exact globally interpreted FRAME_END
+status OR. Every bit in the canonical fatal mask (including partial-data) and
+every unknown status bit is rejected by this standalone production gate; it
+does not grant lane-local expected-partial exceptions.
+The verifier exits nonzero and emits its JSON report to stderr on any failed
+authority check; `"ok": false` is never a successful CLI result.
+
 Proof artifact:
 `extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_domain51_ministack_v1/domain51_ministack_proof.json`.
 

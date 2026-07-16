@@ -3,25 +3,65 @@ use std::env;
 use std::fs;
 use std::process;
 
+#[allow(dead_code)]
+#[path = "../../compact_contract/src/build_profile.rs"]
+mod compact_build_profile;
+#[path = "../../compact_contract/src/record_header.rs"]
+mod compact_record_header;
+#[path = "../../compact_contract/src/record_semantics.rs"]
+mod compact_record_semantics;
+#[allow(dead_code)]
+#[path = "../../compact_contract/src/status_flags_base.rs"]
+mod compact_status_flags;
+use compact_record_header::{parse_compact_record_header, RecordFramingError};
+pub use compact_record_header::{
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_VERSION,
+};
+use compact_record_semantics::validate_compact_record_semantics;
+#[cfg(test)]
+use compact_record_semantics::{
+    COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+};
+
 pub const DOMAIN_OOB_COMMAND: u16 = 28;
 pub const DOMAIN_SHIPS: u16 = 29;
+/// Reserved instrumentation-only PERF domain. It participates in physical
+/// framing/sequence order but never in scheduled-domain coverage or counts.
+pub const RC_PROBE_DOMAIN_ID: u16 = 250;
 
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-pub const COMPACT_RECORD_VERSION: u16 = 1;
 pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
 pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
-pub const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
-pub const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
-pub const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-pub const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
-pub const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
-pub const COMPACT_STATUS_FAILURE_MASK: u32 = COMPACT_STATUS_WORKER_PANIC
+pub use compact_status_flags::{
+    compact_status_unknown_flags_v1, COMPACT_STATUS_BRIDGE_UNAVAILABLE,
+    COMPACT_STATUS_CONTROL_INVALID, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_NO_CLOCK,
+    COMPACT_STATUS_NO_SCALAR_SOURCE, COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_PROFILE_MISMATCH,
+    COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_STATE_UNAVAILABLE,
+    COMPACT_STATUS_WORKER_PANIC,
+};
+pub const COMPACT_STATUS_FAILURE_MASK: u32 = COMPACT_STATUS_STATE_UNAVAILABLE
+    | COMPACT_STATUS_PROFILE_MISMATCH
+    | COMPACT_STATUS_NO_CLOCK
+    | COMPACT_STATUS_NO_SCALAR_SOURCE
+    | COMPACT_STATUS_WORKER_PANIC
     | COMPACT_STATUS_BRIDGE_UNAVAILABLE
     | COMPACT_STATUS_SOURCE_UNAVAILABLE
-    | COMPACT_STATUS_PARTIAL_DATA;
+    | COMPACT_STATUS_PARTIAL_DATA
+    | COMPACT_STATUS_CONTROL_INVALID;
+
+const fn lane_local_status_mask(domain_id: u16) -> u32 {
+    match domain_id {
+        49 => 1 << 11,
+        51 => compact_status_flags::DOMAIN51_LANE_LOCAL_STATUS_MASK,
+        _ => 0,
+    }
+}
+
+const fn status_for_global_interpretation(domain_id: u16, status_flags: u32) -> u32 {
+    status_flags & !lane_local_status_mask(domain_id)
+}
 
 pub const COMPACT_FIXED_SCALE_RAW: u32 = 100_000;
 
@@ -52,7 +92,7 @@ pub const COMPACT_SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
 pub const COMPACT_SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
 pub const COMPACT_SHIP_MAX_ID: u32 = 4_000_000;
 pub const COMPACT_SHIP_MAX_OWNER_TAG_DB_ID: u32 =
-    compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
+    compact_build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const COMPACT_SHIP_MAX_CATEGORY: u32 = 128;
 pub const COMPACT_SHIP_MAX_STRENGTH_RAW: u32 = 1_000_000_000;
 pub const COMPACT_SHIP_MAX_ORGANISATION_RAW: u32 = 100_000_000;
@@ -80,22 +120,44 @@ pub struct NavalOobGateSummary {
     pub domain_perf_record_count: u64,
     pub domain_data_record_count: u64,
     pub frame_end_record_count: u64,
+    pub frame_end_status_flags_or: u32,
     pub total_payload_bytes: u64,
     pub max_payload_len: usize,
     pub max_record_len: usize,
     pub first_game_hour_raw: Option<i32>,
     pub last_game_hour_raw: Option<i32>,
     pub unique_game_hour_count: usize,
+    pub required_game_hour_advancements: i64,
+    pub observed_game_hour_advancements: Option<i64>,
+    pub required_closed_frame_count: u64,
     pub domains_seen: BTreeSet<u16>,
     pub per_domain: BTreeMap<u16, DomainGateSummary>,
     pub parse_errors: Vec<String>,
     pub ordering_errors: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct OwnedFrameAuthority {
+    all_perf_records: u64,
+    all_data_records: u64,
+    all_perf_status_or: u32,
+    perf_domains: BTreeSet<u16>,
+    data_domains: BTreeSet<u16>,
+    oob_perf_records: u64,
+    oob_data_records: u64,
+    ships_perf_records: u64,
+    ships_data_records: u64,
+    oob_perf_status: Option<u32>,
+    oob_data_status: Option<u32>,
+    ships_perf_status: Option<u32>,
+    ships_data_status: Option<u32>,
+}
+
 impl NavalOobGateSummary {
     pub fn gate_passed(&self) -> bool {
         self.parse_errors.is_empty()
             && self.ordering_errors.is_empty()
+            && self.frame_end_status_flags_or & COMPACT_STATUS_FAILURE_MASK == 0
             && required_domain_ok(self.per_domain.get(&DOMAIN_OOB_COMMAND))
             && required_domain_ok(self.per_domain.get(&DOMAIN_SHIPS))
             && self
@@ -105,70 +167,119 @@ impl NavalOobGateSummary {
     }
 }
 
-pub fn decode_stream(raw: &[u8]) -> NavalOobGateSummary {
-    let mut summary = NavalOobGateSummary::default();
+/// Validate a d28/d29 production stream for an explicitly requested number of
+/// game-hour advancements. Because both endpoints are closed frames, `N`
+/// advancements require at least `N + 1` consecutive healthy FRAME_ENDs.
+pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOobGateSummary {
+    let required_closed_frame_count = minimum_game_hour_advancements
+        .checked_add(1)
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(u64::MAX);
+    let mut summary = NavalOobGateSummary {
+        required_game_hour_advancements: minimum_game_hour_advancements,
+        required_closed_frame_count,
+        ..NavalOobGateSummary::default()
+    };
+    if minimum_game_hour_advancements <= 0 {
+        summary.parse_errors.push(format!(
+            "minimum game-hour advancements must be explicitly positive, got {minimum_game_hour_advancements}"
+        ));
+    }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
+    let mut open_hour: Option<i32> = None;
+    let mut pending_perf_hour: Option<i32> = None;
+    let mut last_closed_hour: Option<i32> = None;
+    let mut saw_frame_end = false;
+    let mut last_record_was_clean_frame_end = false;
     let mut hours = BTreeSet::new();
+    let mut owned_frame = OwnedFrameAuthority::default();
 
     while offset < raw.len() {
         let remaining = raw.len().saturating_sub(offset);
-        if remaining < COMPACT_RECORD_HEADER_LEN {
-            summary.parse_errors.push(format!(
-                "offset {offset}: trailing {remaining} byte(s), expected compact record header"
-            ));
-            break;
-        }
-
-        let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
-        if &header[0..4] != COMPACT_RECORD_MAGIC {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: invalid record magic"));
-            break;
-        }
-        let version = read_u16_le(header, 4);
-        if version != COMPACT_RECORD_VERSION {
-            summary.parse_errors.push(format!(
-                "offset {offset}: unsupported record version {version}"
-            ));
-            break;
-        }
-        let header_len = read_u16_le(header, 6) as usize;
-        if header_len != COMPACT_RECORD_HEADER_LEN {
-            summary.parse_errors.push(format!(
-                "offset {offset}: unsupported header length {header_len}"
-            ));
-            break;
-        }
-
-        let sequence = read_u64_le(header, 8);
-        let game_hour_raw = read_i32_le(header, 16);
-        let domain_id = read_u16_le(header, 20);
-        let record_type = read_u16_le(header, 22);
-        let payload_len = read_u32_le(header, 24) as usize;
-        let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+        let header = match parse_compact_record_header(&raw[offset..]) {
+            Ok(header) => header,
+            Err(RecordFramingError::TruncatedHeader(actual)) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: trailing {actual} byte(s), expected compact record header"
+                ));
+                break;
+            }
+            Err(RecordFramingError::BadMagic) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: invalid record magic"));
+                break;
+            }
+            Err(RecordFramingError::UnsupportedVersion(version)) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unsupported record version {version}"
+                ));
+                break;
+            }
+            Err(RecordFramingError::UnsupportedHeaderLen(header_len)) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unsupported header length {header_len}"
+                ));
+                break;
+            }
+            Err(err @ RecordFramingError::PayloadTooLarge(payload_len)) => {
+                let payload_len = payload_len as usize;
+                if COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len) > remaining {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: payload length {payload_len} exceeds remaining stream bytes"
+                    ));
+                } else {
+                    summary.parse_errors.push(format!("offset {offset}: {err}"));
+                }
+                break;
+            }
+        };
+        let payload_len = header.payload_len;
+        let record_len = header.record_len();
         if record_len > remaining {
             summary.parse_errors.push(format!(
                 "offset {offset}: payload length {payload_len} exceeds remaining stream bytes"
             ));
             break;
         }
-        if let Some(previous) = previous_sequence {
-            if sequence <= previous {
-                summary.ordering_errors.push(format!(
-                    "offset {offset}: sequence {sequence} did not advance past {previous}"
-                ));
-            }
+        match previous_sequence {
+            None if header.sequence != 1 => summary.ordering_errors.push(format!(
+                "offset {offset}: first sequence is {}, expected 1",
+                header.sequence
+            )),
+            Some(previous) => match previous.checked_add(1) {
+                Some(expected) if header.sequence != expected => {
+                    summary.ordering_errors.push(format!(
+                        "offset {offset}: sequence discontinuity: expected {expected}, got {}",
+                        header.sequence
+                    ))
+                }
+                None => summary.ordering_errors.push(format!(
+                    "offset {offset}: sequence cannot advance after {previous} without overflow"
+                )),
+                _ => {}
+            },
+            _ => {}
         }
-        previous_sequence = Some(sequence);
-        summary.first_game_hour_raw.get_or_insert(game_hour_raw);
-        summary.last_game_hour_raw = Some(game_hour_raw);
-        hours.insert(game_hour_raw);
-
+        previous_sequence = Some(header.sequence);
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
         let payload_end = payload_start + payload_len;
         let payload = &raw[payload_start..payload_end];
+        let semantics_valid = match validate_compact_record_semantics(
+            header.domain_id,
+            header.record_type,
+            header.record_flags,
+            payload,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {error}"));
+                false
+            }
+        };
 
         summary.record_count = summary.record_count.saturating_add(1);
         summary.total_payload_bytes = summary
@@ -176,33 +287,181 @@ pub fn decode_stream(raw: &[u8]) -> NavalOobGateSummary {
             .saturating_add(payload_len as u64);
         summary.max_payload_len = summary.max_payload_len.max(payload_len);
         summary.max_record_len = summary.max_record_len.max(record_len);
-        summary.domains_seen.insert(domain_id);
+        summary.domains_seen.insert(header.domain_id);
+        last_record_was_clean_frame_end = false;
 
-        match record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
-                summary.domain_perf_record_count =
-                    summary.domain_perf_record_count.saturating_add(1);
-                decode_domain_perf_record(offset, domain_id, payload, &mut summary);
+        match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_PERF if semantics_valid => {
+                if header.domain_id != RC_PROBE_DOMAIN_ID {
+                    owned_frame.all_perf_records = owned_frame.all_perf_records.saturating_add(1);
+                    owned_frame.perf_domains.insert(header.domain_id);
+                    let status_flags = read_u32_le(payload, 32);
+                    owned_frame.all_perf_status_or |=
+                        status_for_global_interpretation(header.domain_id, status_flags);
+                    if header.domain_id != DOMAIN_OOB_COMMAND && header.domain_id != DOMAIN_SHIPS {
+                        validate_known_status_flags(
+                            offset,
+                            header.domain_id,
+                            "DOMAIN_PERF",
+                            status_flags,
+                            &mut summary.parse_errors,
+                        );
+                    }
+                }
+                match (open_hour, pending_perf_hour) {
+                    (Some(open), _) if open == header.game_hour_raw => {}
+                    (Some(open), _) => summary.parse_errors.push(format!(
+                        "offset {offset}: domain perf hour {} does not match open hour {open}",
+                        header.game_hour_raw
+                    )),
+                    (None, Some(pending)) if pending == header.game_hour_raw => {}
+                    (None, Some(pending)) => summary.parse_errors.push(format!(
+                        "offset {offset}: domain perf hour {} does not match pending perf hour {pending}",
+                        header.game_hour_raw
+                    )),
+                    (None, None) => pending_perf_hour = Some(header.game_hour_raw),
+                }
+                if header.domain_id != RC_PROBE_DOMAIN_ID {
+                    summary.domain_perf_record_count =
+                        summary.domain_perf_record_count.saturating_add(1);
+                }
+                if header.domain_id == DOMAIN_OOB_COMMAND || header.domain_id == DOMAIN_SHIPS {
+                    match header.domain_id {
+                        DOMAIN_OOB_COMMAND => {
+                            owned_frame.oob_perf_records =
+                                owned_frame.oob_perf_records.saturating_add(1);
+                            owned_frame.oob_perf_status = Some(read_u32_le(payload, 32));
+                        }
+                        DOMAIN_SHIPS => {
+                            owned_frame.ships_perf_records =
+                                owned_frame.ships_perf_records.saturating_add(1);
+                            owned_frame.ships_perf_status = Some(read_u32_le(payload, 32));
+                        }
+                        _ => unreachable!("owned domain guard"),
+                    }
+                    decode_domain_perf_record(offset, header.domain_id, payload, &mut summary);
+                }
             }
-            COMPACT_RECORD_TYPE_FRAME_END => {
-                summary.frame_end_record_count = summary.frame_end_record_count.saturating_add(1);
+            COMPACT_RECORD_TYPE_FRAME_END if semantics_valid => {
+                let open_matches = match open_hour {
+                    Some(open) if open == header.game_hour_raw => true,
+                    Some(open) => {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: frame-end hour {} does not close open hour {open}",
+                            header.game_hour_raw
+                        ));
+                        false
+                    }
+                    None => {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: frame-end hour {} has no open data hour",
+                            header.game_hour_raw
+                        ));
+                        false
+                    }
+                };
+                if let Some(pending) = pending_perf_hour {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: frame-end hour {} encountered with pending perf-only hour {pending}",
+                        header.game_hour_raw
+                    ));
+                }
+                let successor_matches = closed_hour_is_successor(
+                    offset,
+                    last_closed_hour,
+                    header.game_hour_raw,
+                    &mut summary.ordering_errors,
+                );
+                if open_matches && pending_perf_hour.is_none() {
+                    let authority_error_count = summary.parse_errors.len();
+                    validate_owned_frame_authority(
+                        offset,
+                        header.game_hour_raw,
+                        &owned_frame,
+                        &mut summary.parse_errors,
+                    );
+                    validate_frame_end_authority(
+                        offset,
+                        payload,
+                        &owned_frame,
+                        &mut summary.parse_errors,
+                    );
+                    let authority_valid = summary.parse_errors.len() == authority_error_count;
+                    open_hour = None;
+                    if successor_matches {
+                        last_closed_hour = Some(header.game_hour_raw);
+                        summary.frame_end_record_count =
+                            summary.frame_end_record_count.saturating_add(1);
+                        summary.frame_end_status_flags_or |= status_for_global_interpretation(
+                            COMPACT_DOMAIN_FRAME,
+                            read_u32_le(payload, 24),
+                        );
+                        if authority_valid {
+                            saw_frame_end = true;
+                            last_record_was_clean_frame_end = true;
+                            summary
+                                .first_game_hour_raw
+                                .get_or_insert(header.game_hour_raw);
+                            summary.last_game_hour_raw = Some(header.game_hour_raw);
+                            hours.insert(header.game_hour_raw);
+                        }
+                    }
+                    owned_frame = OwnedFrameAuthority::default();
+                }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+            COMPACT_RECORD_TYPE_DOMAIN_DATA if semantics_valid => {
+                match open_hour {
+                    Some(open) if open != header.game_hour_raw => summary.parse_errors.push(format!(
+                        "offset {offset}: data hour {} encountered before frame-end closed hour {open}",
+                        header.game_hour_raw
+                    )),
+                    None => match pending_perf_hour {
+                        Some(pending) if pending != header.game_hour_raw => summary
+                            .parse_errors
+                            .push(format!(
+                                "offset {offset}: data hour {} does not match pending perf hour {pending}",
+                                header.game_hour_raw
+                            )),
+                        _ => {
+                            pending_perf_hour = None;
+                            open_hour = Some(header.game_hour_raw);
+                        }
+                    },
+                    _ => {}
+                }
                 summary.domain_data_record_count =
                     summary.domain_data_record_count.saturating_add(1);
-                match domain_id {
+                if header.domain_id == RC_PROBE_DOMAIN_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: diagnostic probe domain 250 is PERF-only; DATA is forbidden"
+                    ));
+                } else {
+                    owned_frame.all_data_records = owned_frame.all_data_records.saturating_add(1);
+                    owned_frame.data_domains.insert(header.domain_id);
+                }
+                match header.domain_id {
                     DOMAIN_OOB_COMMAND => {
+                        owned_frame.oob_data_records =
+                            owned_frame.oob_data_records.saturating_add(1);
+                        if payload.len() >= 20 {
+                            owned_frame.oob_data_status = Some(read_u32_le(payload, 16));
+                        }
                         summary
                             .per_domain
-                            .entry(domain_id)
+                            .entry(header.domain_id)
                             .or_default()
                             .data_record_count += 1;
                         decode_oob_command_data_payload(offset, payload, &mut summary);
                     }
                     DOMAIN_SHIPS => {
+                        owned_frame.ships_data_records =
+                            owned_frame.ships_data_records.saturating_add(1);
+                        if payload.len() >= 20 {
+                            owned_frame.ships_data_status = Some(read_u32_le(payload, 16));
+                        }
                         summary
                             .per_domain
-                            .entry(domain_id)
+                            .entry(header.domain_id)
                             .or_default()
                             .data_record_count += 1;
                         decode_ships_data_payload(offset, payload, &mut summary);
@@ -210,16 +469,202 @@ pub fn decode_stream(raw: &[u8]) -> NavalOobGateSummary {
                     _ => {}
                 }
             }
+            COMPACT_RECORD_TYPE_DOMAIN_PERF
+            | COMPACT_RECORD_TYPE_FRAME_END
+            | COMPACT_RECORD_TYPE_DOMAIN_DATA => {}
             _ => summary.parse_errors.push(format!(
-                "offset {offset}: unsupported record type {record_type}"
+                "offset {offset}: unsupported record type {}",
+                header.record_type
             )),
         }
 
         offset = payload_end;
     }
 
+    if !raw.is_empty() {
+        if !saw_frame_end {
+            summary
+                .parse_errors
+                .push("stream has no frame-end record".to_string());
+        }
+        if let Some(open) = open_hour {
+            summary
+                .parse_errors
+                .push(format!("stream ended with open data hour {open}"));
+        }
+        if !last_record_was_clean_frame_end {
+            summary
+                .parse_errors
+                .push("stream does not end at a clean frame-end boundary".to_string());
+        }
+    }
+
     summary.unique_game_hour_count = hours.len();
+    summary.observed_game_hour_advancements =
+        match (summary.first_game_hour_raw, summary.last_game_hour_raw) {
+            (Some(first), Some(last)) => Some(i64::from(last) - i64::from(first)),
+            _ => None,
+        };
+    let observed_advancements = summary.observed_game_hour_advancements.unwrap_or(-1);
+    let observed_closed_frames = u64::try_from(summary.unique_game_hour_count).unwrap_or(u64::MAX);
+    if observed_advancements < minimum_game_hour_advancements
+        || observed_closed_frames < required_closed_frame_count
+    {
+        summary.parse_errors.push(format!(
+            "production proof duration is {observed_advancements} advancement(s) across {observed_closed_frames} closed frame(s), below required {minimum_game_hour_advancements} advancement(s) / {required_closed_frame_count} closed frame(s)"
+        ));
+    }
     summary
+}
+
+fn validate_owned_frame_authority(
+    offset: usize,
+    game_hour_raw: i32,
+    owned: &OwnedFrameAuthority,
+    errors: &mut Vec<String>,
+) {
+    for (domain_id, label, perf_count, data_count, perf_status, data_status) in [
+        (
+            DOMAIN_OOB_COMMAND,
+            "oob_command",
+            owned.oob_perf_records,
+            owned.oob_data_records,
+            owned.oob_perf_status,
+            owned.oob_data_status,
+        ),
+        (
+            DOMAIN_SHIPS,
+            "ships",
+            owned.ships_perf_records,
+            owned.ships_data_records,
+            owned.ships_perf_status,
+            owned.ships_data_status,
+        ),
+    ] {
+        if perf_count != 1 {
+            errors.push(format!(
+                "offset {offset}: closed hour {game_hour_raw} domain {domain_id} ({label}) PERF record count {perf_count} != 1"
+            ));
+        }
+        if data_count != 1 {
+            errors.push(format!(
+                "offset {offset}: closed hour {game_hour_raw} domain {domain_id} ({label}) DATA record count {data_count} != 1"
+            ));
+        }
+        if perf_count == 1 && data_count == 1 {
+            if let (Some(perf_status), Some(data_status)) = (perf_status, data_status) {
+                if perf_status != data_status {
+                    errors.push(format!(
+                        "offset {offset}: closed hour {game_hour_raw} domain {domain_id} ({label}) DATA status {data_status:#010x} does not match PERF status {perf_status:#010x}"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn validate_frame_end_authority(
+    offset: usize,
+    payload: &[u8],
+    owned: &OwnedFrameAuthority,
+    errors: &mut Vec<String>,
+) {
+    // Exact length is already enforced by canonical record semantics. Keep the
+    // guard so this helper remains panic-free if called independently later.
+    if payload.len() != 32 {
+        errors.push(format!(
+            "offset {offset}: FRAME_END payload length {} is not 32",
+            payload.len()
+        ));
+        return;
+    }
+    let emitted_domains = read_u32_le(payload, 16);
+    let scheduled_domains = read_u32_le(payload, 20);
+    let status_flags = read_u32_le(payload, 24);
+    let reserved = read_u32_le(payload, 28);
+    if u64::from(emitted_domains) != owned.all_perf_records {
+        errors.push(format!(
+            "offset {offset}: FRAME_END emitted domain count {emitted_domains} does not match independently observed DOMAIN_PERF count {}",
+            owned.all_perf_records
+        ));
+    }
+    if u64::from(scheduled_domains) != owned.all_data_records {
+        errors.push(format!(
+            "offset {offset}: FRAME_END scheduled domain count {scheduled_domains} does not match independently observed DOMAIN_DATA count {}",
+            owned.all_data_records
+        ));
+    }
+    if emitted_domains != scheduled_domains {
+        errors.push(format!(
+            "offset {offset}: FRAME_END emitted domain count {emitted_domains} does not match scheduled domain count {scheduled_domains}"
+        ));
+    }
+    if emitted_domains < 2 {
+        errors.push(format!(
+            "offset {offset}: FRAME_END emitted domain count {emitted_domains} cannot account for required domains 28 and 29"
+        ));
+    }
+    if owned.perf_domains != owned.data_domains {
+        errors.push(format!(
+            "offset {offset}: closed-frame PERF domains {:?} do not match DATA domains {:?}",
+            owned.perf_domains, owned.data_domains
+        ));
+    }
+    let distinct_domains = u32::try_from(owned.perf_domains.len()).unwrap_or(u32::MAX);
+    if emitted_domains != distinct_domains {
+        errors.push(format!(
+            "offset {offset}: FRAME_END emitted domain count {emitted_domains} does not match {distinct_domains} distinct paired domain(s)"
+        ));
+    }
+    let unknown = compact_status_unknown_flags_v1(status_flags);
+    if unknown != 0 {
+        errors.push(format!(
+            "offset {offset}: FRAME_END status flags {status_flags:#010x} contain unknown bits {unknown:#010x}"
+        ));
+    }
+    let fatal = status_flags & COMPACT_STATUS_FAILURE_MASK;
+    if fatal != 0 {
+        errors.push(format!(
+            "offset {offset}: FRAME_END status flags {status_flags:#010x} contain fatal bits {fatal:#010x}"
+        ));
+    }
+    if status_flags != owned.all_perf_status_or {
+        errors.push(format!(
+            "offset {offset}: FRAME_END status {status_flags:#010x} does not equal closed-frame PERF status aggregate {:#010x}",
+            owned.all_perf_status_or
+        ));
+    }
+    if reserved != 0 {
+        errors.push(format!(
+            "offset {offset}: FRAME_END reserved word is nonzero ({reserved:#010x})"
+        ));
+    }
+}
+
+fn closed_hour_is_successor(
+    offset: usize,
+    previous: Option<i32>,
+    current: i32,
+    errors: &mut Vec<String>,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    match previous.checked_add(1) {
+        Some(expected) if current == expected => true,
+        Some(expected) => {
+            errors.push(format!(
+                "offset {offset}: closed hour discontinuity: expected {expected}, got {current}"
+            ));
+            false
+        }
+        None => {
+            errors.push(format!(
+                "offset {offset}: closed hour cannot advance after {previous} without overflow"
+            ));
+            false
+        }
+    }
 }
 
 fn decode_domain_perf_record(
@@ -228,19 +673,20 @@ fn decode_domain_perf_record(
     payload: &[u8],
     summary: &mut NavalOobGateSummary,
 ) {
-    if payload.len() < 40 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: domain perf payload is {} byte(s), expected at least 40",
-            payload.len()
-        ));
-        return;
-    }
     let read_time_us = read_u64_le(payload, 8);
     let row_count = read_u32_le(payload, 16) as u64;
     let changed_rows = read_u32_le(payload, 20) as u64;
     let unit_count = read_u32_le(payload, 24) as u64;
     let changed_unit_count = read_u32_le(payload, 28) as u64;
-    let status_flags = read_u32_le(payload, 32);
+    let raw_status_flags = read_u32_le(payload, 32);
+    validate_known_status_flags(
+        offset,
+        domain_id,
+        "DOMAIN_PERF",
+        raw_status_flags,
+        &mut summary.parse_errors,
+    );
+    let status_flags = status_for_global_interpretation(domain_id, raw_status_flags);
 
     let domain = summary.per_domain.entry(domain_id).or_default();
     domain.record_count = domain.record_count.saturating_add(1);
@@ -269,7 +715,15 @@ pub fn decode_oob_command_data_payload(
     }
     let row_count = read_u32_le(payload, 8) as usize;
     let changed_rows = read_u32_le(payload, 12) as usize;
-    let status_flags = read_u32_le(payload, 16);
+    let raw_status_flags = read_u32_le(payload, 16);
+    validate_known_status_flags(
+        offset,
+        DOMAIN_OOB_COMMAND,
+        "DOMAIN_DATA",
+        raw_status_flags,
+        &mut summary.parse_errors,
+    );
+    let status_flags = status_for_global_interpretation(DOMAIN_OOB_COMMAND, raw_status_flags);
     let root_rows = read_u32_le(payload, 20) as usize;
     let observed_army_rows = read_u32_le(payload, 24) as usize;
     let observed_army_group_rows = read_u32_le(payload, 28) as usize;
@@ -319,7 +773,12 @@ pub fn decode_oob_command_data_payload(
     }
 
     add_unit(summary, DOMAIN_OOB_COMMAND, "oob_command_rows", row_count);
-    add_unit(summary, DOMAIN_OOB_COMMAND, "oob_command_root_rows", root_rows);
+    add_unit(
+        summary,
+        DOMAIN_OOB_COMMAND,
+        "oob_command_root_rows",
+        root_rows,
+    );
     add_unit(
         summary,
         DOMAIN_OOB_COMMAND,
@@ -333,7 +792,12 @@ pub fn decode_oob_command_data_payload(
         observed_army_group_rows,
     );
     add_unit(summary, DOMAIN_OOB_COMMAND, "oob_member_rows", member_count);
-    add_unit(summary, DOMAIN_OOB_COMMAND, "oob_deleted_rows", deleted_rows);
+    add_unit(
+        summary,
+        DOMAIN_OOB_COMMAND,
+        "oob_deleted_rows",
+        deleted_rows,
+    );
     add_unit(
         summary,
         DOMAIN_OOB_COMMAND,
@@ -561,8 +1025,7 @@ pub fn decode_oob_command_data_payload(
                 _ => {}
             }
         }
-        if member_status != COMPACT_OOB_STATUS_OVERFLOW
-            && row_member_count != logical_member_count
+        if member_status != COMPACT_OOB_STATUS_OVERFLOW && row_member_count != logical_member_count
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: oob command row {row_index} member_count {row_member_count} != logical_member_count {logical_member_count}"
@@ -581,14 +1044,24 @@ pub fn decode_oob_command_data_payload(
         ));
     }
 
-    add_unit(summary, DOMAIN_OOB_COMMAND, "oob_army_rows", emitted_army_rows);
+    add_unit(
+        summary,
+        DOMAIN_OOB_COMMAND,
+        "oob_army_rows",
+        emitted_army_rows,
+    );
     add_unit(
         summary,
         DOMAIN_OOB_COMMAND,
         "oob_army_group_rows",
         emitted_army_group_rows,
     );
-    add_unit(summary, DOMAIN_OOB_COMMAND, "oob_fleet_rows", emitted_fleet_rows);
+    add_unit(
+        summary,
+        DOMAIN_OOB_COMMAND,
+        "oob_fleet_rows",
+        emitted_fleet_rows,
+    );
     add_unit(
         summary,
         DOMAIN_OOB_COMMAND,
@@ -627,7 +1100,12 @@ pub fn decode_oob_command_data_payload(
         leader_skill_rows,
     );
     add_unit(summary, DOMAIN_OOB_COMMAND, "oob_owner_rows", owner_rows);
-    add_unit(summary, DOMAIN_OOB_COMMAND, "oob_location_rows", location_rows);
+    add_unit(
+        summary,
+        DOMAIN_OOB_COMMAND,
+        "oob_location_rows",
+        location_rows,
+    );
     add_unit(
         summary,
         DOMAIN_OOB_COMMAND,
@@ -664,11 +1142,7 @@ pub fn decode_oob_command_data_payload(
     }
 }
 
-pub fn decode_ships_data_payload(
-    offset: usize,
-    payload: &[u8],
-    summary: &mut NavalOobGateSummary,
-) {
+pub fn decode_ships_data_payload(offset: usize, payload: &[u8], summary: &mut NavalOobGateSummary) {
     if payload.len() < 40 {
         summary.parse_errors.push(format!(
             "offset {offset}: ships data payload is {} byte(s), expected at least 40",
@@ -678,7 +1152,15 @@ pub fn decode_ships_data_payload(
     }
     let row_count = read_u32_le(payload, 8) as usize;
     let changed_rows = read_u32_le(payload, 12) as usize;
-    let status_flags = read_u32_le(payload, 16);
+    let raw_status_flags = read_u32_le(payload, 16);
+    validate_known_status_flags(
+        offset,
+        DOMAIN_SHIPS,
+        "DOMAIN_DATA",
+        raw_status_flags,
+        &mut summary.parse_errors,
+    );
+    let status_flags = status_for_global_interpretation(DOMAIN_SHIPS, raw_status_flags);
     let observed_ship_rows = read_u32_le(payload, 20) as usize;
     let observed_task_force_rows = read_u32_le(payload, 24) as usize;
     let deleted_rows = read_u32_le(payload, 28) as usize;
@@ -874,19 +1356,40 @@ pub fn decode_ships_data_payload(
             payload.len().saturating_sub(cursor)
         ));
     }
-    add_unit(summary, DOMAIN_SHIPS, "ship_task_force_rows", task_force_rows);
+    add_unit(
+        summary,
+        DOMAIN_SHIPS,
+        "ship_task_force_rows",
+        task_force_rows,
+    );
     add_unit(summary, DOMAIN_SHIPS, "ship_owner_rows", owner_rows);
-    add_unit(summary, DOMAIN_SHIPS, "ship_definition_rows", definition_rows);
+    add_unit(
+        summary,
+        DOMAIN_SHIPS,
+        "ship_definition_rows",
+        definition_rows,
+    );
 }
 
-fn add_unit(
-    summary: &mut NavalOobGateSummary,
-    domain_id: u16,
-    key: &'static str,
-    value: usize,
-) {
+fn add_unit(summary: &mut NavalOobGateSummary, domain_id: u16, key: &'static str, value: usize) {
     let domain = summary.per_domain.entry(domain_id).or_default();
     *domain.data_units_total.entry(key).or_default() += value as u64;
+}
+
+fn validate_known_status_flags(
+    offset: usize,
+    domain_id: u16,
+    record_label: &str,
+    status_flags: u32,
+    errors: &mut Vec<String>,
+) {
+    let normalized = status_for_global_interpretation(domain_id, status_flags);
+    let unknown = compact_status_unknown_flags_v1(normalized);
+    if unknown != 0 {
+        errors.push(format!(
+            "offset {offset}: domain {domain_id} {record_label} status flags {status_flags:#010x} contain unknown bits {unknown:#010x}"
+        ));
+    }
 }
 
 fn required_domain_ok(domain: Option<&DomainGateSummary>) -> bool {
@@ -953,28 +1456,68 @@ fn read_u32_le(payload: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(payload[offset..offset + 4].try_into().expect("u32 range"))
 }
 
-fn read_i32_le(payload: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes(payload[offset..offset + 4].try_into().expect("i32 range"))
-}
-
 fn read_u64_le(payload: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(payload[offset..offset + 8].try_into().expect("u64 range"))
 }
 
 fn main() {
-    let args = env::args().collect::<Vec<_>>();
-    if args.len() != 2 {
-        eprintln!("usage: {} <collector_stream.bin>", args[0]);
-        process::exit(2);
+    let program = env::args()
+        .next()
+        .unwrap_or_else(|| "naval_oob_gate".to_string());
+    let mut stream_path = None;
+    let mut minimum_game_hour_advancements = None;
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--min-game-hours" {
+            if minimum_game_hour_advancements.is_some() {
+                eprintln!("--min-game-hours may be supplied only once");
+                process::exit(2);
+            }
+            let Some(value) = args.next() else {
+                eprintln!("--min-game-hours requires a value");
+                process::exit(2);
+            };
+            let parsed = match value.parse::<i64>() {
+                Ok(parsed) if parsed > 0 => parsed,
+                Ok(parsed) => {
+                    eprintln!("--min-game-hours must be explicitly positive, got {parsed}");
+                    process::exit(2);
+                }
+                Err(error) => {
+                    eprintln!("invalid --min-game-hours {value:?}: {error}");
+                    process::exit(2);
+                }
+            };
+            minimum_game_hour_advancements = Some(parsed);
+        } else if stream_path.is_none() {
+            stream_path = Some(arg);
+        } else {
+            eprintln!(
+                "usage: {program} <collector_stream.bin> --min-game-hours <positive advancements>"
+            );
+            process::exit(2);
+        }
     }
-    let raw = match fs::read(&args[1]) {
+    let Some(stream_path) = stream_path else {
+        eprintln!(
+            "usage: {program} <collector_stream.bin> --min-game-hours <positive advancements>"
+        );
+        process::exit(2);
+    };
+    let Some(minimum_game_hour_advancements) = minimum_game_hour_advancements else {
+        eprintln!(
+            "--min-game-hours is required explicitly; mutable manifest fallback is forbidden"
+        );
+        process::exit(2);
+    };
+    let raw = match fs::read(&stream_path) {
         Ok(raw) => raw,
         Err(err) => {
-            eprintln!("failed to read {}: {err}", args[1]);
+            eprintln!("failed to read {stream_path}: {err}");
             process::exit(2);
         }
     };
-    let summary = decode_stream(&raw);
+    let summary = decode_stream(&raw, minimum_game_hour_advancements);
     println!("{}", summary_json(&summary));
     if !summary.gate_passed() {
         process::exit(1);
@@ -1006,6 +1549,12 @@ fn summary_json(summary: &NavalOobGateSummary) -> String {
     );
     push_json_u64_field(
         &mut out,
+        "frame_end_status_flags_or",
+        u64::from(summary.frame_end_status_flags_or),
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
         "total_payload_bytes",
         summary.total_payload_bytes,
         true,
@@ -1028,6 +1577,24 @@ fn summary_json(summary: &NavalOobGateSummary) -> String {
         &mut out,
         "unique_game_hour_count",
         summary.unique_game_hour_count,
+        true,
+    );
+    push_json_i64_field(
+        &mut out,
+        "required_game_hour_advancements",
+        summary.required_game_hour_advancements,
+        true,
+    );
+    push_json_opt_i64_field(
+        &mut out,
+        "observed_game_hour_advancements",
+        summary.observed_game_hour_advancements,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "required_closed_frame_count",
+        summary.required_closed_frame_count,
         true,
     );
 
@@ -1148,6 +1715,31 @@ fn push_json_usize_field(out: &mut String, name: &str, value: usize, comma: bool
     out.push('\n');
 }
 
+fn push_json_i64_field(out: &mut String, name: &str, value: i64, comma: bool) {
+    out.push_str("  ");
+    push_json_str(out, name);
+    out.push_str(": ");
+    out.push_str(&value.to_string());
+    if comma {
+        out.push(',');
+    }
+    out.push('\n');
+}
+
+fn push_json_opt_i64_field(out: &mut String, name: &str, value: Option<i64>, comma: bool) {
+    out.push_str("  ");
+    push_json_str(out, name);
+    out.push_str(": ");
+    match value {
+        Some(value) => out.push_str(&value.to_string()),
+        None => out.push_str("null"),
+    }
+    if comma {
+        out.push(',');
+    }
+    out.push('\n');
+}
+
 fn push_json_opt_i32_field(out: &mut String, name: &str, value: Option<i32>, comma: bool) {
     out.push_str("  ");
     push_json_str(out, name);
@@ -1203,15 +1795,25 @@ mod tests {
             .or_default()
             .data_record_count = 1;
         decode_oob_command_data_payload(0, &payload, &mut summary);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         let domain = summary.per_domain.get(&DOMAIN_OOB_COMMAND).unwrap();
         assert_eq!(domain.data_rows_total, 4);
         assert_eq!(domain.data_changed_rows_total, 4);
         assert_eq!(domain.status_flags_or, COMPACT_STATUS_DELTA_DATA);
         assert_eq!(domain.data_units_total.get("oob_fleet_rows"), Some(&1));
         assert_eq!(domain.data_units_total.get("oob_task_force_rows"), Some(&1));
-        assert_eq!(domain.data_units_total.get("oob_member_task_force_rows"), Some(&1));
-        assert_eq!(domain.data_units_total.get("oob_member_ship_rows"), Some(&2));
+        assert_eq!(
+            domain.data_units_total.get("oob_member_task_force_rows"),
+            Some(&1)
+        );
+        assert_eq!(
+            domain.data_units_total.get("oob_member_ship_rows"),
+            Some(&2)
+        );
         assert_eq!(domain.data_units_total.get("oob_location_rows"), Some(&1));
     }
 
@@ -1225,62 +1827,724 @@ mod tests {
             .or_default()
             .data_record_count = 1;
         decode_ships_data_payload(0, &payload, &mut summary);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         let domain = summary.per_domain.get(&DOMAIN_SHIPS).unwrap();
         assert_eq!(domain.data_rows_total, 2);
         assert_eq!(domain.data_changed_rows_total, 2);
-        assert_eq!(domain.data_units_total.get("ship_task_force_rows"), Some(&1));
+        assert_eq!(
+            domain.data_units_total.get("ship_task_force_rows"),
+            Some(&1)
+        );
         assert_eq!(domain.data_units_total.get("ship_owner_rows"), Some(&1));
-        assert_eq!(domain.data_units_total.get("ship_definition_rows"), Some(&1));
+        assert_eq!(
+            domain.data_units_total.get("ship_definition_rows"),
+            Some(&1)
+        );
         assert_eq!(domain.data_units_total.get("ship_deleted_rows"), Some(&1));
     }
 
     #[test]
     fn decodes_compact_stream_and_passes_required_gate() {
         let mut raw = Vec::new();
-        raw.extend_from_slice(&compact_record(
-            1,
-            60787539,
-            DOMAIN_OOB_COMMAND,
-            COMPACT_RECORD_TYPE_DOMAIN_PERF,
-            &test_domain_perf_payload(44_000, 10, 10, 90, 90, COMPACT_STATUS_DELTA_DATA),
-        ));
-        raw.extend_from_slice(&compact_record(
+        let mut sequence = 1;
+        append_valid_owned_frame(&mut raw, &mut sequence, 60787539);
+        append_valid_owned_frame(&mut raw, &mut sequence, 60787540);
+
+        let summary = decode_stream(&raw, 1);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(
+            summary.ordering_errors.is_empty(),
+            "{:?}",
+            summary.ordering_errors
+        );
+        assert!(summary.gate_passed(), "{}", summary_json(&summary));
+        assert_eq!(summary.record_count, 10);
+        assert_eq!(summary.frame_end_record_count, 2);
+        assert_eq!(summary.unique_game_hour_count, 2);
+        assert_eq!(summary.observed_game_hour_advancements, Some(1));
+    }
+
+    #[test]
+    fn rejects_sequence_flags_payload_lengths_and_unclean_tail() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&compact_record_with_flags(
             2,
-            60787539,
+            100,
             DOMAIN_OOB_COMMAND,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &test_oob_command_data_payload(COMPACT_STATUS_DELTA_DATA),
+            1 << 31,
+            &test_oob_command_data_payload(0),
         ));
         raw.extend_from_slice(&compact_record(
             3,
-            60787539,
-            DOMAIN_SHIPS,
+            100,
+            DOMAIN_OOB_COMMAND,
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
-            &test_domain_perf_payload(33_000, 2, 2, 2, 2, 0),
+            &[0; 39],
         ));
         raw.extend_from_slice(&compact_record(
             4,
-            60787539,
-            DOMAIN_SHIPS,
-            COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &test_ships_data_payload(COMPACT_STATUS_DELTA_DATA),
+            101,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0; 31],
         ));
         raw.extend_from_slice(&compact_record(
             5,
-            60787539,
-            0,
-            COMPACT_RECORD_TYPE_FRAME_END,
-            &[],
+            101,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &[0; 40],
         ));
 
-        let summary = decode_stream(&raw);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
-        assert!(summary.ordering_errors.is_empty(), "{:?}", summary.ordering_errors);
+        let summary = decode_stream(&raw, 1);
+        assert!(summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("expected 1")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("record flags")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("shorter than 40")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("is not 32")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("clean frame-end boundary")));
+
+        let mut gap = Vec::new();
+        gap.extend_from_slice(&compact_record(
+            1,
+            100,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_command_data_payload(0),
+        ));
+        gap.extend_from_slice(&compact_record(
+            3,
+            100,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+        ));
+        assert!(decode_stream(&gap, 1)
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity: expected 2, got 3")));
+
+        let mut exhausted = Vec::new();
+        for sequence in [1, u64::MAX, 0] {
+            exhausted.extend_from_slice(&compact_record(
+                sequence,
+                100,
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &test_oob_command_data_payload(0),
+            ));
+        }
+        assert!(decode_stream(&exhausted, 1)
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence cannot advance after 18446744073709551615")));
+    }
+
+    #[test]
+    fn accepts_unowned_records_and_perf_before_data() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&compact_record(
+            1,
+            100,
+            51,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &[0; 40],
+        ));
+        raw.extend_from_slice(&compact_record(
+            2,
+            100,
+            51,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[0xA5; 7],
+        ));
+        raw.extend_from_slice(&compact_record(
+            3,
+            100,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+        ));
+        raw.extend_from_slice(&compact_record(
+            4,
+            100,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_command_data_payload(0),
+        ));
+        raw.extend_from_slice(&compact_record(
+            5,
+            100,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+        ));
+        raw.extend_from_slice(&compact_record(
+            6,
+            100,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_ships_data_payload(0),
+        ));
+        raw.extend_from_slice(&compact_record(
+            7,
+            100,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_end_payload(0, 3, 3, 0),
+        ));
+        let mut sequence = 8;
+        append_valid_owned_frame(&mut raw, &mut sequence, 101);
+
+        let summary = decode_stream(&raw, 1);
         assert!(summary.gate_passed(), "{}", summary_json(&summary));
-        assert_eq!(summary.record_count, 5);
-        assert_eq!(summary.frame_end_record_count, 1);
-        assert_eq!(summary.unique_game_hour_count, 1);
+        assert!(!summary.per_domain.contains_key(&51));
+    }
+
+    #[test]
+    fn rejects_nonconsecutive_physical_closures() {
+        let mut raw = Vec::new();
+        let mut sequence = 1u64;
+        for hour in [100i32, 99, 101] {
+            raw.extend_from_slice(&compact_record(
+                sequence,
+                hour,
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+            ));
+            sequence += 1;
+            raw.extend_from_slice(&compact_record(
+                sequence,
+                hour,
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &test_oob_command_data_payload(0),
+            ));
+            sequence += 1;
+            raw.extend_from_slice(&compact_record(
+                sequence,
+                hour,
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+            ));
+            sequence += 1;
+            raw.extend_from_slice(&compact_record(
+                sequence,
+                hour,
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &test_ships_data_payload(0),
+            ));
+            sequence += 1;
+            raw.extend_from_slice(&compact_record(
+                sequence,
+                hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_end_payload(0, 2, 2, 0),
+            ));
+            sequence += 1;
+        }
+
+        let summary = decode_stream(&raw, 1);
+        assert!(summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("closed hour discontinuity: expected 101, got 99")));
+    }
+
+    #[test]
+    fn uses_full_canonical_failure_mask_after_normalization() {
+        let fatal = (1 << 0)
+            | (1 << 1)
+            | (1 << 2)
+            | (1 << 3)
+            | (1 << 6)
+            | (1 << 7)
+            | (1 << 8)
+            | (1 << 9)
+            | (1 << 12);
+        assert_eq!(fatal, COMPACT_STATUS_FAILURE_MASK);
+        assert_eq!(status_for_global_interpretation(51, 1 << 12), 0);
+        assert_eq!(
+            status_for_global_interpretation(DOMAIN_SHIPS, 1 << 12),
+            1 << 12
+        );
+
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&compact_record(
+            1,
+            100,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_command_data_payload(fatal),
+        ));
+        raw.extend_from_slice(&compact_record(
+            2,
+            100,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_ships_data_payload(0),
+        ));
+        raw.extend_from_slice(&compact_record(
+            3,
+            100,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_end_payload(0, 2, 2, 0),
+        ));
+        let summary = decode_stream(&raw, 1);
+        assert_eq!(
+            summary.per_domain[&DOMAIN_OOB_COMMAND].status_flags_or & COMPACT_STATUS_FAILURE_MASK,
+            fatal
+        );
+        assert!(!summary.gate_passed());
+    }
+
+    #[test]
+    fn validates_announced_perf_trailer_envelopes() {
+        fn stream_with_perf(flags: u32, perf: &[u8]) -> NavalOobGateSummary {
+            let mut raw = Vec::new();
+            raw.extend_from_slice(&compact_record(
+                1,
+                100,
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &test_oob_command_data_payload(0),
+            ));
+            raw.extend_from_slice(&compact_record_with_flags(
+                2,
+                100,
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                flags,
+                perf,
+            ));
+            raw.extend_from_slice(&compact_record(
+                3,
+                100,
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+            ));
+            raw.extend_from_slice(&compact_record(
+                4,
+                100,
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &test_ships_data_payload(0),
+            ));
+            raw.extend_from_slice(&compact_record(
+                5,
+                100,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_end_payload(0, 2, 2, 0),
+            ));
+            let mut sequence = 6;
+            append_valid_owned_frame(&mut raw, &mut sequence, 101);
+            decode_stream(&raw, 1)
+        }
+
+        let base = vec![0; 40];
+        let trailer = empty_pdu1_perf_payload();
+        assert!(
+            stream_with_perf(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &trailer)
+                .parse_errors
+                .is_empty()
+        );
+        assert!(
+            stream_with_perf(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &base)
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("trailer header is truncated"))
+        );
+        assert!(stream_with_perf(0, &trailer)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unannounced trailer")));
+    }
+
+    #[test]
+    fn requires_explicit_positive_minimum_duration_and_both_closed_endpoints() {
+        let mut one_frame = Vec::new();
+        let mut sequence = 1;
+        append_valid_owned_frame(&mut one_frame, &mut sequence, 100);
+
+        let missing_advancement = decode_stream(&one_frame, 1);
+        assert!(missing_advancement.parse_errors.iter().any(|error| {
+            error.contains("production proof duration is 0 advancement(s) across 1 closed frame(s)")
+        }));
+        assert!(decode_stream(&one_frame, 0)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("must be explicitly positive")));
+
+        let mut two_frames = one_frame;
+        append_valid_owned_frame(&mut two_frames, &mut sequence, 101);
+        assert!(decode_stream(&two_frames, 1).gate_passed());
+        assert!(decode_stream(&two_frames, 2)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("below required 2 advancement(s) / 3 closed frame(s)")));
+    }
+
+    #[test]
+    fn requires_exactly_one_perf_and_data_for_both_owned_domains_per_hour() {
+        for (counts, expected) in [
+            (
+                (0, 1, 1, 1),
+                "domain 28 (oob_command) PERF record count 0 != 1",
+            ),
+            (
+                (2, 1, 1, 1),
+                "domain 28 (oob_command) PERF record count 2 != 1",
+            ),
+            (
+                (1, 0, 1, 1),
+                "domain 28 (oob_command) DATA record count 0 != 1",
+            ),
+            (
+                (1, 2, 1, 1),
+                "domain 28 (oob_command) DATA record count 2 != 1",
+            ),
+            ((1, 1, 0, 1), "domain 29 (ships) PERF record count 0 != 1"),
+            ((1, 1, 2, 1), "domain 29 (ships) PERF record count 2 != 1"),
+            ((1, 1, 1, 0), "domain 29 (ships) DATA record count 0 != 1"),
+            ((1, 1, 1, 2), "domain 29 (ships) DATA record count 2 != 1"),
+        ] {
+            let mut raw = Vec::new();
+            let mut sequence = 1;
+            append_owned_frame_with_counts(&mut raw, &mut sequence, 100, counts);
+            append_valid_owned_frame(&mut raw, &mut sequence, 101);
+            let summary = decode_stream(&raw, 1);
+            assert!(
+                summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "expected {expected:?}, got {:?}",
+                summary.parse_errors
+            );
+            assert!(!summary.gate_passed());
+        }
+    }
+
+    #[test]
+    fn rejects_unhealthy_frame_end_counts_status_reserved_and_trailing_records() {
+        for (frame_payload, expected) in [
+            (
+                test_frame_end_payload(0, 3, 3, 0),
+                "does not match independently observed DOMAIN_PERF count 2",
+            ),
+            (
+                test_frame_end_payload(0, 1, 2, 0),
+                "emitted domain count 1 does not match scheduled domain count 2",
+            ),
+            (
+                test_frame_end_payload(0, 1, 1, 0),
+                "cannot account for required domains 28 and 29",
+            ),
+            (
+                test_frame_end_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, 2, 2, 0),
+                "contain fatal bits",
+            ),
+            (
+                test_frame_end_payload(1 << 31, 2, 2, 0),
+                "contain unknown bits",
+            ),
+            (
+                test_frame_end_payload(0, 2, 2, 7),
+                "reserved word is nonzero",
+            ),
+        ] {
+            let mut raw = Vec::new();
+            let mut sequence = 1;
+            append_owned_frame_with_payload(&mut raw, &mut sequence, 100, &frame_payload);
+            append_valid_owned_frame(&mut raw, &mut sequence, 101);
+            let summary = decode_stream(&raw, 1);
+            assert!(
+                summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "expected {expected:?}, got {:?}",
+                summary.parse_errors
+            );
+        }
+
+        let mut trailing = Vec::new();
+        let mut sequence = 1;
+        append_valid_owned_frame(&mut trailing, &mut sequence, 100);
+        append_valid_owned_frame(&mut trailing, &mut sequence, 101);
+        trailing.extend_from_slice(&compact_record(
+            sequence,
+            102,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+        ));
+        let trailing_summary = decode_stream(&trailing, 1);
+        assert!(trailing_summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("clean frame-end boundary")));
+
+        let mut trailing_bytes = Vec::new();
+        let mut sequence = 1;
+        append_valid_owned_frame(&mut trailing_bytes, &mut sequence, 100);
+        append_valid_owned_frame(&mut trailing_bytes, &mut sequence, 101);
+        trailing_bytes.extend_from_slice(&[0xA5; 17]);
+        assert!(decode_stream(&trailing_bytes, 1)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("trailing 17 byte(s)")));
+    }
+
+    #[test]
+    fn rejects_frame_roster_or_status_aggregate_forgery() {
+        let mut mismatched_roster = Vec::new();
+        let mut sequence = 1u64;
+        for hour in [100, 101] {
+            for (domain_id, record_type, payload) in [
+                (
+                    DOMAIN_OOB_COMMAND,
+                    COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                    test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+                ),
+                (
+                    DOMAIN_OOB_COMMAND,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    test_oob_command_data_payload(0),
+                ),
+                (
+                    DOMAIN_SHIPS,
+                    COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                    test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+                ),
+                (77, COMPACT_RECORD_TYPE_DOMAIN_DATA, vec![0xA5]),
+            ] {
+                mismatched_roster.extend_from_slice(&compact_record(
+                    sequence,
+                    hour,
+                    domain_id,
+                    record_type,
+                    &payload,
+                ));
+                sequence += 1;
+            }
+            mismatched_roster.extend_from_slice(&compact_record(
+                sequence,
+                hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_end_payload(0, 2, 2, 0),
+            ));
+            sequence += 1;
+        }
+        assert!(decode_stream(&mismatched_roster, 1)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("closed-frame PERF domains")
+                && error.contains("DATA domains")));
+
+        let mut aggregate = Vec::new();
+        let mut sequence = 1;
+        append_owned_frame_with_payload(
+            &mut aggregate,
+            &mut sequence,
+            100,
+            &test_frame_end_payload(COMPACT_STATUS_DELTA_DATA, 2, 2, 0),
+        );
+        append_valid_owned_frame(&mut aggregate, &mut sequence, 101);
+        assert!(decode_stream(&aggregate, 1)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("does not equal closed-frame PERF status aggregate")));
+    }
+
+    #[test]
+    fn rejects_probe_data_and_duplicate_unowned_frame_records() {
+        let mut raw = Vec::new();
+        let mut sequence = 1u64;
+        for hour in [100, 101] {
+            append_owned_frame_with_extra_unowned_duplicates(
+                &mut raw,
+                &mut sequence,
+                hour,
+                hour == 100,
+            );
+        }
+        let summary = decode_stream(&raw, 1);
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("does not match independently observed DOMAIN_PERF count 4")
+        }));
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("does not match independently observed DOMAIN_DATA count 4")
+        }));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("domain 250 is PERF-only; DATA is forbidden")));
+    }
+
+    #[test]
+    fn reserved_probe_perf_is_ordered_but_excluded_from_frame_authority() {
+        let mut raw = Vec::new();
+        let mut sequence = 1;
+        for (domain_id, record_type, payload) in [
+            (
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+            ),
+            (
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                test_oob_command_data_payload(0),
+            ),
+            (
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+            ),
+            (
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                test_ships_data_payload(0),
+            ),
+            (
+                RC_PROBE_DOMAIN_ID,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                test_domain_perf_payload(1, 0, 0, 0, 0, 0),
+            ),
+        ] {
+            raw.extend_from_slice(&compact_record(
+                sequence,
+                100,
+                domain_id,
+                record_type,
+                &payload,
+            ));
+            sequence += 1;
+        }
+        raw.extend_from_slice(&compact_record(
+            sequence,
+            100,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_end_payload(0, 2, 2, 0),
+        ));
+        sequence += 1;
+        append_valid_owned_frame(&mut raw, &mut sequence, 101);
+
+        let summary = decode_stream(&raw, 1);
+        assert!(summary.gate_passed(), "{}", summary_json(&summary));
+        assert_eq!(summary.domain_perf_record_count, 4);
+    }
+
+    #[test]
+    fn rejects_unknown_owned_status_flags() {
+        let mut raw = Vec::new();
+        let mut sequence = 1;
+        append_owned_frame_with_status(&mut raw, &mut sequence, 100, 1 << 31);
+        append_valid_owned_frame(&mut raw, &mut sequence, 101);
+        let summary = decode_stream(&raw, 1);
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("domain 28 DOMAIN_DATA status flags")
+                && error.contains("unknown bits 0x80000000")
+        }));
+
+        let mut mismatch = Vec::new();
+        let mut sequence = 1;
+        append_owned_frame_with_status(
+            &mut mismatch,
+            &mut sequence,
+            100,
+            COMPACT_STATUS_DELTA_DATA,
+        );
+        append_valid_owned_frame(&mut mismatch, &mut sequence, 101);
+        assert!(decode_stream(&mismatch, 1)
+            .parse_errors
+            .iter()
+            .any(|error| {
+                error.contains("domain 28 (oob_command) DATA status")
+                    && error.contains("does not match PERF status")
+            }));
+    }
+
+    #[test]
+    fn malformed_owned_data_fails_closed_without_panicking() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&compact_record(
+            1,
+            100,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(1, 0, 0, 0, 0, 0),
+        ));
+        raw.extend_from_slice(&compact_record(
+            2,
+            100,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[],
+        ));
+        raw.extend_from_slice(&compact_record(
+            3,
+            100,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+        ));
+        raw.extend_from_slice(&compact_record(
+            4,
+            100,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_ships_data_payload(0),
+        ));
+        raw.extend_from_slice(&compact_record(
+            5,
+            100,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_end_payload(0, 2, 2, 0),
+        ));
+        let mut sequence = 6;
+        append_valid_owned_frame(&mut raw, &mut sequence, 101);
+
+        let result = std::panic::catch_unwind(|| decode_stream(&raw, 1));
+        let summary = result.expect("short owned DATA must fail closed, not panic");
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("expected at least 48")));
+        assert!(!summary.gate_passed());
     }
 
     #[test]
@@ -1329,11 +2593,255 @@ mod tests {
         payload
     }
 
+    fn test_frame_end_payload(
+        status_flags: u32,
+        emitted_domains: u32,
+        scheduled_domains: u32,
+        reserved: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(COMPACT_FRAME_END_PAYLOAD_LEN);
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&emitted_domains.to_le_bytes());
+        payload.extend_from_slice(&scheduled_domains.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&reserved.to_le_bytes());
+        payload
+    }
+
+    fn append_valid_owned_frame(raw: &mut Vec<u8>, sequence: &mut u64, hour: i32) {
+        append_owned_frame_with_payload(raw, sequence, hour, &test_frame_end_payload(0, 2, 2, 0));
+    }
+
+    fn append_owned_frame_with_extra_unowned_duplicates(
+        raw: &mut Vec<u8>,
+        sequence: &mut u64,
+        hour: i32,
+        include_probe_data: bool,
+    ) {
+        for (domain_id, record_type, payload) in [
+            (
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+            ),
+            (
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                test_oob_command_data_payload(0),
+            ),
+            (
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+            ),
+            (
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                test_ships_data_payload(0),
+            ),
+            (77, COMPACT_RECORD_TYPE_DOMAIN_PERF, vec![0; 40]),
+            (77, COMPACT_RECORD_TYPE_DOMAIN_PERF, vec![0; 40]),
+            (77, COMPACT_RECORD_TYPE_DOMAIN_DATA, vec![1]),
+            (77, COMPACT_RECORD_TYPE_DOMAIN_DATA, vec![2]),
+        ] {
+            raw.extend_from_slice(&compact_record(
+                *sequence,
+                hour,
+                domain_id,
+                record_type,
+                &payload,
+            ));
+            *sequence += 1;
+        }
+        if include_probe_data {
+            raw.extend_from_slice(&compact_record(
+                *sequence,
+                hour,
+                RC_PROBE_DOMAIN_ID,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &[0],
+            ));
+            *sequence += 1;
+        }
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_end_payload(0, 3, 3, 0),
+        ));
+        *sequence += 1;
+    }
+
+    fn append_owned_frame_with_payload(
+        raw: &mut Vec<u8>,
+        sequence: &mut u64,
+        hour: i32,
+        frame_payload: &[u8],
+    ) {
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(44_000, 4, 4, 4, 4, 0),
+        ));
+        *sequence += 1;
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_command_data_payload(0),
+        ));
+        *sequence += 1;
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(33_000, 2, 2, 2, 2, 0),
+        ));
+        *sequence += 1;
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_ships_data_payload(0),
+        ));
+        *sequence += 1;
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            frame_payload,
+        ));
+        *sequence += 1;
+    }
+
+    fn append_owned_frame_with_counts(
+        raw: &mut Vec<u8>,
+        sequence: &mut u64,
+        hour: i32,
+        counts: (u64, u64, u64, u64),
+    ) {
+        for _ in 0..counts.0 {
+            raw.extend_from_slice(&compact_record(
+                *sequence,
+                hour,
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+            ));
+            *sequence += 1;
+        }
+        for _ in 0..counts.1 {
+            raw.extend_from_slice(&compact_record(
+                *sequence,
+                hour,
+                DOMAIN_OOB_COMMAND,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &test_oob_command_data_payload(0),
+            ));
+            *sequence += 1;
+        }
+        for _ in 0..counts.2 {
+            raw.extend_from_slice(&compact_record(
+                *sequence,
+                hour,
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+            ));
+            *sequence += 1;
+        }
+        for _ in 0..counts.3 {
+            raw.extend_from_slice(&compact_record(
+                *sequence,
+                hour,
+                DOMAIN_SHIPS,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &test_ships_data_payload(0),
+            ));
+            *sequence += 1;
+        }
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_end_payload(0, 2, 2, 0),
+        ));
+        *sequence += 1;
+    }
+
+    fn append_owned_frame_with_status(
+        raw: &mut Vec<u8>,
+        sequence: &mut u64,
+        hour: i32,
+        data_status_flags: u32,
+    ) {
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(1, 4, 4, 4, 4, 0),
+        ));
+        *sequence += 1;
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_command_data_payload(data_status_flags),
+        ));
+        *sequence += 1;
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_perf_payload(1, 2, 2, 2, 2, 0),
+        ));
+        *sequence += 1;
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_ships_data_payload(0),
+        ));
+        *sequence += 1;
+        raw.extend_from_slice(&compact_record(
+            *sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_end_payload(0, 2, 2, 0),
+        ));
+        *sequence += 1;
+    }
+
     fn compact_record(
         sequence: u64,
         game_hour_raw: i32,
         domain_id: u16,
         record_type: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        compact_record_with_flags(sequence, game_hour_raw, domain_id, record_type, 0, payload)
+    }
+
+    fn compact_record_with_flags(
+        sequence: u64,
+        game_hour_raw: i32,
+        domain_id: u16,
+        record_type: u16,
+        record_flags: u32,
         payload: &[u8],
     ) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1345,9 +2853,17 @@ mod tests {
         out.extend_from_slice(&domain_id.to_le_bytes());
         out.extend_from_slice(&record_type.to_le_bytes());
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_flags.to_le_bytes());
         out.extend_from_slice(payload);
         out
+    }
+
+    fn empty_pdu1_perf_payload() -> Vec<u8> {
+        let mut payload = vec![0; 40];
+        payload.extend_from_slice(b"PDU1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload
     }
 
     fn test_oob_command_data_payload(status_flags: u32) -> Vec<u8> {

@@ -1,5 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use compact_contract::{
+    parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
+};
+
 pub const DOMAIN_ID: u16 = 43;
 pub const DOMAIN_NAME: &str = "market_trade_live";
 
@@ -10,10 +14,10 @@ pub const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 pub const RECORD_TYPE_FRAME_END: u16 = 2;
 pub const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 
-pub const STATUS_WORKER_PANIC: u32 = 1 << 6;
-pub const STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
-pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
+pub const STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
+pub const STATUS_BRIDGE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
+pub const STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
+pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
 
 pub const MARKET_TRADE_HEADER_LEN: usize = 48;
 pub const MARKET_TRADE_ROW_LEN: usize = 48;
@@ -298,12 +302,10 @@ impl MarketTradePayloadSummary {
 
     pub fn ok(&self) -> bool {
         self.parse_errors.is_empty()
-            && self.status_flags
-                & (STATUS_WORKER_PANIC
-                    | STATUS_BRIDGE_UNAVAILABLE
-                    | STATUS_SOURCE_UNAVAILABLE
-                    | STATUS_PARTIAL_DATA)
-                == 0
+            && compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+                DOMAIN_ID,
+                self.status_flags,
+            ) == 0
             && self.partial_field_rows == 0
     }
 }
@@ -312,6 +314,7 @@ impl MarketTradePayloadSummary {
 pub struct MarketTradeStreamSummary {
     pub total_bytes: usize,
     pub record_count: u64,
+    pub domain_perf_records: u64,
     pub domain_data_records: u64,
     pub frame_end_records: u64,
     pub first_game_hour_raw: Option<i32>,
@@ -352,6 +355,7 @@ pub struct MarketTradeStreamSummary {
     pub payloads: Vec<MarketTradePayloadSummary>,
     pub parse_errors: Vec<String>,
     pub ordering_errors: Vec<String>,
+    pub boundary_errors: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2238,70 +2242,117 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
         ..MarketTradeStreamSummary::default()
     };
     let mut offset = 0usize;
-    let mut previous_sequence = None;
-    let mut frame_hours = BTreeSet::new();
-    let mut data_hours = BTreeSet::new();
+    let mut previous_sequence: Option<u64> = None;
+    let mut pending_perf_hour: Option<i32> = None;
+    let mut open_frame_hour: Option<i32> = None;
+    let mut last_closed_hour: Option<i32> = None;
+    let mut clean_closed_hours = BTreeSet::new();
+    let mut observed_closure_hours = BTreeSet::new();
+    let mut final_record_is_clean_frame_end = false;
+    let mut per_hour_perf = BTreeMap::<i32, u32>::new();
     let mut per_hour_data = BTreeMap::<i32, u32>::new();
 
     while offset < raw.len() {
-        if raw.len().saturating_sub(offset) < COMPACT_RECORD_HEADER_LEN {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: truncated compact record header"));
-            break;
-        }
-        let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
-        if &header[0..4] != COMPACT_RECORD_MAGIC {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: invalid compact record magic"));
-            break;
-        }
-        let version = read_u16_le(header, 4);
-        let header_len = read_u16_le(header, 6) as usize;
-        if version != COMPACT_RECORD_VERSION || header_len != COMPACT_RECORD_HEADER_LEN {
-            summary.parse_errors.push(format!(
-                "offset {offset}: unsupported compact record version {version} header_len {header_len}"
-            ));
-            break;
-        }
-        let sequence = read_u64_le(header, 8);
-        let game_hour_raw = read_i32_le(header, 16);
-        let domain_id = read_u16_le(header, 20);
-        let record_type = read_u16_le(header, 22);
-        let payload_len = read_u32_le(header, 24) as usize;
-        let reserved = read_u32_le(header, 28);
-        if reserved != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: compact record reserved field is nonzero"
-            ));
-        }
-        if let Some(previous) = previous_sequence {
-            if sequence <= previous {
-                summary.ordering_errors.push(format!(
-                    "offset {offset}: sequence {sequence} did not advance past {previous}"
-                ));
+        // Any byte after a clean closure means the physical EOF is no longer at
+        // that FRAME_END, even when the trailing bytes cannot form a header.
+        final_record_is_clean_frame_end = false;
+        let header = match parse_compact_record_header(&raw[offset..]) {
+            Ok(header) => header,
+            Err(RecordFramingError::TruncatedHeader(_)) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: truncated compact record header"));
+                break;
             }
+            Err(RecordFramingError::BadMagic) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: invalid compact record magic"));
+                break;
+            }
+            Err(err) => {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                break;
+            }
+        };
+        match previous_sequence {
+            None if header.sequence != 1 => summary.ordering_errors.push(format!(
+                "offset {offset}: sequence {} does not start at 1 (stream prefix is missing)",
+                header.sequence
+            )),
+            Some(previous) => match previous.checked_add(1) {
+                Some(expected) if header.sequence != expected => {
+                    summary.ordering_errors.push(format!(
+                        "offset {offset}: sequence discontinuity {previous} -> {} (expected {expected})",
+                        header.sequence
+                    ));
+                }
+                None => summary.ordering_errors.push(format!(
+                    "offset {offset}: sequence space exhausted after {previous}; got {} (wrapping is not allowed)",
+                    header.sequence
+                )),
+                _ => {}
+            },
+            _ => {}
         }
-        previous_sequence = Some(sequence);
+        previous_sequence = Some(header.sequence);
 
-        let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+        let record_len = header.record_len();
         if record_len > raw.len().saturating_sub(offset) {
             summary.parse_errors.push(format!(
-                "offset {offset}: payload length {payload_len} exceeds remaining stream bytes"
+                "offset {offset}: payload length {} exceeds remaining stream bytes",
+                header.payload_len
             ));
             break;
         }
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
-        let payload_end = payload_start + payload_len;
+        let payload_end = payload_start + header.payload_len;
         let payload = &raw[payload_start..payload_end];
+        let record_semantics_ok = match validate_compact_record_semantics(
+            header.domain_id,
+            header.record_type,
+            header.record_flags,
+            payload,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {error}"));
+                false
+            }
+        };
         summary.record_count = summary.record_count.saturating_add(1);
 
-        match record_type {
-            RECORD_TYPE_DOMAIN_DATA if domain_id == DOMAIN_ID => {
+        match header.record_type {
+            RECORD_TYPE_DOMAIN_PERF => {
+                observe_perf_hour(
+                    &mut summary,
+                    &mut pending_perf_hour,
+                    open_frame_hour,
+                    last_closed_hour,
+                    header.game_hour_raw,
+                    offset,
+                );
+                if header.domain_id == DOMAIN_ID {
+                    summary.domain_perf_records = summary.domain_perf_records.saturating_add(1);
+                    *per_hour_perf.entry(header.game_hour_raw).or_default() += 1;
+                    if record_semantics_ok {
+                        summary.status_flags_or |= read_u32_le(payload, 32);
+                    }
+                }
+            }
+            RECORD_TYPE_DOMAIN_DATA if header.domain_id == DOMAIN_ID => {
+                observe_data_hour(
+                    &mut summary,
+                    pending_perf_hour,
+                    &mut open_frame_hour,
+                    last_closed_hour,
+                    header.game_hour_raw,
+                    offset,
+                );
                 summary.domain_data_records = summary.domain_data_records.saturating_add(1);
-                data_hours.insert(game_hour_raw);
-                *per_hour_data.entry(game_hour_raw).or_default() += 1;
+                *per_hour_data.entry(header.game_hour_raw).or_default() += 1;
                 let payload_summary = decode_payload(offset, payload);
                 summary.status_flags_or |= payload_summary.status_flags;
                 summary.row_count_total = summary
@@ -2401,14 +2452,69 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                     .extend(payload_summary.parse_errors.iter().cloned());
                 summary.payloads.push(payload_summary);
             }
+            RECORD_TYPE_DOMAIN_DATA => {
+                observe_data_hour(
+                    &mut summary,
+                    pending_perf_hour,
+                    &mut open_frame_hour,
+                    last_closed_hour,
+                    header.game_hour_raw,
+                    offset,
+                );
+            }
             RECORD_TYPE_FRAME_END => {
                 summary.frame_end_records = summary.frame_end_records.saturating_add(1);
-                frame_hours.insert(game_hour_raw);
-                if payload.len() >= 28 {
+                let mut clean = record_semantics_ok;
+                if record_semantics_ok {
                     summary.status_flags_or |= read_u32_le(payload, 24);
                 }
+                match open_frame_hour {
+                    Some(open) if open == header.game_hour_raw => {
+                        if record_semantics_ok {
+                            observed_closure_hours.insert(header.game_hour_raw);
+                        }
+                    }
+                    Some(open) => {
+                        clean = false;
+                        summary.boundary_errors.push(format!(
+                            "offset {offset}: FRAME_END hour {} does not close open DATA frame hour {open}",
+                            header.game_hour_raw
+                        ));
+                    }
+                    None => {
+                        clean = false;
+                        summary.boundary_errors.push(format!(
+                            "offset {offset}: FRAME_END hour {} has no open DATA frame",
+                            header.game_hour_raw
+                        ));
+                    }
+                }
+                if let Some(closed) = last_closed_hour {
+                    match closed.checked_add(1) {
+                        Some(expected) if header.game_hour_raw == expected => {}
+                        Some(expected) => {
+                            clean = false;
+                            summary.boundary_errors.push(format!(
+                                "offset {offset}: FRAME_END hour {} does not follow closed frame hour {closed} (expected {expected})",
+                                header.game_hour_raw
+                            ));
+                        }
+                        None => {
+                            clean = false;
+                            summary.boundary_errors.push(format!(
+                                "offset {offset}: closed frame hour {closed} exhausted; another frame is forbidden"
+                            ));
+                        }
+                    }
+                }
+                if clean {
+                    clean_closed_hours.insert(header.game_hour_raw);
+                    open_frame_hour = None;
+                    pending_perf_hour = None;
+                    last_closed_hour = Some(header.game_hour_raw);
+                    final_record_is_clean_frame_end = true;
+                }
             }
-            RECORD_TYPE_DOMAIN_PERF | RECORD_TYPE_DOMAIN_DATA => {}
             other => summary.parse_errors.push(format!(
                 "offset {offset}: unknown compact record type {other}"
             )),
@@ -2416,19 +2522,132 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
         offset += record_len;
     }
 
-    let all_hours: BTreeSet<i32> = frame_hours.union(&data_hours).copied().collect();
-    summary.first_game_hour_raw = all_hours.first().copied();
-    summary.last_game_hour_raw = all_hours.last().copied();
-    summary.unique_game_hours = all_hours.len();
-    summary.skipped_game_hours = skipped_hours(&all_hours);
-    for (hour, count) in per_hour_data {
-        if count != 1 {
-            summary.parse_errors.push(format!(
-                "game_hour_raw {hour}: market_trade_live data record count {count} != 1"
+    if let Some(open) = open_frame_hour {
+        summary
+            .boundary_errors
+            .push(format!("stream ended with open DATA frame hour {open}"));
+    } else if let Some(pending) = pending_perf_hour {
+        summary.boundary_errors.push(format!(
+            "stream ended with pending PERF frame hour {pending} without DATA/FRAME_END"
+        ));
+    }
+    if !final_record_is_clean_frame_end {
+        summary
+            .boundary_errors
+            .push("stream is not closed by a final canonical FRAME_END record".to_string());
+    }
+
+    let mut certified_hours = BTreeSet::new();
+    for hour in clean_closed_hours {
+        let perf_count = per_hour_perf.get(&hour).copied().unwrap_or(0);
+        let data_count = per_hour_data.get(&hour).copied().unwrap_or(0);
+        if perf_count != 1 {
+            summary.boundary_errors.push(format!(
+                "game_hour_raw {hour}: market_trade_live PERF record count {perf_count} != 1"
             ));
         }
+        if data_count != 1 {
+            summary.boundary_errors.push(format!(
+                "game_hour_raw {hour}: market_trade_live DATA record count {data_count} != 1"
+            ));
+        }
+        if perf_count == 1 && data_count == 1 {
+            certified_hours.insert(hour);
+        }
     }
+    summary.first_game_hour_raw = certified_hours.first().copied();
+    summary.last_game_hour_raw = certified_hours.last().copied();
+    summary.unique_game_hours = certified_hours.len();
+    summary.skipped_game_hours = skipped_hours(&observed_closure_hours);
     summary
+}
+
+fn validate_next_frame_hour(
+    summary: &mut MarketTradeStreamSummary,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    record_label: &str,
+    offset: usize,
+) {
+    let Some(closed) = last_closed_hour else {
+        return;
+    };
+    match closed.checked_add(1) {
+        Some(expected) if game_hour_raw == expected => {}
+        Some(expected) => summary.boundary_errors.push(format!(
+            "offset {offset}: {record_label} hour {game_hour_raw} follows closed frame hour {closed}; expected {expected}"
+        )),
+        None => summary.boundary_errors.push(format!(
+            "offset {offset}: closed frame hour {closed} exhausted; another record is forbidden"
+        )),
+    }
+}
+
+fn observe_perf_hour(
+    summary: &mut MarketTradeStreamSummary,
+    pending_perf_hour: &mut Option<i32>,
+    open_frame_hour: Option<i32>,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    offset: usize,
+) {
+    match open_frame_hour {
+        Some(open) if open != game_hour_raw => summary.boundary_errors.push(format!(
+            "offset {offset}: DOMAIN_PERF hour {game_hour_raw} does not match open DATA frame hour {open}"
+        )),
+        Some(_) => {}
+        None => {
+            validate_next_frame_hour(
+                summary,
+                last_closed_hour,
+                game_hour_raw,
+                "DOMAIN_PERF",
+                offset,
+            );
+            match *pending_perf_hour {
+                Some(pending) if pending != game_hour_raw => {
+                    summary.boundary_errors.push(format!(
+                        "offset {offset}: DOMAIN_PERF hour {game_hour_raw} conflicts with pending frame hour {pending}"
+                    ));
+                }
+                Some(_) => {}
+                None => *pending_perf_hour = Some(game_hour_raw),
+            }
+        }
+    }
+}
+
+fn observe_data_hour(
+    summary: &mut MarketTradeStreamSummary,
+    pending_perf_hour: Option<i32>,
+    open_frame_hour: &mut Option<i32>,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    offset: usize,
+) {
+    match *open_frame_hour {
+        Some(open) if open != game_hour_raw => summary.boundary_errors.push(format!(
+            "offset {offset}: DOMAIN_DATA hour {game_hour_raw} encountered before FRAME_END closed open frame hour {open}"
+        )),
+        Some(_) => {}
+        None => {
+            validate_next_frame_hour(
+                summary,
+                last_closed_hour,
+                game_hour_raw,
+                "DOMAIN_DATA",
+                offset,
+            );
+            if let Some(pending) = pending_perf_hour {
+                if pending != game_hour_raw {
+                    summary.boundary_errors.push(format!(
+                        "offset {offset}: DOMAIN_DATA hour {game_hour_raw} conflicts with pending PERF hour {pending}"
+                    ));
+                }
+            }
+            *open_frame_hour = Some(game_hour_raw);
+        }
+    }
 }
 
 pub fn gate_compact_stream(raw: &[u8], min_game_hours: usize) -> MarketTradeGate {
@@ -2440,6 +2659,9 @@ pub fn gate_compact_stream(raw: &[u8], min_game_hours: usize) -> MarketTradeGate
     if !summary.ordering_errors.is_empty() {
         problems.push("ordering_errors");
     }
+    if !summary.boundary_errors.is_empty() {
+        problems.push("boundary_errors");
+    }
     if summary.domain_data_records == 0 {
         problems.push("no_market_trade_data_records");
     }
@@ -2449,17 +2671,41 @@ pub fn gate_compact_stream(raw: &[u8], min_game_hours: usize) -> MarketTradeGate
     if !summary.skipped_game_hours.is_empty() {
         problems.push("skipped_game_hours");
     }
-    if summary.status_flags_or & STATUS_WORKER_PANIC != 0 {
+    // Domain 43 has no lane-local aliases and no registered expected-partial
+    // tolerance. Applying the shared normalizer here covers owned DATA/PERF
+    // status and the FRAME_END aggregate status accumulated above without
+    // inventing a lane-local exemption.
+    let rejected_status =
+        compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+            DOMAIN_ID,
+            summary.status_flags_or,
+        );
+    if rejected_status & compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE != 0 {
+        problems.push("state_unavailable");
+    }
+    if rejected_status & compact_contract::COMPACT_STATUS_PROFILE_MISMATCH != 0 {
+        problems.push("profile_mismatch");
+    }
+    if rejected_status & compact_contract::COMPACT_STATUS_NO_CLOCK != 0 {
+        problems.push("no_clock");
+    }
+    if rejected_status & compact_contract::COMPACT_STATUS_NO_SCALAR_SOURCE != 0 {
+        problems.push("no_scalar_source");
+    }
+    if rejected_status & STATUS_WORKER_PANIC != 0 {
         problems.push("worker_panic");
     }
-    if summary.status_flags_or & STATUS_BRIDGE_UNAVAILABLE != 0 {
+    if rejected_status & STATUS_BRIDGE_UNAVAILABLE != 0 {
         problems.push("bridge_unavailable");
     }
-    if summary.status_flags_or & STATUS_SOURCE_UNAVAILABLE != 0 {
+    if rejected_status & STATUS_SOURCE_UNAVAILABLE != 0 {
         problems.push("source_unavailable");
     }
-    if summary.status_flags_or & STATUS_PARTIAL_DATA != 0 {
+    if rejected_status & STATUS_PARTIAL_DATA != 0 {
         problems.push("partial_data_status");
+    }
+    if rejected_status & compact_contract::COMPACT_STATUS_CONTROL_INVALID != 0 {
+        problems.push("control_invalid");
     }
     if summary.partial_field_rows_total != 0 {
         problems.push("missing_extractable_market_trade_rows");
@@ -2507,6 +2753,349 @@ fn read_i64_le(bytes: &[u8], offset: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn append_test_record_with_flags(
+        stream: &mut Vec<u8>,
+        sequence: u64,
+        domain_id: u16,
+        record_type: u16,
+        record_flags: u32,
+        payload: &[u8],
+    ) {
+        let record_start = stream.len();
+        append_compact_record(stream, sequence, 100, domain_id, record_type, payload);
+        stream[record_start + 28..record_start + 32].copy_from_slice(&record_flags.to_le_bytes());
+    }
+
+    fn canonical_perf_payload() -> Vec<u8> {
+        vec![0; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN]
+    }
+
+    fn canonical_perf_payload_with_status(status_flags: u32) -> Vec<u8> {
+        let mut payload = canonical_perf_payload();
+        payload[32..36].copy_from_slice(&status_flags.to_le_bytes());
+        payload
+    }
+
+    fn canonical_perf_payload_with_pdu1() -> Vec<u8> {
+        let name = b"rows";
+        let mut payload = canonical_perf_payload();
+        payload.extend_from_slice(compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC);
+        payload.extend_from_slice(
+            &compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION.to_le_bytes(),
+        );
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&7u64.to_le_bytes());
+        payload.extend_from_slice(name);
+        payload
+    }
+
+    fn canonical_frame_end_payload() -> [u8; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN] {
+        [0; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN]
+    }
+
+    fn canonical_frame_end_payload_with_status(
+        status_flags: u32,
+    ) -> [u8; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN] {
+        let mut payload = canonical_frame_end_payload();
+        payload[24..28].copy_from_slice(&status_flags.to_le_bytes());
+        payload
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum TestStatusSource {
+        Data,
+        Perf,
+        FrameEnd,
+    }
+
+    fn gate_with_status(source: TestStatusSource, status_flags: u32) -> MarketTradeGate {
+        let perf_status = matches!(source, TestStatusSource::Perf)
+            .then_some(status_flags)
+            .unwrap_or(0);
+        let data_status = matches!(source, TestStatusSource::Data)
+            .then_some(status_flags)
+            .unwrap_or(0);
+        let frame_status = matches!(source, TestStatusSource::FrameEnd)
+            .then_some(status_flags)
+            .unwrap_or(0);
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload_with_status(perf_status),
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_payload(0, data_status, 1, 1, &[MarketTradeRow::complete(1, 2, 3)]),
+        );
+        append_compact_record(
+            &mut stream,
+            3,
+            100,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload_with_status(frame_status),
+        );
+        gate_compact_stream(&stream, 1)
+    }
+
+    fn complete_market_payload(seed: u32) -> Vec<u8> {
+        encode_payload(
+            seed as u64,
+            0,
+            1,
+            1,
+            &[MarketTradeRow::complete(seed, 2, 3)],
+        )
+    }
+
+    fn append_complete_market_frame(stream: &mut Vec<u8>, next_sequence: &mut u64, hour: i32) {
+        append_compact_record(
+            stream,
+            *next_sequence,
+            hour,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        *next_sequence += 1;
+        append_compact_record(
+            stream,
+            *next_sequence,
+            hour,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &complete_market_payload(hour as u32),
+        );
+        *next_sequence += 1;
+        append_compact_record(
+            stream,
+            *next_sequence,
+            hour,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
+        *next_sequence += 1;
+    }
+
+    fn summarize_sequences(sequences: &[u64]) -> MarketTradeStreamSummary {
+        let mut stream = Vec::new();
+        for &sequence in sequences {
+            append_compact_record(
+                &mut stream,
+                sequence,
+                100,
+                DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_PERF,
+                &canonical_perf_payload(),
+            );
+        }
+        summarize_compact_stream(&stream)
+    }
+
+    fn summarize_perf_record(record_flags: u32, payload: &[u8]) -> MarketTradeStreamSummary {
+        let mut stream = Vec::new();
+        append_test_record_with_flags(
+            &mut stream,
+            1,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            record_flags,
+            payload,
+        );
+        summarize_compact_stream(&stream)
+    }
+
+    #[test]
+    fn compact_stream_rejects_missing_sequence_prefix() {
+        let summary = summarize_sequences(&[2]);
+
+        assert!(summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence 2 does not start at 1")));
+    }
+
+    #[test]
+    fn compact_stream_rejects_sequence_gap() {
+        let summary = summarize_sequences(&[1, 3]);
+
+        assert!(summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 1 -> 3 (expected 2)")));
+    }
+
+    #[test]
+    fn compact_stream_rejects_repeated_sequence() {
+        let summary = summarize_sequences(&[1, 1]);
+
+        assert!(summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 1 -> 1 (expected 2)")));
+    }
+
+    #[test]
+    fn compact_stream_rejects_sequence_regression() {
+        let summary = summarize_sequences(&[1, 2, 1]);
+
+        assert!(summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 2 -> 1 (expected 3)")));
+    }
+
+    #[test]
+    fn compact_stream_rejects_sequence_wrap_after_max() {
+        let summary = summarize_sequences(&[u64::MAX, 0]);
+
+        assert!(summary.ordering_errors.iter().any(|error| {
+            error.contains("sequence space exhausted after 18446744073709551615")
+                && error.contains("wrapping is not allowed")
+        }));
+    }
+
+    #[test]
+    fn record_flag_policy_accepts_canonical_schema_and_perf_flags() {
+        let mut stream = Vec::new();
+        append_test_record_with_flags(
+            &mut stream,
+            1,
+            45,
+            RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &[],
+        );
+        append_test_record_with_flags(
+            &mut stream,
+            2,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &canonical_perf_payload_with_pdu1(),
+        );
+
+        let summary = summarize_compact_stream(&stream);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn record_flag_policy_rejects_wrong_placement_and_unknown_bits() {
+        let mut stream = Vec::new();
+        append_test_record_with_flags(
+            &mut stream,
+            1,
+            45,
+            RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &canonical_perf_payload(),
+        );
+        append_test_record_with_flags(
+            &mut stream,
+            2,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            1 << 29,
+            &canonical_frame_end_payload(),
+        );
+
+        let summary = summarize_compact_stream(&stream);
+        let flag_errors = summary
+            .parse_errors
+            .iter()
+            .filter(|error| error.contains("record flags"))
+            .collect::<Vec<_>>();
+        assert_eq!(flag_errors.len(), 2, "{:?}", summary.parse_errors);
+        assert!(flag_errors.iter().any(|error| error.contains("0x80000000")));
+        assert!(flag_errors.iter().any(|error| error.contains("0x20000000")));
+    }
+
+    #[test]
+    fn record_semantics_accepts_exact_pdu1_trailer() {
+        let summary = summarize_perf_record(
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &canonical_perf_payload_with_pdu1(),
+        );
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn record_semantics_rejects_perf_trailer_flag_without_trailer() {
+        let summary = summarize_perf_record(
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &canonical_perf_payload(),
+        );
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("diagnostic trailer header is truncated")));
+    }
+
+    #[test]
+    fn record_semantics_rejects_unannounced_perf_trailer() {
+        let summary = summarize_perf_record(0, &canonical_perf_payload_with_pdu1());
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unannounced trailer byte")));
+    }
+
+    #[test]
+    fn record_semantics_rejects_malformed_pdu1_trailers() {
+        let mut bad_magic = canonical_perf_payload_with_pdu1();
+        bad_magic[compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN] = b'X';
+
+        let mut truncated_header = canonical_perf_payload_with_pdu1();
+        truncated_header.truncate(compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN + 4);
+
+        let mut nonzero_unit_reserved = canonical_perf_payload_with_pdu1();
+        nonzero_unit_reserved[compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN + 10] = 1;
+
+        for (payload, expected_error) in [
+            (bad_magic, "diagnostic trailer magic is invalid"),
+            (truncated_header, "diagnostic trailer header is truncated"),
+            (
+                nonzero_unit_reserved,
+                "diagnostic unit 0 reserved field is nonzero",
+            ),
+        ] {
+            let summary = summarize_perf_record(
+                compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+                &payload,
+            );
+            assert!(
+                summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains(expected_error)),
+                "expected {expected_error:?}, got {:?}",
+                summary.parse_errors
+            );
+        }
+    }
 
     #[test]
     fn payload_roundtrip_accepts_complete_purchase_contract_rows() {
@@ -2607,10 +3196,25 @@ mod tests {
             1,
             100,
             DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            100,
+            DOMAIN_ID,
             RECORD_TYPE_DOMAIN_DATA,
             &payload,
         );
-        append_compact_record(&mut stream, 2, 100, 0, RECORD_TYPE_FRAME_END, &[]);
+        append_compact_record(
+            &mut stream,
+            3,
+            100,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
 
         let gate = gate_compact_stream(&stream, 1);
 
@@ -2741,7 +3345,14 @@ mod tests {
             RECORD_TYPE_DOMAIN_DATA,
             &payload,
         );
-        append_compact_record(&mut stream, 2, 100, 0, RECORD_TYPE_FRAME_END, &[]);
+        append_compact_record(
+            &mut stream,
+            2,
+            100,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
         let summary = summarize_compact_stream(&stream);
         assert!(
             summary.parse_errors.is_empty(),
@@ -2857,6 +3468,437 @@ mod tests {
     }
 
     #[test]
+    fn canonical_failure_bits_fail_from_data_perf_and_frame_end_status() {
+        let fatal_cases = [
+            (
+                compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE,
+                "state_unavailable",
+            ),
+            (
+                compact_contract::COMPACT_STATUS_PROFILE_MISMATCH,
+                "profile_mismatch",
+            ),
+            (compact_contract::COMPACT_STATUS_NO_CLOCK, "no_clock"),
+            (
+                compact_contract::COMPACT_STATUS_NO_SCALAR_SOURCE,
+                "no_scalar_source",
+            ),
+            (
+                compact_contract::COMPACT_STATUS_WORKER_PANIC,
+                "worker_panic",
+            ),
+            (
+                compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE,
+                "bridge_unavailable",
+            ),
+            (
+                compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                "source_unavailable",
+            ),
+            (
+                compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+                "partial_data_status",
+            ),
+            (
+                compact_contract::COMPACT_STATUS_CONTROL_INVALID,
+                "control_invalid",
+            ),
+        ];
+        assert_eq!(
+            fatal_cases.iter().fold(0u32, |mask, (flag, _)| mask | flag),
+            compact_contract::COMPACT_STATUS_FAILURE_MASK
+        );
+
+        for source in [
+            TestStatusSource::Data,
+            TestStatusSource::Perf,
+            TestStatusSource::FrameEnd,
+        ] {
+            for (flag, expected_problem) in fatal_cases {
+                let gate = gate_with_status(source, flag);
+                assert!(
+                    !gate.ok && gate.problems.contains(&expected_problem),
+                    "{source:?} flag {flag:#x}: {:?}",
+                    gate.problems
+                );
+                assert_eq!(gate.summary.status_flags_or, flag, "{source:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn informational_status_is_nonfatal_and_d43_has_no_partial_tolerance() {
+        assert_eq!(compact_contract::lane_local_status_mask(DOMAIN_ID), 0);
+        assert_eq!(
+            compact_contract::expected_partial_tolerance(DOMAIN_ID),
+            None
+        );
+        assert_eq!(
+            compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+                DOMAIN_ID,
+                compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+            ),
+            compact_contract::COMPACT_STATUS_PARTIAL_DATA
+        );
+
+        let informational = compact_contract::COMPACT_STATUS_WAR_BRIDGE_APPLIED
+            | compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE
+            | compact_contract::COMPACT_STATUS_DELTA_DATA
+            | compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET
+            | compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT;
+        assert_eq!(
+            informational & compact_contract::COMPACT_STATUS_FAILURE_MASK,
+            0
+        );
+        for source in [
+            TestStatusSource::Data,
+            TestStatusSource::Perf,
+            TestStatusSource::FrameEnd,
+        ] {
+            let gate = gate_with_status(source, informational);
+            assert!(gate.ok, "{source:?}: {:?}", gate.problems);
+            assert_eq!(gate.summary.status_flags_or, informational, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn compact_stream_gate_rejects_market_data_without_frame_end() {
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            20,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            20,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &complete_market_payload(1),
+        );
+
+        let gate = gate_compact_stream(&stream, 1);
+
+        assert!(!gate.ok);
+        assert!(gate.problems.contains(&"boundary_errors"));
+        assert_eq!(gate.summary.unique_game_hours, 0);
+        assert!(gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| error.contains("open DATA frame hour 20")));
+        assert!(gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| error.contains("final canonical FRAME_END")));
+    }
+
+    #[test]
+    fn bare_and_unrelated_frames_cannot_inflate_market_duration() {
+        let mut bare = Vec::new();
+        append_compact_record(
+            &mut bare,
+            1,
+            20,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
+        let bare_gate = gate_compact_stream(&bare, 1);
+        assert!(!bare_gate.ok);
+        assert_eq!(bare_gate.summary.unique_game_hours, 0);
+        assert!(bare_gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| error.contains("has no open DATA frame")));
+
+        let mut unrelated = Vec::new();
+        append_compact_record(
+            &mut unrelated,
+            1,
+            20,
+            18,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        append_compact_record(
+            &mut unrelated,
+            2,
+            20,
+            18,
+            RECORD_TYPE_DOMAIN_DATA,
+            &[0xde, 0xad, 0xbe, 0xef],
+        );
+        append_compact_record(
+            &mut unrelated,
+            3,
+            20,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
+        let unrelated_gate = gate_compact_stream(&unrelated, 1);
+        assert!(!unrelated_gate.ok);
+        assert_eq!(unrelated_gate.summary.unique_game_hours, 0);
+        assert!(unrelated_gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| { error.contains("market_trade_live PERF record count 0 != 1") }));
+        assert!(unrelated_gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| { error.contains("market_trade_live DATA record count 0 != 1") }));
+    }
+
+    #[test]
+    fn compact_stream_gate_requires_exactly_one_market_perf_and_data_per_frame() {
+        for (name, perf_count, data_count, expected) in [
+            ("missing_perf", 0usize, 1usize, "PERF record count 0 != 1"),
+            ("duplicate_perf", 2, 1, "PERF record count 2 != 1"),
+            ("missing_data", 1, 0, "DATA record count 0 != 1"),
+            ("duplicate_data", 1, 2, "DATA record count 2 != 1"),
+        ] {
+            let mut stream = Vec::new();
+            let mut sequence = 1u64;
+            for _ in 0..perf_count {
+                append_compact_record(
+                    &mut stream,
+                    sequence,
+                    30,
+                    DOMAIN_ID,
+                    RECORD_TYPE_DOMAIN_PERF,
+                    &canonical_perf_payload(),
+                );
+                sequence += 1;
+            }
+            for data_index in 0..data_count {
+                append_compact_record(
+                    &mut stream,
+                    sequence,
+                    30,
+                    DOMAIN_ID,
+                    RECORD_TYPE_DOMAIN_DATA,
+                    &complete_market_payload(data_index as u32 + 1),
+                );
+                sequence += 1;
+            }
+            if data_count == 0 {
+                append_compact_record(
+                    &mut stream,
+                    sequence,
+                    30,
+                    18,
+                    RECORD_TYPE_DOMAIN_DATA,
+                    &[0xaa],
+                );
+                sequence += 1;
+            }
+            append_compact_record(
+                &mut stream,
+                sequence,
+                30,
+                compact_contract::COMPACT_DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                &canonical_frame_end_payload(),
+            );
+
+            let gate = gate_compact_stream(&stream, 1);
+            assert!(!gate.ok, "{name} unexpectedly passed");
+            assert_eq!(gate.summary.unique_game_hours, 0, "{name}");
+            assert!(
+                gate.summary
+                    .boundary_errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "{name}: expected {expected:?}, got {:?}",
+                gate.summary.boundary_errors
+            );
+        }
+    }
+
+    #[test]
+    fn compact_stream_gate_rejects_wrong_hour_perf() {
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            40,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            41,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &complete_market_payload(1),
+        );
+        append_compact_record(
+            &mut stream,
+            3,
+            41,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
+
+        let gate = gate_compact_stream(&stream, 1);
+
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| error.contains("conflicts with pending PERF hour 40")));
+        assert_eq!(gate.summary.unique_game_hours, 0);
+    }
+
+    #[test]
+    fn compact_stream_gate_rejects_skipped_and_reordered_closures() {
+        let mut skipped = Vec::new();
+        let mut sequence = 1;
+        append_complete_market_frame(&mut skipped, &mut sequence, 50);
+        append_complete_market_frame(&mut skipped, &mut sequence, 52);
+        let skipped_gate = gate_compact_stream(&skipped, 2);
+        assert!(!skipped_gate.ok);
+        assert_eq!(skipped_gate.summary.skipped_game_hours, vec![51]);
+        assert!(skipped_gate.summary.boundary_errors.iter().any(|error| {
+            error.contains("FRAME_END hour 52 does not follow closed frame hour 50")
+        }));
+
+        let mut reordered = Vec::new();
+        append_compact_record(
+            &mut reordered,
+            1,
+            60,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        append_compact_record(
+            &mut reordered,
+            2,
+            60,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &complete_market_payload(1),
+        );
+        append_compact_record(
+            &mut reordered,
+            3,
+            59,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
+        let reordered_gate = gate_compact_stream(&reordered, 1);
+        assert!(!reordered_gate.ok);
+        assert!(reordered_gate.summary.boundary_errors.iter().any(|error| {
+            error.contains("FRAME_END hour 59 does not close open DATA frame hour 60")
+        }));
+    }
+
+    #[test]
+    fn compact_stream_gate_rejects_trailing_record_after_clean_frame() {
+        let mut stream = Vec::new();
+        let mut sequence = 1;
+        append_complete_market_frame(&mut stream, &mut sequence, 70);
+        append_compact_record(
+            &mut stream,
+            sequence,
+            71,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+
+        let gate = gate_compact_stream(&stream, 1);
+
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| error.contains("pending PERF frame hour 71")));
+        assert!(gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| error.contains("final canonical FRAME_END")));
+
+        let mut trailing_bytes = Vec::new();
+        let mut sequence = 1;
+        append_complete_market_frame(&mut trailing_bytes, &mut sequence, 70);
+        trailing_bytes.extend_from_slice(&[0xaa, 0xbb]);
+        let byte_tail_gate = gate_compact_stream(&trailing_bytes, 1);
+        assert!(!byte_tail_gate.ok);
+        assert!(byte_tail_gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("truncated compact record header")));
+        assert!(byte_tail_gate
+            .summary
+            .boundary_errors
+            .iter()
+            .any(|error| error.contains("final canonical FRAME_END")));
+    }
+
+    #[test]
+    fn unowned_domain_payload_is_ignored_inside_valid_market_frame() {
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            80,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            80,
+            18,
+            RECORD_TYPE_DOMAIN_DATA,
+            &[0xde, 0xad, 0xbe, 0xef],
+        );
+        append_compact_record(
+            &mut stream,
+            3,
+            80,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &complete_market_payload(1),
+        );
+        append_compact_record(
+            &mut stream,
+            4,
+            80,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
+
+        let gate = gate_compact_stream(&stream, 1);
+
+        assert!(gate.ok, "{:?}", gate.summary);
+        assert_eq!(gate.summary.unique_game_hours, 1);
+        assert_eq!(gate.summary.domain_perf_records, 1);
+        assert_eq!(gate.summary.domain_data_records, 1);
+    }
+
+    #[test]
     fn compact_stream_gate_requires_hourly_unskipped_data() {
         let payload_a = encode_payload(0, 0, 1, 1, &[MarketTradeRow::complete(1, 2, 3)]);
         let payload_b = encode_payload(1, 0, 1, 1, &[MarketTradeRow::complete(2, 2, 3)]);
@@ -2866,19 +3908,49 @@ mod tests {
             1,
             10,
             DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            10,
+            DOMAIN_ID,
             RECORD_TYPE_DOMAIN_DATA,
             &payload_a,
         );
-        append_compact_record(&mut stream, 2, 10, 0, RECORD_TYPE_FRAME_END, &[]);
         append_compact_record(
             &mut stream,
             3,
+            10,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
+        append_compact_record(
+            &mut stream,
+            4,
+            12,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &canonical_perf_payload(),
+        );
+        append_compact_record(
+            &mut stream,
+            5,
             12,
             DOMAIN_ID,
             RECORD_TYPE_DOMAIN_DATA,
             &payload_b,
         );
-        append_compact_record(&mut stream, 4, 12, 0, RECORD_TYPE_FRAME_END, &[]);
+        append_compact_record(
+            &mut stream,
+            6,
+            12,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &canonical_frame_end_payload(),
+        );
 
         let gate = gate_compact_stream(&stream, 2);
 
@@ -2890,7 +3962,7 @@ mod tests {
     #[test]
     fn compact_stream_gate_accepts_complete_consecutive_hours() {
         let mut stream = Vec::new();
-        for (sequence, hour) in [(1, 20), (3, 21), (5, 22)] {
+        for (sequence, hour) in [(1, 20), (4, 21), (7, 22)] {
             let payload = encode_payload(
                 sequence,
                 0,
@@ -2903,16 +3975,24 @@ mod tests {
                 sequence,
                 hour,
                 DOMAIN_ID,
-                RECORD_TYPE_DOMAIN_DATA,
-                &payload,
+                RECORD_TYPE_DOMAIN_PERF,
+                &canonical_perf_payload(),
             );
             append_compact_record(
                 &mut stream,
                 sequence + 1,
                 hour,
-                0,
+                DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            append_compact_record(
+                &mut stream,
+                sequence + 2,
+                hour,
+                compact_contract::COMPACT_DOMAIN_FRAME,
                 RECORD_TYPE_FRAME_END,
-                &[],
+                &canonical_frame_end_payload(),
             );
         }
 

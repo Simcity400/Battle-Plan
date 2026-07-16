@@ -1,6 +1,18 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import templates_equipment_catalog_gate as gate
+
+
+def test_vanilla_only_is_explicit_and_removes_mod_inputs():
+    args = SimpleNamespace(
+        vanilla_only=True,
+        mod=Path("would-have-been-a-mod"),
+        mod_descriptor=Path("would-have-been-a-descriptor.mod"),
+    )
+    gate.apply_layer_mode(args)
+    assert args.mod is None
+    assert args.mod_descriptor is None
 
 
 def test_division_template_grid_and_support_parse(tmp_path: Path):

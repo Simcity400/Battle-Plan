@@ -181,8 +181,16 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     summary.data_rows_total = row_count as u64;
     summary.data_changed_rows_total = changed_rows as u64;
     add_unit(&mut summary, "occupation_state_rows", row_count);
-    add_unit(&mut summary, "occupation_observed_state_rows", observed_state_rows);
-    add_unit(&mut summary, "occupation_occupied_state_rows", occupied_state_rows);
+    add_unit(
+        &mut summary,
+        "occupation_observed_state_rows",
+        observed_state_rows,
+    );
+    add_unit(
+        &mut summary,
+        "occupation_occupied_state_rows",
+        occupied_state_rows,
+    );
     add_unit(&mut summary, "occupation_wall_badge_rows", wall_badge_rows);
     add_unit(&mut summary, "occupation_law_token_rows", law_token_rows);
     add_unit(
@@ -260,8 +268,20 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             occupied_country_tag_db_id,
             flags & ROW_FLAG_OCCUPIED_TAG_DERIVED != 0,
         );
-        validate_fixed(offset, &mut summary, "resistance", row_index, resistance_raw);
-        validate_fixed(offset, &mut summary, "compliance", row_index, compliance_raw);
+        validate_fixed(
+            offset,
+            &mut summary,
+            "resistance",
+            row_index,
+            resistance_raw,
+        );
+        validate_fixed(
+            offset,
+            &mut summary,
+            "compliance",
+            row_index,
+            compliance_raw,
+        );
         validate_fixed(
             offset,
             &mut summary,
@@ -568,7 +588,11 @@ mod tests {
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(32, &payload);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         assert_eq!(summary.data_rows_total, 1);
         assert_eq!(
             summary
@@ -626,7 +650,11 @@ mod tests {
             &rows,
         );
         let summary = decode_payload(0, &payload);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         assert_eq!(summary.status_flags_or, STATUS_DELTA_DATA);
     }
 
@@ -681,7 +709,11 @@ mod tests {
             &[row],
         );
         let summary = decode_payload(32, &payload);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         assert_eq!(
             summary
                 .data_units_total
@@ -720,7 +752,11 @@ mod tests {
     fn accepts_measured_garrison_scalar_rows() {
         let payload = encode_payload(&garrison_scalar_header(2), &[garrison_scalar_row()]);
         let summary = decode_payload(32, &payload);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         assert_eq!(
             summary
                 .data_units_total
@@ -797,15 +833,18 @@ mod tests {
         let mut header = garrison_scalar_header(0);
         header.occupied_state_rows = 0;
         let summary = decode_payload(32, &encode_payload(&header, &[row]));
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]
     fn rejects_garrison_scalars_without_controller() {
         let mut row = garrison_scalar_row();
-        row.flags &= !(ROW_FLAG_CONTROLLER
-            | ROW_FLAG_OCCUPIED_TAG_DERIVED
-            | ROW_FLAG_OCCUPIED_STATE);
+        row.flags &=
+            !(ROW_FLAG_CONTROLLER | ROW_FLAG_OCCUPIED_TAG_DERIVED | ROW_FLAG_OCCUPIED_STATE);
         row.controller_tag_db_id = 0;
         row.occupied_country_tag_db_id = 0;
         let mut header = garrison_scalar_header(0);

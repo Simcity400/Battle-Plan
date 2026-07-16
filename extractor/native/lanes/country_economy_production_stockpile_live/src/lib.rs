@@ -13,6 +13,7 @@ pub const DOMAIN_STOCKPILE_VARIANT_DEFS: u16 = 37;
 pub const DOMAIN_STOCKPILE_VARIANT_UPGRADES: u16 = 40;
 pub const DOMAIN_GAP_BADGES: u16 = 611;
 pub const DOMAIN_FRAME: u16 = 1000;
+const RC_PROBE_DOMAIN_ID: u16 = 250;
 
 pub const PROPOSED_DOMAIN_PRODUCTION_LINE_DEMAND: u16 = 612;
 pub const PROPOSED_DOMAIN_COUNTRY_RESOURCE_FLOWS: u16 = 613;
@@ -20,11 +21,11 @@ pub const PROPOSED_DOMAIN_DEPLOYMENT_QUEUES: u16 = 614;
 pub const PROPOSED_DOMAIN_COUNTRY_ECONOMY_EFFECTS: u16 = 615;
 pub const PROPOSED_DOMAIN_MIO_DESIGN_JOINS: u16 = 616;
 
-pub const STATUS_WORKER_PANIC: u32 = 1 << 6;
-pub const STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
-pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
-pub const STATUS_DELTA_DATA: u32 = 1 << 10;
+pub const STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
+pub const STATUS_BRIDGE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
+pub const STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
+pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
+pub const STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
 
 pub const FUEL_SCALE_RAW: u32 = 32768;
 pub const PRODUCTION_SCALE_RAW: u32 = 100000;
@@ -163,6 +164,7 @@ pub struct CompactStreamSummary {
     pub unique_hours: Vec<i32>,
     pub skipped_hours: i64,
     pub status_flags_or: u32,
+    pub failure_status_flags_or: u32,
     pub ordered: bool,
     pub parse_errors: Vec<String>,
     pub ordering_errors: Vec<String>,
@@ -170,6 +172,8 @@ pub struct CompactStreamSummary {
     pub frame_hour_counts: BTreeMap<i32, u64>,
     pub per_hour_perf_domain_counts: BTreeMap<i32, BTreeMap<u16, u64>>,
     pub per_hour_data_domain_counts: BTreeMap<i32, BTreeMap<u16, u64>>,
+    pub per_hour_perf_row_cardinality: BTreeMap<i32, BTreeMap<u16, (u64, u64)>>,
+    pub per_hour_data_row_cardinality: BTreeMap<i32, BTreeMap<u16, (u64, u64)>>,
     pub per_domain: BTreeMap<u16, DomainSummary>,
 }
 
@@ -217,6 +221,22 @@ pub fn default_expected_domains() -> Vec<u16> {
         DOMAIN_STOCKPILE_VARIANT_DEFS,
         DOMAIN_STOCKPILE_VARIANT_UPGRADES,
     ]
+}
+
+fn is_lane_owned_data_domain(domain_id: u16) -> bool {
+    matches!(
+        domain_id,
+        DOMAIN_FUEL
+            | DOMAIN_PRODUCTION
+            | DOMAIN_STOCKPILE_VARIANT_DEFS
+            | DOMAIN_STOCKPILE_VARIANT_UPGRADES
+            | DOMAIN_GAP_BADGES
+    )
+}
+
+fn is_owned_perf_authority_domain(domain_id: u16) -> bool {
+    is_lane_owned_data_domain(domain_id)
+        || compact_contract::assigned_descriptor_by_id(domain_id).is_some()
 }
 
 pub fn encode_fuel_payload(elapsed_wall_ms: u64, status_flags: u32, rows: &[FuelRow]) -> Vec<u8> {
@@ -512,17 +532,14 @@ pub fn gate_compact_stream(raw: &[u8], expected_domains: &[u16]) -> LaneGate {
         &summary.frame_hour_counts,
         &summary.per_hour_perf_domain_counts,
         &summary.per_hour_data_domain_counts,
+        &summary.per_hour_perf_row_cardinality,
+        &summary.per_hour_data_row_cardinality,
         expected_domains,
     );
     let ok = summary.parse_errors.is_empty()
         && summary.ordering_errors.is_empty()
         && summary.coverage_errors.is_empty()
-        && summary.status_flags_or
-            & (STATUS_WORKER_PANIC
-                | STATUS_BRIDGE_UNAVAILABLE
-                | STATUS_SOURCE_UNAVAILABLE
-                | STATUS_PARTIAL_DATA)
-            == 0;
+        && summary.failure_status_flags_or == 0;
     LaneGate {
         ok,
         expected_domains: expected_domains.to_vec(),
@@ -537,70 +554,188 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
         ..CompactStreamSummary::default()
     };
     let mut offset = 0usize;
-    let mut previous_sequence = None;
+    let mut previous_sequence: Option<u64> = None;
+    let mut pending_perf_hour: Option<i32> = None;
+    let mut open_frame_hour: Option<i32> = None;
+    let mut last_closed_hour: Option<i32> = None;
+    let mut final_record_is_clean_frame_end = false;
+    let mut observed_perf_status_or_by_hour = BTreeMap::<i32, u32>::new();
+    let mut observed_owned_perf_roster_by_hour = BTreeMap::<i32, BTreeSet<u16>>::new();
+    let mut observed_lane_perf_status_by_hour_domain = BTreeMap::<i32, BTreeMap<u16, u32>>::new();
 
     while offset < raw.len() {
         let remaining = raw.len().saturating_sub(offset);
-        if remaining < COMPACT_RECORD_HEADER_LEN {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: truncated compact header"));
-            break;
-        }
-        let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
-        if &header[0..4] != COMPACT_RECORD_MAGIC {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: invalid compact magic"));
-            break;
-        }
-        let version = read_u16_le(header, 4);
-        let header_len = read_u16_le(header, 6) as usize;
-        if version != COMPACT_RECORD_VERSION || header_len != COMPACT_RECORD_HEADER_LEN {
-            summary.parse_errors.push(format!(
-                "offset {offset}: unsupported compact header version {version} length {header_len}"
-            ));
-            break;
-        }
-        let sequence = read_u64_le(header, 8);
-        let game_hour_raw = read_i32_le(header, 16);
-        let domain_id = read_u16_le(header, 20);
-        let record_type = read_u16_le(header, 22);
-        let payload_len = read_u32_le(header, 24) as usize;
-        let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+        let header = match compact_contract::parse_compact_record_header(&raw[offset..]) {
+            Ok(header) => header,
+            Err(compact_contract::RecordFramingError::TruncatedHeader(_)) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: truncated compact header"));
+                break;
+            }
+            Err(compact_contract::RecordFramingError::BadMagic) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: invalid compact magic"));
+                break;
+            }
+            Err(error) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {error}"));
+                break;
+            }
+        };
+        let sequence = header.sequence;
+        let game_hour_raw = header.game_hour_raw;
+        let domain_id = header.domain_id;
+        let record_type = header.record_type;
+        let payload_len = header.payload_len;
+        let record_len = header.record_len();
         if record_len > remaining {
             summary.parse_errors.push(format!(
                 "offset {offset}: payload length {payload_len} exceeds remaining stream bytes"
             ));
             break;
         }
-        if let Some(previous) = previous_sequence {
-            if sequence <= previous {
+        match previous_sequence {
+            None if sequence != 1 => {
                 summary.ordered = false;
                 summary.ordering_errors.push(format!(
-                    "offset {offset}: sequence {sequence} did not advance past {previous}"
+                    "offset {offset}: sequence {sequence} does not start at 1 (stream prefix is missing)"
                 ));
             }
+            Some(previous) => match previous.checked_add(1) {
+                Some(expected) if sequence != expected => {
+                    summary.ordered = false;
+                    summary.ordering_errors.push(format!(
+                        "offset {offset}: sequence discontinuity {previous} -> {sequence} (expected {expected})"
+                    ));
+                }
+                None => {
+                    summary.ordered = false;
+                    summary.ordering_errors.push(format!(
+                        "offset {offset}: sequence space exhausted after {previous}; got {sequence} (wrapping is not allowed)"
+                    ));
+                }
+                _ => {}
+            },
+            _ => {}
         }
         previous_sequence = Some(sequence);
+        final_record_is_clean_frame_end = false;
 
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
         let payload_end = payload_start + payload_len;
         let payload = &raw[payload_start..payload_end];
+        let record_semantics_ok = match compact_contract::validate_compact_record_semantics(
+            domain_id,
+            record_type,
+            header.record_flags,
+            payload,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {error}"));
+                false
+            }
+        };
+        // Domain 250 carries instrumentation-only PERF records. The recorder
+        // excludes it from stream/domain/frame cardinality, while sequence and
+        // envelope semantics still cover it above.
+        if record_type == RECORD_TYPE_DOMAIN_PERF && domain_id == RC_PROBE_DOMAIN_ID {
+            offset = offset.saturating_add(record_len);
+            continue;
+        }
         summary.record_count = summary.record_count.saturating_add(1);
         summary.total_payload_bytes = summary.total_payload_bytes.saturating_add(payload_len);
         summary.max_payload_len = summary.max_payload_len.max(payload_len);
 
         match record_type {
             RECORD_TYPE_DOMAIN_PERF => {
-                decode_domain_perf(offset, game_hour_raw, domain_id, payload, &mut summary);
+                let owned_perf_authority = is_owned_perf_authority_domain(domain_id);
+                if !owned_perf_authority {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: unassigned domain {domain_id} DOMAIN_PERF cannot contribute frame authority"
+                    ));
+                }
+                if record_semantics_ok {
+                    let status_flags = read_u32_le(payload, 32);
+                    if owned_perf_authority {
+                        let inserted = observed_owned_perf_roster_by_hour
+                            .entry(game_hour_raw)
+                            .or_default()
+                            .insert(domain_id);
+                        if !inserted {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: duplicate owned DOMAIN_PERF for domain {domain_id} in hour {game_hour_raw}"
+                            ));
+                        }
+                        *observed_perf_status_or_by_hour
+                            .entry(game_hour_raw)
+                            .or_default() |= status_flags;
+                    }
+                    if is_lane_owned_data_domain(domain_id) {
+                        observed_lane_perf_status_by_hour_domain
+                            .entry(game_hour_raw)
+                            .or_default()
+                            .entry(domain_id)
+                            .or_insert(status_flags);
+                    }
+                    decode_domain_perf(offset, game_hour_raw, domain_id, payload, &mut summary);
+                    increment_hour_domain_cardinality(
+                        &mut summary.per_hour_perf_row_cardinality,
+                        game_hour_raw,
+                        domain_id,
+                        read_u32_le(payload, 16) as u64,
+                        read_u32_le(payload, 20) as u64,
+                    );
+                }
                 increment_hour_domain(
                     &mut summary.per_hour_perf_domain_counts,
                     game_hour_raw,
                     domain_id,
                 );
+                observe_perf_hour(
+                    &mut summary,
+                    &mut pending_perf_hour,
+                    open_frame_hour,
+                    last_closed_hour,
+                    game_hour_raw,
+                    offset,
+                );
             }
             RECORD_TYPE_DOMAIN_DATA => {
+                if record_semantics_ok && is_lane_owned_data_domain(domain_id) {
+                    match observed_lane_perf_status_by_hour_domain
+                        .get(&game_hour_raw)
+                        .and_then(|domains| domains.get(&domain_id))
+                        .copied()
+                    {
+                        Some(perf_status_flags) if payload.len() >= 20 => {
+                            let data_status_flags = read_u32_le(payload, 16);
+                            if perf_status_flags != data_status_flags {
+                                summary.parse_errors.push(format!(
+                                    "offset {offset}: domain {domain_id} DOMAIN_DATA status {data_status_flags:#010x} != preceding same-hour DOMAIN_PERF status {perf_status_flags:#010x}"
+                                ));
+                            }
+                        }
+                        Some(_) => {}
+                        None => summary.parse_errors.push(format!(
+                            "offset {offset}: lane-owned domain {domain_id} DOMAIN_DATA has no preceding same-hour DOMAIN_PERF authority"
+                        )),
+                    }
+                }
+                observe_data_hour(
+                    &mut summary,
+                    pending_perf_hour,
+                    &mut open_frame_hour,
+                    last_closed_hour,
+                    game_hour_raw,
+                    offset,
+                );
                 let domain = domain_entry(&mut summary, domain_id);
                 domain.record_count = domain.record_count.saturating_add(1);
                 domain.data_record_count = domain.data_record_count.saturating_add(1);
@@ -609,26 +744,131 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                     game_hour_raw,
                     domain_id,
                 );
-                match domain_id {
-                    DOMAIN_FUEL => decode_fuel_payload(offset, payload, &mut summary),
-                    DOMAIN_PRODUCTION => decode_production_payload(offset, payload, &mut summary),
-                    DOMAIN_STOCKPILE_VARIANT_DEFS => {
-                        decode_variant_defs_payload(offset, payload, domain_id, &mut summary)
+                if record_semantics_ok {
+                    if matches!(
+                        domain_id,
+                        DOMAIN_FUEL
+                            | DOMAIN_PRODUCTION
+                            | DOMAIN_STOCKPILE_VARIANT_DEFS
+                            | DOMAIN_STOCKPILE_VARIANT_UPGRADES
+                            | DOMAIN_GAP_BADGES
+                    ) && payload.len() >= 16
+                    {
+                        increment_hour_domain_cardinality(
+                            &mut summary.per_hour_data_row_cardinality,
+                            game_hour_raw,
+                            domain_id,
+                            read_u32_le(payload, 8) as u64,
+                            read_u32_le(payload, 12) as u64,
+                        );
                     }
-                    DOMAIN_STOCKPILE_VARIANT_UPGRADES => {
-                        decode_variant_upgrades_payload(offset, payload, domain_id, &mut summary)
+                    match domain_id {
+                        DOMAIN_FUEL => decode_fuel_payload(offset, payload, &mut summary),
+                        DOMAIN_PRODUCTION => {
+                            decode_production_payload(offset, payload, &mut summary)
+                        }
+                        DOMAIN_STOCKPILE_VARIANT_DEFS => {
+                            decode_variant_defs_payload(offset, payload, domain_id, &mut summary)
+                        }
+                        DOMAIN_STOCKPILE_VARIANT_UPGRADES => decode_variant_upgrades_payload(
+                            offset,
+                            payload,
+                            domain_id,
+                            &mut summary,
+                        ),
+                        DOMAIN_GAP_BADGES => {
+                            decode_gap_badges_payload(offset, payload, domain_id, &mut summary)
+                        }
+                        _ => {}
                     }
-                    DOMAIN_GAP_BADGES => {
-                        decode_gap_badges_payload(offset, payload, domain_id, &mut summary)
-                    }
-                    _ => {}
                 }
             }
             RECORD_TYPE_FRAME_END => {
                 summary.frame_end_record_count = summary.frame_end_record_count.saturating_add(1);
                 *summary.frame_hour_counts.entry(game_hour_raw).or_default() += 1;
-                if payload.len() >= 28 {
-                    summary.status_flags_or |= read_u32_le(payload, 24);
+                let mut clean = record_semantics_ok;
+                if record_semantics_ok {
+                    let emitted_domains = read_u32_le(payload, 16);
+                    let scheduled_domains = read_u32_le(payload, 20);
+                    let status_flags = read_u32_le(payload, 24);
+                    let reserved = read_u32_le(payload, 28);
+                    clean &= observe_status_flags(
+                        &mut summary,
+                        DOMAIN_FRAME,
+                        "FRAME_END",
+                        offset,
+                        status_flags,
+                    );
+                    let observed_perf_status_or = observed_perf_status_or_by_hour
+                        .get(&game_hour_raw)
+                        .copied()
+                        .unwrap_or(0);
+                    if status_flags != observed_perf_status_or {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_END status {status_flags:#010x} != OR of independently observed owned DOMAIN_PERF statuses {observed_perf_status_or:#010x}"
+                        ));
+                    }
+                    let observed_owned_perf_domains = observed_owned_perf_roster_by_hour
+                        .get(&game_hour_raw)
+                        .map(|domains| domains.len())
+                        .unwrap_or(0);
+                    if usize::try_from(emitted_domains).ok() != Some(observed_owned_perf_domains) {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_END emitted_domains {emitted_domains} != independently observed owned DOMAIN_PERF roster count {observed_owned_perf_domains}"
+                        ));
+                    }
+                    if scheduled_domains != emitted_domains {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_END scheduled_domains {scheduled_domains} != emitted_domains {emitted_domains}"
+                        ));
+                    }
+                    if reserved != 0 {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_END reserved word is nonzero ({reserved:#x})"
+                        ));
+                    }
+                }
+                match open_frame_hour {
+                    Some(open) if open == game_hour_raw => {}
+                    Some(open) => {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_END hour {game_hour_raw} does not close open DATA frame hour {open}"
+                        ));
+                    }
+                    None => {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_END hour {game_hour_raw} has no open DATA frame"
+                        ));
+                    }
+                }
+                if let Some(closed) = last_closed_hour {
+                    match closed.checked_add(1) {
+                        Some(expected) if game_hour_raw == expected => {}
+                        Some(expected) => {
+                            clean = false;
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: FRAME_END hour {game_hour_raw} does not follow closed frame hour {closed} (expected {expected})"
+                            ));
+                        }
+                        None => {
+                            clean = false;
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: closed frame hour {closed} exhausted; another frame is forbidden"
+                            ));
+                        }
+                    }
+                }
+                if clean {
+                    open_frame_hour = None;
+                    pending_perf_hour = None;
+                    last_closed_hour = Some(game_hour_raw);
+                    final_record_is_clean_frame_end = true;
                 }
             }
             other => summary
@@ -636,6 +876,17 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                 .push(format!("offset {offset}: unknown record type {other}")),
         }
         offset = offset.saturating_add(record_len);
+    }
+
+    if let Some(open) = open_frame_hour {
+        summary
+            .parse_errors
+            .push(format!("stream ended with open DATA frame hour {open}"));
+    }
+    if !final_record_is_clean_frame_end {
+        summary
+            .parse_errors
+            .push("stream is not closed by a final canonical FRAME_END record".to_string());
     }
 
     summary.unique_hours = summary.frame_hour_counts.keys().copied().collect();
@@ -646,6 +897,122 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
     summary
 }
 
+fn validate_next_frame_hour(
+    summary: &mut CompactStreamSummary,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    record_label: &str,
+    offset: usize,
+) {
+    let Some(closed) = last_closed_hour else {
+        return;
+    };
+    match closed.checked_add(1) {
+        Some(expected) if game_hour_raw == expected => {}
+        Some(expected) => summary.parse_errors.push(format!(
+            "offset {offset}: {record_label} hour {game_hour_raw} follows closed frame hour {closed}; expected {expected}"
+        )),
+        None => summary.parse_errors.push(format!(
+            "offset {offset}: closed frame hour {closed} exhausted; another record is forbidden"
+        )),
+    }
+}
+
+fn observe_perf_hour(
+    summary: &mut CompactStreamSummary,
+    pending_perf_hour: &mut Option<i32>,
+    open_frame_hour: Option<i32>,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    offset: usize,
+) {
+    match open_frame_hour {
+        Some(open) if open != game_hour_raw => summary.parse_errors.push(format!(
+            "offset {offset}: DOMAIN_PERF hour {game_hour_raw} does not match open DATA frame hour {open}"
+        )),
+        Some(_) => {}
+        None => {
+            validate_next_frame_hour(
+                summary,
+                last_closed_hour,
+                game_hour_raw,
+                "DOMAIN_PERF",
+                offset,
+            );
+            match *pending_perf_hour {
+                Some(pending) if pending != game_hour_raw => summary.parse_errors.push(format!(
+                    "offset {offset}: DOMAIN_PERF hour {game_hour_raw} conflicts with pending frame hour {pending}"
+                )),
+                Some(_) => {}
+                None => *pending_perf_hour = Some(game_hour_raw),
+            }
+        }
+    }
+}
+
+fn observe_data_hour(
+    summary: &mut CompactStreamSummary,
+    pending_perf_hour: Option<i32>,
+    open_frame_hour: &mut Option<i32>,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    offset: usize,
+) {
+    match *open_frame_hour {
+        Some(open) if open != game_hour_raw => summary.parse_errors.push(format!(
+            "offset {offset}: DOMAIN_DATA hour {game_hour_raw} encountered before FRAME_END closed open frame hour {open}"
+        )),
+        Some(_) => {}
+        None => {
+            validate_next_frame_hour(
+                summary,
+                last_closed_hour,
+                game_hour_raw,
+                "DOMAIN_DATA",
+                offset,
+            );
+            if let Some(pending) = pending_perf_hour {
+                if pending != game_hour_raw {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: DOMAIN_DATA hour {game_hour_raw} conflicts with pending PERF hour {pending}"
+                    ));
+                }
+            }
+            *open_frame_hour = Some(game_hour_raw);
+        }
+    }
+}
+
+fn observe_status_flags(
+    summary: &mut CompactStreamSummary,
+    domain_id: u16,
+    origin: &str,
+    offset: usize,
+    status_flags: u32,
+) -> bool {
+    summary.status_flags_or |= status_flags;
+
+    let unknown = compact_contract::compact_status_unknown_flags_v1(status_flags);
+    if unknown != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain {domain_id} {origin} status {status_flags:#010x} contains unknown canonical bits {unknown:#010x}"
+        ));
+    }
+
+    let fatal = compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+        domain_id,
+        status_flags,
+    );
+    summary.failure_status_flags_or |= fatal;
+    if fatal != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain {domain_id} {origin} carries fatal status flags {fatal:#010x} after canonical lane-local normalization"
+        ));
+    }
+
+    unknown == 0 && fatal == 0
+}
+
 fn decode_domain_perf(
     offset: usize,
     _game_hour_raw: i32,
@@ -653,10 +1020,7 @@ fn decode_domain_perf(
     payload: &[u8],
     summary: &mut CompactStreamSummary,
 ) {
-    if payload.len() < 40 {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: truncated domain perf payload"));
+    if payload.len() < compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN {
         return;
     }
     let read_time_us = read_u64_le(payload, 8);
@@ -665,7 +1029,23 @@ fn decode_domain_perf(
     let unit_count = read_u32_le(payload, 24) as u64;
     let changed_unit_count = read_u32_le(payload, 28) as u64;
     let status_flags = read_u32_le(payload, 32);
-    summary.status_flags_or |= status_flags;
+    let reserved = read_u32_le(payload, 36);
+    observe_status_flags(summary, domain_id, "DOMAIN_PERF", offset, status_flags);
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain {domain_id} PERF changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if changed_unit_count > unit_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain {domain_id} PERF changed_unit_count {changed_unit_count} > unit_count {unit_count}"
+        ));
+    }
+    if reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain {domain_id} PERF reserved word is nonzero ({reserved:#x})"
+        ));
+    }
     let domain = domain_entry(summary, domain_id);
     domain.record_count = domain.record_count.saturating_add(1);
     domain.perf_record_count = domain.perf_record_count.saturating_add(1);
@@ -690,7 +1070,7 @@ fn decode_fuel_payload(offset: usize, payload: &[u8], summary: &mut CompactStrea
     let changed_rows = read_u32_le(payload, 12) as usize;
     let status_flags = read_u32_le(payload, 16);
     let scale_raw = read_u32_le(payload, 20);
-    summary.status_flags_or |= status_flags;
+    observe_status_flags(summary, DOMAIN_FUEL, "DOMAIN_DATA", offset, status_flags);
     if scale_raw != FUEL_SCALE_RAW {
         summary.parse_errors.push(format!(
             "offset {offset}: fuel scale {scale_raw} != expected {FUEL_SCALE_RAW}"
@@ -763,7 +1143,13 @@ fn decode_production_payload(offset: usize, payload: &[u8], summary: &mut Compac
     let military_count = read_u32_le(payload, 28) as usize;
     let naval_count = read_u32_le(payload, 32) as usize;
     let construction_count = read_u32_le(payload, 36) as usize;
-    summary.status_flags_or |= status_flags;
+    observe_status_flags(
+        summary,
+        DOMAIN_PRODUCTION,
+        "DOMAIN_DATA",
+        offset,
+        status_flags,
+    );
     if scale_raw != PRODUCTION_SCALE_RAW {
         summary.parse_errors.push(format!(
             "offset {offset}: production scale {scale_raw} != expected {PRODUCTION_SCALE_RAW}"
@@ -910,7 +1296,7 @@ fn decode_variant_defs_payload(
     let invalid_variant_rows = read_u32_le(payload, 32) as usize;
     let reserved0 = read_u32_le(payload, 36);
     let reserved1 = read_u32_le(payload, 40);
-    summary.status_flags_or |= status_flags;
+    observe_status_flags(summary, domain_id, "DOMAIN_DATA", offset, status_flags);
     if changed_rows > row_count || invalid_variant_rows > observed_variant_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: variant defs impossible row counters"
@@ -1135,7 +1521,7 @@ fn decode_variant_upgrades_payload(
     let invalid_variant_rows = read_u32_le(payload, 32) as usize;
     let reserved0 = read_u32_le(payload, 36);
     let reserved1 = read_u32_le(payload, 40);
-    summary.status_flags_or |= status_flags;
+    observe_status_flags(summary, domain_id, "DOMAIN_DATA", offset, status_flags);
     if changed_rows > row_count
         || invalid_variant_rows > observed_variant_rows
         || reserved0 != 0
@@ -1281,7 +1667,7 @@ fn decode_gap_badges_payload(
     let owned_elsewhere = read_u32_le(payload, 32) as usize;
     let reserved0 = read_u32_le(payload, 36);
     let reserved1 = read_u32_le(payload, 40);
-    summary.status_flags_or |= status_flags;
+    observe_status_flags(summary, domain_id, "DOMAIN_DATA", offset, status_flags);
     if schema_version != GAP_BADGE_SCHEMA_VERSION {
         summary.parse_errors.push(format!(
             "offset {offset}: gap badges schema {schema_version} != expected {GAP_BADGE_SCHEMA_VERSION}"
@@ -1411,6 +1797,8 @@ fn frame_shape_errors(
     frame_counts: &BTreeMap<i32, u64>,
     perf_counts: &BTreeMap<i32, BTreeMap<u16, u64>>,
     data_counts: &BTreeMap<i32, BTreeMap<u16, u64>>,
+    perf_row_cardinality: &BTreeMap<i32, BTreeMap<u16, (u64, u64)>>,
+    data_row_cardinality: &BTreeMap<i32, BTreeMap<u16, (u64, u64)>>,
     expected_domains: &[u16],
 ) -> Vec<String> {
     let mut errors = Vec::new();
@@ -1452,6 +1840,36 @@ fn frame_shape_errors(
                     domain_name(*domain_id)
                 ));
             }
+            if perf_count == 1 && data_count == 1 {
+                let perf_cardinality = perf_row_cardinality
+                    .get(hour)
+                    .and_then(|domains| domains.get(domain_id))
+                    .copied();
+                let data_cardinality = data_row_cardinality
+                    .get(hour)
+                    .and_then(|domains| domains.get(domain_id))
+                    .copied();
+                match (perf_cardinality, data_cardinality) {
+                    (Some((perf_rows, perf_changed)), Some((data_rows, data_changed))) => {
+                        if perf_rows < data_rows {
+                            errors.push(format!(
+                                "game_hour_raw {hour}: compact domain {} PERF observed row_count {perf_rows} < DATA emitted row_count {data_rows}",
+                                domain_name(*domain_id)
+                            ));
+                        }
+                        if perf_changed != data_rows || perf_changed != data_changed {
+                            errors.push(format!(
+                                "game_hour_raw {hour}: compact domain {} PERF changed_rows {perf_changed} != DATA emitted/changed rows {data_rows}/{data_changed}",
+                                domain_name(*domain_id)
+                            ));
+                        }
+                    }
+                    _ => errors.push(format!(
+                        "game_hour_raw {hour}: compact domain {} lacks independently decoded PERF/DATA row cardinality",
+                        domain_name(*domain_id)
+                    )),
+                }
+            }
         }
     }
     for (hour, domains) in perf_counts {
@@ -1481,6 +1899,22 @@ fn frame_shape_errors(
         }
     }
     errors
+}
+
+fn increment_hour_domain_cardinality(
+    counts: &mut BTreeMap<i32, BTreeMap<u16, (u64, u64)>>,
+    hour: i32,
+    domain_id: u16,
+    rows: u64,
+    changed_rows: u64,
+) {
+    let cardinality = counts
+        .entry(hour)
+        .or_default()
+        .entry(domain_id)
+        .or_default();
+    cardinality.0 = cardinality.0.saturating_add(rows);
+    cardinality.1 = cardinality.1.saturating_add(changed_rows);
 }
 
 fn increment_hour_domain(
@@ -1708,7 +2142,7 @@ mod tests {
             RECORD_TYPE_DOMAIN_DATA,
             &encode_fuel_payload(
                 10,
-                32,
+                0,
                 &[FuelRow {
                     tag_db_id: 47,
                     current_raw: 1,
@@ -1732,7 +2166,7 @@ mod tests {
             100,
             DOMAIN_PRODUCTION,
             RECORD_TYPE_DOMAIN_DATA,
-            &encode_production_payload(10, 32, 1, &[], &[], &[], &[]),
+            &encode_production_payload(10, 0, 1, &[], &[], &[], &[]),
         );
         append_compact_record(
             &mut raw,
@@ -1744,6 +2178,614 @@ mod tests {
         );
         let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL, DOMAIN_PRODUCTION]);
         assert!(gate.ok, "{:?}", gate.summary.coverage_errors);
+    }
+
+    #[test]
+    fn stream_gate_rejects_every_canonical_failure_from_each_status_origin() {
+        let fatal_bits = [
+            compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE,
+            compact_contract::COMPACT_STATUS_PROFILE_MISMATCH,
+            compact_contract::COMPACT_STATUS_NO_CLOCK,
+            compact_contract::COMPACT_STATUS_NO_SCALAR_SOURCE,
+            compact_contract::COMPACT_STATUS_WORKER_PANIC,
+            compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE,
+            compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+            compact_contract::COMPACT_STATUS_CONTROL_INVALID,
+        ];
+        assert_eq!(
+            fatal_bits.iter().copied().fold(0, |mask, bit| mask | bit),
+            compact_contract::COMPACT_STATUS_FAILURE_MASK
+        );
+
+        for bit in fatal_bits {
+            for (data_status, perf_status, frame_status) in [(bit, 0, 0), (0, bit, 0), (0, 0, bit)]
+            {
+                let gate = gate_compact_stream(
+                    &fuel_stream_with_statuses(data_status, perf_status, frame_status),
+                    &[DOMAIN_FUEL],
+                );
+                assert!(
+                    !gate.ok,
+                    "bit={bit:#x}, errors={:?}",
+                    gate.summary.parse_errors
+                );
+                assert_ne!(gate.summary.failure_status_flags_or & bit, 0);
+                assert!(gate
+                    .summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains("fatal status flags")));
+            }
+        }
+    }
+
+    #[test]
+    fn stream_gate_accepts_aligned_canonical_informational_status_authority() {
+        let informational_bits = [
+            compact_contract::COMPACT_STATUS_WAR_BRIDGE_APPLIED,
+            compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE,
+            compact_contract::COMPACT_STATUS_DELTA_DATA,
+            compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+            compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+        ];
+        assert_eq!(
+            informational_bits.iter().copied().fold(
+                compact_contract::COMPACT_STATUS_FAILURE_MASK,
+                |mask, bit| mask | bit
+            ),
+            compact_contract::COMPACT_STATUS_V1_KNOWN_MASK
+        );
+
+        for bit in informational_bits {
+            let gate =
+                gate_compact_stream(&fuel_stream_with_statuses(bit, bit, bit), &[DOMAIN_FUEL]);
+            assert!(
+                gate.ok,
+                "bit={bit:#x}, errors={:?}",
+                gate.summary.parse_errors
+            );
+            assert_eq!(gate.summary.failure_status_flags_or, 0);
+            assert_ne!(gate.summary.status_flags_or & bit, 0);
+        }
+    }
+
+    #[test]
+    fn stream_gate_rejects_known_informational_status_authority_mismatches() {
+        let bit = compact_contract::COMPACT_STATUS_DELTA_DATA;
+        for (data_status, perf_status, frame_status) in
+            [(bit, 0, 0), (0, bit, bit), (bit, bit, 0), (0, 0, bit)]
+        {
+            let gate = gate_compact_stream(
+                &fuel_stream_with_statuses(data_status, perf_status, frame_status),
+                &[DOMAIN_FUEL],
+            );
+            assert!(
+                !gate.ok,
+                "statuses=({data_status:#x}, {perf_status:#x}, {frame_status:#x})"
+            );
+            assert!(gate.summary.parse_errors.iter().any(|error| {
+                error.contains("preceding same-hour DOMAIN_PERF status")
+                    || error.contains("OR of independently observed owned DOMAIN_PERF statuses")
+            }));
+        }
+    }
+
+    #[test]
+    fn stream_gate_rejects_unknown_status_bits_from_each_origin() {
+        let unknown = 1u32 << 31;
+        for (data_status, perf_status, frame_status) in
+            [(unknown, 0, 0), (0, unknown, 0), (0, 0, unknown)]
+        {
+            let gate = gate_compact_stream(
+                &fuel_stream_with_statuses(data_status, perf_status, frame_status),
+                &[DOMAIN_FUEL],
+            );
+            assert!(!gate.ok, "errors={:?}", gate.summary.parse_errors);
+            assert!(gate
+                .summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("unknown canonical bits")));
+        }
+    }
+
+    #[test]
+    fn stream_gate_binds_frame_authority_to_observed_perf_and_reserved_zero() {
+        for frame_payload in [
+            frame_payload_with_authority(2, 2, 0, 0),
+            frame_payload_with_authority(1, 2, 0, 0),
+            frame_payload_with_authority(1, 1, 0, 7),
+        ] {
+            let mut raw = Vec::new();
+            append_compact_record(
+                &mut raw,
+                1,
+                100,
+                DOMAIN_FUEL,
+                RECORD_TYPE_DOMAIN_PERF,
+                &perf_payload_with_status(0, 0, 0),
+            );
+            append_compact_record(
+                &mut raw,
+                2,
+                100,
+                DOMAIN_FUEL,
+                RECORD_TYPE_DOMAIN_DATA,
+                &encode_fuel_payload(0, 0, &[]),
+            );
+            append_compact_record(
+                &mut raw,
+                3,
+                100,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                &frame_payload,
+            );
+            let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL]);
+            assert!(!gate.ok, "errors={:?}", gate.summary.parse_errors);
+        }
+    }
+
+    #[test]
+    fn stream_gate_rejects_unassigned_perf_as_frame_authority() {
+        let mut raw = Vec::new();
+        append_compact_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 0, 0),
+        );
+        append_compact_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_fuel_payload(0, 0, &[]),
+        );
+        append_compact_record(
+            &mut raw,
+            3,
+            100,
+            u16::MAX,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 0, 0),
+        );
+        append_compact_record(
+            &mut raw,
+            4,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_authority(2, 2, 0, 0),
+        );
+
+        let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL]);
+        assert!(!gate.ok);
+        assert!(gate.summary.parse_errors.iter().any(|error| {
+            error.contains("unassigned domain 65535 DOMAIN_PERF")
+                || error.contains("owned DOMAIN_PERF roster count 1")
+        }));
+    }
+
+    #[test]
+    fn stream_gate_cross_checks_perf_and_data_row_cardinality() {
+        let mut raw = Vec::new();
+        append_compact_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 1, 1),
+        );
+        append_compact_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_fuel_payload(0, 0, &[]),
+        );
+        append_compact_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(1),
+        );
+        let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL]);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .coverage_errors
+            .iter()
+            .any(|error| error.contains("PERF changed_rows 1 != DATA emitted/changed rows 0/0")));
+    }
+
+    #[test]
+    fn stream_gate_accepts_perf_observed_work_above_emitted_data_rows() {
+        let row = FuelRow {
+            tag_db_id: 47,
+            current_raw: 1,
+            max_raw: 2,
+            gain_raw: 0,
+            cost_raw: 0,
+        };
+        let mut raw = Vec::new();
+        append_compact_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_full(0, 2, 1, 1, 1, 0, 0),
+        );
+        append_compact_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_fuel_payload(0, 0, &[row]),
+        );
+        append_compact_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(1),
+        );
+        let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL]);
+        assert!(gate.ok, "{:?}", gate.summary.coverage_errors);
+    }
+
+    #[test]
+    fn stream_gate_excludes_instrumentation_probe_from_frame_cardinality() {
+        let mut raw = Vec::new();
+        append_compact_record(
+            &mut raw,
+            1,
+            i32::MIN,
+            RC_PROBE_DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 0, 0),
+        );
+        append_compact_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 0, 0),
+        );
+        append_compact_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_fuel_payload(0, 0, &[]),
+        );
+        append_compact_record(
+            &mut raw,
+            4,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(1),
+        );
+        let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL]);
+        assert!(gate.ok, "{:?}", gate.summary.parse_errors);
+        assert_eq!(gate.summary.record_count, 3);
+        assert!(!gate.summary.per_domain.contains_key(&RC_PROBE_DOMAIN_ID));
+    }
+
+    #[test]
+    fn stream_gate_rejects_impossible_perf_cardinality_and_reserved_word() {
+        for perf in [
+            perf_payload_full(0, 0, 1, 0, 0, 0, 0),
+            perf_payload_full(0, 0, 0, 0, 1, 0, 0),
+            perf_payload_full(0, 0, 0, 0, 0, 0, 9),
+        ] {
+            let mut raw = Vec::new();
+            append_compact_record(
+                &mut raw,
+                1,
+                100,
+                DOMAIN_FUEL,
+                RECORD_TYPE_DOMAIN_PERF,
+                &perf,
+            );
+            append_compact_record(
+                &mut raw,
+                2,
+                100,
+                DOMAIN_FUEL,
+                RECORD_TYPE_DOMAIN_DATA,
+                &encode_fuel_payload(0, 0, &[]),
+            );
+            append_compact_record(
+                &mut raw,
+                3,
+                100,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                &frame_payload(1),
+            );
+            assert!(!gate_compact_stream(&raw, &[DOMAIN_FUEL]).ok);
+        }
+    }
+
+    #[test]
+    fn stream_gate_rejects_duplicate_perf_and_data_records_independently() {
+        let perf = perf_payload_with_status(0, 0, 0);
+        let data = encode_fuel_payload(0, 0, &[]);
+        for duplicate_perf in [true, false] {
+            let mut raw = Vec::new();
+            let mut sequence = 1;
+            append_compact_record(
+                &mut raw,
+                sequence,
+                100,
+                DOMAIN_FUEL,
+                RECORD_TYPE_DOMAIN_PERF,
+                &perf,
+            );
+            sequence += 1;
+            if duplicate_perf {
+                append_compact_record(
+                    &mut raw,
+                    sequence,
+                    100,
+                    DOMAIN_FUEL,
+                    RECORD_TYPE_DOMAIN_PERF,
+                    &perf,
+                );
+                sequence += 1;
+            }
+            append_compact_record(
+                &mut raw,
+                sequence,
+                100,
+                DOMAIN_FUEL,
+                RECORD_TYPE_DOMAIN_DATA,
+                &data,
+            );
+            sequence += 1;
+            if !duplicate_perf {
+                append_compact_record(
+                    &mut raw,
+                    sequence,
+                    100,
+                    DOMAIN_FUEL,
+                    RECORD_TYPE_DOMAIN_DATA,
+                    &data,
+                );
+                sequence += 1;
+            }
+            append_compact_record(
+                &mut raw,
+                sequence,
+                100,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                &frame_payload(if duplicate_perf { 2 } else { 1 }),
+            );
+            let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL]);
+            assert!(!gate.ok);
+            assert!(gate.summary.coverage_errors.iter().any(|error| {
+                error.contains(if duplicate_perf {
+                    "perf_record_count 2 != 1"
+                } else {
+                    "data_record_count 2 != 1"
+                })
+            }));
+        }
+    }
+
+    #[test]
+    fn stream_gate_enforces_canonical_record_flag_placement() {
+        let mut legal = valid_fuel_stream();
+        replace_record_payload(&mut legal, 0, &perf_payload_with_empty_diag());
+        legal[28..32].copy_from_slice(
+            &compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER.to_le_bytes(),
+        );
+        assert!(gate_compact_stream(&legal, &[DOMAIN_FUEL]).ok);
+
+        let mut illegal = valid_fuel_stream();
+        let data_offset =
+            COMPACT_RECORD_HEADER_LEN + compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN;
+        illegal[data_offset + 28..data_offset + 32].copy_from_slice(
+            &compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER.to_le_bytes(),
+        );
+        let gate = gate_compact_stream(&illegal, &[DOMAIN_FUEL]);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("contain rejected bits")));
+    }
+
+    #[test]
+    fn stream_gate_rejects_missing_gapped_and_wrapping_sequences() {
+        let mut missing = valid_fuel_stream();
+        missing[8..16].copy_from_slice(&2u64.to_le_bytes());
+        assert!(summarize_compact_stream(&missing)
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("does not start at 1")));
+
+        let mut gap = valid_fuel_stream();
+        let data_offset =
+            COMPACT_RECORD_HEADER_LEN + compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN;
+        gap[data_offset + 8..data_offset + 16].copy_from_slice(&3u64.to_le_bytes());
+        assert!(summarize_compact_stream(&gap)
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 1 -> 3")));
+
+        let mut wrapping = valid_fuel_stream();
+        wrapping[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+        wrapping[data_offset + 8..data_offset + 16].copy_from_slice(&0u64.to_le_bytes());
+        assert!(summarize_compact_stream(&wrapping)
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("wrapping is not allowed")));
+    }
+
+    #[test]
+    fn stream_gate_rejects_missing_and_unannounced_perf_trailers_and_bad_frame_size() {
+        let mut long_perf = Vec::new();
+        append_compact_record(
+            &mut long_perf,
+            1,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &[0; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN + 1],
+        );
+        append_compact_record(
+            &mut long_perf,
+            2,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_fuel_payload(0, 32, &[]),
+        );
+        append_compact_record(
+            &mut long_perf,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(1),
+        );
+        assert!(summarize_compact_stream(&long_perf)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unannounced trailer byte")));
+
+        let mut announced_without_trailer = valid_fuel_stream();
+        announced_without_trailer[28..32].copy_from_slice(
+            &compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER.to_le_bytes(),
+        );
+        assert!(summarize_compact_stream(&announced_without_trailer)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("diagnostic trailer header is truncated")));
+
+        let mut short_frame = valid_fuel_stream();
+        short_frame.truncate(short_frame.len() - 1);
+        let frame_offset = short_frame.len()
+            - (compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN - 1)
+            - COMPACT_RECORD_HEADER_LEN;
+        short_frame[frame_offset + 24..frame_offset + 28].copy_from_slice(
+            &((compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN - 1) as u32).to_le_bytes(),
+        );
+        assert!(summarize_compact_stream(&short_frame)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("FRAME_END payload length 31 is not 32")));
+    }
+
+    #[test]
+    fn stream_gate_rejects_cross_hour_data_and_records_after_closed_hour() {
+        let mut mismatched = valid_fuel_stream();
+        let data_offset =
+            COMPACT_RECORD_HEADER_LEN + compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN;
+        mismatched[data_offset + 16..data_offset + 20].copy_from_slice(&101i32.to_le_bytes());
+        assert!(summarize_compact_stream(&mismatched)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("conflicts with pending PERF hour 100")));
+
+        let mut trailing = valid_fuel_stream();
+        append_compact_record(
+            &mut trailing,
+            4,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0, 0, 0),
+        );
+        let summary = summarize_compact_stream(&trailing);
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("follows closed frame hour 100")
+                || error.contains("final canonical FRAME_END")
+        }));
+    }
+
+    #[test]
+    fn stream_gate_rejects_lane_owned_data_before_same_hour_perf() {
+        let mut raw = Vec::new();
+        append_compact_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_fuel_payload(0, 0, &[]),
+        );
+        append_compact_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 0, 0),
+        );
+        append_compact_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(1),
+        );
+
+        let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL]);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("has no preceding same-hour DOMAIN_PERF authority")));
+    }
+
+    #[test]
+    fn stream_gate_fails_closed_on_malformed_domain_data() {
+        let mut raw = Vec::new();
+        append_compact_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0, 0, 0),
+        );
+        append_compact_record(&mut raw, 2, 100, DOMAIN_FUEL, RECORD_TYPE_DOMAIN_DATA, &[]);
+        append_compact_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(1),
+        );
+        let gate = gate_compact_stream(&raw, &[DOMAIN_FUEL]);
+        assert!(!gate.ok);
+        assert!(gate
+            .summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("fuel payload shorter than 24 bytes")));
     }
 
     #[test]
@@ -1856,27 +2898,130 @@ mod tests {
     }
 
     fn perf_payload(read_time_us: u64, rows: u32, units: u32) -> Vec<u8> {
+        perf_payload_full(read_time_us, rows, rows, units, units, 0, 0)
+    }
+
+    fn perf_payload_with_status(read_time_us: u64, rows: u32, status_flags: u32) -> Vec<u8> {
+        perf_payload_full(read_time_us, rows, rows, rows, rows, status_flags, 0)
+    }
+
+    fn perf_payload_full(
+        read_time_us: u64,
+        rows: u32,
+        changed_rows: u32,
+        units: u32,
+        changed_units: u32,
+        status_flags: u32,
+        reserved: u32,
+    ) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
         payload.extend_from_slice(&read_time_us.to_le_bytes());
         payload.extend_from_slice(&rows.to_le_bytes());
-        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
         payload.extend_from_slice(&units.to_le_bytes());
-        payload.extend_from_slice(&units.to_le_bytes());
-        payload.extend_from_slice(&32u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&changed_units.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&reserved.to_le_bytes());
         payload
     }
 
     fn frame_payload(domains: u32) -> Vec<u8> {
+        frame_payload_with_authority(domains, domains, 0, 0)
+    }
+
+    fn frame_payload_with_authority(
+        emitted_domains: u32,
+        scheduled_domains: u32,
+        status_flags: u32,
+        reserved: u32,
+    ) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
         payload.extend_from_slice(&100u64.to_le_bytes());
-        payload.extend_from_slice(&domains.to_le_bytes());
-        payload.extend_from_slice(&domains.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&emitted_domains.to_le_bytes());
+        payload.extend_from_slice(&scheduled_domains.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&reserved.to_le_bytes());
         payload
+    }
+
+    fn fuel_stream_with_statuses(data_status: u32, perf_status: u32, frame_status: u32) -> Vec<u8> {
+        let mut raw = Vec::new();
+        append_compact_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0, 0, perf_status),
+        );
+        append_compact_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_fuel_payload(0, data_status, &[]),
+        );
+        append_compact_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_authority(1, 1, frame_status, 0),
+        );
+        raw
+    }
+
+    fn perf_payload_with_empty_diag() -> Vec<u8> {
+        let mut payload = perf_payload(0, 0, 0);
+        payload.extend_from_slice(compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC);
+        payload.extend_from_slice(
+            &compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION.to_le_bytes(),
+        );
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload
+    }
+
+    fn valid_fuel_stream() -> Vec<u8> {
+        let mut raw = Vec::new();
+        append_compact_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0, 0, 0),
+        );
+        append_compact_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_FUEL,
+            RECORD_TYPE_DOMAIN_DATA,
+            &encode_fuel_payload(0, 0, &[]),
+        );
+        append_compact_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(1),
+        );
+        raw
+    }
+
+    fn replace_record_payload(raw: &mut Vec<u8>, record_offset: usize, payload: &[u8]) {
+        let header = compact_contract::parse_compact_record_header(&raw[record_offset..])
+            .expect("test stream header");
+        let payload_start = record_offset + COMPACT_RECORD_HEADER_LEN;
+        let payload_end = payload_start + header.payload_len;
+        raw.splice(payload_start..payload_end, payload.iter().copied());
+        raw[record_offset + 24..record_offset + 28]
+            .copy_from_slice(&(payload.len() as u32).to_le_bytes());
     }
 
     fn append_string(out: &mut Vec<u8>, value: &str) {

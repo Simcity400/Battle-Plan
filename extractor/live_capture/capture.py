@@ -459,17 +459,19 @@ class CaptureLoop:
             # valid file at the end of the run, capturing every hour written.
             # Runs UNDER the single-writer lock (before release, Codex) so no other
             # recorder can mutate the store while we package it. A finalize failure
-            # is swallowed and the lock is released unconditionally in the inner
-            # finally, so it can never strand the lock.
+            # propagates to the caller after recording the error; the lock is still
+            # released unconditionally, and the writer preserves any prior output.
             try:
                 if self._recorder is not None:
                     try:
                         self._recorder.finalize()
                         self.last_finalize_error = None
                     except Exception as fexc:
-                        # swallow so a torn store never strands the lock OR ships a
-                        # lying replay; record so the caller/GUI can surface it.
+                        # Record and propagate so callers cannot mistake a failed
+                        # publication for a successful completed recording.
                         self.last_finalize_error = str(fexc)
+                        raise RuntimeError(
+                            "replay finalization failed: %s" % fexc) from fexc
             finally:
                 lock.release()
         return results

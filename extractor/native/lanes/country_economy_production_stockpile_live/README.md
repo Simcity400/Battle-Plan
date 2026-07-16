@@ -5,6 +5,15 @@
 Lane-local production stack for country economy, production, fuel, and stockpile
 variant replay records.
 
+> **Warning: `lane_proof` is a slice-only, non-certifying diagnostic.** It checks
+> the physical compact stream and the selected lane domains, but it does not bind
+> the full production roster, source-capture identity, or commanded duration. Its
+> `ok`/`accepted_for_lane_local_slice` result must never be used as production
+> certification. Production admission belongs to
+> `../compact_replay_verification_gates/` with the authoritative session manifest.
+> Optional manifest substring observations emitted by `lane_proof` are explicitly
+> untrusted and never affect lane acceptance or production certification.
+
 This lane does not own market/trade, supply/logistics, construction/state damage,
 or air/naval/unit extraction. Joins are pointer-free:
 
@@ -76,14 +85,14 @@ surface. The lane-local `gap_report` proof fail-closes the remainder:
 
 ```powershell
 cargo test --manifest-path extractor\native\lanes\country_economy_production_stockpile_live\Cargo.toml
-cargo run --manifest-path extractor\native\lanes\country_economy_production_stockpile_live\Cargo.toml --bin lane_proof -- --stream extractor\native\runs\compact_production_live_speed5_v1\collector_stream.bin --manifest extractor\native\runs\compact_production_live_speed5_v1\native_session_manifest.json --replay extractor\native\runs\compact_production_live_speed5_v1\native_session.battleplan --out extractor\native\runs\country_economy_production_stockpile_live_20260701_v1\production_live_gate.json --expected production_live
+cargo run --manifest-path extractor\native\lanes\country_economy_production_stockpile_live\Cargo.toml --bin lane_proof -- --stream extractor\native\runs\compact_production_live_speed5_v1\collector_stream.bin --manifest extractor\native\runs\compact_production_live_speed5_v1\native_session_manifest.json --replay extractor\native\runs\compact_production_live_speed5_v1\native_session.battleplan --out extractor\native\runs\country_economy_production_stockpile_live_20260701_v1\production_live_slice_proof.json --expected production_live
 cargo run --manifest-path extractor\native\lanes\country_economy_production_stockpile_live\Cargo.toml --bin gap_report -- --production-stream extractor\native\runs\compact_production_live_speed5_v1\collector_stream.bin --badge-stream-out extractor\native\runs\country_economy_production_stockpile_live_20260701_v2\gap_badges_stream.bin --out extractor\native\runs\country_economy_production_stockpile_live_20260701_v2\gap_badges.json
 ```
 
 ## Integration patch plan
 
-When the orchestrator grants a shared integration slot, move this lane from local
-proof to shared production by:
+When the orchestrator grants a shared integration slot, move this lane from local,
+non-certifying slice proof to shared production by:
 
 1. keeping the existing collector domains `10`, `11`, `37`, and `40`;
 2. promoting the stricter lane gate checks into `recorder_host` compact coverage

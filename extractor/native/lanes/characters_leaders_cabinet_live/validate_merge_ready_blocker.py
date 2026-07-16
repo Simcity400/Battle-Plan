@@ -159,6 +159,18 @@ def _contains_regex(text: str, pattern: str) -> bool:
     return re.search(pattern, text, flags=re.MULTILINE) is not None
 
 
+def _noncertifying_container_ok(report: dict) -> bool:
+    return (
+        report.get("result") == "container_integrity_verified_non_certifying"
+        and report.get("production_certifying") is False
+        and report.get("source_capture_verified") is False
+        and report.get("container_integrity_verified") is True
+        and report.get("stream_entry_byte_identity_verified") is True
+        and report.get("verified_stream_bytes") == report.get("synthetic_stream_bytes")
+        and report.get("parse_errors") == []
+    )
+
+
 def _descriptor_contains(text: str, domain_id: int, name: str, status: str, schedulable: bool) -> bool:
     expected_bool = "true" if schedulable else "false"
     start = re.search(
@@ -316,11 +328,9 @@ def validate() -> dict:
     )
     replay_fixture = _read_json(REPLAY_FIXTURE_PROOF)
     replay_fixture_ok = (
-        replay_fixture.get("result") == "verified"
+        _noncertifying_container_ok(replay_fixture)
         and replay_fixture.get("domain_id") == DOMAIN_ID
         and replay_fixture.get("appointed_advisor_rows") == 3
-        and replay_fixture.get("verified_stream_bytes") == replay_fixture.get("collector_stream_bytes")
-        and replay_fixture.get("parse_errors") == []
     )
 
     adapter_fixture = _read_json(ADAPTER_FIXTURE_PROOF)
@@ -360,11 +370,10 @@ def validate() -> dict:
         and live_refresh_compact.get("schema_flags") == 7
         and live_refresh_compact.get("appointed_advisor_rows") == 0
         and live_refresh_compact.get("character_portrait_rows") == 0
-        and live_refresh_replay.get("result") == "verified"
+        and _noncertifying_container_ok(live_refresh_replay)
         and live_refresh_replay.get("domain_id") == DOMAIN_ID
-        and live_refresh_replay.get("game_hour_raw") == live_refresh_compact.get("record_game_hour_raw")
-        and live_refresh_replay.get("verified_stream_bytes") == live_refresh_replay.get("collector_stream_bytes")
-        and live_refresh_replay.get("parse_errors") == []
+        and live_refresh_replay.get("source_game_hour_raw")
+        == live_refresh_compact.get("record_game_hour_raw")
     )
     live_cadence_ok = (
         live_cadence.get("result") == "validated_clock_cadence_observed"
@@ -389,14 +398,12 @@ def validate() -> dict:
         and scheduled_benchmark.get("status_flags_or") == 0
         and scheduled_benchmark.get("schema_flags_or") == 7
         and scheduled_benchmark.get("parse_errors") == []
-        and scheduled_benchmark_replay.get("result") == "verified"
+        and _noncertifying_container_ok(scheduled_benchmark_replay)
         and scheduled_benchmark_replay.get("domain_id") == DOMAIN_ID
         and scheduled_benchmark_replay.get("row_count_total")
         == scheduled_benchmark.get("last_row_count")
         and scheduled_benchmark_replay.get("appointed_advisor_rows") == 3
         and scheduled_benchmark_replay.get("character_portrait_rows") == 128
-        and scheduled_benchmark_replay.get("verified_stream_bytes")
-        == scheduled_benchmark_replay.get("collector_stream_bytes")
         and scheduled_benchmark_replay.get("status_flags_or") == 0
         and scheduled_benchmark_replay.get("schema_flags_or") == 7
         and scheduled_benchmark_replay.get("parse_errors") == []
@@ -476,7 +483,7 @@ def validate() -> dict:
             "path": str(REPLAY_FIXTURE_PROOF),
             "result": replay_fixture.get("result"),
             "hoi4replay_path": replay_fixture.get("hoi4replay_path"),
-            "collector_stream_bytes": replay_fixture.get("collector_stream_bytes"),
+            "synthetic_stream_bytes": replay_fixture.get("synthetic_stream_bytes"),
             "verified_stream_bytes": replay_fixture.get("verified_stream_bytes"),
             "appointed_advisor_rows": replay_fixture.get("appointed_advisor_rows"),
             "domain_id": replay_fixture.get("domain_id"),
@@ -518,9 +525,9 @@ def validate() -> dict:
             "character_portrait_rows": live_refresh_compact.get("character_portrait_rows"),
             "status_flags": live_refresh_compact.get("status_flags"),
             "schema_flags": live_refresh_compact.get("schema_flags"),
-            "replay_verified": live_refresh_replay.get("result") == "verified",
+            "container_integrity_verified": _noncertifying_container_ok(live_refresh_replay),
             "verified_stream_bytes": live_refresh_replay.get("verified_stream_bytes"),
-            "collector_stream_bytes": live_refresh_replay.get("collector_stream_bytes"),
+            "synthetic_stream_bytes": live_refresh_replay.get("synthetic_stream_bytes"),
         },
         "live_cadence_probe": {
             "path": str(LIVE_CADENCE_PROOF),
@@ -547,9 +554,11 @@ def validate() -> dict:
             "max_read_time_us": scheduled_benchmark.get("max_read_time_us"),
             "status_flags_or": scheduled_benchmark.get("status_flags_or"),
             "schema_flags_or": scheduled_benchmark.get("schema_flags_or"),
-            "replay_verified": scheduled_benchmark_replay.get("result") == "verified",
+            "container_integrity_verified": _noncertifying_container_ok(
+                scheduled_benchmark_replay
+            ),
             "verified_stream_bytes": scheduled_benchmark_replay.get("verified_stream_bytes"),
-            "collector_stream_bytes": scheduled_benchmark_replay.get("collector_stream_bytes"),
+            "synthetic_stream_bytes": scheduled_benchmark_replay.get("synthetic_stream_bytes"),
         },
         "native_scheduled_cadence_budget": {
             "path": str(SCHEDULED_CADENCE_BUDGET_PROOF),
@@ -586,9 +595,10 @@ def validate() -> dict:
             "domain 47 is registry-assigned and the lane-owned mini stack/fixture proofs pass, "
             "but domain 47 remains unschedulable in the shared collector/recorder registries with "
             "no shared collector append or recorder decoder hook. The current lane-local DLL wrapper "
-            "and adapter can build a LaneFrame from validated roots, and lane-local live compact "
-            "records verify through .battleplan. A release-mode native cached-root scheduled "
-            "benchmark at live-ish row scale is also verified through .battleplan, but the shared "
+            "and adapter can build a LaneFrame from validated roots, and lane-local compact "
+            "record fragments pass non-certifying replay-container byte-integrity checks. A "
+            "release-mode native cached-root scheduled benchmark at live-ish row scale also passes "
+            "that scoped container-integrity check, but the shared "
             "collector still needs to populate that cache and call the lane scheduled API from "
             "the one injected DLL coordinator. The Python root walk is not hourly-capable."
         ),
@@ -615,16 +625,22 @@ def main() -> None:
         "live_dev_appointed_rows": result["live_dev_proof"]["appointed_advisor_rows"],
         "fixture_appointed_rows": result["nonzero_transition_fixture"]["appointed_advisor_rows"],
         "rust_fixture_appointed_rows": result["rust_fixture_gate"]["appointed_advisor_rows"],
-        "replay_fixture_verified": result["replay_fixture_gate"]["result"] == "verified",
+        "replay_fixture_container_integrity_verified": _noncertifying_container_ok(
+            replay_fixture
+        ),
         "adapter_fixture_portrait_rows": result["adapter_fixture_gate"]["character_portrait_rows"],
         "live_refresh_v2_rows": result["live_refresh_v2"]["row_count_total"],
-        "live_refresh_v2_replay_verified": result["live_refresh_v2"]["replay_verified"],
+        "live_refresh_v2_container_integrity_verified": result["live_refresh_v2"][
+            "container_integrity_verified"
+        ],
         "live_cadence_advanced_hours": result["live_cadence_probe"]["advanced_hours"],
         "live_cadence_skipped_hours": result["live_cadence_probe"]["skipped_hours"],
         "native_scheduled_rows": result["native_scheduled_benchmark"]["last_row_count"],
         "native_scheduled_avg_us": result["native_scheduled_benchmark"]["avg_read_time_us"],
         "native_scheduled_max_us": result["native_scheduled_benchmark"]["max_read_time_us"],
-        "native_scheduled_replay_verified": result["native_scheduled_benchmark"]["replay_verified"],
+        "native_scheduled_container_integrity_verified": result[
+            "native_scheduled_benchmark"
+        ]["container_integrity_verified"],
         "native_scheduled_avg_hour_fraction": result["native_scheduled_cadence_budget"][
             "avg_fraction_of_observed_hour"
         ],

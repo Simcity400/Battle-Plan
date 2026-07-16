@@ -142,6 +142,7 @@ fn perf_payload(rows: u32, units: u32) -> Vec<u8> {
     payload.extend_from_slice(&units.to_le_bytes());
     payload.extend_from_slice(&units.to_le_bytes());
     payload.extend_from_slice(&STATUS_LANE_LOCAL_PROOF.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
     payload
 }
 
@@ -234,4 +235,25 @@ fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
 
 fn usage() -> String {
     "usage: counter_report [--source-stream collector_stream.bin] [--stream-out domain58_stream.bin] [--out report.json]".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_perf_helper_emits_exact_canonical_base() {
+        let payload = perf_payload(8, 8);
+        assert_eq!(
+            payload.len(),
+            compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN
+        );
+        compact_contract::validate_compact_record_semantics(
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &payload,
+        )
+        .expect("report PERF helper must emit a canonical domain-58 PERF base");
+    }
 }

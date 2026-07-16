@@ -1,4 +1,6 @@
-use compact_replay_verification_gates::{validate_run_dir, GateOptions};
+use compact_replay_verification_gates::{
+    validate_report_output_path, validate_run_dir, GateOptions,
+};
 use std::path::PathBuf;
 
 fn main() {
@@ -63,7 +65,11 @@ fn main() {
         std::process::exit(2);
     }
 
-    let report = validate_run_dir(&options);
+    let mut report = validate_run_dir(&options);
+    if let Err(error) = validate_report_output_path(&options) {
+        report.passed = false;
+        report.errors.push(error);
+    }
     let report_json =
         serde_json::to_string_pretty(&report.as_json()).expect("gate report serializes");
     println!("{report_json}");
@@ -106,14 +112,14 @@ fn print_usage() {
         "usage: compact_replay_gate --run-dir <native run dir> [options]\n\
          options:\n\
            --require-domain <name>          require a scheduled compact domain; repeatable\n\
-           --min-game-hours <n>             override manifest hourly_requirement.requested_game_hours\n\
+           --min-game-hours <n>             required explicit positive certification duration\n\
            --max-stream-bytes <n>           default 134217728\n\
            --max-record-bytes <n>           default 8388608\n\
            --max-bytes-per-frame <n>        default 2097152\n\
            --write-report <path>            write the JSON gate report\n\
-           --skip-replay-verify             do not open and verify native_session.battleplan\n\
+           --skip-replay-verify             diagnostic-only; forces passed=false\n\
            --allow-bridge-roots             report bridge/root debt as warning instead of failure\n\
-           --allow-partial-or-source-failure report partial/source/worker/bridge status as warning instead of failure\n\
+           --allow-partial-or-source-failure allow only partial-data/source-unavailable status\n\
            --no-strict-semantic-units       do not require domain semantic counter keys"
     );
 }

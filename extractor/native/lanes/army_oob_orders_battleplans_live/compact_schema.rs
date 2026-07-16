@@ -6,24 +6,64 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-pub const COMPACT_RECORD_VERSION: u16 = 1;
+#[path = "../../compact_contract/src/record_header.rs"]
+mod compact_record_header;
+#[path = "../../compact_contract/src/record_semantics.rs"]
+mod compact_record_semantics;
+#[allow(dead_code)]
+#[path = "../../compact_contract/src/status_flags_base.rs"]
+mod compact_status_flags;
+
+use compact_record_header::{parse_compact_record_header, RecordFramingError};
+pub use compact_record_header::{
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_VERSION,
+};
+use compact_record_semantics::validate_compact_record_semantics;
+#[cfg(test)]
+use compact_record_semantics::{
+    COMPACT_FRAME_END_PAYLOAD_LEN as FRAME_END_PAYLOAD_LEN,
+    COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER as PERF_DIAGNOSTIC_TRAILER_FLAG,
+};
 pub const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 pub const RECORD_TYPE_FRAME_END: u16 = 2;
+pub const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 
 pub const DOMAIN_ARMY_ORDERS: u16 = 27;
 pub const DOMAIN_OOB_COMMAND: u16 = 28;
 pub const DOMAIN_FRAME: u16 = 1000;
 
-const STATUS_WORKER_PANIC: u32 = 1 << 6;
-const STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
-const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-const STATUS_PARTIAL_DATA: u32 = 1 << 9;
-const FAIL_STATUS_MASK: u32 = STATUS_WORKER_PANIC
+use compact_status_flags::{
+    COMPACT_STATUS_BRIDGE_UNAVAILABLE as STATUS_BRIDGE_UNAVAILABLE,
+    COMPACT_STATUS_CONTROL_INVALID as STATUS_CONTROL_INVALID,
+    COMPACT_STATUS_NO_CLOCK as STATUS_NO_CLOCK,
+    COMPACT_STATUS_NO_SCALAR_SOURCE as STATUS_NO_SCALAR_SOURCE,
+    COMPACT_STATUS_PARTIAL_DATA as STATUS_PARTIAL_DATA,
+    COMPACT_STATUS_PROFILE_MISMATCH as STATUS_PROFILE_MISMATCH,
+    COMPACT_STATUS_SOURCE_UNAVAILABLE as STATUS_SOURCE_UNAVAILABLE,
+    COMPACT_STATUS_STATE_UNAVAILABLE as STATUS_STATE_UNAVAILABLE,
+    COMPACT_STATUS_WORKER_PANIC as STATUS_WORKER_PANIC,
+};
+const FAIL_STATUS_MASK: u32 = STATUS_STATE_UNAVAILABLE
+    | STATUS_PROFILE_MISMATCH
+    | STATUS_NO_CLOCK
+    | STATUS_NO_SCALAR_SOURCE
+    | STATUS_WORKER_PANIC
     | STATUS_BRIDGE_UNAVAILABLE
     | STATUS_SOURCE_UNAVAILABLE
-    | STATUS_PARTIAL_DATA;
+    | STATUS_PARTIAL_DATA
+    | STATUS_CONTROL_INVALID;
+
+const fn lane_local_status_mask(domain_id: u16) -> u32 {
+    match domain_id {
+        49 => 1 << 11,
+        51 => compact_status_flags::DOMAIN51_LANE_LOCAL_STATUS_MASK,
+        _ => 0,
+    }
+}
+
+const fn status_for_global_interpretation(domain_id: u16, status_flags: u32) -> u32 {
+    status_flags & !lane_local_status_mask(domain_id)
+}
 
 const ARMY_ORDER_ROW_LEN: usize = 48;
 const ARMY_ORDER_TARGET_ROW_LEN: usize = 8;
@@ -90,8 +130,16 @@ pub fn gate_lane_stream(bytes: &[u8], min_game_hours: i32) -> GateResult {
 
     if summary.parse_errors.is_empty() {
         for hour in &summary.unique_frame_hours {
-            if summary.per_hour_frame_records.get(hour).copied().unwrap_or(0) != 1 {
-                errors.push(format!("game_hour_raw {hour}: expected one frame-end record"));
+            if summary
+                .per_hour_frame_records
+                .get(hour)
+                .copied()
+                .unwrap_or(0)
+                != 1
+            {
+                errors.push(format!(
+                    "game_hour_raw {hour}: expected one frame-end record"
+                ));
             }
             for domain in [DOMAIN_ARMY_ORDERS, DOMAIN_OOB_COMMAND] {
                 let count = summary
@@ -194,46 +242,68 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
     let mut summary = CompactGateSummary::default();
     let mut offset = 0usize;
     let mut last_sequence = None::<u64>;
+    let mut open_hour = None::<i32>;
+    let mut pending_perf_hour = None::<i32>;
+    let mut last_closed_hour = None::<i32>;
+    let mut saw_frame_end = false;
+    let mut last_record_was_clean_frame_end = false;
 
     while offset < bytes.len() {
-        if bytes.len().saturating_sub(offset) < COMPACT_RECORD_HEADER_LEN {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: truncated compact record header"));
-            break;
-        }
-        let header = &bytes[offset..offset + COMPACT_RECORD_HEADER_LEN];
-        if &header[0..4] != COMPACT_RECORD_MAGIC {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: bad compact record magic"));
-            break;
-        }
-        let version = read_u16(header, 4);
-        let header_len = read_u16(header, 6) as usize;
-        let sequence = read_u64(header, 8);
-        let game_hour_raw = read_i32(header, 16);
-        let domain_id = read_u16(header, 20);
-        let record_type = read_u16(header, 22);
-        let payload_len = read_u32(header, 24) as usize;
-        let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
-
-        if version != COMPACT_RECORD_VERSION {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: unsupported compact version {version}"));
-        }
-        if header_len != COMPACT_RECORD_HEADER_LEN {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: bad header length {header_len}"));
-        }
-        if let Some(last) = last_sequence {
-            if sequence <= last {
-                summary.ordering_errors.push(format!(
-                    "offset {offset}: sequence {sequence} is not greater than {last}"
-                ));
+        let header = match parse_compact_record_header(&bytes[offset..]) {
+            Ok(header) => header,
+            Err(RecordFramingError::TruncatedHeader(_)) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: truncated compact record header"));
+                break;
             }
+            Err(RecordFramingError::BadMagic) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: bad compact record magic"));
+                break;
+            }
+            Err(RecordFramingError::UnsupportedVersion(version)) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unsupported compact version {version}"
+                ));
+                break;
+            }
+            Err(RecordFramingError::UnsupportedHeaderLen(header_len)) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: bad header length {header_len}"));
+                break;
+            }
+            Err(RecordFramingError::PayloadTooLarge(_)) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: payload length exceeds stream"));
+                break;
+            }
+        };
+        let sequence = header.sequence;
+        let game_hour_raw = header.game_hour_raw;
+        let domain_id = header.domain_id;
+        let record_type = header.record_type;
+        let record_flags = header.record_flags;
+        let payload_len = header.payload_len;
+        let record_len = header.record_len();
+
+        match last_sequence {
+            None if sequence != 1 => summary.ordering_errors.push(format!(
+                "offset {offset}: first sequence is {sequence}, expected 1"
+            )),
+            Some(last) => match last.checked_add(1) {
+                Some(expected) if sequence != expected => summary.ordering_errors.push(format!(
+                    "offset {offset}: sequence discontinuity: expected {expected}, got {sequence}"
+                )),
+                None => summary.ordering_errors.push(format!(
+                    "offset {offset}: sequence cannot advance after {last} without overflow"
+                )),
+                _ => {}
+            },
+            _ => {}
         }
         last_sequence = Some(sequence);
         if bytes.len().saturating_sub(offset) < record_len {
@@ -245,22 +315,88 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
 
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
         let payload = &bytes[payload_start..payload_start + payload_len];
+        let semantics_valid = match validate_compact_record_semantics(
+            domain_id,
+            record_type,
+            record_flags,
+            payload,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {error}"));
+                false
+            }
+        };
         summary.record_count = summary.record_count.saturating_add(1);
+        last_record_was_clean_frame_end = false;
 
         match record_type {
-            RECORD_TYPE_FRAME_END => {
-                summary.frame_end_count = summary.frame_end_count.saturating_add(1);
-                summary.first_hour = Some(summary.first_hour.map_or(game_hour_raw, |v| v.min(game_hour_raw)));
-                summary.last_hour = Some(summary.last_hour.map_or(game_hour_raw, |v| v.max(game_hour_raw)));
-                summary.unique_frame_hours.insert(game_hour_raw);
-                *summary.per_hour_frame_records.entry(game_hour_raw).or_default() += 1;
-                if domain_id != DOMAIN_FRAME {
+            RECORD_TYPE_FRAME_END if semantics_valid => {
+                let open_matches = match open_hour {
+                    Some(open) if open == game_hour_raw => true,
+                    Some(open) => {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: frame-end hour {game_hour_raw} does not close open hour {open}"
+                        ));
+                        false
+                    }
+                    None => {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: frame-end hour {game_hour_raw} has no open data hour"
+                        ));
+                        false
+                    }
+                };
+                if let Some(pending) = pending_perf_hour {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: frame-end record used domain {domain_id}"
+                        "offset {offset}: frame-end hour {game_hour_raw} encountered with pending perf-only hour {pending}"
                     ));
                 }
+                let successor_matches = closed_hour_is_successor(
+                    offset,
+                    last_closed_hour,
+                    game_hour_raw,
+                    &mut summary.ordering_errors,
+                );
+                if open_matches && pending_perf_hour.is_none() {
+                    open_hour = None;
+                    if successor_matches {
+                        saw_frame_end = true;
+                        last_closed_hour = Some(game_hour_raw);
+                        last_record_was_clean_frame_end = true;
+                        summary.frame_end_count = summary.frame_end_count.saturating_add(1);
+                        summary.first_hour = Some(summary.first_hour.unwrap_or(game_hour_raw));
+                        summary.last_hour = Some(game_hour_raw);
+                        summary.unique_frame_hours.insert(game_hour_raw);
+                        *summary
+                            .per_hour_frame_records
+                            .entry(game_hour_raw)
+                            .or_default() += 1;
+                        summary.status_flags_or |=
+                            status_for_global_interpretation(DOMAIN_FRAME, read_u32(payload, 24));
+                    }
+                }
             }
-            RECORD_TYPE_DOMAIN_DATA => {
+            RECORD_TYPE_DOMAIN_DATA if semantics_valid => {
+                match open_hour {
+                    Some(open) if open != game_hour_raw => summary.parse_errors.push(format!(
+                        "offset {offset}: data hour {game_hour_raw} encountered before frame-end closed hour {open}"
+                    )),
+                    None => match pending_perf_hour {
+                        Some(pending) if pending != game_hour_raw => summary.parse_errors.push(
+                            format!(
+                                "offset {offset}: data hour {game_hour_raw} does not match pending perf hour {pending}"
+                            ),
+                        ),
+                        _ => {
+                            pending_perf_hour = None;
+                            open_hour = Some(game_hour_raw);
+                        }
+                    },
+                    _ => {}
+                }
                 *summary
                     .per_hour_data_records
                     .entry(game_hour_raw)
@@ -273,20 +409,84 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
                     _ => {}
                 }
             }
-            _ => {}
+            RECORD_TYPE_DOMAIN_PERF if semantics_valid => {
+                match (open_hour, pending_perf_hour) {
+                    (Some(open), _) if open == game_hour_raw => {}
+                    (Some(open), _) => summary.parse_errors.push(format!(
+                        "offset {offset}: domain perf hour {game_hour_raw} does not match open hour {open}"
+                    )),
+                    (None, Some(pending)) if pending == game_hour_raw => {}
+                    (None, Some(pending)) => summary.parse_errors.push(format!(
+                        "offset {offset}: domain perf hour {game_hour_raw} does not match pending perf hour {pending}"
+                    )),
+                    (None, None) => pending_perf_hour = Some(game_hour_raw),
+                }
+                if domain_id == DOMAIN_ARMY_ORDERS || domain_id == DOMAIN_OOB_COMMAND {
+                    summary.status_flags_or |=
+                        status_for_global_interpretation(domain_id, read_u32(payload, 32));
+                }
+            }
+            RECORD_TYPE_FRAME_END | RECORD_TYPE_DOMAIN_DATA | RECORD_TYPE_DOMAIN_PERF => {}
+            other => summary
+                .parse_errors
+                .push(format!("offset {offset}: unsupported record type {other}")),
         }
 
         offset += record_len;
     }
 
+    if !bytes.is_empty() {
+        if !saw_frame_end {
+            summary
+                .parse_errors
+                .push("stream has no frame-end record".to_string());
+        }
+        if let Some(open) = open_hour {
+            summary
+                .parse_errors
+                .push(format!("stream ended with open data hour {open}"));
+        }
+        if !last_record_was_clean_frame_end {
+            summary
+                .parse_errors
+                .push("stream does not end at a clean frame-end boundary".to_string());
+        }
+    }
+
     summary
+}
+
+fn closed_hour_is_successor(
+    offset: usize,
+    previous: Option<i32>,
+    current: i32,
+    errors: &mut Vec<String>,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    match previous.checked_add(1) {
+        Some(expected) if current == expected => true,
+        Some(expected) => {
+            errors.push(format!(
+                "offset {offset}: closed hour discontinuity: expected {expected}, got {current}"
+            ));
+            false
+        }
+        None => {
+            errors.push(format!(
+                "offset {offset}: closed hour cannot advance after {previous} without overflow"
+            ));
+            false
+        }
+    }
 }
 
 pub fn decode_army_orders_payload(offset: usize, payload: &[u8], summary: &mut CompactGateSummary) {
     if payload.len() < 40 {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: army_orders payload shorter than 40 bytes"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: army_orders payload shorter than 40 bytes"
+        ));
         return;
     }
     let row_count = read_u32(payload, 8) as usize;
@@ -308,19 +508,19 @@ pub fn decode_army_orders_payload(offset: usize, payload: &[u8], summary: &mut C
         return;
     }
     if changed_rows > row_count {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: army_orders changed rows exceed row count"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: army_orders changed rows exceed row count"
+        ));
     }
     if observed_army_rows > root_rows {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: observed army rows exceed root rows"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: observed army rows exceed root rows"
+        ));
     }
     if deleted_rows > row_count {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: army_orders deleted rows exceed row count"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: army_orders deleted rows exceed row count"
+        ));
     }
 
     let domain = summary.per_domain.entry(DOMAIN_ARMY_ORDERS).or_default();
@@ -329,6 +529,7 @@ pub fn decode_army_orders_payload(offset: usize, payload: &[u8], summary: &mut C
     domain.changed_rows = domain.changed_rows.saturating_add(changed_rows as u64);
     domain.child_rows = domain.child_rows.saturating_add(target_state_count as u64);
     domain.deleted_rows = domain.deleted_rows.saturating_add(deleted_rows as u64);
+    let status_flags = status_for_global_interpretation(DOMAIN_ARMY_ORDERS, status_flags);
     domain.status_flags_or |= status_flags;
     summary.status_flags_or |= status_flags;
 
@@ -353,87 +554,97 @@ pub fn decode_army_orders_payload(offset: usize, payload: &[u8], summary: &mut C
         let has_target_states = flags & ARMY_ORDER_FLAG_TARGET_STATES != 0;
         let has_target_count = flags & ARMY_ORDER_FLAG_TARGET_STATE_COUNT != 0;
         if army_id == 0 || army_id > MAX_ARMY_ID {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has bad army id"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has bad army id"
+            ));
         }
         if !seen.insert((army_id, generation, slot_index, deleted)) {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: duplicate army order row {row_index}"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: duplicate army order row {row_index}"
+            ));
         }
-        if flags & !(ARMY_ORDER_FLAG_DELETED | ARMY_ORDER_FLAG_TARGET_STATES | ARMY_ORDER_FLAG_TARGET_STATE_COUNT) != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has unknown flags"));
+        if flags
+            & !(ARMY_ORDER_FLAG_DELETED
+                | ARMY_ORDER_FLAG_TARGET_STATES
+                | ARMY_ORDER_FLAG_TARGET_STATE_COUNT)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has unknown flags"
+            ));
         }
         if slot_index >= MAX_ARMY_ORDER_SLOT_INDEX {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has bad slot"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has bad slot"
+            ));
         }
         if !(-1000..=1000).contains(&order_type) {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has bad order type"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has bad order type"
+            ));
         }
-        if deleted && (target_first != 0 || target_count != 0 || target_declared != 0 || target_status != 0) {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: deleted army order row {row_index} has live target fields"));
+        if deleted
+            && (target_first != 0
+                || target_count != 0
+                || target_declared != 0
+                || target_status != 0)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: deleted army order row {row_index} has live target fields"
+            ));
         }
         if !deleted && target_status > 4 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has bad target status"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has bad target status"
+            ));
         }
         if !has_target_states && target_count != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has target rows without flag"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has target rows without flag"
+            ));
         }
         if has_target_states {
             let target_end = target_first.saturating_add(target_count);
             if target_end > target_state_count {
-                summary
-                    .parse_errors
-                    .push(format!("offset {offset}: army order row {row_index} target range exceeds child table"));
+                summary.parse_errors.push(format!(
+                    "offset {offset}: army order row {row_index} target range exceeds child table"
+                ));
             }
             declared_targets = declared_targets.saturating_add(target_count);
         } else if target_first != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has target_first without flag"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has target_first without flag"
+            ));
         }
         if !has_target_count && target_declared != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has target count without flag"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has target count without flag"
+            ));
         }
         if reserved0 != 0 || reserved1 != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: army order row {row_index} has nonzero reserved field"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has nonzero reserved field"
+            ));
         }
     }
     if declared_targets != target_state_count {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: army_orders target child count mismatch"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: army_orders target child count mismatch"
+        ));
     }
     for row_index in 0..target_state_count {
         let state_id = read_u32(payload, cursor);
         let reserved = read_u32(payload, cursor + 4);
         cursor += ARMY_ORDER_TARGET_ROW_LEN;
         if state_id == 0 || state_id > MAX_STATE_ID {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: target row {row_index} has bad state id"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: target row {row_index} has bad state id"
+            ));
         }
         if reserved != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: target row {row_index} has nonzero reserved field"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: target row {row_index} has nonzero reserved field"
+            ));
         }
     }
     let _ = observed_order_rows;
@@ -441,9 +652,9 @@ pub fn decode_army_orders_payload(offset: usize, payload: &[u8], summary: &mut C
 
 pub fn decode_oob_command_payload(offset: usize, payload: &[u8], summary: &mut CompactGateSummary) {
     if payload.len() < 48 {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: oob_command payload shorter than 48 bytes"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob_command payload shorter than 48 bytes"
+        ));
         return;
     }
     let row_count = read_u32(payload, 8) as usize;
@@ -469,19 +680,19 @@ pub fn decode_oob_command_payload(offset: usize, payload: &[u8], summary: &mut C
         return;
     }
     if changed_rows > row_count {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: oob changed rows exceed row count"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob changed rows exceed row count"
+        ));
     }
     if observed_army_rows > root_rows {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: oob observed army rows exceed root rows"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob observed army rows exceed root rows"
+        ));
     }
     if deleted_rows > row_count {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: oob deleted rows exceed row count"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob deleted rows exceed row count"
+        ));
     }
 
     let domain = summary.per_domain.entry(DOMAIN_OOB_COMMAND).or_default();
@@ -490,6 +701,7 @@ pub fn decode_oob_command_payload(offset: usize, payload: &[u8], summary: &mut C
     domain.changed_rows = domain.changed_rows.saturating_add(changed_rows as u64);
     domain.child_rows = domain.child_rows.saturating_add(member_count as u64);
     domain.deleted_rows = domain.deleted_rows.saturating_add(deleted_rows as u64);
+    let status_flags = status_for_global_interpretation(DOMAIN_OOB_COMMAND, status_flags);
     domain.status_flags_or |= status_flags;
     summary.status_flags_or |= status_flags;
 
@@ -520,15 +732,18 @@ pub fn decode_oob_command_payload(offset: usize, payload: &[u8], summary: &mut C
         cursor += OOB_ROW_LEN;
 
         let deleted = flags & OOB_FLAG_DELETED != 0;
-        if !matches!(kind, OOB_KIND_ARMY | OOB_KIND_ARMY_GROUP | OOB_KIND_FLEET | OOB_KIND_TASK_FORCE) {
+        if !matches!(
+            kind,
+            OOB_KIND_ARMY | OOB_KIND_ARMY_GROUP | OOB_KIND_FLEET | OOB_KIND_TASK_FORCE
+        ) {
             summary
                 .parse_errors
                 .push(format!("offset {offset}: oob row {row_index} has bad kind"));
         }
         if object_id == 0 || object_id > MAX_OOB_ID {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} has bad object id"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} has bad object id"
+            ));
         }
         if !seen.insert((kind, object_id, deleted)) {
             summary
@@ -544,9 +759,9 @@ pub fn decode_oob_command_payload(offset: usize, payload: &[u8], summary: &mut C
             | OOB_FLAG_MISSING_MEMBER_COUNT
             | OOB_FLAG_LOCATION;
         if flags & !known_flags != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} has unknown flags"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} has unknown flags"
+            ));
         }
         if deleted
             && (parent_id != 0
@@ -560,44 +775,65 @@ pub fn decode_oob_command_payload(offset: usize, payload: &[u8], summary: &mut C
                 || leader_trait_count != 0
                 || location_province_id != 0)
         {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: deleted oob row {row_index} has live fields"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: deleted oob row {row_index} has live fields"
+            ));
         }
-        validate_optional_id(summary, offset, row_index, flags & OOB_FLAG_PARENT != 0, parent_id, "parent");
-        validate_optional_id(summary, offset, row_index, flags & OOB_FLAG_OWNER != 0, owner_tag_db_id, "owner");
-        validate_optional_id(summary, offset, row_index, flags & OOB_FLAG_LEADER != 0, leader_id, "leader");
+        validate_optional_id(
+            summary,
+            offset,
+            row_index,
+            flags & OOB_FLAG_PARENT != 0,
+            parent_id,
+            "parent",
+        );
+        validate_optional_id(
+            summary,
+            offset,
+            row_index,
+            flags & OOB_FLAG_OWNER != 0,
+            owner_tag_db_id,
+            "owner",
+        );
+        validate_optional_id(
+            summary,
+            offset,
+            row_index,
+            flags & OOB_FLAG_LEADER != 0,
+            leader_id,
+            "leader",
+        );
         if flags & OOB_FLAG_LEADER_SKILL != 0 {
             if leader_skill > MAX_OOB_LEADER_SKILL {
-                summary
-                    .parse_errors
-                    .push(format!("offset {offset}: oob row {row_index} has bad leader skill"));
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob row {row_index} has bad leader skill"
+                ));
             }
         } else if leader_skill != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} has leader skill without flag"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} has leader skill without flag"
+            ));
         }
         if flags & OOB_FLAG_LOCATION != 0 {
             if location_province_id == 0 || location_province_id > MAX_OOB_LOCATION_PROVINCE_ID {
-                summary
-                    .parse_errors
-                    .push(format!("offset {offset}: oob row {row_index} has bad location"));
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob row {row_index} has bad location"
+                ));
             }
         } else if location_province_id != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} has location without flag"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} has location without flag"
+            ));
         }
         if flags & OOB_FLAG_MEMBER_COUNT_ENGINE == 0 && member_count_engine != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} has engine count without flag"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} has engine count without flag"
+            ));
         }
         if flags & OOB_FLAG_MISSING_MEMBER_COUNT == 0 && missing_member_count != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} has missing count without flag"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} has missing count without flag"
+            ));
         }
         for (name, status) in [
             ("parent", parent_status),
@@ -607,33 +843,33 @@ pub fn decode_oob_command_payload(offset: usize, payload: &[u8], summary: &mut C
             ("leader_trait", leader_trait_status),
         ] {
             if status > 5 {
-                summary
-                    .parse_errors
-                    .push(format!("offset {offset}: oob row {row_index} has bad {name} status"));
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob row {row_index} has bad {name} status"
+                ));
             }
         }
         if row_member_count > 0 {
             let member_end = member_first.saturating_add(row_member_count);
             if member_end > member_count {
-                summary
-                    .parse_errors
-                    .push(format!("offset {offset}: oob row {row_index} member range exceeds child table"));
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob row {row_index} member range exceeds child table"
+                ));
             }
             declared_members = declared_members.saturating_add(row_member_count);
         } else if member_first != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} has member_first without members"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} has member_first without members"
+            ));
         }
         if logical_member_count < row_member_count {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} logical member count is too small"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} logical member count is too small"
+            ));
         }
         if reserved != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob row {row_index} has nonzero reserved field"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob row {row_index} has nonzero reserved field"
+            ));
         }
     }
     if declared_members != member_count {
@@ -646,14 +882,14 @@ pub fn decode_oob_command_payload(offset: usize, payload: &[u8], summary: &mut C
         let reserved = read_u32(payload, cursor + 4);
         cursor += OOB_MEMBER_ROW_LEN;
         if member_id == 0 || member_id > MAX_OOB_ID {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob member row {row_index} has bad id"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob member row {row_index} has bad id"
+            ));
         }
         if reserved != 0 {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: oob member row {row_index} has nonzero reserved field"));
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob member row {row_index} has nonzero reserved field"
+            ));
         }
     }
 }
@@ -677,10 +913,6 @@ fn validate_optional_id(
             "offset {offset}: oob row {row_index} has {field} id without flag"
         ));
     }
-}
-
-fn read_u16(data: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap())
 }
 
 fn read_u32(data: &[u8], offset: usize) -> u32 {
@@ -716,7 +948,8 @@ mod tests {
     fn army_orders_payload_rejects_bad_target_reserved_field() {
         let mut payload = test_army_orders_payload(0);
         let target_reserved_offset = 40 + 2 * ARMY_ORDER_ROW_LEN + 4;
-        payload[target_reserved_offset..target_reserved_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+        payload[target_reserved_offset..target_reserved_offset + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
 
         let mut summary = CompactGateSummary::default();
         decode_army_orders_payload(77, &payload, &mut summary);
@@ -762,7 +995,14 @@ mod tests {
                 &test_oob_payload(0),
             );
             sequence += 1;
-            append_record(&mut raw, sequence, hour, DOMAIN_FRAME, RECORD_TYPE_FRAME_END, &[]);
+            append_record(
+                &mut raw,
+                sequence,
+                hour,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                &[0; FRAME_END_PAYLOAD_LEN],
+            );
             sequence += 1;
         }
 
@@ -791,7 +1031,14 @@ mod tests {
             RECORD_TYPE_DOMAIN_DATA,
             &test_oob_payload(0),
         );
-        append_record(&mut raw, 3, 100, DOMAIN_FRAME, RECORD_TYPE_FRAME_END, &[]);
+        append_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &[0; FRAME_END_PAYLOAD_LEN],
+        );
 
         let result = gate_lane_stream(&raw, 0);
 
@@ -799,6 +1046,310 @@ mod tests {
             .errors
             .iter()
             .any(|err| err.contains("failure status flags")));
+    }
+
+    #[test]
+    fn stream_gate_accepts_unowned_records_and_perf_before_data() {
+        let mut raw = Vec::new();
+        append_record(&mut raw, 1, 100, 51, RECORD_TYPE_DOMAIN_PERF, &[0; 40]);
+        append_record(&mut raw, 2, 100, 51, RECORD_TYPE_DOMAIN_DATA, &[0xA5; 7]);
+        append_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_ARMY_ORDERS,
+            RECORD_TYPE_DOMAIN_PERF,
+            &[0; 40],
+        );
+        append_record(
+            &mut raw,
+            4,
+            100,
+            DOMAIN_ARMY_ORDERS,
+            RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_payload(0),
+        );
+        append_record(
+            &mut raw,
+            5,
+            100,
+            DOMAIN_OOB_COMMAND,
+            RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_payload(0),
+        );
+        append_record(
+            &mut raw,
+            6,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &[0; FRAME_END_PAYLOAD_LEN],
+        );
+
+        let result = gate_lane_stream(&raw, 0);
+        assert_eq!(result.errors, Vec::<String>::new(), "{:?}", result.errors);
+        assert!(!result.summary.per_domain.contains_key(&51));
+    }
+
+    #[test]
+    fn stream_gate_rejects_nonconsecutive_physical_closures() {
+        let mut raw = Vec::new();
+        let mut sequence = 1u64;
+        for hour in [100i32, 99, 101] {
+            append_record(
+                &mut raw,
+                sequence,
+                hour,
+                DOMAIN_ARMY_ORDERS,
+                RECORD_TYPE_DOMAIN_DATA,
+                &test_army_orders_payload(0),
+            );
+            sequence += 1;
+            append_record(
+                &mut raw,
+                sequence,
+                hour,
+                DOMAIN_OOB_COMMAND,
+                RECORD_TYPE_DOMAIN_DATA,
+                &test_oob_payload(0),
+            );
+            sequence += 1;
+            append_record(
+                &mut raw,
+                sequence,
+                hour,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                &[0; FRAME_END_PAYLOAD_LEN],
+            );
+            sequence += 1;
+        }
+
+        let result = gate_lane_stream(&raw, 0);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("closed hour discontinuity: expected 101, got 99")));
+    }
+
+    #[test]
+    fn stream_gate_uses_full_canonical_failure_mask_after_normalization() {
+        let fatal = (1 << 0)
+            | (1 << 1)
+            | (1 << 2)
+            | (1 << 3)
+            | (1 << 6)
+            | (1 << 7)
+            | (1 << 8)
+            | (1 << 9)
+            | (1 << 12);
+        assert_eq!(fatal, FAIL_STATUS_MASK);
+        assert_eq!(status_for_global_interpretation(51, 1 << 12), 0);
+        assert_eq!(
+            status_for_global_interpretation(DOMAIN_ARMY_ORDERS, 1 << 12),
+            1 << 12
+        );
+
+        let mut raw = Vec::new();
+        append_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_ARMY_ORDERS,
+            RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_payload(fatal),
+        );
+        append_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_OOB_COMMAND,
+            RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_payload(0),
+        );
+        append_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &[0; FRAME_END_PAYLOAD_LEN],
+        );
+        let result = gate_lane_stream(&raw, 0);
+        assert_eq!(result.summary.status_flags_or & FAIL_STATUS_MASK, fatal);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("failure status flags")));
+    }
+
+    #[test]
+    fn stream_gate_rejects_sequence_gap_and_invalid_flags() {
+        let mut raw = Vec::new();
+        append_record_with_flags(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_ARMY_ORDERS,
+            RECORD_TYPE_DOMAIN_DATA,
+            1 << 31,
+            &test_army_orders_payload(0),
+        );
+        append_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_OOB_COMMAND,
+            RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_payload(0),
+        );
+        append_record(
+            &mut raw,
+            4,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &[0; FRAME_END_PAYLOAD_LEN],
+        );
+
+        let summary = decode_compact_stream(&raw);
+        assert!(summary
+            .ordering_errors
+            .iter()
+            .any(|error| error.contains("expected 2, got 3")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("record flags")));
+    }
+
+    #[test]
+    fn stream_gate_rejects_bad_perf_and_frame_payload_lengths() {
+        let mut raw = Vec::new();
+        append_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_ARMY_ORDERS,
+            RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_payload(0),
+        );
+        append_record(
+            &mut raw,
+            2,
+            100,
+            DOMAIN_ARMY_ORDERS,
+            RECORD_TYPE_DOMAIN_PERF,
+            &[0; 39],
+        );
+        append_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &[0; 31],
+        );
+
+        let summary = decode_compact_stream(&raw);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("shorter than 40")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("is not 32")));
+    }
+
+    #[test]
+    fn stream_gate_validates_announced_perf_trailer_envelopes() {
+        fn stream_with_perf(flags: u32, perf: &[u8]) -> CompactGateSummary {
+            let mut raw = Vec::new();
+            append_record(
+                &mut raw,
+                1,
+                100,
+                DOMAIN_ARMY_ORDERS,
+                RECORD_TYPE_DOMAIN_DATA,
+                &test_army_orders_payload(0),
+            );
+            append_record_with_flags(
+                &mut raw,
+                2,
+                100,
+                DOMAIN_ARMY_ORDERS,
+                RECORD_TYPE_DOMAIN_PERF,
+                flags,
+                perf,
+            );
+            append_record(
+                &mut raw,
+                3,
+                100,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                &[0; FRAME_END_PAYLOAD_LEN],
+            );
+            decode_compact_stream(&raw)
+        }
+
+        let base = vec![0; 40];
+        let trailer = empty_pdu1_perf_payload();
+        assert!(stream_with_perf(PERF_DIAGNOSTIC_TRAILER_FLAG, &trailer)
+            .parse_errors
+            .is_empty());
+        assert!(stream_with_perf(PERF_DIAGNOSTIC_TRAILER_FLAG, &base)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("trailer header is truncated")));
+        assert!(stream_with_perf(0, &trailer)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unannounced trailer")));
+    }
+
+    #[test]
+    fn stream_gate_rejects_hour_mismatch_and_trailing_record() {
+        let mut raw = Vec::new();
+        append_record(
+            &mut raw,
+            1,
+            100,
+            DOMAIN_ARMY_ORDERS,
+            RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_payload(0),
+        );
+        append_record(
+            &mut raw,
+            2,
+            101,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &[0; FRAME_END_PAYLOAD_LEN],
+        );
+        append_record(
+            &mut raw,
+            3,
+            101,
+            DOMAIN_ARMY_ORDERS,
+            RECORD_TYPE_DOMAIN_PERF,
+            &[0; 40],
+        );
+
+        let summary = decode_compact_stream(&raw);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("does not close open hour")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("does not match open hour")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("clean frame-end boundary")));
     }
 
     fn test_army_orders_payload(status_flags: u32) -> Vec<u8> {
@@ -843,6 +1394,14 @@ mod tests {
             payload.extend_from_slice(&state_id.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
+        payload
+    }
+
+    fn empty_pdu1_perf_payload() -> Vec<u8> {
+        let mut payload = vec![0; 40];
+        payload.extend_from_slice(b"PDU1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
         payload
     }
 
@@ -970,6 +1529,26 @@ mod tests {
         record_type: u16,
         payload: &[u8],
     ) {
+        append_record_with_flags(
+            out,
+            sequence,
+            game_hour_raw,
+            domain_id,
+            record_type,
+            0,
+            payload,
+        );
+    }
+
+    fn append_record_with_flags(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        domain_id: u16,
+        record_type: u16,
+        record_flags: u32,
+        payload: &[u8],
+    ) {
         out.extend_from_slice(COMPACT_RECORD_MAGIC);
         out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
         out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
@@ -978,7 +1557,7 @@ mod tests {
         out.extend_from_slice(&domain_id.to_le_bytes());
         out.extend_from_slice(&record_type.to_le_bytes());
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_flags.to_le_bytes());
         out.extend_from_slice(payload);
     }
 }

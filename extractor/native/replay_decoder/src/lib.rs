@@ -57,13 +57,18 @@
 //! ```
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use compact_contract::{
-    parse_compact_record_header, RecordFramingError, ASSIGNED_COMPACT_DOMAINS,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    parse_compact_record_header, validate_compact_record_semantics, CompactRecordHeader,
+    RecordFramingError, ASSIGNED_COMPACT_DOMAINS, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
     COMPACT_RECORD_TYPE_FRAME_END,
+};
+use recorder_host::stream_fold::{
+    strict_stream_certification_verdict, validate_domain_data_payload, BoundaryTracker,
 };
 use recorder_host::world_fold::{schema_version, WorldFold};
 use snapshot::container::{Container, ExpectedIdentity};
@@ -75,6 +80,9 @@ const CHUNK: usize = 8 * 1024 * 1024;
 
 /// ZIP local-file header magic (`PK\x03\x04`) — a `.battleplan` container.
 const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
+
+/// Persisted format marker for a source-bound, fully certified stream index.
+const CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v1";
 
 /// Manifest role of the compact stream inside a `.battleplan` container.
 pub const STREAM_ROLE: &str = "collector_compact_stream";
@@ -191,6 +199,10 @@ pub struct DecodeStats {
     pub truncated_tail_bytes: u64,
     pub records_total: u64,
     pub data_records: u64,
+    /// Framed DOMAIN_DATA records rejected by the production fold's exact
+    /// structural payload validator. Their domain state is degraded/unknown;
+    /// they are never eligible for strict certification.
+    pub malformed_payload_records: u64,
     pub frame_end_records: u64,
     pub perf_records: u64,
     pub other_records: u64,
@@ -198,6 +210,28 @@ pub struct DecodeStats {
     pub per_domain_data_records: BTreeMap<u16, u64>,
     /// Set when framing stopped early on a malformed record (bad magic/version).
     pub stop_reason: Option<String>,
+    /// Canonical envelope or logical-boundary failure: invalid record flags,
+    /// PERF/FRAME_END shape, residual bytes, open/interleaved hour, mismatched
+    /// FRAME_END, sequence discontinuity, or no closed hour.
+    pub boundary_error: Option<String>,
+    /// True only when both the production tracker and strict extractor
+    /// certification accept the final closed-hour boundary.
+    pub ends_at_frame_end: bool,
+}
+
+impl DecodeStats {
+    /// Fail-closed certification verdict. Prefix recovery remains available to
+    /// ordinary decoder callers, but hash/equivalence gates must require this
+    /// result before treating any emitted hours as authoritative.
+    pub fn certification_verdict(&self) -> Result<(), String> {
+        strict_stream_certification_verdict(
+            self.stop_reason.as_deref(),
+            self.truncated_tail_bytes,
+            self.malformed_payload_records,
+            self.ends_at_frame_end,
+            self.boundary_error.as_deref(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +248,8 @@ pub enum OpenError {
     /// A `.battleplan` container could not be opened/validated, or had no (or
     /// more than one) `collector_compact_stream` entry.
     Container(String),
+    /// Full-stream certification failed, so no authoritative index exists.
+    Certification(String),
 }
 
 impl std::fmt::Display for OpenError {
@@ -222,6 +258,7 @@ impl std::fmt::Display for OpenError {
             OpenError::Io(e) => write!(f, "io: {e}"),
             OpenError::UnrecognizedInput(s) => write!(f, "unrecognized input: {s}"),
             OpenError::Container(s) => write!(f, "container: {s}"),
+            OpenError::Certification(s) => write!(f, "certification: {s}"),
         }
     }
 }
@@ -255,6 +292,9 @@ pub enum SeekError {
     Decode(DecodeError),
     /// The target hour is not present in the index / stream.
     HourNotFound(i64),
+    /// The persisted index is structurally invalid or is not the certified
+    /// index for the exact source/options being sought.
+    InvalidIndex(String),
 }
 
 impl std::fmt::Display for SeekError {
@@ -263,10 +303,42 @@ impl std::fmt::Display for SeekError {
             SeekError::Open(e) => write!(f, "open: {e}"),
             SeekError::Decode(e) => write!(f, "decode: {e}"),
             SeekError::HourNotFound(h) => write!(f, "hour {h} not found in stream"),
+            SeekError::InvalidIndex(s) => write!(f, "invalid stream index: {s}"),
         }
     }
 }
 impl std::error::Error for SeekError {}
+
+/// Why an in-progress decoder cursor could not mint an authoritative index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexCertificationError {
+    NotExhausted,
+    Stream(String),
+    Length(String),
+    UnidentifiedSource,
+    InvalidIndex(String),
+}
+
+impl std::fmt::Display for IndexCertificationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IndexCertificationError::NotExhausted => {
+                write!(f, "cursor has not reached physical EOF")
+            }
+            IndexCertificationError::Stream(s) => write!(f, "stream is not certified: {s}"),
+            IndexCertificationError::Length(s) => write!(f, "source length mismatch: {s}"),
+            IndexCertificationError::UnidentifiedSource => write!(
+                f,
+                "reader-only cursor has no stable source identity; use build_index on Source"
+            ),
+            IndexCertificationError::InvalidIndex(s) => {
+                write!(f, "certified index invariant failed: {s}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IndexCertificationError {}
 
 // ---------------------------------------------------------------------------
 // Opening a source
@@ -317,28 +389,38 @@ impl Source {
     pub fn open_cursor(&self, opts: &OpenOptions) -> Result<HourCursor, OpenError> {
         match self {
             Source::StreamFile(path) => {
-                let file = compact_stream::open(path)?;
+                let canonical_path = fs::canonicalize(path)?;
+                let file = compact_stream::open(&canonical_path)?;
                 let compressed = file.compression() == compact_stream::StreamCompression::Zstd;
                 let total_len = if compressed { 0 } else { file.encoded_len() };
                 let game_id = opts
                     .game_id
                     .clone()
                     .unwrap_or_else(|| DEFAULT_GAME_ID.to_string());
-                Ok(HourCursor::from_reader_compressed(
+                Ok(HourCursor::from_reader_compressed_with_source(
                     Box::new(file),
                     total_len,
                     game_id,
                     compressed,
+                    Some(IndexSourceDescriptor {
+                        kind: "stream_file".to_string(),
+                        canonical_path: canonical_path.to_string_lossy().into_owned(),
+                    }),
                 ))
             }
             Source::Container(path) => {
-                let (bytes, manifest_game_id) = extract_container_stream(path)?;
+                let canonical_path = fs::canonicalize(path)?;
+                let (bytes, manifest_game_id) = extract_container_stream(&canonical_path)?;
                 let total_len = bytes.len() as u64;
                 let game_id = opts.game_id.clone().unwrap_or(manifest_game_id);
-                Ok(HourCursor::from_reader(
+                Ok(HourCursor::from_reader_with_source(
                     Box::new(Cursor::new(bytes)),
                     total_len,
                     game_id,
+                    Some(IndexSourceDescriptor {
+                        kind: "container".to_string(),
+                        canonical_path: canonical_path.to_string_lossy().into_owned(),
+                    }),
                 ))
             }
         }
@@ -462,11 +544,43 @@ pub struct HourCursor {
     cur_hour_start: u64,
     index_hours: Vec<HourOffset>,
     first_hour_seen: bool,
+    /// The same hour/sequence/boundary state machine used by the production
+    /// streaming fold and seal-time verifier.
+    boundary_tracker: BoundaryTracker,
+    /// Decoder-owned strict certification state. The production tracker is
+    /// intentionally tolerant of legacy streams; extractor certification is
+    /// stricter: sequence starts at one and never wraps, every FRAME_END closes
+    /// an open DATA hour, and the final record is FRAME_END.
+    strict_previous_sequence: Option<u64>,
+    strict_open_hour: Option<i32>,
+    strict_last_record_type: Option<u16>,
+    strict_validation_error: Option<String>,
+    /// Digest of every decoded source byte pulled from the reader. It is only
+    /// published after EOF and strict certification, never for a valid prefix.
+    source_hasher: Sha256,
+    /// Stable re-openable source identity. Reader-only cursors deliberately
+    /// lack one and therefore cannot mint a persisted authoritative index.
+    index_source: Option<IndexSourceDescriptor>,
+}
+
+#[derive(Debug, Clone)]
+struct IndexSourceDescriptor {
+    kind: String,
+    canonical_path: String,
 }
 
 impl HourCursor {
     fn from_reader(reader: Box<dyn Read>, total_len: u64, game_id: String) -> HourCursor {
         Self::from_reader_compressed(reader, total_len, game_id, false)
+    }
+
+    fn from_reader_with_source(
+        reader: Box<dyn Read>,
+        total_len: u64,
+        game_id: String,
+        index_source: Option<IndexSourceDescriptor>,
+    ) -> HourCursor {
+        Self::from_reader_compressed_with_source(reader, total_len, game_id, false, index_source)
     }
 
     /// `compressed` = the underlying reader is a checksummed zstd stream. On such
@@ -479,6 +593,16 @@ impl HourCursor {
         total_len: u64,
         game_id: String,
         compressed: bool,
+    ) -> HourCursor {
+        Self::from_reader_compressed_with_source(reader, total_len, game_id, compressed, None)
+    }
+
+    fn from_reader_compressed_with_source(
+        reader: Box<dyn Read>,
+        total_len: u64,
+        game_id: String,
+        compressed: bool,
+        index_source: Option<IndexSourceDescriptor>,
     ) -> HourCursor {
         HourCursor {
             reader,
@@ -501,6 +625,13 @@ impl HourCursor {
             cur_hour_start: 0,
             index_hours: Vec::new(),
             first_hour_seen: false,
+            boundary_tracker: BoundaryTracker::default(),
+            strict_previous_sequence: None,
+            strict_open_hour: None,
+            strict_last_record_type: None,
+            strict_validation_error: None,
+            source_hasher: Sha256::new(),
+            index_source,
         }
     }
 
@@ -513,7 +644,11 @@ impl HourCursor {
         loop {
             match self.reader.read(&mut sink).map_err(DecodeError::Io)? {
                 0 => return Ok(residual),
-                n => residual += n as u64,
+                n => {
+                    self.source_hasher.update(&sink[..n]);
+                    self.decoded_read = self.decoded_read.saturating_add(n as u64);
+                    residual += n as u64;
+                }
             }
         }
     }
@@ -562,13 +697,46 @@ impl HourCursor {
         }
     }
 
-    /// Consume this cursor and return the [`StreamIndex`] built so far (valid
-    /// once iteration has completed).
-    pub fn take_index(self) -> StreamIndex {
-        StreamIndex {
+    /// Consume this cursor and return a source-bound [`StreamIndex`]. The cursor
+    /// must have reached physical EOF, passed strict stream certification, and
+    /// have a stable re-openable source identity. Prefix/reader-only indexes are
+    /// intentionally unavailable through this authoritative API.
+    pub fn take_index(self) -> Result<StreamIndex, IndexCertificationError> {
+        if !self.done {
+            return Err(IndexCertificationError::NotExhausted);
+        }
+        self.stats
+            .certification_verdict()
+            .map_err(IndexCertificationError::Stream)?;
+        if self.processed != self.decoded_read {
+            return Err(IndexCertificationError::Length(format!(
+                "framed {} byte(s), but read {} decoded source byte(s)",
+                self.processed, self.decoded_read
+            )));
+        }
+        if self.total_len != 0 && self.total_len != self.decoded_read {
+            return Err(IndexCertificationError::Length(format!(
+                "declared decoded length {} does not match {} byte(s) read",
+                self.total_len, self.decoded_read
+            )));
+        }
+        let descriptor = self
+            .index_source
+            .ok_or(IndexCertificationError::UnidentifiedSource)?;
+        let index = StreamIndex {
+            source: CertifiedSourceIdentity {
+                kind: descriptor.kind,
+                canonical_path: descriptor.canonical_path,
+                decoded_len: self.decoded_read,
+                decoded_sha256: to_hex(&self.source_hasher.finalize()),
+            },
             game_id: self.meta.game_id,
             hours: self.index_hours,
-        }
+        };
+        index
+            .validate_structure()
+            .map_err(IndexCertificationError::InvalidIndex)?;
+        Ok(index)
     }
 
     /// Advance framing until at least one hour is queued, EOF, or a hard framing
@@ -609,8 +777,32 @@ impl HourCursor {
                 if record_len > remaining {
                     break; // payload not fully buffered yet — read more
                 }
+                self.observe_strict_header(&header, record_start_abs);
                 let payload =
                     &self.carry[self.pos + COMPACT_RECORD_HEADER_LEN..self.pos + record_len];
+
+                let envelope_error = validate_compact_record_envelope(&header, payload)
+                    .err()
+                    .map(|reason| {
+                        format!("record contract violation at byte {record_start_abs}: {reason}")
+                    });
+                if self.strict_validation_error.is_none() {
+                    self.strict_validation_error = envelope_error.clone();
+                }
+                let exact_payload_error = match (header.record_type, envelope_error.as_ref()) {
+                    (COMPACT_RECORD_TYPE_DOMAIN_DATA, None) => {
+                        validate_domain_data_payload(header.domain_id, payload, header.record_flags)
+                            .err()
+                    }
+                    _ => None,
+                };
+                let malformed_reason = (header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA)
+                    .then(|| {
+                        envelope_error
+                            .clone()
+                            .or_else(|| exact_payload_error.clone())
+                    })
+                    .flatten();
 
                 self.stats.records_total += 1;
                 match header.record_type {
@@ -627,16 +819,29 @@ impl HourCursor {
                     COMPACT_RECORD_TYPE_DOMAIN_PERF => self.stats.perf_records += 1,
                     _ => self.stats.other_records += 1,
                 }
+                self.boundary_tracker
+                    .observe(&header, payload, record_start_abs);
 
-                // The single production fold. PERF / probe records carry no
-                // folded state and are ignored inside `ingest_record`.
-                self.fold.ingest_record(
-                    header.game_hour_raw,
-                    header.domain_id,
-                    header.record_type,
-                    payload,
-                    header.record_flags,
-                );
+                if let Some(reason) = malformed_reason {
+                    if exact_payload_error.is_some() {
+                        self.stats.malformed_payload_records += 1;
+                    }
+                    self.fold.record_malformed_domain_payload(
+                        header.game_hour_raw,
+                        header.domain_id,
+                        &reason,
+                    );
+                } else {
+                    // The single production fold. PERF / probe records carry no
+                    // folded state and are ignored inside `ingest_record`.
+                    self.fold.ingest_record(
+                        header.game_hour_raw,
+                        header.domain_id,
+                        header.record_type,
+                        payload,
+                        header.record_flags,
+                    );
+                }
                 self.pos += record_len;
 
                 if header.record_type == COMPACT_RECORD_TYPE_FRAME_END {
@@ -657,6 +862,7 @@ impl HourCursor {
                 return Ok(());
             }
             self.decoded_read = self.decoded_read.saturating_add(n as u64);
+            self.source_hasher.update(&self.chunk[..n]);
             self.carry.extend_from_slice(&self.chunk[..n]);
         }
     }
@@ -678,10 +884,64 @@ impl HourCursor {
             self.stats.stream_bytes = self.decoded_read;
         }
         self.stats.bytes_folded = self.processed;
-        self.stats.truncated_tail_bytes =
-            self.stats.stream_bytes.saturating_sub(self.processed);
+        self.stats.truncated_tail_bytes = self.stats.stream_bytes.saturating_sub(self.processed);
         self.stats.hours_emitted = self.fold.emitted_hours_count() as u64;
+        let shared_boundary_error = self.boundary_tracker.eof_check(self.carry.len()).err();
+        if self.strict_validation_error.is_none() {
+            self.strict_validation_error = shared_boundary_error.or_else(|| {
+                (self.strict_last_record_type != Some(COMPACT_RECORD_TYPE_FRAME_END)).then(|| {
+                    match self.strict_last_record_type {
+                        Some(record_type) => {
+                            format!("stream final record type {record_type} is not FRAME_END")
+                        }
+                        None => "stream contains no records".to_string(),
+                    }
+                })
+            });
+        }
+        self.stats.boundary_error = self.strict_validation_error.take();
+        self.stats.ends_at_frame_end = self.stats.boundary_error.is_none();
         self.done = true;
+    }
+
+    fn observe_strict_header(&mut self, header: &CompactRecordHeader, at: u64) {
+        let sequence_error =
+            strict_sequence_error(self.strict_previous_sequence, header.sequence, at);
+        self.strict_previous_sequence = Some(header.sequence);
+
+        let boundary_error = match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => match self.strict_open_hour {
+                Some(open) if open != header.game_hour_raw => Some(format!(
+                    "hour interleaving at byte {at}: DOMAIN_DATA for hour {} while hour {open} is open",
+                    header.game_hour_raw
+                )),
+                None => {
+                    self.strict_open_hour = Some(header.game_hour_raw);
+                    None
+                }
+                Some(_) => None,
+            },
+            COMPACT_RECORD_TYPE_FRAME_END => match self.strict_open_hour {
+                Some(open) if open == header.game_hour_raw => {
+                    self.strict_open_hour = None;
+                    None
+                }
+                Some(open) => Some(format!(
+                    "mismatched FRAME_END at byte {at}: closes hour {} while hour {open} is open",
+                    header.game_hour_raw
+                )),
+                None => Some(format!(
+                    "FRAME_END at byte {at} closes hour {} without an open DOMAIN_DATA hour",
+                    header.game_hour_raw
+                )),
+            },
+            _ => None,
+        };
+        self.strict_last_record_type = Some(header.record_type);
+
+        if self.strict_validation_error.is_none() {
+            self.strict_validation_error = sequence_error.or(boundary_error);
+        }
     }
 
     /// Drain the hours the fold just closed on this `FRAME_END`, attaching the
@@ -721,6 +981,9 @@ impl Iterator for HourCursor {
 
 fn framing_stop_message(e: RecordFramingError, at: u64) -> String {
     match e {
+        RecordFramingError::TruncatedHeader(actual) => {
+            format!("truncated record header ({actual} byte(s)) at byte {at}")
+        }
         RecordFramingError::BadMagic => format!("invalid record magic at byte {at}"),
         RecordFramingError::UnsupportedVersion(v) => {
             format!("unsupported record version {v} at byte {at}")
@@ -732,6 +995,52 @@ fn framing_stop_message(e: RecordFramingError, at: u64) -> String {
             format!("payload length {l} exceeds the record bound at byte {at}")
         }
     }
+}
+
+fn strict_sequence_error(previous: Option<u64>, current: u64, at: u64) -> Option<String> {
+    match previous {
+        None if current != 1 => Some(format!(
+            "record sequence at byte {at} starts at {current}, expected 1"
+        )),
+        Some(previous) => match previous.checked_add(1) {
+            Some(expected) if current != expected => Some(format!(
+                "sequence discontinuity at byte {at}: {previous} -> {current} (expected {expected})"
+            )),
+            None => Some(format!(
+                "sequence overflow at byte {at}: {previous} cannot be followed by {current}"
+            )),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Validate one fully framed compact record's canonical envelope semantics.
+///
+/// This check is deliberately performed before any DOMAIN_DATA decoder runs.
+/// It rejects record-header flag bits that are reserved or misplaced, requires
+/// an exact 40-byte DOMAIN_PERF base payload unless its flag announces a valid
+/// exact `PDU1` diagnostic trailer, and requires FRAME_END to use domain 1000,
+/// a 32-byte payload, and no flags. Logical cross-record sequencing/hour closure
+/// remains the cursor's responsibility. Envelope semantics delegate to the
+/// dependency-free `compact_contract` source of truth.
+pub fn validate_compact_record_envelope(
+    header: &CompactRecordHeader,
+    payload: &[u8],
+) -> Result<(), String> {
+    if payload.len() != header.payload_len as usize {
+        return Err(format!(
+            "payload slice length {} does not match header payload length {}",
+            payload.len(),
+            header.payload_len
+        ));
+    }
+    validate_compact_record_semantics(
+        header.domain_id,
+        header.record_type,
+        header.record_flags,
+        payload,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +1077,9 @@ pub struct HourOffset {
 /// instead of re-scanning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamIndex {
+    /// Exact re-openable source and full decoded-byte identity certified when
+    /// this index was built. Seek re-certifies and compares this whole value.
+    pub source: CertifiedSourceIdentity,
     /// The game id these offsets were folded under (offsets are byte positions,
     /// independent of the id, but the id is recorded so a seek re-folds
     /// identically).
@@ -776,7 +1088,73 @@ pub struct StreamIndex {
     pub hours: Vec<HourOffset>,
 }
 
+/// Full identity of the decoded H4CR source covered by an authoritative index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertifiedSourceIdentity {
+    /// `"stream_file"` or `"container"`.
+    pub kind: String,
+    /// Canonical filesystem path of the source opened for certification.
+    pub canonical_path: String,
+    /// Exact decoded H4CR byte length through certified physical EOF.
+    pub decoded_len: u64,
+    /// Lower-case SHA-256 of all `decoded_len` decoded H4CR bytes.
+    pub decoded_sha256: String,
+}
+
 impl StreamIndex {
+    fn validate_structure(&self) -> Result<(), String> {
+        if !matches!(self.source.kind.as_str(), "stream_file" | "container") {
+            return Err(format!("unsupported source kind {:?}", self.source.kind));
+        }
+        if self.source.canonical_path.is_empty() {
+            return Err("source canonical_path is empty".to_string());
+        }
+        if self.source.decoded_len == 0 {
+            return Err("certified decoded length is zero".to_string());
+        }
+        if self.source.decoded_sha256.len() != 64
+            || !self
+                .source
+                .decoded_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("decoded_sha256 is not 64 lower-case hexadecimal characters".to_string());
+        }
+        let first = self
+            .hours
+            .first()
+            .ok_or_else(|| "certified index contains no emitted hours".to_string())?;
+        if first.start_offset != 0 || !first.cheap_seek_point {
+            return Err(
+                "first hour must be the sole cheap seek point at decoded offset zero".to_string(),
+            );
+        }
+        let mut previous_offset = None;
+        for (position, hour) in self.hours.iter().enumerate() {
+            if hour.start_offset >= self.source.decoded_len {
+                return Err(format!(
+                    "hour at position {position} has out-of-range start_offset {} for decoded length {}",
+                    hour.start_offset, self.source.decoded_len
+                ));
+            }
+            if position > 0 && hour.cheap_seek_point {
+                return Err(format!(
+                    "hour at position {position} forges an unsupported non-initial cheap seek point"
+                ));
+            }
+            if let Some(previous) = previous_offset {
+                if hour.start_offset <= previous {
+                    return Err(format!(
+                        "hour offsets are not strictly increasing at position {position}"
+                    ));
+                }
+            }
+            previous_offset = Some(hour.start_offset);
+        }
+        Ok(())
+    }
+
     /// The `[first, last]` emitted hour indices, or `None` if empty.
     pub fn hour_range(&self) -> Option<(i64, i64)> {
         match (self.hours.first(), self.hours.last()) {
@@ -794,22 +1172,16 @@ impl StreamIndex {
             .collect()
     }
 
-    /// The nearest cheap seek point at or before `target` (the offset a seek
-    /// re-folds from), or `None` if `target` precedes every cheap point.
-    fn nearest_cheap_point(&self, target: i64) -> Option<&HourOffset> {
-        self.hours
-            .iter()
-            .filter(|h| h.cheap_seek_point && h.hour_index <= target)
-            .last()
-    }
-
-    fn contains_hour(&self, hour: i64) -> bool {
-        self.hours.iter().any(|h| h.hour_index == hour)
-    }
-
     /// Serialize the index to a compact JSON value (for persistence).
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
+            "index_schema": CERTIFIED_INDEX_SCHEMA,
+            "source": {
+                "kind": self.source.kind,
+                "canonical_path": self.source.canonical_path,
+                "decoded_len": self.source.decoded_len,
+                "decoded_sha256": self.source.decoded_sha256,
+            },
             "game_id": self.game_id,
             "hours": self.hours.iter().map(|h| serde_json::json!({
                 "hour_index": h.hour_index,
@@ -821,6 +1193,16 @@ impl StreamIndex {
 
     /// Parse an index previously produced by [`StreamIndex::to_json`].
     pub fn from_json(v: &serde_json::Value) -> Option<StreamIndex> {
+        if v.get("index_schema")?.as_str()? != CERTIFIED_INDEX_SCHEMA {
+            return None;
+        }
+        let source_json = v.get("source")?;
+        let source = CertifiedSourceIdentity {
+            kind: source_json.get("kind")?.as_str()?.to_string(),
+            canonical_path: source_json.get("canonical_path")?.as_str()?.to_string(),
+            decoded_len: source_json.get("decoded_len")?.as_u64()?,
+            decoded_sha256: source_json.get("decoded_sha256")?.as_str()?.to_string(),
+        };
         let game_id = v.get("game_id")?.as_str()?.to_string();
         let mut hours = Vec::new();
         for h in v.get("hours")?.as_array()? {
@@ -830,7 +1212,13 @@ impl StreamIndex {
                 cheap_seek_point: h.get("cheap_seek_point")?.as_bool()?,
             });
         }
-        Some(StreamIndex { game_id, hours })
+        let index = StreamIndex {
+            source,
+            game_id,
+            hours,
+        };
+        index.validate_structure().ok()?;
+        Some(index)
     }
 }
 
@@ -845,74 +1233,46 @@ pub fn build_index(source: &Source, opts: &OpenOptions) -> Result<StreamIndex, O
             DecodeError::Io(io) => OpenError::Io(io),
         })?;
     }
-    Ok(cursor.take_index())
+    cursor
+        .take_index()
+        .map_err(|e| OpenError::Certification(e.to_string()))
 }
 
-/// Reconstruct a single hour's world state by re-folding from the nearest cheap
-/// seek point at or before `target`.
+/// Reconstruct one hour from an authoritative persisted index.
 ///
-/// Correctness is guaranteed: the fold starts fresh at a cheap seek point (today
-/// always the first hour / stream start), so every delta domain's baseline is
-/// present. **Cost** is `O(bytes from that cheap point to `target`)` — see
-/// [`HourOffset::cheap_seek_point`] for why an earlier restart is generally
-/// unsafe. For the first hour this is trivial; for a late hour it folds most of
-/// the stream. Callers doing many seeks should iterate linearly instead.
+/// The target is retained while decoding continues through physical EOF. Only
+/// after full certification and exact comparison of source identity, digest,
+/// length, offsets, and flags may it be returned. Cost is therefore `O(full
+/// stream bytes)` until an authenticated keyframe/index format exists.
 pub fn seek_to_hour(
     source: &Source,
     index: &StreamIndex,
     target: i64,
     opts: &OpenOptions,
 ) -> Result<WorldHour, SeekError> {
-    if !index.contains_hour(target) {
-        return Err(SeekError::HourNotFound(target));
-    }
-    let start = index
-        .nearest_cheap_point(target)
-        .ok_or(SeekError::HourNotFound(target))?;
-    // The one cheap seek point today is the stream start; assert the invariant so
-    // a future non-zero cheap point can't silently fold from the wrong offset.
-    debug_assert_eq!(
-        start.start_offset, 0,
-        "non-zero cheap seek points are not yet foldable; see HourOffset docs"
-    );
-
+    index
+        .validate_structure()
+        .map_err(SeekError::InvalidIndex)?;
+    // Retain the target while continuing through physical EOF. Certification
+    // and index comparison happen before the retained hour can be returned.
     let mut cursor = source.open_cursor(opts).map_err(SeekError::Open)?;
-    // Skip the decoded bytes before the cheap seek point (a no-op at offset 0).
-    skip_decoded_bytes(&mut cursor, start.start_offset).map_err(SeekError::Decode)?;
-
-    while let Some(h) = cursor.next_hour() {
-        let h = h.map_err(SeekError::Decode)?;
-        if h.hour_index == target {
-            return Ok(h);
+    let mut found = None;
+    while let Some(hour) = cursor.next_hour() {
+        let hour = hour.map_err(SeekError::Decode)?;
+        if found.is_none() && hour.hour_index == target {
+            found = Some(hour);
         }
     }
-    Err(SeekError::HourNotFound(target))
-}
-
-/// Discard `offset` decoded bytes from the front of a freshly opened cursor's
-/// reader, keeping its framing offsets consistent. At `offset == 0` this is a
-/// no-op. (Only reached with `offset == 0` today; the loop exists so non-zero
-/// cheap seek points work once the stream marks them.)
-fn skip_decoded_bytes(cursor: &mut HourCursor, offset: u64) -> Result<(), DecodeError> {
-    if offset == 0 {
-        return Ok(());
+    let certified = cursor
+        .take_index()
+        .map_err(|e| SeekError::Open(OpenError::Certification(e.to_string())))?;
+    if &certified != index {
+        return Err(SeekError::InvalidIndex(
+            "persisted index does not match the freshly certified source, options, offsets, or flags"
+                .to_string(),
+        ));
     }
-    let mut remaining = offset;
-    let mut buf = vec![0u8; CHUNK.min(remaining as usize)];
-    while remaining > 0 {
-        let want = (remaining as usize).min(buf.len());
-        let got = cursor
-            .reader
-            .read(&mut buf[..want])
-            .map_err(DecodeError::Io)?;
-        if got == 0 {
-            break;
-        }
-        remaining -= got as u64;
-        cursor.decoded_read = cursor.decoded_read.saturating_add(got as u64);
-    }
-    cursor.processed = offset - remaining;
-    Ok(())
+    found.ok_or(SeekError::HourNotFound(target))
 }
 
 #[cfg(test)]

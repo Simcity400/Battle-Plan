@@ -16,14 +16,15 @@
 //! by the recorder host during finalization and by the `stream_fold` offline
 //! tool (which also re-folds old recordings and measures peak memory).
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
 use compact_contract::{
-    parse_compact_record_header, RecordFramingError, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
-    COMPACT_RECORD_TYPE_FRAME_END,
+    parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
 };
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -31,6 +32,56 @@ use crate::world_fold::{FoldedSnapshotFile, WorldFold};
 
 /// Read granularity for the streaming fold. Bounded and independent of stream size.
 const CHUNK: usize = 8 * 1024 * 1024;
+
+/// Every globally-defined compact status currently occupies one of bits 0..=13.
+/// FRAME_END carries the frame-wide aggregate, so lane-local interpretations do
+/// not apply there and any higher bit is an unknown wire-contract extension.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+
+fn validate_frame_end_seal_fields(payload: &[u8]) -> Result<(u32, u32), String> {
+    if payload.len() != compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN {
+        return Err(format!(
+            "FRAME_END payload length {} is not {}",
+            payload.len(),
+            compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN
+        ));
+    }
+
+    // Wire layout: elapsed_wall_ms:u64, frame_time_us:u64,
+    // emitted_domains:u32, scheduled_domains:u32, status_flags:u32,
+    // reserved:u32. The timing fields are decoded by their fixed offsets but
+    // carry no seal-time predicate; the remaining fields are authoritative.
+    let _elapsed_wall_ms = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+    let _frame_time_us = u64::from_le_bytes(payload[8..16].try_into().unwrap());
+    let emitted_domains = u32::from_le_bytes(payload[16..20].try_into().unwrap());
+    let scheduled_domains = u32::from_le_bytes(payload[20..24].try_into().unwrap());
+    let status_flags = u32::from_le_bytes(payload[24..28].try_into().unwrap());
+    let reserved = u32::from_le_bytes(payload[28..32].try_into().unwrap());
+
+    if reserved != 0 {
+        return Err(format!(
+            "FRAME_END reserved word is nonzero ({reserved:#010x})"
+        ));
+    }
+    if emitted_domains != scheduled_domains {
+        return Err(format!(
+            "FRAME_END emitted domain count {emitted_domains} does not match scheduled domain count {scheduled_domains}"
+        ));
+    }
+    let unknown = status_flags & !FRAME_END_KNOWN_STATUS_MASK;
+    if unknown != 0 {
+        return Err(format!(
+            "FRAME_END status flags {status_flags:#010x} contain unknown bits {unknown:#010x}"
+        ));
+    }
+    let fatal = status_flags & COMPACT_STATUS_FAILURE_MASK;
+    if fatal != 0 {
+        return Err(format!(
+            "FRAME_END status flags {status_flags:#010x} contain fatal bits {fatal:#010x}"
+        ));
+    }
+    Ok((emitted_domains, scheduled_domains))
+}
 
 /// Accounting for one streaming fold pass (mirrors the `fold_check` totals so the
 /// two can be cross-checked). Never grows with stream length.
@@ -104,60 +155,120 @@ pub fn fold_compact_stream_file(
 ///   overwrites forgets the earlier open hour).
 /// - Only a FRAME_END whose hour MATCHES the open hour closes it; a
 ///   mismatched FRAME_END is a VIOLATION.
-/// - Record sequence must be CONSECUTIVE (+1) — an inflated-but-under-cap
-///   payload_len that swallows whole records leaves a sequence gap (round-3
-///   finding 2); framing alone cannot see the swallowed bytes, the counter
-///   can.
-/// - PERF/OTHER records neither open nor close hours (but do consume
-///   sequence numbers).
-#[derive(Default)]
-struct BoundaryTracker {
+/// - Record sequence starts at 1 and must be CONSECUTIVE (+1) without wrap —
+///   an inflated-but-under-cap payload_len that swallows whole records leaves
+///   a sequence gap (round-3 finding 2); framing alone cannot see the swallowed
+///   bytes, the counter can.
+/// - PERF may precede DATA, but it binds the pending hour; every later PERF and
+///   DATA before FRAME_END must use that same hour. PERF inside an open DATA
+///   frame must match the open hour.
+/// - Closed hours are strictly increasing. Forward gaps remain visible as
+///   coverage gaps to higher-level duration checks; same/backward hours are
+///   corruption. The final physical record at EOF must be FRAME_END.
+#[derive(Debug, Default)]
+pub struct BoundaryTracker {
     open_hour: Option<i32>,
-    frame_end_seen: bool,
+    pending_perf_hour: Option<i32>,
+    last_closed_hour: Option<i32>,
+    last_record_kind: Option<u16>,
+    non_probe_perf_domains: BTreeSet<u16>,
     prev_sequence: Option<u64>,
     violation: Option<String>,
 }
 
 impl BoundaryTracker {
-    fn observe(&mut self, header: &compact_contract::CompactRecordHeader, at_byte: u64) {
+    pub fn observe(
+        &mut self,
+        header: &compact_contract::CompactRecordHeader,
+        payload: &[u8],
+        at_byte: u64,
+    ) {
         if self.violation.is_some() {
             return; // first violation is the diagnostic; state is already dirty
         }
-        if let Some(prev) = self.prev_sequence {
-            if header.sequence != prev.wrapping_add(1) {
+        match self.prev_sequence {
+            None if header.sequence != 1 => {
                 self.violation = Some(format!(
-                    "sequence discontinuity at byte {at_byte}: {prev} -> {} \
-                     (a record was swallowed or reordered)",
+                    "stream starts with sequence {} at byte {at_byte}; expected 1",
                     header.sequence
                 ));
                 return;
             }
+            Some(prev) => {
+                let Some(expected) = prev.checked_add(1) else {
+                    self.violation = Some(format!(
+                        "sequence overflow at byte {at_byte}: {prev} cannot be followed \
+                         without wrapping"
+                    ));
+                    return;
+                };
+                if header.sequence != expected {
+                    self.violation = Some(format!(
+                        "sequence discontinuity at byte {at_byte}: {prev} -> {} \
+                         (expected {expected}; a record was swallowed or reordered)",
+                        header.sequence
+                    ));
+                    return;
+                }
+            }
+            None => {}
         }
         self.prev_sequence = Some(header.sequence);
-        // Per-type payload bounds (round-4 finding 1: a TERMINAL record with a
-        // forged under-cap payload_len can swallow everything to EOF, leaving
-        // no later header to expose the sequence gap). DOMAIN_DATA is the only
-        // type that legitimately needs large payloads, and a terminal
-        // swallowing DATA always leaves its own hour OPEN at EOF (already a
-        // violation) — so tight bounds on every other type close the class:
-        // FRAME_END is EXACTLY 32 bytes (collector layout; corpus-verified on
-        // 126k records: min=max=32); PERF diagnostics observed <=2.5KB, bound
-        // 1 MiB; unknown/session types bound 16 MiB.
-        let payload_bound_violation = match header.record_type {
-            COMPACT_RECORD_TYPE_FRAME_END => header.payload_len != 32,
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => false, // contract cap (256 MiB) applies
-            COMPACT_RECORD_TYPE_DOMAIN_PERF => header.payload_len > (1 << 20),
-            _ => header.payload_len > (16 << 20),
-        };
-        if payload_bound_violation {
+
+        if let Err(reason) = validate_compact_record_semantics(
+            header.domain_id,
+            header.record_type,
+            header.record_flags,
+            payload,
+        ) {
             self.violation = Some(format!(
-                "record type {} at byte {at_byte} carries an implausible payload \
-                 length {} (per-type bound violated)",
-                header.record_type, header.payload_len
+                "record semantic violation at byte {at_byte}: {reason}"
             ));
             return;
         }
+
+        self.last_record_kind = Some(header.record_type);
         match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+                if header.domain_id != 250 && !self.non_probe_perf_domains.insert(header.domain_id)
+                {
+                    self.violation = Some(format!(
+                        "duplicate DOMAIN_PERF for domain {} in hour {} at byte {at_byte}",
+                        header.domain_id, header.game_hour_raw
+                    ));
+                    return;
+                }
+                match self.open_hour {
+                    Some(open) if open != header.game_hour_raw => {
+                        self.violation = Some(format!(
+                        "hour interleaving at byte {at_byte}: DOMAIN_PERF for hour {} while hour {open} is still open",
+                        header.game_hour_raw
+                    ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(last_closed) = self.last_closed_hour {
+                            if header.game_hour_raw <= last_closed {
+                                self.violation = Some(format!(
+                                "non-monotonic DOMAIN_PERF at byte {at_byte}: closed hour {last_closed}, then {}",
+                                header.game_hour_raw
+                            ));
+                                return;
+                            }
+                        }
+                        match self.pending_perf_hour {
+                            Some(pending) if pending != header.game_hour_raw => {
+                                self.violation = Some(format!(
+                                "PERF hour conflict at byte {at_byte}: pending hour {pending}, then {}",
+                                header.game_hour_raw
+                            ));
+                            }
+                            Some(_) => {}
+                            None => self.pending_perf_hour = Some(header.game_hour_raw),
+                        }
+                    }
+                }
+            }
             COMPACT_RECORD_TYPE_DOMAIN_DATA => match self.open_hour {
                 Some(open) if open != header.game_hour_raw => {
                     self.violation = Some(format!(
@@ -166,28 +277,89 @@ impl BoundaryTracker {
                         header.game_hour_raw
                     ));
                 }
-                _ => self.open_hour = Some(header.game_hour_raw),
+                Some(_) => {}
+                None => {
+                    if let Some(pending) = self.pending_perf_hour {
+                        if pending != header.game_hour_raw {
+                            self.violation = Some(format!(
+                                "DATA hour conflict at byte {at_byte}: pending PERF hour {pending}, then DATA hour {}",
+                                header.game_hour_raw
+                            ));
+                            return;
+                        }
+                    }
+                    if let Some(last_closed) = self.last_closed_hour {
+                        if header.game_hour_raw <= last_closed {
+                            self.violation = Some(format!(
+                                "non-monotonic DOMAIN_DATA at byte {at_byte}: closed hour {last_closed}, then {}",
+                                header.game_hour_raw
+                            ));
+                            return;
+                        }
+                    }
+                    self.open_hour = Some(header.game_hour_raw);
+                }
             },
             COMPACT_RECORD_TYPE_FRAME_END => {
-                self.frame_end_seen = true;
+                let (emitted_domains, scheduled_domains) =
+                    match validate_frame_end_seal_fields(payload) {
+                        Ok(counts) => counts,
+                        Err(reason) => {
+                            self.violation = Some(format!(
+                                "FRAME_END seal violation at byte {at_byte}: {reason}"
+                            ));
+                            return;
+                        }
+                    };
+                let observed_perf_domains =
+                    self.non_probe_perf_domains.len().min(u32::MAX as usize) as u32;
+                if observed_perf_domains != emitted_domains
+                    || observed_perf_domains != scheduled_domains
+                {
+                    self.violation = Some(format!(
+                        "FRAME_END domain counts at byte {at_byte} claim emitted={emitted_domains} scheduled={scheduled_domains}, but observed {observed_perf_domains} unique non-probe DOMAIN_PERF domains"
+                    ));
+                    return;
+                }
                 match self.open_hour {
-                    Some(open) if open == header.game_hour_raw => self.open_hour = None,
+                    Some(open) if open == header.game_hour_raw => {}
                     Some(open) => {
                         self.violation = Some(format!(
                             "mismatched FRAME_END at byte {at_byte}: closes hour {} \
                              while hour {open} is open",
                             header.game_hour_raw
                         ));
+                        return;
                     }
-                    None => {}
+                    None => {
+                        self.violation = Some(format!(
+                            "FRAME_END at byte {at_byte} closes hour {} without an open DOMAIN_DATA hour",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
                 }
+                if let Some(last_closed) = self.last_closed_hour {
+                    if header.game_hour_raw <= last_closed {
+                        self.violation = Some(format!(
+                            "non-monotonic FRAME_END at byte {at_byte}: closed hour \
+                             {last_closed}, then {}",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                }
+                self.open_hour = None;
+                self.pending_perf_hour = None;
+                self.non_probe_perf_domains.clear();
+                self.last_closed_hour = Some(header.game_hour_raw);
             }
             _ => {}
         }
     }
 
     /// Ok(()) when the stream ended at a CLEAN closed boundary; Err(reason).
-    fn eof_check(&self, residual_carry: usize) -> Result<(), String> {
+    pub fn eof_check(&self, residual_carry: usize) -> Result<(), String> {
         if let Some(v) = &self.violation {
             return Err(v.clone());
         }
@@ -200,21 +372,71 @@ impl BoundaryTracker {
         if let Some(open) = self.open_hour {
             return Err(format!("game hour {open} left open at EOF"));
         }
-        if !self.frame_end_seen {
+        if self.last_closed_hour.is_none() {
             return Err("stream closes no game hour (no FRAME_END records)".to_string());
+        }
+        if self.last_record_kind != Some(COMPACT_RECORD_TYPE_FRAME_END) {
+            return Err(format!(
+                "stream ends after record type {}; final record must be canonical FRAME_END",
+                self.last_record_kind
+                    .map_or_else(|| "none".to_string(), |kind| kind.to_string())
+            ));
         }
         Ok(())
     }
 }
 
-/// Framing-only logical-boundary check of an on-disk compact stream — the
+/// One fail-closed certification verdict shared by extractor-side stream
+/// consumers. Diagnostic/raw recovery may still yield complete prefix hours,
+/// but no certification gate may accept framing stops, torn tails, malformed
+/// domain payloads, or a stream that does not end on a clean closed-hour
+/// boundary.
+pub fn strict_stream_certification_verdict(
+    stop_reason: Option<&str>,
+    truncated_tail_bytes: u64,
+    malformed_payload_records: u64,
+    ends_at_frame_end: bool,
+    boundary_error: Option<&str>,
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if let Some(reason) = stop_reason {
+        failures.push(format!("framing stopped: {reason}"));
+    }
+    if truncated_tail_bytes != 0 {
+        failures.push(format!(
+            "truncated/corrupt tail contains {truncated_tail_bytes} byte(s)"
+        ));
+    }
+    if malformed_payload_records != 0 {
+        failures.push(format!(
+            "{malformed_payload_records} DOMAIN_DATA payload record(s) failed exact validation"
+        ));
+    }
+    if let Some(reason) = boundary_error {
+        failures.push(format!("stream boundary is not closed: {reason}"));
+    } else if !ends_at_frame_end {
+        failures.push(
+            "stream iteration is not finalized at a certified closed-hour boundary".to_string(),
+        );
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "stream is not certifiable: {}",
+            failures.join("; ")
+        ))
+    }
+}
+
+/// Exact-DATA and logical-boundary check of an on-disk compact stream — the
 /// SEAL-TIME gate for containers packed WITHOUT a host fold (skip-fold /
 /// fast-turnaround), so the production writer can never publish a container
 /// that is guaranteed unreadable under the sealed-source strictness
 /// (container re-gate round 2, finding 3). Runs the same hour-aware state
 /// machine as `drive_fold_compressed` but folds nothing: hard-errors on any
-/// framing error, residual tail bytes, an hour left open at EOF, or a stream
-/// that closes no hour.
+/// framing error, malformed domain payload, residual tail bytes, an hour left
+/// open at EOF, or a stream that closes no hour.
 pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
     let mut reader = compact_stream::open(stream_path)?;
     let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
@@ -236,14 +458,31 @@ pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
             let header = parse_compact_record_header(&carry[off..]).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("seal-time boundary check: {e} at byte {}", processed + off as u64),
+                    format!(
+                        "seal-time boundary check: {e} at byte {}",
+                        processed + off as u64
+                    ),
                 )
             })?;
             let record_len = header.record_len();
             if record_len > remaining {
                 break;
             }
-            tracker.observe(&header, processed + off as u64);
+            let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
+            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                validate_domain_data_payload(header.domain_id, payload, header.record_flags)
+                    .map_err(|reason| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "seal-time boundary check: domain {} DATA payload failed exact validation at byte {}: {reason}",
+                                header.domain_id,
+                                processed + off as u64
+                            ),
+                        )
+                    })?;
+            }
+            tracker.observe(&header, payload, processed + off as u64);
             off += record_len;
         }
         processed += off as u64;
@@ -448,7 +687,7 @@ fn sha256_file(path: &Path) -> io::Result<String> {
 /// not trusted: exact consumption by the domain grammar is the independent
 /// delimiter. No payload bytes or status bits are modified, and missing fold
 /// baselines are deliberately irrelevant to this boundary verdict.
-fn validate_domain_data_payload(
+pub fn validate_domain_data_payload(
     domain_id: u16,
     payload: &[u8],
     record_flags: u32,
@@ -518,6 +757,9 @@ pub fn drive_fold_compressed<R: Read>(
                 Err(e) => {
                     let at = processed + off as u64;
                     stats.stop_reason = Some(match e {
+                        RecordFramingError::TruncatedHeader(actual) => {
+                            format!("truncated record header ({actual} byte(s)) at byte {at}")
+                        }
                         RecordFramingError::BadMagic => {
                             format!("invalid record magic at byte {at}")
                         }
@@ -553,7 +795,7 @@ pub fn drive_fold_compressed<R: Read>(
                     stats.records_total += 1;
                     stats.data_records += 1;
                     stats.malformed_payload_records += 1;
-                    tracker.observe(&header, processed + off as u64);
+                    tracker.observe(&header, payload, processed + off as u64);
                     fold.record_malformed_domain_payload(
                         header.game_hour_raw,
                         header.domain_id,
@@ -571,7 +813,7 @@ pub fn drive_fold_compressed<R: Read>(
                 COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
                 _ => stats.other_records += 1,
             }
-            tracker.observe(&header, processed + off as u64);
+            tracker.observe(&header, payload, processed + off as u64);
 
             fold.ingest_record(
                 header.game_hour_raw,
@@ -641,6 +883,9 @@ mod tests {
     use super::*;
     use compact_contract::calendar::DATE_EPOCH_CONST;
     use compact_contract::{
+        CompactRecordHeader, COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN,
+        COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC, COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION,
+        COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
         COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
         COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_PARTIAL_DATA,
         COMPACT_STATUS_SOURCE_UNAVAILABLE,
@@ -683,6 +928,13 @@ mod tests {
         ty: u16,
         payload: &[u8],
     ) {
+        // Historical fixtures passed zero for FRAME_END. Keep their intent but
+        // encode the canonical production domain now enforced by record semantics.
+        let domain = if ty == COMPACT_RECORD_TYPE_FRAME_END {
+            COMPACT_DOMAIN_FRAME
+        } else {
+            domain
+        };
         out.extend_from_slice(COMPACT_RECORD_MAGIC);
         out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
         out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
@@ -693,6 +945,22 @@ mod tests {
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(payload);
+    }
+
+    fn frame_end_payload(
+        emitted_domains: u32,
+        scheduled_domains: u32,
+        status_flags: u32,
+        reserved: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(COMPACT_FRAME_END_PAYLOAD_LEN);
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&emitted_domains.to_le_bytes());
+        payload.extend_from_slice(&scheduled_domains.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&reserved.to_le_bytes());
+        payload
     }
 
     /// domain-18 country_identity payload (same wire layout the collector emits).
@@ -802,6 +1070,559 @@ mod tests {
     const HOUR_B: i64 = 16_959_361;
     const HOUR_C: i64 = 16_959_362;
 
+    fn boundary_header(
+        sequence: u64,
+        hour: i32,
+        domain_id: u16,
+        record_type: u16,
+        payload_len: usize,
+        record_flags: u32,
+    ) -> CompactRecordHeader {
+        CompactRecordHeader {
+            sequence,
+            game_hour_raw: hour,
+            domain_id,
+            record_type,
+            payload_len,
+            record_flags,
+        }
+    }
+
+    fn observe_zero_payload(
+        tracker: &mut BoundaryTracker,
+        header: CompactRecordHeader,
+        at_byte: u64,
+    ) {
+        let payload = vec![0u8; header.payload_len];
+        tracker.observe(&header, &payload, at_byte);
+    }
+
+    #[test]
+    fn boundary_tracker_requires_sequence_one_and_rejects_wraparound() {
+        let hour = raw_for(HOUR_A);
+        let mut wrong_start = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut wrong_start,
+            boundary_header(2, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        let err = wrong_start.eof_check(0).unwrap_err();
+        assert!(err.contains("expected 1"), "{err}");
+
+        let mut wrap = BoundaryTracker {
+            prev_sequence: Some(u64::MAX),
+            ..BoundaryTracker::default()
+        };
+        observe_zero_payload(
+            &mut wrap,
+            boundary_header(0, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            32,
+        );
+        let err = wrap.eof_check(0).unwrap_err();
+        assert!(err.contains("sequence overflow"), "{err}");
+    }
+
+    #[test]
+    fn boundary_tracker_allows_forward_gaps_but_rejects_non_monotonic_hours() {
+        let first_hour = raw_for(HOUR_A);
+        let forward_gap = raw_for(HOUR_A + 2);
+        let mut accepted = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut accepted,
+            boundary_header(1, first_hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        observe_zero_payload(
+            &mut accepted,
+            boundary_header(
+                2,
+                first_hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+                0,
+            ),
+            32,
+        );
+        observe_zero_payload(
+            &mut accepted,
+            boundary_header(
+                3,
+                forward_gap,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_DOMAIN_PERF_BASE_LEN,
+                0,
+            ),
+            64,
+        );
+        observe_zero_payload(
+            &mut accepted,
+            boundary_header(4, forward_gap, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            96,
+        );
+        accepted.observe(
+            &boundary_header(
+                5,
+                forward_gap,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+                0,
+            ),
+            &frame_end_payload(1, 1, 0, 0),
+            128,
+        );
+        accepted
+            .eof_check(0)
+            .expect("a forward coverage gap remains a valid monotonic boundary");
+
+        for next_hour in [first_hour, raw_for(HOUR_A - 1)] {
+            let first_hour = raw_for(HOUR_A);
+            let mut tracker = BoundaryTracker::default();
+            observe_zero_payload(
+                &mut tracker,
+                boundary_header(1, first_hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+                0,
+            );
+            observe_zero_payload(
+                &mut tracker,
+                boundary_header(
+                    2,
+                    first_hour,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_FRAME_END,
+                    COMPACT_FRAME_END_PAYLOAD_LEN,
+                    0,
+                ),
+                32,
+            );
+            observe_zero_payload(
+                &mut tracker,
+                boundary_header(3, next_hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+                64,
+            );
+            observe_zero_payload(
+                &mut tracker,
+                boundary_header(
+                    4,
+                    next_hour,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_FRAME_END,
+                    COMPACT_FRAME_END_PAYLOAD_LEN,
+                    0,
+                ),
+                96,
+            );
+            let err = tracker.eof_check(0).unwrap_err();
+            assert!(err.contains("non-monotonic DOMAIN_DATA"), "{err}");
+        }
+    }
+
+    #[test]
+    fn boundary_tracker_requires_frame_end_as_the_final_record() {
+        let hour = raw_for(HOUR_A);
+        for trailing_domain in [18, 250] {
+            let mut tracker = BoundaryTracker::default();
+            observe_zero_payload(
+                &mut tracker,
+                boundary_header(1, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+                0,
+            );
+            observe_zero_payload(
+                &mut tracker,
+                boundary_header(
+                    2,
+                    hour,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_FRAME_END,
+                    COMPACT_FRAME_END_PAYLOAD_LEN,
+                    0,
+                ),
+                32,
+            );
+            observe_zero_payload(
+                &mut tracker,
+                boundary_header(
+                    3,
+                    hour + 1,
+                    trailing_domain,
+                    COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                    COMPACT_DOMAIN_PERF_BASE_LEN,
+                    0,
+                ),
+                64,
+            );
+            let err = tracker.eof_check(0).unwrap_err();
+            assert!(
+                err.contains("final record must be canonical FRAME_END"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_tracker_binds_perf_to_pending_and_open_hours() {
+        let hour = raw_for(HOUR_A);
+
+        let mut inside_open = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut inside_open,
+            boundary_header(1, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        observe_zero_payload(
+            &mut inside_open,
+            boundary_header(
+                2,
+                hour + 999,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_DOMAIN_PERF_BASE_LEN,
+                0,
+            ),
+            32,
+        );
+        let err = inside_open.eof_check(0).unwrap_err();
+        assert!(
+            err.contains("DOMAIN_PERF") && err.contains("still open"),
+            "{err}"
+        );
+
+        let mut pending = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut pending,
+            boundary_header(
+                1,
+                hour,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_DOMAIN_PERF_BASE_LEN,
+                0,
+            ),
+            0,
+        );
+        observe_zero_payload(
+            &mut pending,
+            boundary_header(2, hour + 1, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            32,
+        );
+        let err = pending.eof_check(0).unwrap_err();
+        assert!(err.contains("pending PERF hour"), "{err}");
+
+        let mut after_close = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut after_close,
+            boundary_header(1, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        observe_zero_payload(
+            &mut after_close,
+            boundary_header(
+                2,
+                hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+                0,
+            ),
+            32,
+        );
+        observe_zero_payload(
+            &mut after_close,
+            boundary_header(
+                3,
+                hour,
+                250,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_DOMAIN_PERF_BASE_LEN,
+                0,
+            ),
+            64,
+        );
+        let err = after_close.eof_check(0).unwrap_err();
+        assert!(err.contains("non-monotonic DOMAIN_PERF"), "{err}");
+    }
+
+    #[test]
+    fn boundary_tracker_preserves_perf_before_data_for_the_next_hour() {
+        let first = raw_for(HOUR_A);
+        let second = raw_for(HOUR_A + 1);
+        let mut tracker = BoundaryTracker::default();
+        for (sequence, hour, domain, record_type, payload_len) in [
+            (
+                1,
+                first,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_DOMAIN_PERF_BASE_LEN,
+            ),
+            (2, first, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0),
+            (
+                3,
+                first,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+            ),
+            (
+                4,
+                second,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_DOMAIN_PERF_BASE_LEN,
+            ),
+            (5, second, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0),
+            (
+                6,
+                second,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+            ),
+        ] {
+            let header = boundary_header(sequence, hour, domain, record_type, payload_len, 0);
+            if record_type == COMPACT_RECORD_TYPE_FRAME_END {
+                tracker.observe(&header, &frame_end_payload(1, 1, 0, 0), sequence * 32);
+            } else {
+                observe_zero_payload(&mut tracker, header, sequence * 32);
+            }
+        }
+        tracker
+            .eof_check(0)
+            .expect("PERF may precede DATA when the next hour closes canonically");
+    }
+
+    fn valid_pdu1_payload() -> Vec<u8> {
+        let mut payload = vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN];
+        payload.extend_from_slice(COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC);
+        payload.extend_from_slice(&COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&3u16.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&123u64.to_le_bytes());
+        payload.extend_from_slice(b"cpu");
+        payload
+    }
+
+    #[test]
+    fn boundary_tracker_accepts_valid_announced_pdu1() {
+        let hour = raw_for(HOUR_A);
+        let payload = valid_pdu1_payload();
+        let mut tracker = BoundaryTracker::default();
+        tracker.observe(
+            &boundary_header(
+                1,
+                hour,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                payload.len(),
+                COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            ),
+            &payload,
+            0,
+        );
+        observe_zero_payload(
+            &mut tracker,
+            boundary_header(2, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            32,
+        );
+        tracker.observe(
+            &boundary_header(
+                3,
+                hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+                0,
+            ),
+            &frame_end_payload(1, 1, 0, 0),
+            64,
+        );
+        tracker
+            .eof_check(0)
+            .expect("a valid announced PDU1 trailer must pass the shared entrypoint");
+    }
+
+    #[test]
+    fn boundary_tracker_binds_frame_end_counts_to_unique_non_probe_perf_domains() {
+        let hour = raw_for(HOUR_A);
+
+        let mut duplicate = BoundaryTracker::default();
+        for sequence in 1..=2 {
+            observe_zero_payload(
+                &mut duplicate,
+                boundary_header(
+                    sequence,
+                    hour,
+                    18,
+                    COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                    COMPACT_DOMAIN_PERF_BASE_LEN,
+                    0,
+                ),
+                sequence * 32,
+            );
+        }
+        let err = duplicate.eof_check(0).unwrap_err();
+        assert!(err.contains("duplicate DOMAIN_PERF for domain 18"), "{err}");
+
+        let mut missing = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut missing,
+            boundary_header(1, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        missing.observe(
+            &boundary_header(
+                2,
+                hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+                0,
+            ),
+            &frame_end_payload(1, 1, 0, 0),
+            32,
+        );
+        let err = missing.eof_check(0).unwrap_err();
+        assert!(
+            err.contains("observed 0 unique non-probe DOMAIN_PERF domains"),
+            "{err}"
+        );
+
+        let mut probe_excluded = BoundaryTracker::default();
+        for (sequence, domain) in [(1, 250), (2, 18)] {
+            observe_zero_payload(
+                &mut probe_excluded,
+                boundary_header(
+                    sequence,
+                    hour,
+                    domain,
+                    COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                    COMPACT_DOMAIN_PERF_BASE_LEN,
+                    0,
+                ),
+                sequence * 32,
+            );
+        }
+        observe_zero_payload(
+            &mut probe_excluded,
+            boundary_header(3, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            96,
+        );
+        probe_excluded.observe(
+            &boundary_header(
+                4,
+                hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+                0,
+            ),
+            &frame_end_payload(1, 1, 0, 0),
+            128,
+        );
+        probe_excluded
+            .eof_check(0)
+            .expect("reserved probe domain 250 must not inflate FRAME_END counts");
+    }
+
+    #[test]
+    fn boundary_tracker_rejects_missing_announced_pdu1() {
+        let hour = raw_for(HOUR_A);
+        let payload = vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN];
+        let mut tracker = BoundaryTracker::default();
+        tracker.observe(
+            &boundary_header(
+                1,
+                hour,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                payload.len(),
+                COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            ),
+            &payload,
+            0,
+        );
+        let err = tracker.eof_check(0).unwrap_err();
+        assert!(
+            err.contains("diagnostic trailer header is truncated"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn boundary_tracker_rejects_unannounced_pdu1() {
+        let hour = raw_for(HOUR_A);
+        let payload = valid_pdu1_payload();
+        let mut tracker = BoundaryTracker::default();
+        tracker.observe(
+            &boundary_header(
+                1,
+                hour,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                payload.len(),
+                0,
+            ),
+            &payload,
+            0,
+        );
+        let err = tracker.eof_check(0).unwrap_err();
+        assert!(err.contains("unannounced trailer byte"), "{err}");
+    }
+
+    #[test]
+    fn boundary_tracker_rejects_malformed_announced_pdu1() {
+        let hour = raw_for(HOUR_A);
+        let mut payload = valid_pdu1_payload();
+        payload[COMPACT_DOMAIN_PERF_BASE_LEN] = b'X';
+        let mut tracker = BoundaryTracker::default();
+        tracker.observe(
+            &boundary_header(
+                1,
+                hour,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                payload.len(),
+                COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            ),
+            &payload,
+            0,
+        );
+        let err = tracker.eof_check(0).unwrap_err();
+        assert!(err.contains("diagnostic trailer magic is invalid"), "{err}");
+    }
+
+    #[test]
+    fn boundary_tracker_delegates_flags_and_frame_contract() {
+        let hour = raw_for(HOUR_A);
+        let mut rejected_flags = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut rejected_flags,
+            boundary_header(1, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 1 << 29),
+            0,
+        );
+        let err = rejected_flags.eof_check(0).unwrap_err();
+        assert!(err.contains("contain rejected bits"), "{err}");
+
+        let mut wrong_frame = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut wrong_frame,
+            boundary_header(
+                1,
+                hour,
+                0,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+                0,
+            ),
+            0,
+        );
+        let err = wrong_frame.eof_check(0).unwrap_err();
+        assert!(err.contains("FRAME_END domain 0 is not"), "{err}");
+    }
+
     #[test]
     fn d12_truncated_country_row_returns_invalid_data_not_panic() {
         let mut payload = vec![0u8; 28];
@@ -886,25 +1707,34 @@ mod tests {
 
     #[test]
     fn d69_failure_status_at_byte_12_cannot_skip_boundary_validation() {
-        let mut payload = vec![0u8; 16];
-        payload[12..16].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+        let mut payload = compact_contract::tech_sharing_groups::encode_payload_with_bonuses(
+            &[],
+            1,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        )
+        .unwrap();
         append_complete_domain_record(&mut payload, raw_for(HOUR_A));
         expect_domain_boundary_degrades(69, &payload);
 
-        // Refutation attempt: make the swallowed neighbor exactly 64 bytes so
-        // d69's member-blob remainder is u32-aligned. Zero group windows still
-        // cannot cover those orphan u32s, so exact coverage must reject it.
-        let mut aligned_payload = vec![0u8; 16];
-        aligned_payload[12..16].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
-        push_record(
-            &mut aligned_payload,
-            99,
-            raw_for(HOUR_A),
-            0,
-            COMPACT_RECORD_TYPE_FRAME_END,
-            &[0u8; 32],
-        );
+        // Refutation attempt: append 192 bytes, exactly divisible by the TSG2
+        // 12-byte pair width. Zero group windows still cannot claim the rows.
+        let mut aligned_payload =
+            compact_contract::tech_sharing_groups::encode_payload_with_bonuses(
+                &[],
+                1,
+                COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            )
+            .unwrap();
+        for sequence in 99..102 {
+            append_complete_domain_record(&mut aligned_payload, raw_for(HOUR_A) + sequence);
+        }
         expect_domain_boundary_degrades(69, &aligned_payload);
+
+        // The legacy 16-byte zero-row payload is ambiguous without a schema
+        // discriminator and must never be admitted as D69 production DATA.
+        let mut legacy = vec![0u8; 16];
+        legacy[12..16].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+        expect_domain_boundary_degrades(69, &legacy);
     }
 
     #[test]
@@ -924,12 +1754,40 @@ mod tests {
         );
         expect_domain_boundary_acceptance(51, &d51);
 
-        let d69 = compact_contract::tech_sharing_groups::encode_payload(
+        let d69 = compact_contract::tech_sharing_groups::encode_payload_with_bonuses(
             &[],
             1,
             COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        );
+        )
+        .unwrap();
         expect_domain_boundary_acceptance(69, &d69);
+    }
+
+    #[test]
+    fn d69_v2_signed_bonus_payload_passes_stream_boundary() {
+        use compact_contract::tech_sharing_groups::{
+            encode_payload_with_bonuses, TechSharingGroupBonusRow, TechSharingMemberBonus,
+        };
+
+        let payload = encode_payload_with_bonuses(
+            &[TechSharingGroupBonusRow {
+                id_token: 9,
+                members: vec![
+                    TechSharingMemberBonus {
+                        member_tag_db_id: 1,
+                        dynamic_bonus_raw_fixed5: -5_000,
+                    },
+                    TechSharingMemberBonus {
+                        member_tag_db_id: 368,
+                        dynamic_bonus_raw_fixed5: 10_000,
+                    },
+                ],
+            }],
+            1,
+            0,
+        )
+        .unwrap();
+        expect_domain_boundary_acceptance(69, &payload);
     }
 
     #[test]
@@ -1117,7 +1975,7 @@ mod tests {
             hour,
             0,
             COMPACT_RECORD_TYPE_FRAME_END,
-            &[0u8; 32],
+            &frame_end_payload(1, 1, 0, 0),
         );
 
         let regenerated_manifest_hash = Sha256::digest(&stream);
@@ -1159,7 +2017,7 @@ mod tests {
             hour,
             0,
             COMPACT_RECORD_TYPE_FRAME_END,
-            &[0u8; 32],
+            &frame_end_payload(1, 1, 0, 0),
         );
 
         let mut fold = WorldFold::new("gid");
@@ -1267,14 +2125,14 @@ mod tests {
         stream.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
         stream.extend_from_slice(&7u64.to_le_bytes());
         let mut fold = WorldFold::new("gid");
-        let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
-            .unwrap_err();
+        let err =
+            drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true).unwrap_err();
         assert!(err.to_string().contains("ends mid-record"), "{err}");
 
         // Same bytes, RAW source: tolerated with the residue accounted.
         let mut fold = WorldFold::new("gid");
-        let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
-            .unwrap();
+        let stats =
+            drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false).unwrap();
         assert_eq!(stats.truncated_tail_bytes, 16);
         assert!(!stats.ends_at_frame_end);
     }
@@ -1294,14 +2152,14 @@ mod tests {
             &country_identity_payload(&[(47, "GER")]),
         );
         let mut fold = WorldFold::new("gid");
-        let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
-            .unwrap_err();
+        let err =
+            drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true).unwrap_err();
         assert!(err.to_string().contains("left open"), "{err}");
 
         // RAW: tolerated; the boundary fact is exposed for the repack guard.
         let mut fold = WorldFold::new("gid");
-        let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
-            .unwrap();
+        let stats =
+            drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false).unwrap();
         assert!(!stats.ends_at_frame_end);
         // A clean stream reports the closed boundary.
         let mut fold = WorldFold::new("gid");
@@ -1340,13 +2198,13 @@ mod tests {
             &[0u8; 32],
         );
         let mut fold = WorldFold::new("gid");
-        let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
-            .unwrap_err();
+        let err =
+            drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true).unwrap_err();
         assert!(err.to_string().contains("mismatched FRAME_END"), "{err}");
 
         let mut fold = WorldFold::new("gid");
-        let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
-            .unwrap();
+        let stats =
+            drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false).unwrap();
         assert!(!stats.ends_at_frame_end);
 
         // The seal-time walker enforces the same law for skip-fold packs.
@@ -1358,6 +2216,103 @@ mod tests {
         let clean = dir.0.join("clean.bin");
         std::fs::write(&clean, three_hour_stream()).unwrap();
         verify_stream_logical_boundary(&clean).unwrap();
+    }
+
+    #[test]
+    fn seal_time_boundary_rejects_malformed_domain_data() {
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[],
+        );
+        push_record(
+            &mut stream,
+            2,
+            raw_for(HOUR_A),
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; COMPACT_FRAME_END_PAYLOAD_LEN],
+        );
+
+        let dir = TmpDir::new("malformed_data_boundary");
+        let path = dir.0.join("malformed.bin");
+        std::fs::write(&path, stream).unwrap();
+        let err = verify_stream_logical_boundary(&path).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("domain 18 DATA payload failed exact validation"),
+            "{err}"
+        );
+    }
+
+    fn expect_frame_end_seal_rejection(tag: &str, frame_payload: &[u8], expected: &str) {
+        let hour = raw_for(HOUR_A);
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        push_record(
+            &mut stream,
+            2,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            frame_payload,
+        );
+        let dir = TmpDir::new(tag);
+        let path = dir.0.join("invalid-frame-end.bin");
+        std::fs::write(&path, stream).unwrap();
+
+        let err = verify_stream_logical_boundary(&path).unwrap_err();
+        assert!(
+            err.to_string().contains(expected),
+            "case {tag}: expected {expected:?}, got {err}"
+        );
+    }
+
+    #[test]
+    fn seal_time_boundary_rejects_nonzero_frame_end_reserved_word() {
+        expect_frame_end_seal_rejection(
+            "frame_end_reserved",
+            &frame_end_payload(1, 1, 0, 7),
+            "reserved word is nonzero",
+        );
+    }
+
+    #[test]
+    fn seal_time_boundary_rejects_frame_end_domain_count_mismatch() {
+        expect_frame_end_seal_rejection(
+            "frame_end_count_mismatch",
+            &frame_end_payload(1, 2, 0, 0),
+            "emitted domain count 1 does not match scheduled domain count 2",
+        );
+    }
+
+    #[test]
+    fn seal_time_boundary_rejects_unknown_frame_end_status_bits() {
+        expect_frame_end_seal_rejection(
+            "frame_end_unknown_status",
+            &frame_end_payload(1, 1, 1 << 31, 0),
+            "contain unknown bits 0x80000000",
+        );
+    }
+
+    #[test]
+    fn seal_time_boundary_rejects_fatal_frame_end_status() {
+        expect_frame_end_seal_rejection(
+            "frame_end_fatal_status",
+            &frame_end_payload(1, 1, COMPACT_STATUS_SOURCE_UNAVAILABLE, 0),
+            "contain fatal bits",
+        );
     }
 
     /// Net-gate finding 3: a forged/corrupt payload_len beyond the record
@@ -1377,13 +2332,13 @@ mod tests {
         stream.extend_from_slice(&0u32.to_le_bytes());
 
         let mut fold = WorldFold::new("gid");
-        let err = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true)
-            .unwrap_err();
+        let err =
+            drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true).unwrap_err();
         assert!(err.to_string().contains("framing stopped"), "{err}");
 
         let mut fold = WorldFold::new("gid");
-        let stats = drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false)
-            .unwrap();
+        let stats =
+            drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, false).unwrap();
         assert!(
             stats
                 .stop_reason

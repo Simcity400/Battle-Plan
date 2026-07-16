@@ -82,17 +82,24 @@ class Report:
         return nf
 
 
-def load(odir, name, rep):
+def load(odir, name, rep, *, allow_missing=False):
     path = os.path.join(odir, name)
     if not os.path.isfile(path):
-        rep.warn(f"load {name}", "missing - skipped")
+        (rep.warn if allow_missing else rep.fail)(
+            f"load {name}",
+            "missing - skipped (parser-debug override)" if allow_missing else "missing required oracle output",
+        )
         return None
     try:
         with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+            value = json.load(fh)
     except Exception as exc:  # noqa: BLE001
         rep.fail(f"load {name}", f"unreadable: {exc}")
         return None
+    if not isinstance(value, dict):
+        rep.fail(f"load {name}", f"invalid root: expected JSON object, got {type(value).__name__}")
+        return None
+    return value
 
 
 def _meta(doc):
@@ -124,6 +131,11 @@ def main(argv=None):
     ap.add_argument("--output-dir", default=os.path.join(here, "output"))
     ap.add_argument("--allow-stale-mix", action="store_true",
                     help="demote source-incoherence from FAIL to WARN (parser-debug)")
+    ap.add_argument(
+        "--allow-missing-outputs",
+        action="store_true",
+        help="demote missing required oracle outputs to WARN (parser-debug only)",
+    )
     args = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -132,7 +144,10 @@ def main(argv=None):
 
     odir = args.output_dir
     rep = Report()
-    docs = {n: load(odir, n, rep) for n in ALL_FILES}
+    docs = {
+        n: load(odir, n, rep, allow_missing=args.allow_missing_outputs)
+        for n in ALL_FILES
+    }
 
     # fingerprint per file, with association for metaless outputs
     fps = {}

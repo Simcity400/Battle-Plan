@@ -2,8 +2,8 @@
 
 **Lane:** `w12d-duplex-transport`
 
-**Status:** design plus offline transport primitive; live wiring and all three consumers are out
-of fence.
+**Status:** offline H4CT/Windows-adapter and explicit-mode CFA1/durability contracts are
+focused-green; product composition and every live acceptance gate remain disabled/open.
 
 **Hard laws:** fail closed on every uncertainty; never fabricate liveness or rollover; a control
 message can never cause injection or a second DLL load.
@@ -20,13 +20,12 @@ creates both listeners before the one permitted hook installation; the collector
 control pipe read/write after its existing one-time worker guard has won. The new pipe carries only
 framed control traffic. H4CR remains the canonical data artifact.
 
-This is prerequisite 0, not consumer wiring. The current dispatch explicitly says no reverse
-channel exists and that campaign rollover `[O]`, Stage-B handshake `[S]`, and heartbeat proof
-`[A]` all depend on one (`CODEX_DISPATCH_QUEUE.md:2015,2055-2057`). The premise is also visible in
-code: the host creates the data pipe with `PIPE_ACCESS_INBOUND`
-(`recorder_host/src/main.rs:64,5357-5361`), the DLL opens it `GENERIC_WRITE` and only calls
-`WriteFile` (`collector/src/lib.rs:104,45944-45967`), and the fold requires consecutive H4CR
-sequences (`recorder_host/src/stream_fold.rs:93-132`).
+This transport was prerequisite 0 for campaign rollover, Stage-B handshake, and heartbeat proof.
+The offline prerequisite now exists, including a combined listener-before-injection authority,
+overlapped Windows adapters, a real paired H4CR/H4CT server backend, and a recorder-main seam that
+commits the one permitted injection before bounded accept/bind. That does not make it an active
+consumer path: the collector has no H4CT/CID1 client, the product permit is therefore unmintable,
+and activation remains false.
 
 ## 1. Choice and rejected alternatives
 
@@ -125,24 +124,26 @@ terminal. CRC-32 is an integrity checksum, not authentication; peer PID/creation
 the unpredictable session id, pipe ACL, first-instance flag, and exact echo/digest comparisons are
 the authorization boundary. Any checksum mismatch rejects before a typed consumer sees a frame.
 
-The proof-of-concept lives in `recorder_host/src/control_transport.rs`. `ControlChannel<I>` owns
+The transport authority lives in `recorder_host/src/control_transport.rs`. `ControlChannel<I>` owns
 send/receive counters and becomes permanently poisoned after any framing, ordering, direction, or
 I/O error. Construction consumes a move-only `SessionCapability`; claiming the same session id
 again in that process is permanently rejected, including after the channel is dropped. Production
 code cannot extract the owned backend. The claim itself consumes the endpoint's unchanged
 initial-handshake deadline through the bounded registry contract in section 5; it is not a
-deadline-free precondition. `ControlIo` is the only backend seam. The live named-pipe
-adapter is intentionally not implemented in this lane; unit tests use an in-memory backend.
+deadline-free precondition. `ControlIo` is the only backend seam. The restrictive overlapped
+Windows named-pipe adapter is implemented; in-memory backends retain deterministic contract tests.
 
 ## 3. Closed message registry and payloads
 
-Every payload begins with `payload_schema: u16 = 1, reserved: u16 = 0`. Fixed bytes and integers
-then appear in the exact order below. A later schema uses a new header/message version; it is not
-guessed from length. Hashes are raw 32-byte SHA-256 values. IDs and challenges are raw 16-byte
-CSPRNG values. Optional fixed-width values use a canonical `u8` presence tag: `0` has no value
-bytes and `1` is followed immediately by the value; there are no sentinel values. A codec must
-consume the payload exactly and reject unknown option tags, wrong branch lengths, trailing bytes,
-zero IDs, unknown enums, impossible states, and nonzero reserved fields.
+Hello, heartbeat, rollover, and Stage-B payloads begin with `payload_schema: u16 = 1, reserved:
+u16 = 0`. The first-record and identity-failure family is instead explicitly magic-tagged
+(`CFA1`/`CIF1`/`CIA1`) with version and exact length at offsets 4/6; there is no alternate prefix
+or length-based schema guessing. Hashes are raw 32-byte SHA-256 values. IDs and challenges are raw
+16-byte CSPRNG values. Optional fixed-width values use a canonical `u8` presence tag: `0` has no
+value bytes and `1` is followed immediately by the value; there are no sentinel values except where
+the fixed CIF1/CIA1 tables explicitly define `u64::MAX`. A codec must consume the payload exactly
+and reject unknown option tags, wrong branch lengths, trailing bytes, zero IDs, unknown enums,
+impossible states, and nonzero reserved fields.
 
 | Kind | Direction | v1 payload after prefix | Dispatch rule |
 |---|---|---|---|
@@ -150,7 +151,7 @@ zero IDs, unknown enums, impossible states, and nonzero reserved fields.
 | `CollectorHello` | collector → recorder | exact PID/FILETIME/H4CR version; control version `u16`; loaded DLL SHA-256; echoed challenge id | Exact equality proves the connected injected instance answered; mismatch is terminal |
 | `HeartbeatChallenge` | recorder → collector | fresh challenge id; host challenge counter `u64` | A timer creates evidence only by soliciting a fresh response |
 | `HeartbeatProof` | collector → recorder | echoed challenge id; last completely written H4CR sequence `u64`; state `u16` (`WaitingForWorld=1`, `Producing=2`, `PausedForControl=3`); reserved `u16` | Only a not-previously-used outstanding challenge accepted before its deadline is liveness; cached/unsolicited proof is not |
-| `FirstCompactFrameAck` | recorder → collector | H4CR sequence `u64`; game hour `i32`; record type `u16`; reserved `u16`; exact total record length `u32`; SHA-256 of the complete accepted H4CR header plus payload | Sent only after the recorder has read the complete record and its H4CR/session validator accepts it; the recorder's local observation, not this ack, is production proof |
+| `FirstCompactFrameAck` | recorder → collector | Exact 104-byte `CFA1` table below | Sent once for the first complete record of one logical stream, only after durable open and full H4CR/session/payload validation; the recorder's later local world-record observation, not this ack, is production Recording proof |
 | `RolloverPropose` | collector → recorder | boundary id; old and new campaign-identity digests; last old H4CR sequence `u64`; observed game hour `i32`; reserved `u32` | Collector pauses H4CR immediately after that sequence; unknown/torn identity cannot propose |
 | `RolloverAck` | recorder → collector | boundary id; same last-old sequence; required next sequence `u64`; new physical-stream id; new header-contract SHA-256 | Sent only after host drains through the named sequence, durably closes A, creates B, and is ready for B's identity header |
 | `EpochTokenOffer` | recorder → collector | canonical token length `u32`; token bytes; token SHA-256 | Recorder is authority; token codec is owned by Stage B and length-bounded below 1 MiB |
@@ -159,6 +160,39 @@ zero IDs, unknown enums, impossible states, and nonzero reserved fields.
 | `DeclarationTableAck` | recorder → collector | the same four values | Sent only after exact table validation and durable admission; no hash-only lookup across epochs |
 | `EpochSealReady` | collector → recorder | token SHA-256; table SHA-256; H4CR seal-record sequence `u64`; last-attempt presence `u8` (`0=None`, `1=Some`); only for `Some`, last attempt id `u64`; seal reason `u16`; reserved `u16`; exact complete typed payload (including the common prefix) `81`/`89` bytes and total frame `129`/`137` bytes for `None`/`Some` | Collector freezes the epoch and emits no new-epoch record while waiting; an acknowledged epoch sealed before its first attempt uses `None` |
 | `EpochSealAck` | recorder → collector | byte-identical typed payload and the same `81`/`89`-byte payload / `129`/`137`-byte total-frame branch as `EpochSealReady` | Sent only after the old epoch is durably sealed and permanently closed to later records |
+| `SinkSetupFailure` | collector → recorder | Exact 64-byte typed setup-failure payload owned by `transport_status` | Implemented message id 14; remains authoritative and is not reused by campaign identity |
+| `SinkTerminalFailure` | collector → recorder | Exact 64-byte typed terminal-failure payload owned by `transport_status` | Implemented message id 15; remains authoritative and is not reused by campaign identity |
+| `IdentityFailure` | collector → recorder | Exact variable-length `CIF1` table in `CAMPAIGN_IDENTITY_DESIGN.md` | Message id 16; requires `CAMPAIGN_IDENTITY`; raw malformed identity bytes are durably recorded before acknowledgement |
+| `IdentityFailureAck` | recorder → collector | Exact 32-byte `CIA1` table in `CAMPAIGN_IDENTITY_DESIGN.md` | Message id 17; requires `CAMPAIGN_IDENTITY`; disposition 1 is sent only after durable ledger append |
+
+The implemented ids 1 through 15 remain unchanged. The previously conflicting campaign-identity
+allocation is superseded: ids 14/15 are the existing sink-failure messages, while the proven-unused
+adjacent ids 16/17 are `IdentityFailure`/`IdentityFailureAck`. Both require the distinct
+`CAMPAIGN_IDENTITY = 1 << 5` capability.
+
+#### One canonical first-record acknowledgement
+
+`FirstCompactFrameAck` (`CFA1`) is exactly 104 bytes:
+
+| Offset | Type | Meaning |
+| ---: | --- | --- |
+| 0 | `[u8;4]` | `CFA1` |
+| 4 / 6 | `u16 / u16` | version 1 / total length 104 |
+| 8 | `u64` | logical-stream id; `u64::MAX` rejects |
+| 16 | `u64` | first complete H4CR sequence |
+| 24 | `i32` | calendar-valid H4CR `game_hour_raw` |
+| 28 / 30 | `u16 / u16` | H4CR domain id / record type |
+| 32 | `u32` | exact complete H4CR header-plus-payload byte length |
+| 36 | `u32` | reserved zero |
+| 40 | `[u8;32]` | SHA-256 of the exact complete H4CR header plus payload |
+| 72 | `[u8;32]` | SHA-256 of the exact H4CR payload bytes |
+
+Identity-v1 accepts only `(sequence, domain, type) = (0, 0, STREAM_HEADER=4)` and requires the
+payload hash to equal the committed CID1 hash. Explicit legacy mode accepts only its first sequence
+1 record of known type 1-3 on a nonzero domain and remains identity-unavailable. The collector
+compares every echoed field and both hashes before emitting the next sequence. There is no second
+ack for the later PERF/DATA pair that establishes local `Recording`, and the obsolete 48-byte
+CID-only CFA1 form is invalid.
 
 No kind means inject, attach, retry injection, load library, install hook, change pipe name, or
 execute a command. The closed Rust enum enforces this at the primitive. Consumers dispatch by
@@ -579,15 +613,18 @@ Implemented now:
 - fake in-memory `ControlIo` tests covering round trip, standard checksum vector, corruption,
   header/payload truncation, duplicate, reorder/gap, stale session replay, direction mismatch,
   send sequencing, terminal send failure, unknown/invalid header fields, and rejection of
-  same-session reconstruction after accepting sequence zero.
+  same-session reconstruction after accepting sequence zero;
+- restrictive overlapped Windows connector/adapter, bounded server/client connection paths,
+  cancellation/deadline propagation, peer/capability admission, hello and heartbeat contracts;
+- dependency-neutral explicit IdentityV1/Legacy CFA1 codec, exact complete-record/hash authority,
+  and durable write → flush → sync receipt ordering. Focused results are CFA1 3/3,
+  identity-control 10/10, and duplex-session 16/16.
 
-Not implemented here: Win32 pipe connector/adapter, pipe ACL construction, timers, payload codecs,
-state machines, H4CR boundary records, live collector/recorder wiring, injection changes, or game tests.
-The required deadline-bearing `SessionCapability::claim`, `ControlConnector`/`ControlIo`
-signatures, bounded server/client
-connection paths, and overlapped submit/wait/cancel/reap-or-quarantine path
-are also not implemented by the current blocking proof-of-concept. Those omissions are consumer
-work, not implied success; no live consumer may enable the primitive first.
+Not implemented/composed for production: the collector H4CT/CID1 client and sequence-0/CFA1
+barrier, production filesystem durable sink adapter, replacement of the old stdout proof path,
+rollover/Stage-B lifecycle, or live game tests. The paired Windows server and recorder-main
+one-shot-injection composition seam are compiled, but `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`
+remains false and the product permit cannot be minted.
 
 ## 7. Self-refutation
 

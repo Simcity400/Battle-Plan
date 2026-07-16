@@ -23,6 +23,7 @@ from typing import Any
 LANE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = LANE_DIR.parents[3]
 GAME_ASSETS = REPO_ROOT / "replay_interface" / "game_assets"
+GAME_DEFS = REPO_ROOT / "extractor" / "game_defs"
 DEFAULT_VANILLA_FALLBACK = Path(r"C:/Program Files (x86)/Steam/steamapps/common/Hearts of Iron IV")
 DEFAULT_MOD = (REPO_ROOT.parent / "test").resolve()
 DEFAULT_DESCRIPTOR = DEFAULT_MOD.with_suffix(".mod")
@@ -32,8 +33,15 @@ GAME_ID = "templates_equipment_catalog_live_domain59"
 STEAM_APP_ID = "394360"
 
 sys.path.insert(0, str(GAME_ASSETS))
+sys.path.insert(0, str(GAME_DEFS))
 from paradox_parser import Node, parse  # noqa: E402
-from extract import Layer, build_file_map_layers, parse_mod_descriptor  # noqa: E402
+from extract import (  # noqa: E402
+    Layer,
+    build_file_map_layers,
+    build_modset_layers,
+    parse_mod_descriptor,
+)
+import source_inventory_layers as SIL  # noqa: E402
 
 
 STATIC_SUBDIRS = {
@@ -310,6 +318,9 @@ def make_layers(
     mod: Path | None,
     descriptor: Path | None,
     allow_missing_vanilla: bool,
+    mods: list[str] | None = None,
+    userdata: Path | None = None,
+    strict_mods: bool = False,
 ) -> tuple[list[Layer], list[str], dict[str, Any]]:
     warnings: list[str] = []
     layers: list[Layer] = []
@@ -326,7 +337,21 @@ def make_layers(
             f"checked: {checked}"
         )
 
-    if mod and mod.is_dir():
+    if mods is not None:
+        if discovered_vanilla is None:
+            raise SystemExit("explicit mod layers require a readable vanilla root")
+        user_root = userdata.resolve() if userdata else REPO_ROOT.parent.parent.resolve()
+        descriptors = []
+        for token in mods:
+            candidate = Path(token.strip().replace("\\", "/"))
+            descriptors.append(candidate if candidate.is_absolute() else user_root / candidate)
+        resolved, mod_warnings = build_modset_layers(discovered_vanilla, descriptors, user_root)
+        if strict_mods and (mod_warnings or len(resolved) != 1 + len(descriptors)):
+            detail = "; ".join(mod_warnings) or "layer count mismatch"
+            raise SystemExit(f"strict mod resolution failed: {detail}")
+        layers = resolved
+        warnings.extend(mod_warnings)
+    elif mod and mod.is_dir():
         replace_paths: list[str] = []
         label = mod.name
         if descriptor and descriptor.is_file():
@@ -348,6 +373,12 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
         args.mod,
         args.mod_descriptor,
         args.allow_missing_vanilla,
+        getattr(args, "mods", None),
+        getattr(args, "userdata", None),
+        getattr(args, "strict_mods", False),
+    )
+    layers, source_namespace_proof = SIL.definition_layers(
+        layers, getattr(args, "source_inventory", None)
     )
     args.vanilla_root_discovery = discovery
     maps = {
@@ -395,6 +426,7 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
             }
             for layer in layers
         ],
+        "source_namespace_proof": source_namespace_proof,
         "warnings": warnings,
         "source_files": source_files,
         "catalog": {
@@ -513,15 +545,39 @@ def run_pack_verify(out_dir: Path) -> dict[str, Any]:
     }
 
 
+def apply_layer_mode(args: argparse.Namespace) -> None:
+    if args.vanilla_only and getattr(args, "mods", None) is not None:
+        raise SystemExit("--vanilla-only and --mods are mutually exclusive")
+    if args.vanilla_only:
+        args.mod = None
+        args.mod_descriptor = None
+        args.mods = []
+    elif getattr(args, "mods", None) is not None:
+        args.mod = None
+        args.mod_descriptor = None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--vanilla-root", "--vanilla", dest="vanilla_root", type=Path, default=None)
     parser.add_argument("--mod", type=Path, default=DEFAULT_MOD)
     parser.add_argument("--mod-descriptor", type=Path, default=DEFAULT_DESCRIPTOR)
+    parser.add_argument("--mods", default=None, help="explicit comma-separated ordered .mod tokens")
+    parser.add_argument("--userdata", type=Path, default=None)
+    parser.add_argument("--strict-mods", action="store_true")
+    parser.add_argument("--source-inventory", type=Path, default=None)
+    parser.add_argument(
+        "--vanilla-only",
+        action="store_true",
+        help="explicitly build without a mod layer; never inferred from a missing mod path",
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--allow-missing-vanilla", action="store_true")
     parser.add_argument("--skip-pack", action="store_true")
     args = parser.parse_args()
+    if args.mods is not None:
+        args.mods = [part.strip() for part in args.mods.split(",") if part.strip()]
+    apply_layer_mode(args)
 
     catalog = build_catalog(args)
     paths = write_store(args.out_dir, catalog)

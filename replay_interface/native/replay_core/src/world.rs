@@ -4731,10 +4731,42 @@ pub struct ResearchProgressRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ResearchTechnologyRow {
+    pub name: Leaf<String>,
+    pub level: Leaf<i64>,
+    pub date: Leaf<String>,
+    pub research_points: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DoctrineCompletedRow {
+    pub id: Leaf<String>,
+    pub level: Leaf<i64>,
+    pub date: Leaf<String>,
+    pub research_points: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DoctrineProgressRow {
+    pub id: Leaf<String>,
+    pub progress: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DoctrineView {
+    pub completed: Leaf<Vec<DoctrineCompletedRow>>,
+    pub completed_count: Leaf<i64>,
+    pub in_progress: Leaf<Vec<DoctrineProgressRow>>,
+    pub source: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResearchView {
     pub tech_count: Leaf<i64>,
     pub research_slots: Leaf<i64>,
     pub in_progress: Leaf<Vec<ResearchProgressRow>>,
+    pub technologies: Leaf<Vec<ResearchTechnologyRow>>,
+    pub doctrine: Leaf<DoctrineView>,
 }
 
 impl ResearchView {
@@ -4743,6 +4775,8 @@ impl ResearchView {
             tech_count: Leaf::Unobtained,
             research_slots: Leaf::Unobtained,
             in_progress: Leaf::Unobtained,
+            technologies: Leaf::Unobtained,
+            doctrine: Leaf::Unobtained,
         }
     }
 }
@@ -5390,8 +5424,56 @@ fn build_research(
                     progress_pct: leaf_f64(o, &["progress_pct"], c, w),
                 }
             }),
+            technologies: leaf_rows(obj, &["research", "technologies"], ctx, w, |o, c, w| {
+                ResearchTechnologyRow {
+                    name: leaf_string(o, &["name"], c, w),
+                    level: leaf_i64(o, &["level"], c, w),
+                    date: leaf_string(o, &["date"], c, w),
+                    research_points: leaf_f64(o, &["research_points"], c, w),
+                }
+            }),
+            doctrine: leaf_doctrine(obj, ctx, w),
         },
     )
+}
+
+fn leaf_doctrine(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<DoctrineView> {
+    match walk_path(obj, &["research", "doctrine"], ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Object(doctrine)) => {
+            let dctx = format!("{ctx}.research.doctrine");
+            Leaf::Measured(DoctrineView {
+                completed: leaf_rows(doctrine, &["completed"], &dctx, warnings, |o, c, w| {
+                    DoctrineCompletedRow {
+                        id: leaf_string(o, &["id"], c, w),
+                        level: leaf_i64(o, &["level"], c, w),
+                        date: leaf_string(o, &["date"], c, w),
+                        research_points: leaf_f64(o, &["research_points"], c, w),
+                    }
+                }),
+                completed_count: leaf_i64(doctrine, &["completed_count"], &dctx, warnings),
+                in_progress: leaf_rows(doctrine, &["in_progress"], &dctx, warnings, |o, c, w| {
+                    DoctrineProgressRow {
+                        id: leaf_string(o, &["id"], c, w),
+                        progress: leaf_f64(o, &["progress"], c, w),
+                    }
+                }),
+                source: leaf_string(doctrine, &["source"], &dctx, warnings),
+            })
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.research.doctrine: present but wrong-typed (expected object, found {}); treated as unobtained",
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
 }
 
 fn build_focus(
@@ -6125,6 +6207,66 @@ mod tests {
                 "collector": Value::Object(collector)
             }
         })
+    }
+
+    #[test]
+    fn research_view_keeps_completed_technologies_and_doctrine_subsets_typed() {
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 7,
+            "countries": {
+                "GER": {
+                    "research": {
+                        "tech_count": 1,
+                        "research_slots": 4,
+                        "in_progress": [],
+                        "technologies": [{
+                            "name": "infantry_weapons",
+                            "level": 1,
+                            "date": "1936.1.1.0",
+                            "research_points": 10.0
+                        }],
+                        "doctrine": {
+                            "completed": [{
+                                "id": "superior_firepower",
+                                "level": 1,
+                                "date": "1936.2.1.0",
+                                "research_points": 100.0
+                            }],
+                            "completed_count": 1,
+                            "in_progress": [{"id": "delay", "progress": 0.25}],
+                            "source": "S"
+                        }
+                    }
+                }
+            }
+        }));
+        let research = frame.research("GER").expect("typed research");
+        assert_eq!(
+            research.technologies,
+            Leaf::Measured(vec![ResearchTechnologyRow {
+                name: Leaf::Measured("infantry_weapons".to_string()),
+                level: Leaf::Measured(1),
+                date: Leaf::Measured("1936.1.1.0".to_string()),
+                research_points: Leaf::Measured(10.0),
+            }])
+        );
+        assert_eq!(
+            research.doctrine,
+            Leaf::Measured(DoctrineView {
+                completed: Leaf::Measured(vec![DoctrineCompletedRow {
+                    id: Leaf::Measured("superior_firepower".to_string()),
+                    level: Leaf::Measured(1),
+                    date: Leaf::Measured("1936.2.1.0".to_string()),
+                    research_points: Leaf::Measured(100.0),
+                }]),
+                completed_count: Leaf::Measured(1),
+                in_progress: Leaf::Measured(vec![DoctrineProgressRow {
+                    id: Leaf::Measured("delay".to_string()),
+                    progress: Leaf::Measured(0.25),
+                }]),
+                source: Leaf::Measured("S".to_string()),
+            })
+        );
     }
 
     fn assert_all_problem_backed_views_unavailable(label: &str, frame: &WorldFrame) {

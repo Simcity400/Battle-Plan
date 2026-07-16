@@ -244,15 +244,38 @@ class CollectorFrameSession:
         if self.recorder is None:
             return None
         path = self._finalize_recorder()
-        if path is not None:
-            if not self.patch_recording_diagnostics(path):
-                self.finalize_error = "recording diagnostics patch failed"
-            else:
-                try:
-                    if not _verify_container(path):
-                        self.finalize_error = "replay verification failed after diagnostics patch"
-                except Exception as exc:
-                    self.finalize_error = str(exc)
+        if self.finalize_error is not None:
+            raise RuntimeError(
+                "collector replay finalization failed: %s"
+                % self.finalize_error)
+        if not isinstance(path, str) or not path:
+            self.finalize_error = "recorder returned no finalized replay path"
+            raise RuntimeError(
+                "collector replay finalization failed: %s"
+                % self.finalize_error)
+        try:
+            patched = self.patch_recording_diagnostics(path)
+        except Exception as exc:
+            self.finalize_error = (
+                "recording diagnostics publication failed: %s" % exc)
+            raise RuntimeError(
+                "collector replay finalization failed: %s"
+                % self.finalize_error) from exc
+        if not patched:
+            self.finalize_error = "recording diagnostics patch failed"
+            raise RuntimeError(
+                "collector replay finalization failed: %s"
+                % self.finalize_error)
+        try:
+            if _verify_container(path) is not True:
+                raise ValueError(
+                    "replay verification failed after diagnostics patch")
+        except Exception as exc:
+            self.finalize_error = str(exc)
+            raise RuntimeError(
+                "collector replay finalization failed: %s"
+                % self.finalize_error) from exc
+        self.finalize_error = None
         return path
 
     def diagnostics(self) -> Dict[str, Any]:

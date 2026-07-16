@@ -118,6 +118,7 @@ def build_gfx_asset_layers(
     vanilla: str | None = None,
     mods: list[str] | None = None,
     userdata: str | Path | None = None,
+    strict_mods: bool = False,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Build the GFX-only effective asset layer stack.
 
@@ -129,7 +130,9 @@ def build_gfx_asset_layers(
 
     vanilla_root = R.vanilla_root(vanilla)
     userdata_root = Path(userdata).resolve() if userdata else R.DEFAULT_USERDATA
-    mod_layers = R.build_layers(vanilla=str(vanilla_root), mods=mods, userdata=userdata_root)
+    mod_layers = R.build_layers(
+        vanilla=str(vanilla_root), mods=mods, userdata=userdata_root, strict_mods=strict_mods
+    )
 
     integrated_dirs = _installed_dlc_dirs(vanilla_root, "integrated_dlc")
     installed_dlc_dirs = _installed_dlc_dirs(vanilla_root, "dlc")
@@ -378,6 +381,7 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
         vanilla=args.vanilla,
         mods=mods_from_arg(args.mods),
         userdata=args.userdata,
+        strict_mods=getattr(args, "strict_mods", False),
     )
     warnings = []
     sprites: dict[str, dict[str, Any]] = {}

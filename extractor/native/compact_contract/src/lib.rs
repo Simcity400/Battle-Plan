@@ -10,163 +10,34 @@
 pub mod bound_trips;
 pub mod build_profile;
 pub mod calendar;
+pub mod campaign_identity;
+pub mod first_compact_ack;
+pub mod record_header;
+pub mod record_semantics;
+pub mod status_flags_base;
 pub mod status_origins;
+pub mod stream_validator;
 pub mod tech_sharing_groups;
+
+pub use record_header::{
+    parse_compact_record_header, CompactRecordHeader, RecordFramingError, COMPACT_MAX_PAYLOAD_LEN,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_VERSION,
+};
+pub use record_semantics::*;
+pub use status_flags_base::*;
 
 pub type CompactDomainId = u16;
 
 // --- H4CR compact record framing -------------------------------------------
 
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_VERSION: u16 = 1;
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-
-pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
-pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
-pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
-
 pub const MAX_SCHEDULED_DOMAINS: usize = 64;
 
-/// H4CR record-header `flags` bit reserved for payload-schema selection.
-///
-/// This is framing metadata, not a compact status flag. Domain 45
-/// `focus_research_decisions_depth_live` uses it to select the schema-v2
-/// payload shape from outside the payload so legacy elapsed-time bytes cannot
-/// collide with an in-payload magic marker.
-pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
-
-/// H4CR record-header `flags` bit announcing the optional domain-perf
-/// diagnostic-unit trailer after the base 40-byte perf payload.
-///
-/// Presence is decided from this framing bit, not by scanning payload bytes, so
-/// future perf payload extensions cannot collide with the trailer magic.
-pub const COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 = 1 << 30;
-
-// --- H4CR record-header parsing (the single framing primitive) --------------
-
-/// A parsed 32-byte H4CR record header. This is the ONE place the compact
-/// record envelope is decoded from bytes; every stream walker (the production
-/// streaming fold, the fold-equivalence gate, and the shared `replay_decoder`
-/// facade) frames records through [`parse_compact_record_header`] so the wire
-/// contract has a single decoder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompactRecordHeader {
-    pub sequence: u64,
-    pub game_hour_raw: i32,
-    pub domain_id: CompactDomainId,
-    pub record_type: u16,
-    pub payload_len: usize,
-    pub record_flags: u32,
-}
-
-impl CompactRecordHeader {
-    /// Total on-wire length of the record (header + payload). Saturating so a
-    /// hostile `payload_len` cannot overflow the offset arithmetic.
-    pub fn record_len(&self) -> usize {
-        COMPACT_RECORD_HEADER_LEN.saturating_add(self.payload_len)
-    }
-}
-
-/// Why a candidate 32-byte header is not a valid H4CR record. Callers add the
-/// byte offset for their diagnostics; the variants keep the offending value so
-/// existing messages ("unsupported record version {v} ...") reproduce exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordFramingError {
-    /// Leading four bytes are not `H4CR`.
-    BadMagic,
-    /// Header `version` field != [`COMPACT_RECORD_VERSION`].
-    UnsupportedVersion(u16),
-    /// Header `header_len` field != [`COMPACT_RECORD_HEADER_LEN`].
-    UnsupportedHeaderLen(usize),
-    /// Header `payload_len` exceeds [`COMPACT_MAX_PAYLOAD_LEN`]. A forged or
-    /// corrupted length would otherwise make framing consumers buffer up to
-    /// 4 GiB of "payload" and could swallow every subsequent record —
-    /// including FRAME_END — inside one bogus record (stream-container net
-    /// gate 2026-07-11, finding 3).
-    PayloadTooLarge(u32),
-}
-
-/// Hard upper bound on a single record's payload. The largest real payloads
-/// observed in production (deep-war d53 relation snapshots) are tens of MB;
-/// 256 MiB is more than an order of magnitude above any legitimate record and
-/// far below the carry-exhaustion / record-swallowing threshold.
-pub const COMPACT_MAX_PAYLOAD_LEN: u32 = 1 << 28;
-
-impl core::fmt::Display for RecordFramingError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            RecordFramingError::BadMagic => write!(f, "invalid record magic"),
-            RecordFramingError::UnsupportedVersion(v) => {
-                write!(f, "unsupported record version {v}")
-            }
-            RecordFramingError::UnsupportedHeaderLen(l) => {
-                write!(f, "unsupported header length {l}")
-            }
-            RecordFramingError::PayloadTooLarge(l) => {
-                write!(
-                    f,
-                    "payload length {l} exceeds the {COMPACT_MAX_PAYLOAD_LEN}-byte record bound"
-                )
-            }
-        }
-    }
-}
-
-/// Parse the fixed 32-byte H4CR record header at the front of `buf`, validating
-/// magic, version, and header length. `buf` must be at least
-/// [`COMPACT_RECORD_HEADER_LEN`] bytes; a shorter slice panics in debug and is a
-/// caller bug (callers gate on `remaining >= COMPACT_RECORD_HEADER_LEN` first).
-///
-/// This mirrors, byte-for-byte, the header decode previously inlined in the
-/// streaming fold and the `fold_check` gate — extracting it keeps the H4CR
-/// envelope decoded in exactly one place.
-pub fn parse_compact_record_header(buf: &[u8]) -> Result<CompactRecordHeader, RecordFramingError> {
-    debug_assert!(
-        buf.len() >= COMPACT_RECORD_HEADER_LEN,
-        "parse_compact_record_header needs a full {COMPACT_RECORD_HEADER_LEN}-byte header"
-    );
-    if &buf[0..4] != COMPACT_RECORD_MAGIC {
-        return Err(RecordFramingError::BadMagic);
-    }
-    let version = u16::from_le_bytes([buf[4], buf[5]]);
-    if version != COMPACT_RECORD_VERSION {
-        return Err(RecordFramingError::UnsupportedVersion(version));
-    }
-    let header_len = u16::from_le_bytes([buf[6], buf[7]]) as usize;
-    if header_len != COMPACT_RECORD_HEADER_LEN {
-        return Err(RecordFramingError::UnsupportedHeaderLen(header_len));
-    }
-    let payload_len = u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]);
-    if payload_len > COMPACT_MAX_PAYLOAD_LEN {
-        return Err(RecordFramingError::PayloadTooLarge(payload_len));
-    }
-    Ok(CompactRecordHeader {
-        sequence: u64::from_le_bytes([
-            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
-        ]),
-        game_hour_raw: i32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]),
-        domain_id: u16::from_le_bytes([buf[20], buf[21]]),
-        record_type: u16::from_le_bytes([buf[22], buf[23]]),
-        payload_len: payload_len as usize,
-        record_flags: u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]),
-    })
-}
+// H4CR parsing is implemented in the dependency-free `record_header` module
+// and envelope semantics in `record_semantics`; both are re-exported above so
+// Cargo and direct-rustc consumers share one source.
 
 // --- Compact stream status flags (record header `flags` field) -------------
 
-pub const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
-pub const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
-pub const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
-pub const COMPACT_STATUS_NO_SCALAR_SOURCE: u32 = 1 << 3;
-pub const COMPACT_STATUS_WAR_BRIDGE_APPLIED: u32 = 1 << 4;
-pub const COMPACT_STATUS_EXTRACTION_PERF_GATE: u32 = 1 << 5;
-pub const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
-pub const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
-pub const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-pub const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
-pub const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
-pub const COMPACT_STATUS_TRANSITION_BASELINE_RESET: u32 = 1 << 11;
-pub const COMPACT_STATUS_CONTROL_INVALID: u32 = 1 << 12;
 /// d17 diplomacy: the war-relations SEGMENT (per-country `at_war` +
 /// casualties) was NOT captured this frame because no well-formed
 /// `war_relation_bridge` was supplied (production presets pass none). Without
@@ -177,17 +48,10 @@ pub const COMPACT_STATUS_CONTROL_INVALID: u32 = 1 << 12;
 /// rest of the diplomacy frame is complete, d53 carries wars natively in
 /// production, and the SourceDisposition design (O8) will type this segment
 /// properly. Never used to mask or excuse anything.
-pub const COMPACT_STATUS_WAR_SEGMENT_ABSENT: u32 = 1 << 13;
 
 // Domain 51 `scripted_state_flags_variables_live` carries lane-local badges in
 // the shared status field for legacy wire compatibility. These bits intentionally
 // overlap global bits and must be masked before global status interpretation.
-pub const DOMAIN51_STATUS_FLAG_NAMES_PARTIAL: u32 = 1 << 11;
-pub const DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED: u32 = 1 << 12;
-pub const DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED: u32 = 1 << 13;
-pub const DOMAIN51_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN51_STATUS_FLAG_NAMES_PARTIAL
-    | DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
-    | DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED;
 
 // Domain-49 (naval_combat_lifecycle_live) lane-local payload status bit: a
 // lifecycle row is missing the promoted location/region pair (fail-closed
@@ -222,6 +86,11 @@ pub const COMPACT_STATUS_FAILURE_MASK: u32 = COMPACT_STATUS_STATE_UNAVAILABLE
     | COMPACT_STATUS_PARTIAL_DATA
     | COMPACT_STATUS_CONTROL_INVALID;
 
+/// Classifies the known v1 failure vocabulary.
+///
+/// This is not a status-validity predicate. Callers handling untrusted status
+/// words must first reject a non-zero [`compact_status_unknown_flags_v1`]
+/// result; otherwise an unassigned bit has no defined classification.
 pub const fn compact_status_is_failure(status_flags: u32) -> bool {
     (status_flags & COMPACT_STATUS_FAILURE_MASK) != 0
 }
@@ -331,6 +200,7 @@ pub const STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS: &str = "decisions_static
 pub const STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC: &str = "idea_tech_loc_xref_static";
 pub const STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC: &str = "ship_definitions_static";
 pub const STATIC_ARTIFACT_GFX_ICON_MANIFEST: &str = "gfx_icon_asset_manifest_static";
+pub const STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC: &str = "technology_sharing_static";
 
 pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
@@ -339,6 +209,7 @@ pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
     STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
     STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+    STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC,
 ];
 
 pub const PRODUCTION_PROFILE_RULE: &str =
@@ -1363,6 +1234,42 @@ mod tests {
     }
 
     #[test]
+    fn record_header_flag_policy_is_domain_and_record_type_specific() {
+        assert_eq!(
+            compact_record_allowed_flags(45, COMPACT_RECORD_TYPE_DOMAIN_DATA),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
+        );
+        assert_eq!(
+            compact_record_allowed_flags(10, COMPACT_RECORD_TYPE_DOMAIN_PERF),
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER
+        );
+        assert_eq!(
+            compact_record_allowed_flags(10, COMPACT_RECORD_TYPE_DOMAIN_DATA),
+            0
+        );
+        assert_eq!(
+            compact_record_allowed_flags(1000, COMPACT_RECORD_TYPE_FRAME_END),
+            0
+        );
+        assert_eq!(
+            compact_record_rejected_flags(
+                45,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2 | (1 << 29),
+            ),
+            1 << 29
+        );
+        assert_eq!(
+            compact_record_rejected_flags(
+                45,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            ),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
+        );
+    }
+
+    #[test]
     fn capture_profile_round_trips_and_presets_are_coherent() {
         for profile in [CaptureProfile::Production, CaptureProfile::Debug] {
             assert_eq!(CaptureProfile::parse(profile.as_str()), Some(profile));
@@ -1645,6 +1552,7 @@ mod tests {
                 STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
                 STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
                 STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+                STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC,
             ]
         );
     }
@@ -1762,6 +1670,11 @@ mod tests {
 
     #[test]
     fn failure_status_predicate_covers_failure_vocabulary_only() {
+        assert_eq!(
+            COMPACT_STATUS_FAILURE_MASK & !COMPACT_STATUS_V1_KNOWN_MASK,
+            0,
+            "all classified failure bits must belong to the v1 status vocabulary"
+        );
         for flag in [
             COMPACT_STATUS_STATE_UNAVAILABLE,
             COMPACT_STATUS_PROFILE_MISMATCH,
@@ -1790,5 +1703,12 @@ mod tests {
                 "flag {flag:#x} should be informational"
             );
         }
+
+        let unknown = 1_u32 << 31;
+        assert_eq!(compact_status_unknown_flags_v1(unknown), unknown);
+        assert!(
+            !compact_status_is_failure(unknown),
+            "failure classification remains known-vocabulary-only; callers reject unknown bits first"
+        );
     }
 }

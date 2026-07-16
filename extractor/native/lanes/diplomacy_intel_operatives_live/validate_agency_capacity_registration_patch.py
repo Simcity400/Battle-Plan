@@ -56,6 +56,16 @@ def proof_unit_count(proof: dict[str, Any], name: str) -> int:
     return int(units.get(name) or 0)
 
 
+def container_integrity_ok(proof: dict[str, Any]) -> bool:
+    return (
+        proof.get("container_integrity_verified") is True
+        and proof.get("stream_entry_byte_identity_verified") is True
+        and proof.get("production_certifying") is False
+        and proof.get("source_capture_verified") is False
+        and not proof.get("parse_errors")
+    )
+
+
 def get_path(value: Any, *keys: str) -> Any:
     for key in keys:
         if not isinstance(value, dict):
@@ -157,7 +167,11 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     require(int(replay_proof.get("domain_id") or 0) == DOMAIN_ID, errors, "proof domain_id is not 53")
-    require(bool(replay_proof.get("hoi4replay_verified")), errors, "proof does not verify .battleplan")
+    require(
+        container_integrity_ok(replay_proof),
+        errors,
+        "proof does not establish scoped non-certifying replay-container integrity",
+    )
     require(int(replay_proof.get("data_rows_total") or 0) == 12, errors, "proof row count is not 12")
     require(
         proof_unit_count(replay_proof, "agency_capacity_cluster_rows") == 1,
@@ -232,14 +246,14 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
             "operative_lifecycle_rows": proof_unit_count(
                 replay_proof, "operative_lifecycle_rows"
             ),
-            "hoi4replay_verified": bool(replay_proof.get("hoi4replay_verified")),
+            "replay_container_integrity_verified": container_integrity_ok(replay_proof),
         },
         "dll_only": "no",
-        "compact_stream": "yes, lane-local v22 proof",
+        "compact_stream": "yes, lane-local synthetic v22 integrity proof",
         "rust_decoded": "yes, lane-local decoder; shared hook plan validated",
-        "hoi4replay_verified": bool(replay_proof.get("hoi4replay_verified")),
+        "replay_container_integrity_verified": container_integrity_ok(replay_proof),
         "speed_five_current_equivalent_hourly_or_lower": "no",
-        "zero_skipped_hours": "lane-local single-record proof only",
+        "zero_skipped_hours": "not claimed; synthetic single-hour stream only",
         "partial_source_worker_bridge_failures": "no in lane-local proof; shared run not executed",
         "errors": errors,
     }

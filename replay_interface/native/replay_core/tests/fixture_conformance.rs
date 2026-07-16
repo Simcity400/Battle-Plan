@@ -103,7 +103,8 @@ fn positive_fixtures_load_and_match_manifest_probes() {
             let got = frame_probe(&frame, path)
                 .unwrap_or_else(|| panic!("{name}: missing probe path {:?}", probe["path"]));
             assert_eq!(
-                got, &probe["equals"],
+                got,
+                &probe["equals"],
                 "{name}: probe failed ({})",
                 probe["note"].as_str().unwrap_or("<no note>")
             );

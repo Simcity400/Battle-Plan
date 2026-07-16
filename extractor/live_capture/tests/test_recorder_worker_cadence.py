@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.normpath(os.path.join(_HERE, os.pardir, os.pardir))
@@ -154,6 +155,10 @@ class TestRecorderWorkerCadence(unittest.TestCase):
         loop = _FakeLoop(worker, self.tmp, fail_calls=fail_calls, pids=pids,
                          finalize_every=finalize_every)
         worker._loop = loop
+        # Cadence unit fixtures do not build a real replay container.  Keep the
+        # diagnostics publisher outside these cadence-only tests; its strict
+        # failure behavior is covered explicitly below and in the manifest tests.
+        worker._patch_recording_diagnostics = lambda **_kwargs: True
         seq = list(dates)
         pos = {"i": 0}
 
@@ -293,6 +298,73 @@ class TestRecorderWorkerCadence(unittest.TestCase):
 
         self.assertEqual(worker.n_captured, 4)
         self.assertEqual(loop._recorder.finalize_calls, 2)
+
+    def test_worker_final_publication_failure_propagates(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        worker = self._worker()
+        loop = _FakeLoop(worker, self.tmp, finalize_every=6)
+        worker._loop = loop
+
+        def fail_finalize():
+            loop._recorder.finalize_calls += 1
+            raise ValueError("candidate verification failed")
+
+        loop._recorder.finalize = fail_finalize
+        observations = [h0, h0]
+        pos = {"i": 0}
+
+        def date_provider(_proc):
+            value = observations[pos["i"]]
+            pos["i"] += 1
+            if pos["i"] >= len(observations):
+                worker.stop()
+            return value
+
+        def on_capture(res):
+            if not res.error and res.written_path and res.canonical:
+                worker.n_captured += 1
+
+        with self.assertRaisesRegex(RuntimeError,
+                                    "replay finalization failed"):
+            worker._run_until_stop(date_provider, on_capture)
+        self.assertEqual(loop.last_finalize_error,
+                         "candidate verification failed")
+
+    def test_gui_reports_publication_failure_and_never_saved(self):
+        worker = self._worker()
+
+        def fail_after_capture(_date_provider, _on_capture):
+            worker.n_captured = 1
+            raise RuntimeError("replay finalization failed: rejected candidate")
+
+        worker._run_until_stop = fail_after_capture
+        with mock.patch("live_capture.capture.CaptureLoop",
+                        return_value=object()), \
+                mock.patch("traceback.print_exc"):
+            worker._run()
+
+        joined = " ".join(self.statuses)
+        self.assertIn("Could not record: replay finalization failed", joined)
+        self.assertNotIn("Saved:", joined)
+
+    def test_strict_diagnostics_failure_propagates_to_gui_caller(self):
+        worker = self._worker()
+        worker._loop = _FakeLoop(worker, self.tmp)
+        worker._diagnostics = {"cadence": {
+            "skipped_hours": 1,
+            "coverage_warnings": [],
+            "timing": {"warning_count": 0},
+        }}
+        with mock.patch(
+                "live_capture.recorder.manifest_diagnostics."
+                "patch_manifest_diagnostics",
+                side_effect=ValueError("rejected diagnostics candidate")):
+            with self.assertRaisesRegex(
+                    RuntimeError, "diagnostics publication failed"):
+                worker._patch_recording_diagnostics(
+                    force=True, fail_closed=True)
+        self.assertIn("rejected diagnostics candidate",
+                      worker._loop.last_finalize_error)
 
     def test_every_two_worker_waits_and_skips_one_scheduled_target(self):
         dates = [

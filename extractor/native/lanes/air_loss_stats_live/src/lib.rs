@@ -312,6 +312,15 @@ pub trait Mem {
     fn i64(&self, addr: u64) -> Option<i64>;
 }
 
+/// Result of reading one country slot. Clean null optional links are positive
+/// absence; unreadable fields and failed guards are failures, never absence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AirLossRowRead {
+    Present(AirLossStatRow),
+    Absent,
+    Failed,
+}
+
 fn ok_ptr(v: u64) -> bool {
     (0x1_0000..0x7FFF_FFFF_FFFF).contains(&v)
 }
@@ -397,6 +406,148 @@ pub fn derive_country_row<M: Mem>(
         channels[k] = raw;
     }
     Some(AirLossStatRow {
+        owner_tag_db_id: tag_db_id,
+        country_idx,
+        flags: ROW_FLAG_BINDING_VERIFIED | ROW_FLAG_STRUCT_VERIFIED,
+        channels,
+    })
+}
+
+/// Tri-state production reader. Clean null optional links are `Absent`; every
+/// unreadable field or failed structural guard is `Failed`.
+pub fn derive_country_row_result<M: Mem>(
+    mem: &M,
+    module_base: u64,
+    country_idx: u32,
+) -> AirLossRowRead {
+    let Some(cgs) = mem.u64(module_base + CGAMESTATE_RVA) else {
+        return AirLossRowRead::Failed;
+    };
+    if !ok_ptr(cgs) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(country_table) = mem.u64(cgs + COUNTRY_TABLE_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    let Some(country_count) = mem.u32(cgs + COUNTRY_COUNT_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if !ok_ptr(country_table) || country_idx >= country_count {
+        return AirLossRowRead::Failed;
+    }
+    let Some(cc) = mem.u64(country_table + u64::from(country_idx) * 8) else {
+        return AirLossRowRead::Failed;
+    };
+    if cc == 0 {
+        return AirLossRowRead::Absent;
+    }
+    if !ok_ptr(cc) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(country_vtable) = mem.u64(cc) else {
+        return AirLossRowRead::Failed;
+    };
+    if country_vtable != module_base + COUNTRY_VTABLE_RVA {
+        return AirLossRowRead::Failed;
+    }
+    let Some(tag_db_id) = mem.u32(cc + COUNTRY_TAG_DB_ID_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if tag_db_id != country_idx {
+        return AirLossRowRead::Failed;
+    }
+    let Some(registry) = mem.u64(cgs + REGISTRY_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if !ok_ptr(registry) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(mgr_array) = mem.u64(registry + MGR_ARRAY_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if !ok_ptr(mgr_array) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(country_mgr) = mem.u64(mgr_array + u64::from(country_idx) * 8) else {
+        return AirLossRowRead::Failed;
+    };
+    if country_mgr == 0 {
+        return AirLossRowRead::Absent;
+    }
+    if !ok_ptr(country_mgr) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(stat_base) = mem.u64(country_mgr + STAT_BASE_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if stat_base == 0 {
+        return AirLossRowRead::Absent;
+    }
+    if !ok_ptr(stat_base) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(loophist) = mem.u64(stat_base + AIR_STAT_KEY * 8) else {
+        return AirLossRowRead::Failed;
+    };
+    if loophist == 0 {
+        return AirLossRowRead::Absent;
+    }
+    if !ok_ptr(loophist) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(loophist_vtable) = mem.u64(loophist) else {
+        return AirLossRowRead::Failed;
+    };
+    if loophist_vtable != module_base + LOOPHIST_VTABLE_RVA {
+        return AirLossRowRead::Failed;
+    }
+    let Some(field_count) = mem.u32(loophist + LOOPHIST_FIELDCOUNT_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if field_count != EXPECTED_FIELD_COUNT {
+        return AirLossRowRead::Failed;
+    }
+    let Some(self_ref) = mem.u64(loophist + LOOPHIST_SELF_REF_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if self_ref != loophist {
+        return AirLossRowRead::Failed;
+    }
+    let Some(window) = mem.u64(loophist + LOOPHIST_WINDOW_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if !ok_ptr(window) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(window_capacity) = mem.u32(window + LOOPHIST_WINDOW_CAPACITY_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if window_capacity != EXPECTED_YEARLY_CAPACITY {
+        return AirLossRowRead::Failed;
+    }
+    let Some(recflds) = mem.u64(window + LOOPHIST_RECFLDS_OFF) else {
+        return AirLossRowRead::Failed;
+    };
+    if !ok_ptr(recflds) {
+        return AirLossRowRead::Failed;
+    }
+    let Some(arr) = mem.u64(recflds) else {
+        return AirLossRowRead::Failed;
+    };
+    if !ok_ptr(arr) {
+        return AirLossRowRead::Failed;
+    }
+    let mut channels = [0i64; 6];
+    for (k, (idx, _)) in PINNED_CHANNELS.iter().enumerate() {
+        let Some(raw) = mem.i64(arr + u64::from(*idx) * 8) else {
+            return AirLossRowRead::Failed;
+        };
+        if raw < 0 || raw > MAX_CHANNEL_RAW {
+            return AirLossRowRead::Failed;
+        }
+        channels[k] = raw;
+    }
+    AirLossRowRead::Present(AirLossStatRow {
         owner_tag_db_id: tag_db_id,
         country_idx,
         flags: ROW_FLAG_BINDING_VERIFIED | ROW_FLAG_STRUCT_VERIFIED,
@@ -566,6 +717,31 @@ mod tests {
         let mut m = good_image(1);
         m.u.remove(&(0x2700_0000 + LOOPHIST_WINDOW_OFF)); // window read now returns None
         assert!(derive_country_row(&m, BASE, 1).is_none());
+    }
+
+    #[test]
+    fn tri_state_distinguishes_clean_absence_from_torn_read() {
+        let mut absent = good_image(1);
+        absent.su(0x2600_0000 + AIR_STAT_KEY * 8, 0);
+        assert_eq!(
+            derive_country_row_result(&absent, BASE, 1),
+            AirLossRowRead::Absent
+        );
+
+        let mut torn = good_image(1);
+        torn.u.remove(&(0x2700_0000 + LOOPHIST_WINDOW_OFF));
+        assert_eq!(
+            derive_country_row_result(&torn, BASE, 1),
+            AirLossRowRead::Failed
+        );
+    }
+
+    #[test]
+    fn tri_state_reports_present_row() {
+        assert!(matches!(
+            derive_country_row_result(&good_image(1), BASE, 1),
+            AirLossRowRead::Present(_)
+        ));
     }
 
     #[test]

@@ -109,6 +109,36 @@ fn proof_json(
     push_json_field(
         &mut out,
         1,
+        "artifact_kind",
+        "\"lane_local_stream_slice_proof\"",
+        true,
+    );
+    push_json_field(&mut out, 1, "production_certifying", "false", true);
+    push_json_field(&mut out, 1, "source_capture_verified", "false", true);
+    push_json_field(
+        &mut out,
+        1,
+        "accepted_for_lane_local_slice",
+        if gate.ok { "true" } else { "false" },
+        true,
+    );
+    push_json_field(&mut out, 1, "manifest_observations_trusted", "false", true);
+    out.push_str("  \"certification\": {\n");
+    push_json_field(&mut out, 2, "claimed", "false", true);
+    push_json_field(
+        &mut out,
+        2,
+        "reason",
+        &json_string(
+            "lane-local stream slice only; no full product roster, source-capture identity, or commanded-duration authority",
+        ),
+        true,
+    );
+    push_json_field(&mut out, 2, "commanded_duration_bound", "false", false);
+    out.push_str("  },\n");
+    push_json_field(
+        &mut out,
+        1,
         "stream",
         &json_string(&stream.display().to_string()),
         true,
@@ -144,7 +174,7 @@ fn proof_json(
         push_json_field(
             &mut out,
             1,
-            "manifest_mentions_replay_file",
+            "untrusted_observation_manifest_mentions_replay_file",
             if text.contains("\"replay_file\"") {
                 "true"
             } else {
@@ -155,7 +185,7 @@ fn proof_json(
         push_json_field(
             &mut out,
             1,
-            "manifest_hourly_requirement_met",
+            "untrusted_observation_manifest_hourly_requirement_met",
             if text.contains("\"met\": true") {
                 "true"
             } else {
@@ -166,7 +196,7 @@ fn proof_json(
         push_json_field(
             &mut out,
             1,
-            "manifest_zero_skipped_hours",
+            "untrusted_observation_manifest_zero_skipped_hours",
             if text.contains("\"skipped_game_hours\": 0") {
                 "true"
             } else {
@@ -273,6 +303,13 @@ fn proof_json(
         1,
         "status_flags_or",
         &summary.status_flags_or.to_string(),
+        true,
+    );
+    push_json_field(
+        &mut out,
+        1,
+        "failure_status_flags_or",
+        &summary.failure_status_flags_or.to_string(),
         true,
     );
     push_json_array_strings(&mut out, 1, "parse_errors", &summary.parse_errors, true);

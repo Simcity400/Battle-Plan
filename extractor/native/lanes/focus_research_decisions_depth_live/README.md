@@ -48,7 +48,8 @@ cargo run --manifest-path extractor\native\lanes\focus_research_decisions_depth_
 
 cargo run --manifest-path extractor\native\lanes\focus_research_decisions_depth_live\Cargo.toml --bin gate_depth_stream -- `
   --input extractor\native\runs\focus_research_decisions_depth_live_integrated_870ebf_20260701_v1\collector_stream.bin `
-  --out-dir extractor\native\lanes\focus_research_decisions_depth_live\proofs\integrated_depth_gate_20260701_v1
+  --out-dir extractor\native\lanes\focus_research_decisions_depth_live\proofs\integrated_depth_gate_20260701_v1 `
+  --game-hours 48
 ```
 
 The proof command writes:
@@ -61,26 +62,48 @@ The proof command writes:
 - `sample_events.jsonl`: first derived rows for manual inspection.
 
 The direct depth gate over the integrated domain `45` stream writes
-`depth_gate_manifest.json`. The current integrated proof has `89` depth data
-records, `9` focus event rows, `0` exact completed-focus closure rows, `1`
-inferred completed-focus closure row, `267` badge rows, and zero parse errors.
+`depth_gate_manifest.json`. Certification requires canonical H4CR flags and
+sequence from `1`, consecutive open/closed hours, exactly one domain-45
+`DOMAIN_DATA`/`DOMAIN_PERF` pair in every frame, known non-fatal PERF status,
+and a 32-byte `FRAME_END` whose emitted count equals the independently observed
+PERF roster, whose scheduled count matches emitted, whose reserved word is zero,
+and whose status is known and non-fatal. Physical EOF must immediately follow
+the final certified `FRAME_END`. Production DATA must carry the schema-v2 record
+flag and the `FRD2` schema-v3/60-byte header. Schema v3 preserves the v2 field
+offsets, adds authoritative raw compact DATA status at byte `56`, and begins rows
+at byte `60`; byte `8` remains lane-local depth status. Legacy lane-local v1 and
+statusless FRD2 v2 payloads cannot certify.
+The explicit `--game-hours N` argument is authoritative and requires exactly
+`N + 1` certified closed frames; under-length and over-length streams both fail,
+and no manifest-derived duration fallback exists.
+
+The shared FRD2 schema-v3 DATA decoder now exposes exact compact status authority,
+including clean `Some(0)`, so the gate certifies only when DATA and PERF status
+match exactly. Shared readers retain v1/v2 structural compatibility, but missing
+status is never synthesized from PERF, `FRAME_END`, or the unrelated depth-status
+word at byte `8`. The older named proof inputs and gate manifests are absent from
+this checkout and their historical counts must not be treated as current
+certification evidence.
 
 The exact-completed production slice proof is gated separately:
 
 ```powershell
 cargo run --manifest-path extractor\native\lanes\focus_research_decisions_depth_live\Cargo.toml --bin gate_depth_stream -- `
   --input extractor\native\runs\focus_research_decisions_depth_live_exact_completed_20260701_v1\collector_stream.bin `
-  --out-dir extractor\native\lanes\focus_research_decisions_depth_live\proofs\exact_completed_gate_20260701_v2
+  --out-dir extractor\native\lanes\focus_research_decisions_depth_live\proofs\exact_completed_gate_20260701_v2 `
+  --game-hours 48
 
 extractor\native\target\release\pack_replay.exe verify `
   extractor\native\runs\focus_research_decisions_depth_live_exact_completed_20260701_v1\native_session.battleplan
 ```
 
-That proof has `144` depth records, `1` exact completed-focus row, `0`
-inferred rows, `0` unresolved rows, `432` badge rows, zero parse errors, zero
-skipped hours, and verified `.battleplan` output. The shared collector hunk
-needed for that behavior is not applied by this lane; it is documented for the
-orchestrator in `../../../documents/archive/native_lanes/focus_research_decisions_depth_live/SHARED_RESIDUAL_PATCH_PLAN.md`.
+Historical notes reported `144` depth records, `1` exact completed-focus row,
+`0` inferred rows, `0` unresolved rows, and `432` badge rows for that run. The
+input and gate artifacts are absent from this checkout, so those counts are not
+current certification evidence; the hardened gate must reject that old result
+until D45 DATA status authority is added and a fresh exact-duration proof passes.
+The shared collector hunk once proposed for that behavior is archived in
+`../../../documents/archive/native_lanes/focus_research_decisions_depth_live/SHARED_RESIDUAL_PATCH_PLAN.md`.
 
 Current-build root validation for fail-closed depth fields:
 

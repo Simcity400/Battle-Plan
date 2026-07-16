@@ -543,6 +543,9 @@ so stale workers and local file I/O cannot contaminate the timing signal.
 - Canonical snapshot filenames are keyed by trusted in-game time and segment.
 - The single-writer lock prevents concurrent capture loops from corrupting a
   store.
+- Publication writes a same-directory temporary artifact, verifies and flushes/fsyncs it, then
+  atomically replaces the destination. Any verification, sync, or replace failure propagates and
+  preserves the previous last-good artifact; a failed publication never becomes success-shaped.
 
 ## Store Layout
 

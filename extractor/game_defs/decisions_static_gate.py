@@ -19,6 +19,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 import resolver as R  # noqa: E402
+import source_inventory_layers as SIL  # noqa: E402
 import parse_decisions  # noqa: E402
 import parse_localisation  # noqa: E402
 from static_artifact_common import (  # noqa: E402
@@ -100,6 +101,10 @@ def build_catalog(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, A
         vanilla=args.vanilla,
         mods=mods_from_arg(args.mods),
         userdata=args.userdata,
+        strict_mods=getattr(args, "strict_mods", False),
+    )
+    layers, source_namespace_proof = SIL.definition_layers(
+        layers, getattr(args, "source_inventory", None)
     )
     loc_keys, loc_source = _loc_catalog(args.localisation_catalog, layers)
     parsed = parse_decisions.parse_decisions(layers, strict=True)
@@ -125,6 +130,7 @@ def build_catalog(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, A
             "compatibility_status": "decoder shape documented; no real decode-row sample verified by this static gate",
         },
         "layers": layer_summary(layers),
+        "source_namespace_proof": source_namespace_proof,
         "localisation_source": loc_source,
         "meta": parsed["meta"],
         "source_files": parsed["source_files"],

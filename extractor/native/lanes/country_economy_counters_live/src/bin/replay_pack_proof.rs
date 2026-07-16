@@ -293,5 +293,5 @@ fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
 }
 
 fn usage() -> String {
-    "usage: replay_pack_proof --stream domain58_stream.bin --out-dir <proof-dir> [--game-id <id>] [--min-game-hours <n>]".to_string()
+    "usage: country_economy_counters_replay_pack_proof --stream domain58_stream.bin --out-dir <proof-dir> [--game-id <id>] [--min-game-hours <n>]".to_string()
 }

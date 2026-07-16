@@ -19,7 +19,7 @@ No shared collector, recorder, or master status files were edited.
 
 ## Files
 
-- `domain56_compact.rs`: final domain-56 wire schema, payload encoder, compact
+- `src/domain56_compact.rs`: final domain-56 wire schema, payload encoder, compact
   stream gate, and tests.
 - `naval_missions_status_probe.py`: bounded live proof probe against `hoi4.exe`.
 - `../../../documents/archive/native_lanes/naval_missions_status_live/REGISTRATION_PATCH_PLAN.md`: exact shared registration plan for the
@@ -100,15 +100,20 @@ orchestrator-owned row updates:
 
 ```powershell
 python -m py_compile extractor/native/lanes/naval_missions_status_live/naval_missions_status_probe.py
-rustc --edition=2021 --test extractor/native/lanes/naval_missions_status_live/domain56_compact.rs -o extractor/native/lanes/naval_missions_status_live/domain56_compact_tests.exe
-extractor/native/lanes/naval_missions_status_live/domain56_compact_tests.exe
+cargo test --manifest-path extractor/native/lanes/naval_missions_status_live/Cargo.toml
 python extractor/native/lanes/naval_missions_status_live/naval_missions_status_probe.py --out extractor/native/runs/naval_missions_status_live_870ebf_20260701_v1/naval_missions_status_probe.json --snapshot-label domain56_live_probe_v1
 ```
+
+The Cargo invocation is the supported Rust validation path. The active module
+is `src/domain56_compact.rs` (there is no lane-root `domain56_compact.rs`), and
+the crate depends on the shared `compact_contract`, so a bare `rustc --test`
+command does not resolve the production dependency graph.
 
 Results:
 
 - Python compile: pass.
-- Rust tests: pass, 4 tests.
+- Rust tests: rerun the Cargo command above after source changes; the historical
+  bare-rustc result predates the shared-contract dependency.
 - Live probe: pass, proof JSON written.
 
 ## Required report fields
@@ -124,7 +129,7 @@ Results:
 - Exact roots/offsets/functions validated or rejected: listed above.
 - Compact schema/record changes: final domain 56, 44-byte header, 64-byte
   task-force rows, badged fixture-required fields.
-- Rust decoder/gate changes: `domain56_compact.rs`.
+- Rust decoder/gate changes: `src/domain56_compact.rs`.
 - Proof commands/results: listed above.
 - DLL-only: no shared DLL integration yet; lane-local proof uses bounded live
   validation, not hot extraction.

@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -2819,7 +2820,7 @@ class TestCollectorSession(unittest.TestCase):
             session = CollectorFrameSession(
                 game_id="bad_frame",
                 store_root=root / "store",
-                replay_path=root / "bad_frame.battleplan",
+                replay_path=None,
                 pid=444,
             )
             results = session.record_frames([
@@ -2830,6 +2831,50 @@ class TestCollectorSession(unittest.TestCase):
             self.assertIsNotNone(results[0].error)
             self.assertEqual(session.invalid_frames, 1)
             self.assertFalse((root / "store" / "bad_frame" / "index.json").exists())
+
+    def test_finalize_direct_call_rejects_missing_replay_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            missing = root / "missing.battleplan"
+            session = CollectorFrameSession(
+                game_id="missing_finalize",
+                store_root=root / "store",
+                replay_path=None,
+            )
+            recorder = mock.Mock()
+            recorder.finalize.return_value = str(missing)
+            session.recorder = recorder
+
+            with self.assertRaisesRegex(
+                    RuntimeError, "collector replay finalization failed"):
+                session.finalize()
+
+            self.assertIsNotNone(session.finalize_error)
+            self.assertFalse(missing.exists())
+
+    def test_record_frames_direct_call_propagates_finalize_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            session = CollectorFrameSession(
+                game_id="failed_record_frames_finalize",
+                store_root=root / "store",
+                replay_path=None,
+            )
+            recorder = mock.Mock()
+            recorder.finalize.side_effect = ValueError(
+                "temporary replay verification failed")
+            session.recorder = recorder
+
+            with self.assertRaisesRegex(
+                    RuntimeError, "temporary replay verification failed"):
+                session.record_frames([])
+
+            self.assertEqual(
+                session.finalize_error,
+                "temporary replay verification failed",
+            )
+            self.assertFalse(
+                Path(session.store.lock_path(session.game_id)).exists())
 
 
 def _write_json(path, data):

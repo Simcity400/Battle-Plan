@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(not(test))]
+use compact_contract::{parse_compact_record_header, RecordFramingError};
+
 pub const DOMAIN_ID: u16 = 47;
 pub const DOMAIN_NAME: &str = "characters_leaders_cabinet_live";
 
@@ -1460,35 +1463,45 @@ fn run_cli() -> Result<(), String> {
 
 #[cfg(not(test))]
 fn payload_from_input(bytes: &[u8]) -> Result<(&[u8], bool), String> {
-    if bytes.len() >= COMPACT_RECORD_HEADER_LEN && &bytes[0..4] == COMPACT_RECORD_MAGIC {
-        let version = read_u16(bytes, 4);
-        let header_len = read_u16(bytes, 6) as usize;
-        let domain_id = read_u16(bytes, 20);
-        let record_type = read_u16(bytes, 22);
-        let payload_len = read_u32(bytes, 24) as usize;
-        if version != COMPACT_RECORD_VERSION {
-            return Err(format!("unsupported compact record version {version}"));
+    if bytes.starts_with(COMPACT_RECORD_MAGIC) {
+        let header = parse_compact_record_header(bytes).map_err(|err| match err {
+            RecordFramingError::TruncatedHeader(_) | RecordFramingError::BadMagic => {
+                format!("invalid compact record header: {err}")
+            }
+            RecordFramingError::UnsupportedVersion(version) => {
+                format!("unsupported compact record version {version}")
+            }
+            RecordFramingError::UnsupportedHeaderLen(header_len) => {
+                format!("header_len {header_len} != {COMPACT_RECORD_HEADER_LEN}")
+            }
+            RecordFramingError::PayloadTooLarge(_) => {
+                format!("invalid compact record header: {err}")
+            }
+        })?;
+        if header.domain_id != DOMAIN_ID {
+            return Err(format!("domain_id {} != {DOMAIN_ID}", header.domain_id));
         }
-        if header_len != COMPACT_RECORD_HEADER_LEN {
+        if header.record_type != COMPACT_RECORD_TYPE_DOMAIN_DATA {
             return Err(format!(
-                "header_len {header_len} != {COMPACT_RECORD_HEADER_LEN}"
+                "record_type {} != {COMPACT_RECORD_TYPE_DOMAIN_DATA}",
+                header.record_type
             ));
         }
-        if domain_id != DOMAIN_ID {
-            return Err(format!("domain_id {domain_id} != {DOMAIN_ID}"));
-        }
-        if record_type != COMPACT_RECORD_TYPE_DOMAIN_DATA {
+        if bytes.len() != header.record_len() {
             return Err(format!(
-                "record_type {record_type} != {COMPACT_RECORD_TYPE_DOMAIN_DATA}"
-            ));
-        }
-        if bytes.len() != header_len + payload_len {
-            return Err(format!(
-                "record payload length {payload_len} plus header {header_len} != file bytes {}",
+                "record payload length {} plus header {COMPACT_RECORD_HEADER_LEN} != file bytes {}",
+                header.payload_len,
                 bytes.len()
             ));
         }
-        return Ok((&bytes[header_len..], true));
+        compact_contract::validate_compact_record_semantics(
+            header.domain_id,
+            header.record_type,
+            header.record_flags,
+            &bytes[COMPACT_RECORD_HEADER_LEN..],
+        )
+        .map_err(|error| format!("invalid compact record semantics: {error}"))?;
+        return Ok((&bytes[COMPACT_RECORD_HEADER_LEN..], true));
     }
     Ok((bytes, false))
 }

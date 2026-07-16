@@ -114,10 +114,10 @@ python extractor\native\lanes\supply_logistics_attrition_live\save_supply_oracle
 python extractor\native\lanes\supply_logistics_attrition_live\ccountry_supply_node_record_probe.py --pid 45880 --supply-json extractor\native\runs\supply_logistics_attrition_live_save_oracle_870ebf_20260701_v3\supply.json --out-dir extractor\native\runs\supply_logistics_attrition_live_ccountry_node_records_870ebf_20260701_v1
 python extractor\native\lanes\supply_logistics_attrition_live\foreign_homebase_pressure_record_probe.py --pid 45880 --supply-json extractor\native\runs\supply_logistics_attrition_live_save_oracle_870ebf_20260701_v3\supply.json --out-dir extractor\native\runs\supply_logistics_attrition_live_foreign_pressure_records_870ebf_20260701_v1
 python extractor\native\lanes\supply_logistics_attrition_live\hub_motorization_level_probe.py --pid 45880 --supply-json extractor\native\runs\supply_logistics_attrition_live_save_oracle_870ebf_20260701_v3\supply.json --out-dir extractor\native\runs\supply_logistics_attrition_live_hub_motorization_level_870ebf_20260701_v1
-cargo run --manifest-path extractor\native\lanes\supply_logistics_attrition_live\Cargo.toml --bin replay_pack_proof -- --payload extractor\native\runs\supply_logistics_attrition_live_870ebf_20260701_v3\domain44_payload.bin --out-dir extractor\native\runs\supply_logistics_attrition_live_replay_pack_870ebf_20260701_v1 --game-id supply44_v1
+cargo run --manifest-path extractor\native\lanes\supply_logistics_attrition_live\Cargo.toml --bin supply_logistics_attrition_replay_pack_proof -- --payload extractor\native\runs\supply_logistics_attrition_live_870ebf_20260701_v3\domain44_payload.bin --out-dir extractor\native\runs\supply_logistics_attrition_live_replay_pack_870ebf_20260701_v1 --game-id supply44_v1
 cargo run --manifest-path extractor\native\snapshot\Cargo.toml --bin pack_replay -- verify extractor\native\runs\supply_logistics_attrition_live_replay_pack_870ebf_20260701_v1\native_session.battleplan
 python extractor\native\lanes\supply_logistics_attrition_live\foreign_homebase_pressure_record_probe.py --pid 45880 --supply-json extractor\native\runs\supply_logistics_attrition_live_save_oracle_870ebf_20260701_v3\supply.json --out-dir extractor\native\runs\supply_logistics_attrition_live_foreign_pressure_records_870ebf_20260701_v2
-cargo run --manifest-path extractor\native\lanes\supply_logistics_attrition_live\Cargo.toml --bin replay_pack_proof -- --payload extractor\native\runs\supply_logistics_attrition_live_foreign_pressure_records_870ebf_20260701_v2\domain44_pressure_candidate_payload.bin --out-dir extractor\native\runs\supply_logistics_attrition_live_pressure_replay_pack_870ebf_20260701_v1 --game-id supply44_pressure_candidate_v1
+cargo run --manifest-path extractor\native\lanes\supply_logistics_attrition_live\Cargo.toml --bin supply_logistics_attrition_replay_pack_proof -- --payload extractor\native\runs\supply_logistics_attrition_live_foreign_pressure_records_870ebf_20260701_v2\domain44_pressure_candidate_payload.bin --out-dir extractor\native\runs\supply_logistics_attrition_live_pressure_replay_pack_870ebf_20260701_v1 --game-id supply44_pressure_candidate_v1
 cargo run --manifest-path extractor\native\snapshot\Cargo.toml --bin pack_replay -- verify extractor\native\runs\supply_logistics_attrition_live_pressure_replay_pack_870ebf_20260701_v1\native_session.battleplan
 ```
 
@@ -147,7 +147,9 @@ Current lane-local live proof:
 The lane-local replay pack proof wraps `domain44_payload.bin` in a compact `H4CR` stream,
 packs it into `.battleplan`, reopens the container, verifies it, and byte-compares the embedded
 stream. It validates CSupply `+0x10` rows through lane-local compact replay packing, but it is
-not a shared DLL hourly proof. The whole supply concept remains open:
+not a shared DLL hourly proof. Its manifest explicitly declines production-duration certification:
+the synthetic fixture has one canonically closed frame and therefore zero observed game-hour
+advancements. The whole supply concept remains open:
 exact per-province supply, attrition reason, hub motorization, convoy/logistics pressure,
 and CSupplySystem `+0x138` / `+0x150` arrays remain explicitly badged or rejected.
 

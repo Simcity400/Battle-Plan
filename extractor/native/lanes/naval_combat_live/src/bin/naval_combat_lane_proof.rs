@@ -3,10 +3,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use naval_combat_live_lane::{
-    build_capture_frame, build_transition_capture_frame, gate_stream, result_json, CombatSide,
-    CshipSnapshotRow, MemberBridgeRow, NavalCombatBodyBridgeRow, ValidatedCombatSnapshot,
+    build_capture_frame, build_transition_capture_frame, compact_record, encode_lifecycle_payload,
+    encode_member_payload, gate_stream, result_json, CaptureFrame, CombatSide, CshipSnapshotRow,
+    GateResult, MemberBridgeRow, NavalCombatBodyBridgeRow, ValidatedCombatSnapshot,
     CURRENT_870EBF_BUILD_SHA256, CURRENT_870EBF_CSHIP_ROUTE, DOMAIN_NAVAL_COMBAT_LIFECYCLE,
-    DOMAIN_NAVAL_COMBAT_MEMBERS, STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+    DOMAIN_NAVAL_COMBAT_MEMBERS, STATUS_DELTA_DATA, STATUS_LOCATION_CANDIDATE_UNVALIDATED,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -56,7 +57,7 @@ fn main() {
     updated_fixture.members[0].engagement_weight_raw = Some(1_250);
     let cships = [cship(1001)];
     let start =
-        match build_transition_capture_frame(&[], &[fixture.clone()], &cships, 100, 60787539, 7) {
+        match build_transition_capture_frame(&[], &[fixture.clone()], &cships, 1, 60787539, 7) {
             Ok(frame) => frame,
             Err(errors) => {
                 eprintln!("synthetic start fixture unexpectedly failed: {errors:?}");
@@ -67,7 +68,7 @@ fn main() {
         &[fixture.clone()],
         &[updated_fixture.clone()],
         &cships,
-        102,
+        4,
         60787540,
         17,
     ) {
@@ -78,16 +79,17 @@ fn main() {
         }
     };
     let end =
-        match build_transition_capture_frame(&[updated_fixture], &[], &cships, 104, 60787541, 29) {
+        match build_transition_capture_frame(&[updated_fixture], &[], &cships, 7, 60787541, 29) {
             Ok(frame) => frame,
             Err(errors) => {
                 eprintln!("synthetic end fixture unexpectedly failed: {errors:?}");
                 std::process::exit(1);
             }
         };
-    let mut compact_stream = start.compact_stream;
-    compact_stream.extend_from_slice(&update.compact_stream);
-    compact_stream.extend_from_slice(&end.compact_stream);
+    let mut compact_stream = Vec::new();
+    append_certified_frame(&mut compact_stream, 1, 60787539, 7, &start);
+    append_certified_frame(&mut compact_stream, 6, 60787540, 17, &update);
+    append_certified_frame(&mut compact_stream, 11, 60787541, 29, &end);
     let compact_path = out_dir.join("naval_combat_live_domain49_50_compact.bin");
     if let Err(err) = fs::write(&compact_path, &compact_stream) {
         eprintln!("write {} failed: {err}", compact_path.display());
@@ -119,10 +121,11 @@ fn main() {
     let empty_fixture_errors = build_capture_frame(&[], &cships, 200, 60787540, 1)
         .err()
         .unwrap_or_default();
+    let proof_ok = synthetic_proof_passes(&gate, &replay_verify, &empty_fixture_errors);
     let proof_json = format!(
         concat!(
             "{{\n",
-            "  \"status\": \"passed\",\n",
+            "  \"status\": {},\n",
             "  \"domains\": {{\"49\": \"naval_combat_lifecycle_live\", \"50\": \"naval_combat_members_live\"}},\n",
             "  \"domain_ids\": [{}, {}],\n",
             "  \"compact_path\": {},\n",
@@ -151,6 +154,7 @@ fn main() {
             "  \"empty_fixture_errors\": {}\n",
             "}}\n"
         ),
+        json_str(proof_status_label(proof_ok)),
         DOMAIN_NAVAL_COMBAT_LIFECYCLE,
         DOMAIN_NAVAL_COMBAT_MEMBERS,
         json_str(&compact_path.to_string_lossy()),
@@ -184,25 +188,7 @@ fn main() {
         std::process::exit(1);
     }
     println!("{proof_json}");
-    std::process::exit(
-        if gate.ok
-            && gate.summary.lifecycle_started_row_count > 0
-            && gate.summary.lifecycle_updated_row_count > 0
-            && gate.summary.lifecycle_ended_row_count > 0
-            && gate.summary.lifecycle_location_row_count == gate.summary.lifecycle_row_count
-            && gate.summary.lifecycle_region_row_count == gate.summary.lifecycle_row_count
-            && (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) == 0
-            && gate.summary.member_deleted_row_count > 0
-            && gate.summary.task_force_linked_member_count > 0
-            && gate.summary.fleet_linked_member_count > 0
-            && gate.summary.hull_telemetry_member_count > 0
-            && !empty_fixture_errors.is_empty()
-        {
-            0
-        } else {
-            1
-        },
-    );
+    std::process::exit(if proof_ok { 0 } else { 1 });
 }
 
 #[derive(Debug, Deserialize)]
@@ -295,9 +281,17 @@ fn run_fixture_json_proof(fixture_path: &PathBuf, out_dir: &PathBuf) -> Result<b
     .map_err(|errors| format!("fixture-json capture failed: {errors:?}"))?;
 
     let compact_path = out_dir.join("naval_combat_live_domain49_50_compact.bin");
-    fs::write(&compact_path, &frame.compact_stream)
+    let mut compact_stream = Vec::new();
+    append_certified_frame(
+        &mut compact_stream,
+        1,
+        input.game_hour_raw,
+        input.elapsed_wall_ms,
+        &frame,
+    );
+    fs::write(&compact_path, &compact_stream)
         .map_err(|err| format!("write {} failed: {err}", compact_path.display()))?;
-    let gate = gate_stream(&frame.compact_stream);
+    let gate = gate_stream(&compact_stream);
     let gate_json = result_json(&gate);
     let gate_path = out_dir.join("naval_combat_live_domain49_50_gate.json");
     fs::write(&gate_path, &gate_json)
@@ -306,7 +300,7 @@ fn run_fixture_json_proof(fixture_path: &PathBuf, out_dir: &PathBuf) -> Result<b
     let replay_path = out_dir.join("native_session.battleplan");
     let replay_verify = write_and_verify_replay(
         &replay_path,
-        &frame.compact_stream,
+        &compact_stream,
         "naval_combat_live_active_fixture_bridge",
         "lane-local-active-fixture-v1",
     )?;
@@ -371,6 +365,72 @@ fn run_fixture_json_proof(fixture_path: &PathBuf, out_dir: &PathBuf) -> Result<b
         serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
     );
     Ok(ok)
+}
+
+fn perf_payload(elapsed_wall_ms: u64, rows: usize, status_flags: u32) -> Vec<u8> {
+    let rows = rows.min(u32::MAX as usize) as u32;
+    let mut payload = Vec::with_capacity(compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN);
+    payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&rows.to_le_bytes());
+    payload.extend_from_slice(&rows.to_le_bytes());
+    payload.extend_from_slice(&rows.to_le_bytes());
+    payload.extend_from_slice(&rows.to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload
+}
+
+fn append_certified_frame(
+    stream: &mut Vec<u8>,
+    sequence_start: u64,
+    game_hour_raw: i32,
+    elapsed_wall_ms: u64,
+    frame: &CaptureFrame,
+) {
+    stream.extend_from_slice(&compact_record(
+        sequence_start,
+        game_hour_raw,
+        DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(
+            elapsed_wall_ms,
+            frame.lifecycle_rows.len(),
+            frame.status_flags,
+        ),
+    ));
+    stream.extend_from_slice(&compact_record(
+        sequence_start + 1,
+        game_hour_raw,
+        DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &encode_lifecycle_payload(elapsed_wall_ms, frame.status_flags, &frame.lifecycle_rows),
+    ));
+    stream.extend_from_slice(&compact_record(
+        sequence_start + 2,
+        game_hour_raw,
+        DOMAIN_NAVAL_COMBAT_MEMBERS,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(elapsed_wall_ms, frame.member_rows.len(), STATUS_DELTA_DATA),
+    ));
+    stream.extend_from_slice(&compact_record(
+        sequence_start + 3,
+        game_hour_raw,
+        DOMAIN_NAVAL_COMBAT_MEMBERS,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &encode_member_payload(elapsed_wall_ms, STATUS_DELTA_DATA, &frame.member_rows),
+    ));
+    let mut frame_end = [0u8; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN];
+    frame_end[0..8].copy_from_slice(&elapsed_wall_ms.to_le_bytes());
+    frame_end[16..20].copy_from_slice(&2u32.to_le_bytes());
+    frame_end[20..24].copy_from_slice(&2u32.to_le_bytes());
+    stream.extend_from_slice(&compact_record(
+        sequence_start + 4,
+        game_hour_raw,
+        compact_contract::COMPACT_DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end,
+    ));
 }
 
 impl FixtureProofInput {
@@ -539,6 +599,35 @@ struct ReplayVerifyReport {
     collector_compact_stream_bytes: usize,
 }
 
+fn synthetic_proof_passes(
+    gate: &GateResult,
+    replay_verify: &ReplayVerifyReport,
+    empty_fixture_errors: &[String],
+) -> bool {
+    gate.ok
+        && replay_verify.verified
+        && replay_verify.byte_match
+        && gate.summary.lifecycle_started_row_count > 0
+        && gate.summary.lifecycle_updated_row_count > 0
+        && gate.summary.lifecycle_ended_row_count > 0
+        && gate.summary.lifecycle_location_row_count == gate.summary.lifecycle_row_count
+        && gate.summary.lifecycle_region_row_count == gate.summary.lifecycle_row_count
+        && (gate.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED) == 0
+        && gate.summary.member_deleted_row_count > 0
+        && gate.summary.task_force_linked_member_count > 0
+        && gate.summary.fleet_linked_member_count > 0
+        && gate.summary.hull_telemetry_member_count > 0
+        && !empty_fixture_errors.is_empty()
+}
+
+fn proof_status_label(proof_ok: bool) -> &'static str {
+    if proof_ok {
+        "passed"
+    } else {
+        "failed"
+    }
+}
+
 fn write_and_verify_replay(
     replay_path: &PathBuf,
     compact_stream: &[u8],
@@ -694,6 +783,25 @@ fn json_str(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn synthetic_status_is_failed_when_gate_predicate_fails() {
+        let gate = GateResult {
+            ok: false,
+            errors: vec!["adversarial gate failure".to_string()],
+            summary: naval_combat_live_lane::GateSummary::default(),
+        };
+        let replay = ReplayVerifyReport {
+            verified: true,
+            byte_match: true,
+            collector_compact_stream_bytes: 1,
+        };
+        let empty_fixture_errors = vec!["empty rejected".to_string()];
+
+        let proof_ok = synthetic_proof_passes(&gate, &replay, &empty_fixture_errors);
+        assert!(!proof_ok);
+        assert_eq!(proof_status_label(proof_ok), "failed");
+    }
 
     #[test]
     fn fixture_source_requires_expected_build_sha() {

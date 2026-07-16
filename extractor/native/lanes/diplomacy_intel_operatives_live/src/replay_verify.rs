@@ -1,4 +1,4 @@
-use crate::decoder_gate::decode_domain53_record;
+use crate::stream_gate::verify_domain53_stream;
 use crate::DOMAIN_ID;
 use serde_json::json;
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
@@ -6,12 +6,14 @@ use std::fs;
 use std::path::Path;
 
 pub const REPLAY_SCHEMA_VERSION: &str = "native_collector_session_v1";
-pub const GAME_ID: &str = "domain53_lane_local";
-pub const STREAM_PATH: &str = "payload/domain53_lane_local/collector_raw/collector_stream.bin";
-pub const MANIFEST_PATH: &str = "payload/domain53_lane_local/recorder/native_session_manifest.json";
+pub const GAME_ID: &str = "domain53_lane_local_synthetic";
+pub const STREAM_PATH: &str =
+    "payload/domain53_lane_local_synthetic/collector_raw/collector_stream.bin";
+pub const MANIFEST_PATH: &str =
+    "payload/domain53_lane_local_synthetic/recorder/native_session_manifest.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReplayVerification {
+pub struct ReplayContainerIntegrity {
     pub replay_bytes: usize,
     pub stream_bytes: usize,
     pub collector_stream_entries: usize,
@@ -19,59 +21,63 @@ pub struct ReplayVerification {
 }
 
 pub fn manifest_json(stream_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let gate = decode_domain53_record(0, stream_bytes);
+    let gate = verify_domain53_stream(stream_bytes);
     if !gate.parse_errors.is_empty() {
         return Err(format!(
             "domain53 compact stream failed gate: {:?}",
             gate.parse_errors
         ));
     }
-    let data_units_total = gate.data_units_total.clone();
+    let synthetic_closed_hours = gate.closed_game_hours.clone();
     serde_json::to_vec_pretty(&json!({
-        "session_id": "domain53_lane_local",
+        "session_id": "domain53_lane_local_synthetic",
         "replay_game_id": GAME_ID,
+        "artifact_kind": "lane_local_synthetic_fixture_stream",
+        "production_certifying": false,
+        "source_capture_verified": false,
         "stream_format": "compact",
         "stream_role": "collector_compact_stream",
         "stream_file": "collector_stream.bin",
-        "scheduled_domains": ["diplomacy_intel_operatives_live"],
-        "extraction_perf_gate": true,
+        "synthetic_scheduled_domains": ["diplomacy_intel_operatives_live"],
+        "extraction_perf_gate": false,
         "parse_errors": [],
-        "ordering_errors": [],
-        "game_hours_advanced": 0,
-        "skipped_game_hours": 0,
-        "unique_game_hour_count": 1,
+        "source_ordering_verified": false,
+        "synthetic_stream_ordering_validated": true,
+        "synthetic_closed_game_hour_count": synthetic_closed_hours.len(),
+        "synthetic_closed_game_hours": synthetic_closed_hours,
         "hourly_requirement": {
             "required": false,
             "met": null,
-            "problems": ["lane-local single-record replay container; shared DLL coordinator slot not owned"]
+            "problems": ["synthetic fixture bytes do not certify production hourly capture"]
         },
         "compact_stream": {
             "record_magic": "H4CR",
             "record_header_len": 32,
             "record_version": 1,
             "decodable": true,
-            "ordered": true,
+            "source_ordered": false,
+            "synthetic_ordering_validated": true,
             "total_bytes": stream_bytes.len(),
-            "max_record_len": stream_bytes.len(),
+            "max_record_len": gate.max_record_len,
             "record_count": gate.record_count,
-            "domain_data_record_count": gate.record_count,
-            "frame_end_record_count": 0,
+            "domain_perf_record_count": gate.domain_perf_record_count,
+            "domain_data_record_count": gate.domain_data_record_count,
+            "frame_end_record_count": gate.frame_end_record_count,
             "status_flags_or": gate.status_flags_or,
-            "worker_panic_seen": false,
-            "bridge_unavailable_seen": false,
-            "source_unavailable_seen": false,
-            "partial_data_seen": false,
-            "expected_domains": ["diplomacy_intel_operatives_live"],
-            "domains_seen": ["diplomacy_intel_operatives_live"],
+            "worker_panic_seen": gate.status_flags_or & compact_contract::COMPACT_STATUS_WORKER_PANIC != 0,
+            "bridge_unavailable_seen": gate.status_flags_or & compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE != 0,
+            "source_unavailable_seen": gate.status_flags_or & compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE != 0,
+            "partial_data_seen": gate.status_flags_or & compact_contract::COMPACT_STATUS_PARTIAL_DATA != 0,
+            "synthetic_expected_domains": ["diplomacy_intel_operatives_live"],
+            "synthetic_domains_seen": ["diplomacy_intel_operatives_live"],
             "per_domain": {
                 "diplomacy_intel_operatives_live": {
                     "domain_id": DOMAIN_ID,
-                    "data_records": gate.record_count,
-                    "payload_bytes": gate.payload_bytes_total,
+                    "perf_records": gate.domain_perf_record_count,
+                    "data_records": gate.domain_data_record_count,
                     "status_flags_or": gate.status_flags_or,
                     "data_rows_total": gate.data_rows_total,
                     "data_changed_rows_total": gate.data_changed_rows_total,
-                    "data_units_total": data_units_total,
                     "omitted_unresolved_fields": [
                         "war_lifecycle_detail",
                         "operation_detail",
@@ -81,7 +87,7 @@ pub fn manifest_json(stream_bytes: &[u8]) -> Result<Vec<u8>, String> {
                 }
             }
         },
-        "dll_slot_blocker": "shared integration slot not owned by diplomacy_intel_operatives_live"
+        "proof_scope": "lane-local synthetic PERF/DATA/FRAME_END container-integrity fixture; not source capture or production certification"
     }))
     .map_err(|err| err.to_string())
 }
@@ -138,10 +144,10 @@ pub fn pack_replay(stream_bytes: &[u8], manifest_bytes: &[u8]) -> Result<Vec<u8>
     pack(GAME_ID, &entries, &identity, true).map_err(|err| err.to_string())
 }
 
-pub fn verify_replay_bytes(
+pub fn verify_replay_container_integrity(
     replay_bytes: &[u8],
     expected_stream: &[u8],
-) -> Result<ReplayVerification, String> {
+) -> Result<ReplayContainerIntegrity, String> {
     let container = Container::from_bytes(replay_bytes.to_vec(), &ExpectedIdentity::default())
         .map_err(|err| err.to_string())?;
     container.verify_all().map_err(|err| err.to_string())?;
@@ -165,7 +171,7 @@ pub fn verify_replay_bytes(
     if stored_stream != expected_stream {
         return Err("collector_compact_stream bytes differ after replay pack".to_string());
     }
-    Ok(ReplayVerification {
+    Ok(ReplayContainerIntegrity {
         replay_bytes: replay_bytes.len(),
         stream_bytes: stored_stream.len(),
         collector_stream_entries: stream_entries.len(),
@@ -173,15 +179,15 @@ pub fn verify_replay_bytes(
     })
 }
 
-pub fn write_replay_artifacts(
+pub fn write_noncertifying_replay_artifacts(
     stream_path: &Path,
     manifest_path: &Path,
     replay_path: &Path,
     stream_bytes: &[u8],
-) -> Result<ReplayVerification, String> {
+) -> Result<ReplayContainerIntegrity, String> {
     let manifest = manifest_json(stream_bytes)?;
     let replay = pack_replay(stream_bytes, &manifest)?;
-    let verification = verify_replay_bytes(&replay, stream_bytes)?;
+    let verification = verify_replay_container_integrity(&replay, stream_bytes)?;
     if let Some(parent) = stream_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
@@ -200,24 +206,54 @@ pub fn write_replay_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decoder_gate::encode_domain53_data_record;
     use crate::extractor::{
         build_domain53_payload, proof_fixture_rows, CURRENT_VALIDATED_SOURCE_PROOFS,
     };
+    use crate::stream_gate::encode_domain53_proof_stream;
 
     #[test]
     fn packs_and_verifies_domain53_replay_container() {
         let extraction =
             build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
         assert!(extraction.ok(), "{:?}", extraction.errors);
-        let stream = encode_domain53_data_record(1, 43_800_024, &extraction.payload);
+        let stream = encode_domain53_proof_stream(43_800_024, &extraction.payload).unwrap();
         let manifest = manifest_json(&stream).unwrap();
         let replay = pack_replay(&stream, &manifest).unwrap();
 
-        let verified = verify_replay_bytes(&replay, &stream).unwrap();
+        let verified = verify_replay_container_integrity(&replay, &stream).unwrap();
 
         assert_eq!(verified.stream_bytes, stream.len());
         assert_eq!(verified.collector_stream_entries, 1);
         assert_eq!(verified.recorder_manifest_entries, 1);
+    }
+
+    #[test]
+    fn manifest_refuses_a_bare_data_record_without_frame_closure() {
+        let extraction =
+            build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let stream =
+            crate::decoder_gate::encode_domain53_data_record(1, 43_800_024, &extraction.payload);
+        let error = manifest_json(&stream).unwrap_err();
+        assert!(error.contains("FRAME_END"), "{error}");
+    }
+
+    #[test]
+    fn manifest_is_explicitly_synthetic_and_non_certifying() {
+        let extraction =
+            build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let stream = encode_domain53_proof_stream(43_800_024, &extraction.payload).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_json(&stream).unwrap()).unwrap();
+
+        assert_eq!(manifest["production_certifying"], false);
+        assert_eq!(manifest["source_capture_verified"], false);
+        assert_eq!(manifest["extraction_perf_gate"], false);
+        assert_eq!(manifest["source_ordering_verified"], false);
+        assert_eq!(manifest["synthetic_stream_ordering_validated"], true);
+        assert!(manifest.get("unique_game_hour_count").is_none());
+        assert!(manifest.get("game_hours_advanced").is_none());
+        assert!(manifest.get("skipped_game_hours").is_none());
+        assert_eq!(manifest["hourly_requirement"]["required"], false);
+        assert!(manifest["hourly_requirement"]["met"].is_null());
     }
 }

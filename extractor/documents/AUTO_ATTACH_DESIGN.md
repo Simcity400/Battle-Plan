@@ -60,10 +60,14 @@ forever to learn nothing changed. The hybrid bounds work and failure:
   ([snapshot](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot),
   [enumeration](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-process32first)).
 
-Use a blocking WMI enumerator on a dedicated thread with a cancellation handle.
-Subscribe to `Win32_ProcessStartTrace` and `Win32_ProcessStopTrace`, filtering
-`hoi4.exe` case-insensitively in-process. Do not use intrinsic
-`__InstanceCreationEvent WITHIN N`, which is provider polling.
+Use blocking WMI enumerators on a dedicated thread with a cancellation handle.
+Subscribe separately to `__InstanceCreationEvent WITHIN 1` and
+`__InstanceDeletionEvent WITHIN 1`, restricted to `TargetInstance ISA
+'Win32_Process'`, then filter `hoi4.exe` case-insensitively in-process. The
+extrinsic `Win32_ProcessTrace` provider is not a standard-user contract: it
+returns `WBEM_E_ACCESS_DENIED` on the supported host. The intrinsic event path
+has a one-second provider sampling interval, still below the two-second degraded
+reconciliation bound, and its live gate must prove both a real start and stop.
 
 Exact startup order: open journal/singleton; establish both subscriptions;
 enumerate a complete snapshot; drain queued events; reduce both sources through one

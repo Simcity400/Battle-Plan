@@ -383,8 +383,12 @@ class _RecorderWorker:
                     break
             self._set_recorder_diagnostics()
             if self.n_captured:
-                self._finalize_recording()
-                self._patch_recording_diagnostics(force=True)
+                if not self._finalize_recording():
+                    raise RuntimeError(
+                        "replay finalization failed: %s"
+                        % (self._loop.last_finalize_error or "unknown error"))
+                self._patch_recording_diagnostics(
+                    force=True, fail_closed=True)
         finally:
             lock.release()
 
@@ -448,9 +452,10 @@ class _RecorderWorker:
                 if cadence.get("status") == "ok":
                     cadence["status"] = "coverage_warning"
 
-    def _patch_recording_diagnostics(self, *, force=False):
+    def _patch_recording_diagnostics(self, *, force=False,
+                                     fail_closed=False):
         if not self._diagnostics:
-            return
+            return True
         skipped = 0
         try:
             skipped = int(self._diagnostics.get("cadence", {}).get(
@@ -473,7 +478,7 @@ class _RecorderWorker:
                 and warnings <= self._last_patched_coverage_warnings
                 and timing_warnings <=
                 self._last_patched_timing_warning_count):
-            return
+            return True
         try:
             from live_capture.recorder.manifest_diagnostics import (
                 patch_manifest_diagnostics,
@@ -482,8 +487,19 @@ class _RecorderWorker:
                 self._last_patched_skipped_hours = skipped
                 self._last_patched_coverage_warnings = warnings
                 self._last_patched_timing_warning_count = timing_warnings
-        except Exception:
-            pass
+                return True
+            error = "recording diagnostics were not published"
+            if not fail_closed:
+                # Before the first periodic finalize, no container exists yet;
+                # the patcher deliberately returns False so the worker retries
+                # later.  That expected state is not a publication failure.
+                return False
+        except Exception as exc:
+            error = "recording diagnostics publication failed: %s" % exc
+        self._loop.last_finalize_error = error
+        if fail_closed:
+            raise RuntimeError(error)
+        return False
 
     def _note_live_clock_observation(self, date_info, observed_at):
         trusted = bool(getattr(date_info, "trusted", False))

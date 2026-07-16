@@ -202,9 +202,7 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                 &read_character_raw_fields(mem, roots, root.character_addr),
             ) {
                 RootFailure::Dead => stats.dead_roots = stats.dead_roots.saturating_add(1),
-                RootFailure::Torn => {
-                    stats.rejected_roots = stats.rejected_roots.saturating_add(1)
-                }
+                RootFailure::Torn => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
             },
         }
     }
@@ -226,9 +224,7 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                 &read_unit_leader(mem, roots, root, &trait_tokens),
             ) {
                 RootFailure::Dead => stats.dead_roots = stats.dead_roots.saturating_add(1),
-                RootFailure::Torn => {
-                    stats.rejected_roots = stats.rejected_roots.saturating_add(1)
-                }
+                RootFailure::Torn => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
             },
         }
     }
@@ -311,9 +307,7 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                 &read_advisor_raw_fields(mem, roots, root.advisor_addr),
             ) {
                 RootFailure::Dead => stats.dead_roots = stats.dead_roots.saturating_add(1),
-                RootFailure::Torn => {
-                    stats.rejected_roots = stats.rejected_roots.saturating_add(1)
-                }
+                RootFailure::Torn => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
             },
         }
     }

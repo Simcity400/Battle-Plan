@@ -38,10 +38,16 @@ Not owned here:
   lifecycle detail, intel-map percentages, and incoming action queue.
 - `src/decoder_gate.rs`: lane-owned Rust recorder gate for compact domain `53`
   `H4CR` domain-data records.
-- `src/replay_verify.rs`: lane-local `.battleplan` pack/verify path using
-  `snapshot::pack` and `snapshot::Container`; this verifies the domain 53
-  compact stream bytes are preserved in a replay container without claiming a
-  live shared-DLL speed-five run.
+- `src/stream_gate.rs`: lane-local certifying parser for complete domain `53`
+  streams. It requires sequence-one contiguous records, canonical record flags
+  and types, exact PERF/DATA authority, FRAME_END counts bound to observed
+  records, nonfatal status, consecutive closed hours, and final FRAME_END.
+- `src/replay_verify.rs`: explicitly non-certifying synthetic `.battleplan`
+  pack/integrity path using `snapshot::pack` and `snapshot::Container`. It
+  verifies that a generated closed stream is structurally valid and byte-
+  identical after packing. Its manifest deliberately does not claim source
+  ordering, unique live hours, cadence, a production extraction performance
+  gate, or live shared-DLL capture.
 - `domain44_compact.rs`: reserved production compact domain `53` schema, encoder,
   decoder, and gate tests. The file name is historical from the provisional
   package; the packet constant is `DOMAIN_ID_PROPOSED = 53`, and the

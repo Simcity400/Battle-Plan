@@ -1,15 +1,18 @@
 //! Fail-closed framing and byte-I/O seam for the recorder/collector control pipe.
 //!
 //! This module deliberately owns no pipe names, Windows handles, injection hooks,
-//! reconnect policy, timers, or consumer state machines.  Live wiring supplies a
-//! [`ControlIo`] implementation and an unpredictable, per-attach
-//! [`SessionCapability`].
+//! reconnect policy, timer scheduling, or consumer state machines. Existing
+//! offline wiring can supply [`ControlIo`]; live wiring must supply
+//! [`DeadlineControlIo`], absolute deadlines, cancellation, and an unpredictable,
+//! per-attach [`SessionCapability`].
 //! Consequently, no decoded control message can call or request DLL injection.
 
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
+use std::time::{Duration, Instant};
 
 pub const CONTROL_MAGIC: &[u8; 4] = b"H4CT";
 pub const CONTROL_VERSION: u16 = 1;
@@ -27,6 +30,14 @@ const RESERVED_OFFSET: usize = 44;
 pub struct SessionId([u8; 16]);
 
 impl SessionId {
+    pub fn from_bytes(bytes: [u8; 16]) -> Result<Self, ControlError> {
+        if bytes == [0; 16] {
+            Err(ControlError::InvalidSessionId)
+        } else {
+            Ok(Self(bytes))
+        }
+    }
+
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
@@ -42,6 +53,157 @@ pub struct SessionCapability {
     session_id: SessionId,
 }
 
+/// Absolute monotonic deadline shared by every partial transfer in one control
+/// operation.  A backend must not replace this with a fresh relative timeout.
+#[derive(Clone, Copy, Debug)]
+pub struct ControlDeadline(Instant);
+
+impl ControlDeadline {
+    pub fn at(instant: Instant) -> Self {
+        Self(instant)
+    }
+
+    pub fn after(duration: Duration) -> Result<Self, ControlError> {
+        Instant::now()
+            .checked_add(duration)
+            .map(Self)
+            .ok_or(ControlError::DeadlineOverflow)
+    }
+
+    pub fn instant(self) -> Instant {
+        self.0
+    }
+
+    pub fn is_expired(self) -> bool {
+        Instant::now() >= self.0
+    }
+
+    pub fn remaining(self) -> Option<Duration> {
+        self.0.checked_duration_since(Instant::now())
+    }
+}
+
+/// Cooperative cancellation shared by the session driver and the exact
+/// operation adapter.  A Windows backend is expected to translate this into
+/// `CancelIoEx(handle, &overlapped)` and reap or quarantine that operation.
+#[derive(Clone, Debug, Default)]
+pub struct ControlCancellation(Arc<AtomicBool>);
+
+impl ControlCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Closed capability set admitted for H4CT v1 consumers.  These bits are a
+/// local handshake/admission fact; they do not change the v1 envelope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControlCapabilities(u32);
+
+impl ControlCapabilities {
+    pub const HEARTBEAT: u32 = 1 << 0;
+    pub const FIRST_COMPACT_ACK: u32 = 1 << 1;
+    pub const ROLLOVER: u32 = 1 << 2;
+    pub const STAGE_B: u32 = 1 << 3;
+    pub const TRANSPORT_STATUS: u32 = 1 << 4;
+    pub const CAMPAIGN_IDENTITY: u32 = 1 << 5;
+    pub const KNOWN_MASK: u32 = Self::HEARTBEAT
+        | Self::FIRST_COMPACT_ACK
+        | Self::ROLLOVER
+        | Self::STAGE_B
+        | Self::TRANSPORT_STATUS
+        | Self::CAMPAIGN_IDENTITY;
+
+    pub fn from_bits(bits: u32) -> Result<Self, ControlError> {
+        let unknown = bits & !Self::KNOWN_MASK;
+        if unknown != 0 {
+            return Err(ControlError::UnknownCapabilities(unknown));
+        }
+        Ok(Self(bits))
+    }
+
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    pub const fn contains(self, required: Self) -> bool {
+        self.0 & required.0 == required.0
+    }
+
+    pub const fn permits(self, kind: MessageKind) -> bool {
+        let required = kind.required_capability_bits();
+        self.0 & required == required
+    }
+}
+
+/// Process fact returned by the live pipe peer-validation adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControlPeerIdentity {
+    pub pid: u32,
+    pub creation_filetime: u64,
+}
+
+/// Move-only admission token proving that process identity and the closed
+/// capability set were validated before channel construction.
+pub struct ValidatedSessionCapability {
+    session: SessionCapability,
+    peer: ControlPeerIdentity,
+    capabilities: ControlCapabilities,
+}
+
+impl ValidatedSessionCapability {
+    pub fn admit(
+        session: SessionCapability,
+        expected_peer: ControlPeerIdentity,
+        observed_peer: ControlPeerIdentity,
+        required: ControlCapabilities,
+        observed: ControlCapabilities,
+    ) -> Result<Self, ControlError> {
+        if expected_peer.pid == 0 || expected_peer.creation_filetime == 0 {
+            return Err(ControlError::InvalidPeerIdentity);
+        }
+        if observed_peer.pid != expected_peer.pid {
+            return Err(ControlError::PeerPidMismatch {
+                expected: expected_peer.pid,
+                actual: observed_peer.pid,
+            });
+        }
+        if observed_peer.creation_filetime != expected_peer.creation_filetime {
+            return Err(ControlError::PeerCreationTimeMismatch {
+                expected: expected_peer.creation_filetime,
+                actual: observed_peer.creation_filetime,
+            });
+        }
+        if !observed.contains(required) {
+            return Err(ControlError::MissingCapabilities {
+                required: required.bits(),
+                observed: observed.bits(),
+            });
+        }
+        Ok(Self {
+            session,
+            peer: observed_peer,
+            capabilities: observed,
+        })
+    }
+
+    pub const fn peer(&self) -> ControlPeerIdentity {
+        self.peer
+    }
+
+    pub const fn capabilities(&self) -> ControlCapabilities {
+        self.capabilities
+    }
+}
+
 impl SessionCapability {
     /// Permanently claims a CSPRNG-minted id for one channel in this process.
     pub fn claim(session_id: [u8; 16]) -> Result<Self, ControlError> {
@@ -49,9 +211,13 @@ impl SessionCapability {
             return Err(ControlError::InvalidSessionId);
         }
 
-        let mut claimed = claimed_session_ids()
-            .lock()
-            .map_err(|_| ControlError::SessionClaimRegistryPoisoned)?;
+        let mut claimed = match claimed_session_ids().try_lock() {
+            Ok(claimed) => claimed,
+            Err(TryLockError::WouldBlock) => return Err(ControlError::SessionClaimRegistryBusy),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(ControlError::SessionClaimRegistryPoisoned)
+            }
+        };
         if !claimed.insert(session_id) {
             return Err(ControlError::SessionAlreadyClaimed(SessionId(session_id)));
         }
@@ -63,6 +229,35 @@ impl SessionCapability {
 
     pub const fn session_id(&self) -> SessionId {
         self.session_id
+    }
+}
+
+/// Internal claim seam used by recorder-host composition.
+///
+/// Production preserves the public nonblocking `try_lock` behavior exactly.
+/// Unit tests share one process-global registry while running concurrently, so
+/// their composition paths receive a bounded retry instead of randomly
+/// interpreting another test's short critical section as an attach failure.
+pub(crate) fn claim_session_capability(
+    session_id: [u8; 16],
+) -> Result<SessionCapability, ControlError> {
+    #[cfg(not(test))]
+    {
+        SessionCapability::claim(session_id)
+    }
+    #[cfg(test)]
+    {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or(ControlError::DeadlineOverflow)?;
+        loop {
+            match SessionCapability::claim(session_id) {
+                Err(ControlError::SessionClaimRegistryBusy) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                result => return result,
+            }
+        }
     }
 }
 
@@ -104,6 +299,10 @@ pub enum MessageKind {
     DeclarationTableAck = 11,
     EpochSealReady = 12,
     EpochSealAck = 13,
+    SinkSetupFailure = 14,
+    SinkTerminalFailure = 15,
+    IdentityFailure = 16,
+    IdentityFailureAck = 17,
 }
 
 impl MessageKind {
@@ -115,13 +314,41 @@ impl MessageKind {
             | Self::RolloverAck
             | Self::EpochTokenOffer
             | Self::DeclarationTableAck
-            | Self::EpochSealAck => EndpointRole::Recorder,
+            | Self::EpochSealAck
+            | Self::IdentityFailureAck => EndpointRole::Recorder,
             Self::CollectorHello
             | Self::HeartbeatProof
             | Self::RolloverPropose
             | Self::EpochTokenEcho
             | Self::DeclarationTableReady
-            | Self::EpochSealReady => EndpointRole::Collector,
+            | Self::EpochSealReady
+            | Self::SinkSetupFailure
+            | Self::SinkTerminalFailure
+            | Self::IdentityFailure => EndpointRole::Collector,
+        }
+    }
+
+    /// Capability required before this message may cross the typed transport
+    /// boundary. Hello is the admission exchange itself; every consumer kind
+    /// is closed over exactly one capability.
+    pub const fn required_capability_bits(self) -> u32 {
+        match self {
+            Self::RecorderHello | Self::CollectorHello => 0,
+            Self::HeartbeatChallenge | Self::HeartbeatProof => ControlCapabilities::HEARTBEAT,
+            Self::FirstCompactFrameAck => ControlCapabilities::FIRST_COMPACT_ACK,
+            Self::RolloverPropose | Self::RolloverAck => ControlCapabilities::ROLLOVER,
+            Self::EpochTokenOffer
+            | Self::EpochTokenEcho
+            | Self::DeclarationTableReady
+            | Self::DeclarationTableAck
+            | Self::EpochSealReady
+            | Self::EpochSealAck => ControlCapabilities::STAGE_B,
+            Self::SinkSetupFailure | Self::SinkTerminalFailure => {
+                ControlCapabilities::TRANSPORT_STATUS
+            }
+            Self::IdentityFailure | Self::IdentityFailureAck => {
+                ControlCapabilities::CAMPAIGN_IDENTITY
+            }
         }
     }
 
@@ -140,6 +367,10 @@ impl MessageKind {
             11 => Ok(Self::DeclarationTableAck),
             12 => Ok(Self::EpochSealReady),
             13 => Ok(Self::EpochSealAck),
+            14 => Ok(Self::SinkSetupFailure),
+            15 => Ok(Self::SinkTerminalFailure),
+            16 => Ok(Self::IdentityFailure),
+            17 => Ok(Self::IdentityFailureAck),
             other => Err(ControlError::UnknownMessageKind(other)),
         }
     }
@@ -163,6 +394,26 @@ pub trait ControlIo {
     fn recv_exact(&mut self, bytes: &mut [u8]) -> io::Result<()>;
 }
 
+/// Production-facing byte seam.  Implementations must use the same absolute
+/// deadline for every partial transfer and must give cancellation ownership of
+/// the exact in-flight operation.  Returning `Ok` after either condition has
+/// become observable is still rejected by [`DeadlineControlChannel`].
+pub trait DeadlineControlIo {
+    fn send_all_until(
+        &mut self,
+        bytes: &[u8],
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> io::Result<()>;
+
+    fn recv_exact_until(
+        &mut self,
+        bytes: &mut [u8],
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> io::Result<()>;
+}
+
 #[derive(Debug)]
 pub enum ControlError {
     Poisoned,
@@ -176,7 +427,35 @@ pub enum ControlError {
     PayloadTooLarge(u32),
     InvalidSessionId,
     SessionAlreadyClaimed(SessionId),
+    SessionClaimRegistryBusy,
     SessionClaimRegistryPoisoned,
+    DeadlineOverflow,
+    DeadlineExpired,
+    Cancelled,
+    InvalidPeerIdentity,
+    PeerPidMismatch {
+        expected: u32,
+        actual: u32,
+    },
+    PeerCreationTimeMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    UnknownCapabilities(u32),
+    MissingCapabilities {
+        required: u32,
+        observed: u32,
+    },
+    UnexpectedCapabilities {
+        required: u32,
+        observed: u32,
+    },
+    InvalidCapabilityAdmissionState,
+    CapabilityDenied {
+        kind: MessageKind,
+        required: u32,
+        admitted: u32,
+    },
     NonZeroReserved(u32),
     SessionMismatch {
         expected: SessionId,
@@ -222,9 +501,46 @@ impl fmt::Display for ControlError {
             Self::SessionAlreadyClaimed(session_id) => {
                 write!(f, "control session id {session_id:?} was already claimed")
             }
+            Self::SessionClaimRegistryBusy => {
+                write!(f, "control session claim registry is busy")
+            }
             Self::SessionClaimRegistryPoisoned => {
                 write!(f, "control session claim registry is poisoned")
             }
+            Self::DeadlineOverflow => write!(f, "control deadline overflow"),
+            Self::DeadlineExpired => write!(f, "control operation deadline expired"),
+            Self::Cancelled => write!(f, "control operation was cancelled"),
+            Self::InvalidPeerIdentity => write!(f, "invalid expected control peer identity"),
+            Self::PeerPidMismatch { expected, actual } => {
+                write!(f, "control peer PID mismatch: {actual} != {expected}")
+            }
+            Self::PeerCreationTimeMismatch { expected, actual } => write!(
+                f,
+                "control peer creation FILETIME mismatch: {actual} != {expected}"
+            ),
+            Self::UnknownCapabilities(bits) => {
+                write!(f, "unknown control capabilities {bits:#010x}")
+            }
+            Self::MissingCapabilities { required, observed } => write!(
+                f,
+                "missing control capabilities: required {required:#010x}, observed {observed:#010x}"
+            ),
+            Self::UnexpectedCapabilities { required, observed } => write!(
+                f,
+                "control hello capabilities must equal {required:#010x}, observed {observed:#010x}"
+            ),
+            Self::InvalidCapabilityAdmissionState => write!(
+                f,
+                "decoded hello capabilities were admitted outside the first-hello boundary"
+            ),
+            Self::CapabilityDenied {
+                kind,
+                required,
+                admitted,
+            } => write!(
+                f,
+                "control message {kind:?} requires capability {required:#010x}, admitted {admitted:#010x}"
+            ),
             Self::NonZeroReserved(value) => {
                 write!(f, "nonzero reserved control field {value:#010x}")
             }
@@ -346,6 +662,221 @@ impl<I: ControlIo> ControlChannel<I> {
             Err(ControlError::Poisoned)
         } else {
             Ok(())
+        }
+    }
+
+    fn fail<T>(&mut self, error: ControlError) -> Result<T, ControlError> {
+        self.poisoned = true;
+        Err(error)
+    }
+}
+
+/// Deadline-bearing H4CT endpoint for live adapters. Construction requires a
+/// move-only peer-admission token, so a raw pipe connection cannot dispatch a
+/// control frame before PID, creation time, and capabilities are checked.
+pub struct DeadlineControlChannel<I> {
+    io: I,
+    role: EndpointRole,
+    session_id: SessionId,
+    peer: ControlPeerIdentity,
+    capabilities: ControlCapabilities,
+    next_send_sequence: u64,
+    next_recv_sequence: u64,
+    poisoned: bool,
+    hello_capabilities_admitted: bool,
+}
+
+impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
+    pub fn new(io: I, role: EndpointRole, admission: ValidatedSessionCapability) -> Self {
+        Self {
+            io,
+            role,
+            session_id: admission.session.session_id,
+            peer: admission.peer,
+            capabilities: admission.capabilities,
+            next_send_sequence: 0,
+            next_recv_sequence: 0,
+            poisoned: false,
+            hello_capabilities_admitted: admission.capabilities.bits() != 0,
+        }
+    }
+
+    pub fn peer(&self) -> ControlPeerIdentity {
+        self.peer
+    }
+
+    pub fn capabilities(&self) -> ControlCapabilities {
+        self.capabilities
+    }
+
+    /// Complete the capability half of peer admission from a decoded hello.
+    ///
+    /// The live H4CT accept path can prove PID and creation time before it reads
+    /// any bytes, but the collector's capability claim is inside its first
+    /// typed hello.  Such a channel is constructed with an empty capability
+    /// set, may receive only `CollectorHello`, and calls this method exactly
+    /// once after the hello codec has validated the complete payload.  No raw
+    /// or caller-invented capability tuple can be substituted later.
+    pub fn admit_decoded_hello_capabilities(
+        &mut self,
+        required: ControlCapabilities,
+        observed: ControlCapabilities,
+    ) -> Result<(), ControlError> {
+        if self.poisoned {
+            return Err(ControlError::Poisoned);
+        }
+        if self.hello_capabilities_admitted
+            || self.capabilities.bits() != 0
+            || self.next_recv_sequence != 1
+            || self.next_send_sequence != 0
+        {
+            return self.fail(ControlError::InvalidCapabilityAdmissionState);
+        }
+        if observed.bits() != required.bits() {
+            return self.fail(ControlError::UnexpectedCapabilities {
+                required: required.bits(),
+                observed: observed.bits(),
+            });
+        }
+        self.capabilities = required;
+        self.hello_capabilities_admitted = true;
+        Ok(())
+    }
+
+    pub fn send_until(
+        &mut self,
+        kind: MessageKind,
+        payload: &[u8],
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<(), ControlError> {
+        self.preflight(deadline, cancellation)?;
+        self.assert_capability(kind)?;
+        if kind.sender() != self.role {
+            return self.fail(ControlError::WrongDirection {
+                role: self.role,
+                kind,
+            });
+        }
+        if self.next_send_sequence == u64::MAX {
+            return self.fail(ControlError::SequenceExhausted);
+        }
+        let frame = match encode_frame(self.session_id, self.next_send_sequence, kind, payload) {
+            Ok(frame) => frame,
+            Err(error) => return self.fail(error),
+        };
+        let result = self.io.send_all_until(&frame, deadline, cancellation);
+        self.finish_io(result, deadline, cancellation)?;
+        self.next_send_sequence += 1;
+        Ok(())
+    }
+
+    pub fn recv_until(
+        &mut self,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<ControlFrame, ControlError> {
+        self.preflight(deadline, cancellation)?;
+        if self.next_recv_sequence == u64::MAX {
+            return self.fail(ControlError::SequenceExhausted);
+        }
+
+        let mut header = [0u8; CONTROL_HEADER_LEN];
+        let result = self
+            .io
+            .recv_exact_until(&mut header, deadline, cancellation);
+        self.finish_io(result, deadline, cancellation)?;
+        let payload_len = match parse_header(&header) {
+            Ok(parsed) => parsed.payload_len,
+            Err(error) => return self.fail(error),
+        };
+        let mut wire = Vec::with_capacity(CONTROL_HEADER_LEN + payload_len);
+        wire.extend_from_slice(&header);
+        wire.resize(CONTROL_HEADER_LEN + payload_len, 0);
+        let result =
+            self.io
+                .recv_exact_until(&mut wire[CONTROL_HEADER_LEN..], deadline, cancellation);
+        self.finish_io(result, deadline, cancellation)?;
+        let frame = match decode_frame(&wire, self.session_id, self.next_recv_sequence) {
+            Ok(frame) => frame,
+            Err(error) => return self.fail(error),
+        };
+        self.assert_capability(frame.kind)?;
+        if frame.kind.sender() != self.role.opposite() {
+            return self.fail(ControlError::WrongDirection {
+                role: self.role,
+                kind: frame.kind,
+            });
+        }
+        self.next_recv_sequence += 1;
+        Ok(frame)
+    }
+
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Consumer-level codec/state failures share the same terminal session
+    /// result as transport failures. There is no transparent reconnect.
+    pub fn poison(&mut self) {
+        self.poisoned = true;
+    }
+
+    /// Assert the closed message-to-capability mapping before state-machine
+    /// mutation or wire dispatch. Failure permanently poisons the session.
+    pub fn assert_capability(&mut self, kind: MessageKind) -> Result<(), ControlError> {
+        let required = kind.required_capability_bits();
+        if self.capabilities.permits(kind) {
+            Ok(())
+        } else {
+            self.fail(ControlError::CapabilityDenied {
+                kind,
+                required,
+                admitted: self.capabilities.bits(),
+            })
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn io(&self) -> &I {
+        &self.io
+    }
+
+    fn preflight(
+        &mut self,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<(), ControlError> {
+        if self.poisoned {
+            return Err(ControlError::Poisoned);
+        }
+        if cancellation.is_cancelled() {
+            return self.fail(ControlError::Cancelled);
+        }
+        if deadline.is_expired() {
+            return self.fail(ControlError::DeadlineExpired);
+        }
+        Ok(())
+    }
+
+    fn finish_io(
+        &mut self,
+        result: io::Result<()>,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<(), ControlError> {
+        if cancellation.is_cancelled() {
+            return self.fail(ControlError::Cancelled);
+        }
+        if deadline.is_expired() {
+            return self.fail(ControlError::DeadlineExpired);
+        }
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                self.fail(ControlError::DeadlineExpired)
+            }
+            Err(error) => self.fail(map_io_error(error)),
         }
     }
 
@@ -582,6 +1113,46 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct DeadlineMemoryIo {
+        inbound: VecDeque<u8>,
+        outbound: Vec<u8>,
+        cancel_during_send: Option<ControlCancellation>,
+        delay_during_send: Option<Duration>,
+    }
+
+    impl DeadlineControlIo for DeadlineMemoryIo {
+        fn send_all_until(
+            &mut self,
+            bytes: &[u8],
+            _deadline: ControlDeadline,
+            _cancellation: &ControlCancellation,
+        ) -> io::Result<()> {
+            if let Some(delay) = self.delay_during_send {
+                std::thread::sleep(delay);
+            }
+            self.outbound.extend_from_slice(bytes);
+            if let Some(cancellation) = &self.cancel_during_send {
+                cancellation.cancel();
+            }
+            Ok(())
+        }
+
+        fn recv_exact_until(
+            &mut self,
+            bytes: &mut [u8],
+            _deadline: ControlDeadline,
+            _cancellation: &ControlCancellation,
+        ) -> io::Result<()> {
+            for slot in bytes {
+                *slot = self.inbound.pop_front().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "fake truncated input")
+                })?;
+            }
+            Ok(())
+        }
+    }
+
     const SESSION: SessionId = SessionId([0x5a; 16]);
 
     fn fresh_session_bytes() -> [u8; 16] {
@@ -592,9 +1163,33 @@ mod tests {
     }
 
     fn fresh_session() -> (SessionCapability, SessionId) {
-        let capability = SessionCapability::claim(fresh_session_bytes()).unwrap();
+        let capability = claim_session_for_test(fresh_session_bytes()).unwrap();
         let session_id = capability.session_id();
         (capability, session_id)
+    }
+
+    fn claim_session_for_test(bytes: [u8; 16]) -> Result<SessionCapability, ControlError> {
+        claim_session_capability(bytes)
+    }
+
+    fn admitted_session(
+        required_bits: u32,
+        observed_bits: u32,
+    ) -> (ValidatedSessionCapability, SessionId) {
+        let (session, session_id) = fresh_session();
+        let identity = ControlPeerIdentity {
+            pid: 42,
+            creation_filetime: 9_001,
+        };
+        let admission = ValidatedSessionCapability::admit(
+            session,
+            identity,
+            identity,
+            ControlCapabilities::from_bits(required_bits).unwrap(),
+            ControlCapabilities::from_bits(observed_bits).unwrap(),
+        )
+        .unwrap();
+        (admission, session_id)
     }
 
     #[test]
@@ -815,7 +1410,7 @@ mod tests {
     #[test]
     fn accepted_sequence_cannot_be_replayed_by_reconstructing_same_session() {
         let session_bytes = fresh_session_bytes();
-        let session = SessionCapability::claim(session_bytes).unwrap();
+        let session = claim_session_for_test(session_bytes).unwrap();
         let session_id = session.session_id();
         let replay = encode_frame(session_id, 0, MessageKind::CollectorHello, b"").unwrap();
 
@@ -828,8 +1423,368 @@ mod tests {
         drop(channel);
 
         assert!(matches!(
-            SessionCapability::claim(session_bytes),
+            claim_session_for_test(session_bytes),
             Err(ControlError::SessionAlreadyClaimed(claimed)) if claimed == session_id
         ));
+    }
+
+    #[test]
+    fn session_claim_never_blocks_a_deadline_path_on_registry_contention() {
+        let guard = claimed_session_ids().lock().unwrap();
+        let result = SessionCapability::claim(fresh_session_bytes());
+        assert!(matches!(
+            result,
+            Err(ControlError::SessionClaimRegistryBusy)
+        ));
+        drop(guard);
+    }
+
+    #[test]
+    fn peer_admission_rejects_pid_creation_time_and_capability_faults() {
+        let expected = ControlPeerIdentity {
+            pid: 100,
+            creation_filetime: 200,
+        };
+        let heartbeat = ControlCapabilities::from_bits(ControlCapabilities::HEARTBEAT).unwrap();
+
+        let (session, _) = fresh_session();
+        assert!(matches!(
+            ValidatedSessionCapability::admit(
+                session,
+                expected,
+                ControlPeerIdentity {
+                    pid: 101,
+                    ..expected
+                },
+                heartbeat,
+                heartbeat,
+            ),
+            Err(ControlError::PeerPidMismatch { .. })
+        ));
+
+        let (session, _) = fresh_session();
+        assert!(matches!(
+            ValidatedSessionCapability::admit(
+                session,
+                expected,
+                ControlPeerIdentity {
+                    creation_filetime: 201,
+                    ..expected
+                },
+                heartbeat,
+                heartbeat,
+            ),
+            Err(ControlError::PeerCreationTimeMismatch { .. })
+        ));
+
+        let (session, _) = fresh_session();
+        let none = ControlCapabilities::from_bits(0).unwrap();
+        assert!(matches!(
+            ValidatedSessionCapability::admit(session, expected, expected, heartbeat, none,),
+            Err(ControlError::MissingCapabilities { .. })
+        ));
+        assert!(matches!(
+            ControlCapabilities::from_bits(1 << 31),
+            Err(ControlError::UnknownCapabilities(_))
+        ));
+    }
+
+    #[test]
+    fn deadline_channel_rejects_pre_cancel_without_touching_io() {
+        let (admission, _) = admitted_session(
+            ControlCapabilities::HEARTBEAT,
+            ControlCapabilities::HEARTBEAT,
+        );
+        let mut channel = DeadlineControlChannel::new(
+            DeadlineMemoryIo::default(),
+            EndpointRole::Recorder,
+            admission,
+        );
+        let cancellation = ControlCancellation::new();
+        cancellation.cancel();
+        let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            channel.send_until(
+                MessageKind::HeartbeatChallenge,
+                b"x",
+                deadline,
+                &cancellation
+            ),
+            Err(ControlError::Cancelled)
+        ));
+        assert!(channel.io().outbound.is_empty());
+        assert!(channel.is_poisoned());
+    }
+
+    #[test]
+    fn cancellation_observed_after_ambiguous_write_is_terminal() {
+        let cancellation = ControlCancellation::new();
+        let io = DeadlineMemoryIo {
+            cancel_during_send: Some(cancellation.clone()),
+            ..DeadlineMemoryIo::default()
+        };
+        let (admission, _) = admitted_session(
+            ControlCapabilities::HEARTBEAT,
+            ControlCapabilities::HEARTBEAT,
+        );
+        let mut channel = DeadlineControlChannel::new(io, EndpointRole::Recorder, admission);
+        let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            channel.send_until(
+                MessageKind::HeartbeatChallenge,
+                b"x",
+                deadline,
+                &cancellation
+            ),
+            Err(ControlError::Cancelled)
+        ));
+        assert!(!channel.io().outbound.is_empty());
+        assert!(channel.is_poisoned());
+    }
+
+    #[test]
+    fn completion_first_observed_after_absolute_deadline_is_rejected() {
+        let io = DeadlineMemoryIo {
+            delay_during_send: Some(Duration::from_millis(10)),
+            ..DeadlineMemoryIo::default()
+        };
+        let (admission, _) = admitted_session(
+            ControlCapabilities::HEARTBEAT,
+            ControlCapabilities::HEARTBEAT,
+        );
+        let mut channel = DeadlineControlChannel::new(io, EndpointRole::Recorder, admission);
+        let cancellation = ControlCancellation::new();
+        let deadline = ControlDeadline::after(Duration::from_millis(1)).unwrap();
+        assert!(matches!(
+            channel.send_until(
+                MessageKind::HeartbeatChallenge,
+                b"x",
+                deadline,
+                &cancellation
+            ),
+            Err(ControlError::DeadlineExpired)
+        ));
+        assert!(channel.is_poisoned());
+    }
+
+    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 15] {
+        [
+            (
+                MessageKind::HeartbeatChallenge,
+                EndpointRole::Recorder,
+                ControlCapabilities::HEARTBEAT,
+            ),
+            (
+                MessageKind::HeartbeatProof,
+                EndpointRole::Collector,
+                ControlCapabilities::HEARTBEAT,
+            ),
+            (
+                MessageKind::FirstCompactFrameAck,
+                EndpointRole::Recorder,
+                ControlCapabilities::FIRST_COMPACT_ACK,
+            ),
+            (
+                MessageKind::RolloverPropose,
+                EndpointRole::Collector,
+                ControlCapabilities::ROLLOVER,
+            ),
+            (
+                MessageKind::RolloverAck,
+                EndpointRole::Recorder,
+                ControlCapabilities::ROLLOVER,
+            ),
+            (
+                MessageKind::EpochTokenOffer,
+                EndpointRole::Recorder,
+                ControlCapabilities::STAGE_B,
+            ),
+            (
+                MessageKind::EpochTokenEcho,
+                EndpointRole::Collector,
+                ControlCapabilities::STAGE_B,
+            ),
+            (
+                MessageKind::DeclarationTableReady,
+                EndpointRole::Collector,
+                ControlCapabilities::STAGE_B,
+            ),
+            (
+                MessageKind::DeclarationTableAck,
+                EndpointRole::Recorder,
+                ControlCapabilities::STAGE_B,
+            ),
+            (
+                MessageKind::EpochSealReady,
+                EndpointRole::Collector,
+                ControlCapabilities::STAGE_B,
+            ),
+            (
+                MessageKind::EpochSealAck,
+                EndpointRole::Recorder,
+                ControlCapabilities::STAGE_B,
+            ),
+            (
+                MessageKind::SinkSetupFailure,
+                EndpointRole::Collector,
+                ControlCapabilities::TRANSPORT_STATUS,
+            ),
+            (
+                MessageKind::SinkTerminalFailure,
+                EndpointRole::Collector,
+                ControlCapabilities::TRANSPORT_STATUS,
+            ),
+            (
+                MessageKind::IdentityFailure,
+                EndpointRole::Collector,
+                ControlCapabilities::CAMPAIGN_IDENTITY,
+            ),
+            (
+                MessageKind::IdentityFailureAck,
+                EndpointRole::Recorder,
+                ControlCapabilities::CAMPAIGN_IDENTITY,
+            ),
+        ]
+    }
+
+    #[test]
+    fn v1_message_registry_is_contiguous_and_identity_ids_do_not_collide() {
+        let registry = [
+            MessageKind::RecorderHello,
+            MessageKind::CollectorHello,
+            MessageKind::HeartbeatChallenge,
+            MessageKind::HeartbeatProof,
+            MessageKind::FirstCompactFrameAck,
+            MessageKind::RolloverPropose,
+            MessageKind::RolloverAck,
+            MessageKind::EpochTokenOffer,
+            MessageKind::EpochTokenEcho,
+            MessageKind::DeclarationTableReady,
+            MessageKind::DeclarationTableAck,
+            MessageKind::EpochSealReady,
+            MessageKind::EpochSealAck,
+            MessageKind::SinkSetupFailure,
+            MessageKind::SinkTerminalFailure,
+            MessageKind::IdentityFailure,
+            MessageKind::IdentityFailureAck,
+        ];
+        for (wire, kind) in (1u16..=17).zip(registry) {
+            assert_eq!(kind as u16, wire);
+            assert_eq!(MessageKind::from_wire(wire).unwrap(), kind);
+        }
+        assert_eq!(MessageKind::SinkSetupFailure as u16, 14);
+        assert_eq!(MessageKind::SinkTerminalFailure as u16, 15);
+        assert_eq!(MessageKind::IdentityFailure as u16, 16);
+        assert_eq!(MessageKind::IdentityFailureAck as u16, 17);
+    }
+
+    fn wrong_capability(required: u32) -> u32 {
+        match required {
+            ControlCapabilities::HEARTBEAT => ControlCapabilities::ROLLOVER,
+            ControlCapabilities::FIRST_COMPACT_ACK => ControlCapabilities::HEARTBEAT,
+            ControlCapabilities::ROLLOVER => ControlCapabilities::STAGE_B,
+            ControlCapabilities::STAGE_B => ControlCapabilities::FIRST_COMPACT_ACK,
+            ControlCapabilities::TRANSPORT_STATUS => ControlCapabilities::HEARTBEAT,
+            ControlCapabilities::CAMPAIGN_IDENTITY => ControlCapabilities::TRANSPORT_STATUS,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn every_consumer_kind_denies_zero_and_wrong_capability_on_send() {
+        let cancellation = ControlCancellation::new();
+        for (kind, sender, required) in capability_kinds() {
+            for admitted in [0, wrong_capability(required)] {
+                let (admission, _) = admitted_session(0, admitted);
+                let mut channel =
+                    DeadlineControlChannel::new(DeadlineMemoryIo::default(), sender, admission);
+                let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+                assert!(matches!(
+                    channel.send_until(kind, b"", deadline, &cancellation),
+                    Err(ControlError::CapabilityDenied {
+                        kind: denied,
+                        required: denied_required,
+                        admitted: denied_admitted,
+                    }) if denied == kind
+                        && denied_required == required
+                        && denied_admitted == admitted
+                ));
+                assert!(channel.io().outbound.is_empty());
+                assert!(channel.is_poisoned());
+            }
+        }
+    }
+
+    #[test]
+    fn every_consumer_kind_denies_zero_and_wrong_capability_on_receive() {
+        let cancellation = ControlCancellation::new();
+        for (kind, sender, required) in capability_kinds() {
+            for admitted in [0, wrong_capability(required)] {
+                let (session, session_id) = fresh_session();
+                let wire = encode_frame(session_id, 0, kind, b"").unwrap();
+                let peer = ControlPeerIdentity {
+                    pid: 42,
+                    creation_filetime: 9_001,
+                };
+                let admission = ValidatedSessionCapability::admit(
+                    session,
+                    peer,
+                    peer,
+                    ControlCapabilities::from_bits(0).unwrap(),
+                    ControlCapabilities::from_bits(admitted).unwrap(),
+                )
+                .unwrap();
+                let mut channel = DeadlineControlChannel::new(
+                    DeadlineMemoryIo {
+                        inbound: wire.into(),
+                        ..DeadlineMemoryIo::default()
+                    },
+                    sender.opposite(),
+                    admission,
+                );
+                let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+                assert!(matches!(
+                    channel.recv_until(deadline, &cancellation),
+                    Err(ControlError::CapabilityDenied {
+                        kind: denied,
+                        required: denied_required,
+                        admitted: denied_admitted,
+                    }) if denied == kind
+                        && denied_required == required
+                        && denied_admitted == admitted
+                ));
+                assert!(channel.is_poisoned());
+            }
+        }
+    }
+
+    #[test]
+    fn exact_capability_allows_each_kind_and_hello_needs_none() {
+        let cancellation = ControlCancellation::new();
+        for (kind, sender, required) in capability_kinds() {
+            let (admission, _) = admitted_session(required, required);
+            let mut channel =
+                DeadlineControlChannel::new(DeadlineMemoryIo::default(), sender, admission);
+            let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+            channel
+                .send_until(kind, b"", deadline, &cancellation)
+                .unwrap();
+            assert!(!channel.is_poisoned());
+        }
+
+        let (admission, _) = admitted_session(0, 0);
+        let mut channel = DeadlineControlChannel::new(
+            DeadlineMemoryIo::default(),
+            EndpointRole::Recorder,
+            admission,
+        );
+        channel
+            .send_until(
+                MessageKind::RecorderHello,
+                b"",
+                ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                &cancellation,
+            )
+            .unwrap();
     }
 }

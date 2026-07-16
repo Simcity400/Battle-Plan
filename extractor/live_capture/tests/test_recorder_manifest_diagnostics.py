@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.normpath(os.path.join(_HERE, os.pardir, os.pardir))
@@ -260,6 +261,28 @@ class TestRecorderManifestDiagnostics(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "manual/paused"):
             patch_manifest_diagnostics(self.out, diagnostics)
 
+    def test_rejected_diagnostics_candidate_preserves_prior_container(self):
+        self._write_one_snapshot_container()
+        prior = self._read_bytes()
+        diagnostics = self._one_snapshot_diagnostics()
+
+        real_verify = rw._verify_container
+
+        def reject_candidate(path):
+            if os.fspath(path).endswith(".tmp"):
+                raise ValueError("diagnostics candidate rejection")
+            return real_verify(path)
+
+        with mock.patch.object(rw, "_verify_container",
+                               side_effect=reject_candidate):
+            with self.assertRaisesRegex(ValueError, "candidate rejection"):
+                patch_manifest_diagnostics(self.out, diagnostics)
+
+        self.assertEqual(self._read_bytes(), prior)
+        self.assertTrue(rw._verify_container(self.out))
+        self.assertNotIn("recording_diagnostics", self._read_manifest())
+        self.assertFalse(os.path.exists(self.out + ".tmp"))
+
     def _write_one_snapshot_container(self):
         self._write_container(["1936.1.1.0"])
 
@@ -281,6 +304,33 @@ class TestRecorderManifestDiagnostics(unittest.TestCase):
             path = store.write_snapshot(snap, allow_unknown_hour=False)
             rec.on_snapshot_written(path)
         rec.finalize()
+
+    def _one_snapshot_diagnostics(self):
+        h0 = schema.date_to_hour_index("1936.1.1.0")
+        return {"cadence": {
+            "mode": "ingame_hour_dedup_v1",
+            "target_step_hours": 1,
+            "status": "ok",
+            "observations": 1,
+            "trusted_observations": 1,
+            "untrusted_observations": 0,
+            "captures": 1,
+            "duplicate_observations": 0,
+            "skipped_hours": 0,
+            "skip_events": 0,
+            "rollback_observations": 0,
+            "startup_untrusted_observations": 0,
+            "last_observed_hour": h0,
+            "last_captured_hour": h0,
+            "last_capture_reason": "first_hour",
+            "manual_once": False,
+            "skip_ranges": [],
+            "coverage_warnings": [],
+        }}
+
+    def _read_bytes(self):
+        with open(self.out, "rb") as fh:
+            return fh.read()
 
     def _read_manifest(self):
         with open(self.out, "rb") as fh:

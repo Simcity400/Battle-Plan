@@ -79,6 +79,7 @@ def parse_focus_defs(layers, loc) -> dict:
     trees: dict[str, dict] = {}
     focuses: dict[str, dict] = {}
     shared: dict[str, dict] = {}
+    joint: dict[str, dict] = {}
     collisions = []
     ordered = R.ordered_files(layers, "common/national_focus", (".txt",))
     for rel, abspath in ordered:
@@ -118,16 +119,20 @@ def parse_focus_defs(layers, loc) -> dict:
                                           if kk.lower() == "shared_focus" and isinstance(vv, str)],
                     "source_file": rel,
                 }
-            elif kl == "shared_focus" and isinstance(v, Node):
+            elif kl in ("shared_focus", "joint_focus") and isinstance(v, Node):
                 rec = parse_focus(v, loc, rel)
                 if rec:
-                    shared[rec["id"]] = rec
+                    if kl == "shared_focus":
+                        shared[rec["id"]] = rec
+                    else:
+                        joint[rec["id"]] = rec
                     focuses[rec["id"]] = rec
     return {
         "meta": {
             "tree_count": len(trees),
             "focus_count": len(focuses),
             "shared_focus_count": len(shared),
+            "joint_focus_count": len(joint),
             "files_parsed": len(ordered),
             "id_collisions_last_wins": collisions,
         },

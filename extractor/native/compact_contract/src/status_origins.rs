@@ -164,10 +164,8 @@ const ATOMIC_ZERO: AtomicU64 = AtomicU64::new(0);
 /// flag, or a fresh flag being consumed by an older batch's drain, leaving
 /// the next drain to report counted sample-recordings with no sample. A
 /// single swapped word makes (count, flag) inseparable.
-static ORIGIN_PACKED: [AtomicU64; STATUS_ORIGIN_ID_COUNT] =
-    [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
-static ORIGIN_SAMPLES: [AtomicU64; STATUS_ORIGIN_ID_COUNT] =
-    [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
+static ORIGIN_PACKED: [AtomicU64; STATUS_ORIGIN_ID_COUNT] = [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
+static ORIGIN_SAMPLES: [AtomicU64; STATUS_ORIGIN_ID_COUNT] = [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
 
 const SAMPLE_FLAG: u64 = 1 << 63;
 const COUNT_MASK: u64 = SAMPLE_FLAG - 1;
@@ -339,8 +337,10 @@ mod tests {
         // passes the uniqueness test, permanently mislabeling two causes in
         // every manifest. Pin the FULL id -> name registry mechanically.
         let expected: [(usize, &str); STATUS_ORIGIN_ID_COUNT] = [
-            (SO_D45_PARTIAL_TARGETED_TIMED_STRUCTURAL,
-             "so_d45_partial_targeted_timed_structural"),
+            (
+                SO_D45_PARTIAL_TARGETED_TIMED_STRUCTURAL,
+                "so_d45_partial_targeted_timed_structural",
+            ),
             (SO_D48_PARTIAL_INHERITED, "so_d48_partial_inherited"),
             (SO_D48_PARTIAL_ROOTS_ERR, "so_d48_partial_roots_err"),
             (SO_D48_PARTIAL_HARD_OR_GATE, "so_d48_partial_hard_or_gate"),
@@ -356,20 +356,33 @@ mod tests {
             (SO_D53_SOURCE_UNAVAILABLE, "so_d53_source_unavailable"),
             (SO_D53_PARTIAL_INHERITED, "so_d53_partial_inherited"),
             (SO_D53_PARTIAL_ROW_SKIPPED, "so_d53_partial_row_skipped"),
-            (SO_D53_PARTIAL_SHADOW_MISMATCH, "so_d53_partial_shadow_mismatch"),
+            (
+                SO_D53_PARTIAL_SHADOW_MISMATCH,
+                "so_d53_partial_shadow_mismatch",
+            ),
             (SO_D53_WORKER_PANIC, "so_d53_worker_panic"),
             (SO_D54_PARTIAL_INHERITED, "so_d54_partial_inherited"),
             (SO_D54_PARTIAL_ARMY_ORDERS, "so_d54_partial_army_orders"),
             (SO_D54_PARTIAL_OOB_COMMAND, "so_d54_partial_oob_command"),
             (SO_D54_HARD_DEPENDENCY, "so_d54_hard_dependency"),
             (SO_D54_PARTIAL_SKIPPED_ROWS, "so_d54_partial_skipped_rows"),
-            (SO_D65_SOURCE_EMPTY_NO_WITNESS, "so_d65_source_empty_no_witness"),
-            (SO_D65_PARTIAL_DROPPED_AMBIGUOUS,
-             "so_d65_partial_dropped_ambiguous"),
-            (SO_D55_TRANSITION_BASELINE_RESET,
-             "so_d55_transition_baseline_reset"),
+            (
+                SO_D65_SOURCE_EMPTY_NO_WITNESS,
+                "so_d65_source_empty_no_witness",
+            ),
+            (
+                SO_D65_PARTIAL_DROPPED_AMBIGUOUS,
+                "so_d65_partial_dropped_ambiguous",
+            ),
+            (
+                SO_D55_TRANSITION_BASELINE_RESET,
+                "so_d55_transition_baseline_reset",
+            ),
             (SO_FRAME_CONTROL_INVALID, "so_frame_control_invalid"),
-            (SO_D43_SOURCE_EMPTY_WARM_KNOWN, "so_d43_source_empty_warm_known"),
+            (
+                SO_D43_SOURCE_EMPTY_WARM_KNOWN,
+                "so_d43_source_empty_warm_known",
+            ),
             (SO_D43_SOURCE_EMPTY_COLD, "so_d43_source_empty_cold"),
             (SO_D53_POSTBUILD_GATE, "so_d53_postbuild_gate"),
             (SO_D48_WORKER_PANIC, "so_d48_worker_panic"),
@@ -377,20 +390,34 @@ mod tests {
             (SO_D54_WORKER_PANIC, "so_d54_worker_panic"),
             (SO_D65_SOURCE_NO_SCALAR, "so_d65_source_no_scalar"),
             (SO_D65_SOURCE_VTABLE_RVA, "so_d65_source_vtable_rva"),
-            (SO_D48_LANE_FAILED_COUNTRY_ROOTS,
-             "so_d48_lane_failed_country_roots"),
-            (SO_D48_LANE_FAILED_STATE_BUILDING_ROOTS,
-             "so_d48_lane_failed_state_building_roots"),
-            (SO_D48_LANE_FAILED_STATE_RESOURCE_ROOTS,
-             "so_d48_lane_failed_state_resource_roots"),
-            (SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS,
-             "so_d48_lane_failed_province_building_roots"),
-            (SO_D48_LANE_SKIPPED_CONSTRUCTION_ROWS,
-             "so_d48_lane_skipped_construction_rows"),
-            (SO_D48_LANE_SKIPPED_BUILDING_ROWS,
-             "so_d48_lane_skipped_building_rows"),
-            (SO_D48_LANE_SKIPPED_RESOURCE_ROWS,
-             "so_d48_lane_skipped_resource_rows"),
+            (
+                SO_D48_LANE_FAILED_COUNTRY_ROOTS,
+                "so_d48_lane_failed_country_roots",
+            ),
+            (
+                SO_D48_LANE_FAILED_STATE_BUILDING_ROOTS,
+                "so_d48_lane_failed_state_building_roots",
+            ),
+            (
+                SO_D48_LANE_FAILED_STATE_RESOURCE_ROOTS,
+                "so_d48_lane_failed_state_resource_roots",
+            ),
+            (
+                SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS,
+                "so_d48_lane_failed_province_building_roots",
+            ),
+            (
+                SO_D48_LANE_SKIPPED_CONSTRUCTION_ROWS,
+                "so_d48_lane_skipped_construction_rows",
+            ),
+            (
+                SO_D48_LANE_SKIPPED_BUILDING_ROWS,
+                "so_d48_lane_skipped_building_rows",
+            ),
+            (
+                SO_D48_LANE_SKIPPED_RESOURCE_ROWS,
+                "so_d48_lane_skipped_resource_rows",
+            ),
         ];
         for (id, name) in expected {
             assert_eq!(

@@ -31,6 +31,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 import resolver as R  # noqa: E402
+import source_inventory_layers as SIL  # noqa: E402
 import parse_localisation  # noqa: E402
 import parse_focus_def  # noqa: E402
 import parse_world_defs  # noqa: E402
@@ -38,6 +39,7 @@ import parse_catalogs  # noqa: E402
 import parse_characters  # noqa: E402
 import parse_idea_tech_loc  # noqa: E402
 import parse_decisions  # noqa: E402
+from static_artifact_common import mods_from_arg  # noqa: E402
 from paradox_parser import Node  # noqa: E402
 
 REPO_ROOT = _HERE.parent.parent
@@ -567,11 +569,36 @@ def build_coverage_report(layers, loc_catalog_keys: dict[str, Any]) -> dict[str,
     }
 
 
-def build_catalog(vanilla: str | None, mods: list[str] | None) -> dict[str, Any]:
-    layers = R.build_layers(vanilla=vanilla, mods=mods)
+def build_catalog(
+    vanilla: str | None,
+    mods: list[str] | None,
+    userdata: str | Path | None = None,
+    strict_mods: bool = False,
+    source_inventory: Path | None = None,
+) -> dict[str, Any]:
+    layers = R.build_layers(
+        vanilla=vanilla, mods=mods, userdata=userdata, strict_mods=strict_mods
+    )
+    layers, source_namespace_proof = SIL.definition_layers(layers, source_inventory)
     loc_out = parse_localisation.parse_localisation(layers)
     coverage = build_coverage_report(layers, loc_out["keys"])
     resolved_joins = build_resolved_joins(layers, loc_out)
+    source_files: dict[str, list[dict[str, Any]]] = {}
+    for label, subdir, extensions in (
+        ("common_files", "common", (".txt",)),
+        ("history_files", "history", (".txt",)),
+        ("event_files", "events", (".txt",)),
+        ("localisation_files", "localisation/english", (".yml",)),
+    ):
+        effective = R.effective_files(layers, subdir, extensions)
+        source_files[label] = [
+            {
+                "relpath": rel,
+                "bytes": path.stat().st_size,
+                "sha256": sha256_bytes(path.read_bytes()),
+            }
+            for rel, path in sorted(effective.items())
+        ]
 
     catalog = {
         "schema": "static_localisation_join_r3.static_artifact.v1",
@@ -598,7 +625,9 @@ def build_catalog(vanilla: str | None, mods: list[str] | None) -> dict[str, Any]
             {"label": ly.label, "root": redact_path(ly.root), "replace_path": list(ly.replace_paths)}
             for ly in layers
         ],
+        "source_namespace_proof": source_namespace_proof,
         "meta": loc_out["meta"],
+        "source_files": source_files,
         "coverage": coverage,
         # N4/E11: consumable id -> display-name join tables (additive; the
         # recorder hashes the whole file and reads only schema/layers, and
@@ -692,12 +721,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--vanilla", default=None, help="the game install dir (else BATTLE_PLAN_VANILLA env).")
     ap.add_argument("--mods", default=None, help="comma-separated .mod tokens (else active_modset.json).")
+    ap.add_argument("--userdata", default=None, help="explicit the game user-data directory for launcher/mod state.")
+    ap.add_argument("--strict-mods", action="store_true", help="fail if any explicit mod layer is skipped.")
+    ap.add_argument("--source-inventory", type=Path, default=None)
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--skip-pack", action="store_true")
     args = ap.parse_args()
-    mods = args.mods.split(",") if args.mods else None
+    mods = mods_from_arg(args.mods)
 
-    catalog = build_catalog(args.vanilla, mods)
+    catalog = build_catalog(
+        args.vanilla,
+        mods,
+        args.userdata,
+        getattr(args, "strict_mods", False),
+        args.source_inventory,
+    )
     paths = write_store(args.out_dir, catalog)
 
     joins = catalog["resolved_joins"]["counts"]

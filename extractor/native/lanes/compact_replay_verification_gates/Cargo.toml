@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+compact_contract = { path = "../../compact_contract" }
+compact_stream = { path = "../../compact_stream" }
+characters_leaders_cabinet_live = { path = "../characters_leaders_cabinet_live" }
+diplomacy_intel_operatives_live = { path = "../diplomacy_intel_operatives_live" }
+recorder_host = { path = "../../recorder_host" }
 serde_json = "1"
 snapshot = { path = "../../snapshot" }
 

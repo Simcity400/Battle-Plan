@@ -1,4 +1,4 @@
-# Product session semantics (owner's vision of record — 2026-07-12)
+# Product session semantics (owner's vision of record — reconciled 2026-07-15)
 
 Owner's sanity-check statement, recorded verbatim in intent (source: session
 2026-07-12, direct quote paraphrased):
@@ -10,35 +10,75 @@ Owner's sanity-check statement, recorded verbatim in intent (source: session
 > stitch everything together so it looks normal. Settings should be bare
 > bones: plug and play, minimal changes to the actual app.
 
-This is the UX contract the extractor is being built toward. Status per pillar
-(honest, as of 2026-07-12):
+This is the UX contract the extractor is being built toward. The status below separates
+offline/code foundations from an activated, live-proven product path. A merged module or synthetic
+gate is not evidence that the end-user lifecycle works.
 
-## 1. Boot-and-play (auto-attach) — NOT BUILT YET (packaging layer)
-Today the recorder attaches to a running hoi4.exe by PID via dev tooling.
+## 1. Boot-and-play (auto-attach) — FOUNDATION BUILT; PRODUCT COMPOSITION OPEN
+
+The recorder has running-process discovery, WMI event sources, singleton/injection-lease logic,
+PID/session binding, a journaled coordinator/state machine, and default-deny recording proof. The
+new safe production-capture scripts stage a unique DLL copy and define a one-attempt path; they have
+not yet completed a real production capture.
+
 OWNER DECISION 2026-07-12: BOTH launch orders must work, symmetrically —
 (a) app first: it waits/watches and attaches when the game launches;
 (b) game first: booting the app mid-session finds the running game and
-attaches immediately. "It always works" regardless of order. No design doc
-yet — needs one covering both arms (watcher loop + running-process discovery,
-which the modset resolver's PID plumbing already half-provides).
+attaches immediately. "It always works" regardless of order.
+
+Auto-attach now passes exact attempt/capture identity, a canonical UUID session id, staged-DLL
+provenance, production profile, static-bundle inputs, and packaging into the recorder. Remaining
+product work is process-lifetime supervision instead of the finite dev worker, graceful stop,
+recurring live heartbeat activation, complete Known Folder/OneDrive/`-userdir` discovery,
+lifecycle/crash gates, and end-user packaging.
 Constraint (standing): must work on arbitrary end-user machines (any install
 location, any Steam library, OneDrive-redirected user dirs) — everything
 probed at runtime, nothing hardcoded (memory: portability-no-rig-hardcoding).
 
-## 2. Auto-identify game/build/modset — LARGELY BUILT (the modset binding)
-The resolver auto-binds exe hash/size/path, Paradox user dir (probed,
-PID-ownership-corroborated), enabled mods (descriptor+content sha256), and the
-DLC census — zero configuration, fail-closed on any uncertainty. This is the
-G2/modset workstream, currently under its final adversarial gates.
+## 2. Auto-identify game/build/modset/static data — OFFLINE PATH BUILT; LIVE ADMISSION OPEN
 
-## 3. SAVE/CAMPAIGN identity — GAP (required for pillar 4)
-"Which save is attached" is NOT yet bound. Stitching across sessions requires
-recognizing that two recording sessions belong to the same campaign (and where
-they overlap). Needs an engine-derived campaign identity (e.g. game/session id,
-start scenario + seed, or save-file lineage) read from live memory and stamped
-into every stream. NOT designed yet — prerequisite for pillar 4.
+The resolver and runtime builder cover executable identity, Paradox user-dir probing, the exact v2
+source inventory, ordered active-product DLC/mod definition layers, token/static joins, and all seven
+required roles, including `technology_sharing_static`. Asset-only namespaces are explicitly excluded
+from definition parsing. Bundle creation and verification pin catalog/store/gate hashes, source
+inventory, namespace labels, localisation bytes, and the deliberately unjoined runtime intern-ordinal
+policy. Production arguments require this bundle.
 
-## 4. Reload / relaunch stitching — FORMAT ANTICIPATES IT, LOGIC NOT BUILT
+This is offline-green, not current-session authority. S9 remains live-blocking until the paused D-0-4
+session yields a fresh executable/mod/DLC/load binding, all seven artifacts rebuild and verify with
+`unknown=0`, and that exact bundle passes pre-injection, capture, and pre-publication checks. No such
+live bundle or capture token exists yet.
+
+## 3. Save/campaign identity — OFFLINE CONTRACT PARTIAL; LIVE BINDING OPEN
+
+The identity resolver, digest, strict manifest grammar, and explicit
+known/unavailable/ambiguous/conflict states are built. Hash-bound current-build serializer and
+deserializer evidence for executable SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad` now proves
+`game_unique_seed` as signed `i32[CGameState+0x720]` and `game_unique_id` as the MSVC `std::string`
+object at `CGameState+0x728`; see
+[`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). These are
+statically proven representations, not live-accepted offsets. The CID1 payload/parser and explicit
+IdentityV1/Legacy stateful validator are offline-green. Shared CFA1 validates the exact complete
+record and enforces durable write → flush → sync receipt ordering. Recorder main now validates before
+dispatch, retains opaque `ValidatedCid1`, excludes CID1 from ordinary counts, and allows manifest
+`Known` only through that token (focused 3/3).
+
+Phase B is still partial: the collector's sequence-0/CFA1 producer barrier is unapplied, the active
+capture path remains Legacy, and there is no authorized `+0x720/+0x728` reader, production durable
+sink composition, or live control-channel delivery. No production identity or stitching activation
+is authorized.
+
+Activation requires the complete matrix: paused D04 must give two stable, same-hour exact matches to
+seed `1026046527` and UUID `a4b17fed-ed12-4361-9064-fb6576638110`; exact-save reload, older-lineage
+rollback, process relaunch, and renamed/copied-save arms must preserve the pair; two independently
+created otherwise-identical campaigns must differ, and switching measured campaigns in one process
+must change identity before any new world row; host/hotjoin, host/observer, and cross-machine rehost
+must preserve the pair. Unreadable/torn values, one-component conflict, whole-pair rollover, and
+digest-collision states remain fail-closed exactly as P3 defines them in the master contract.
+
+## 4. Reload/relaunch stitching — PLANNER/FORMAT BUILT; PRODUCTION CALL SITE OPEN
+
 - The snapshot container already round-trips SEGMENT-PREFIXED ROLLBACK
   filenames (snapshot/src/container.rs, pack.rs; tests pin both filename
   forms) — the file format was designed for branch/rollback timelines.
@@ -47,9 +87,12 @@ into every stream. NOT designed yet — prerequisite for pillar 4.
   gaps/rollback spans surfaced, never silently blended.
 - The live-capture harness already detects continuity breaks (time_rollback,
   time_jump_forward, pid change) diagnostically.
-- The CURRENT recorder fold has NO segment creation on rollback and NO
-  cross-session (relaunch with older save) stitching. This is the largest
-  unbuilt pillar.
+- Deterministic stitch planning, supersede rules, v2 stitched-container packing/open validation,
+  and integration tests exist. The production recorder still has no call site that performs
+  pre-fold segmentation, fresh per-segment folds, durable append-ticket ordering, and atomic
+  stitched publication across reload/relaunch.
+- Stitch activation is additionally blocked on the entire campaign-identity live matrix above; the
+  static member proof is not sufficient to join or supersede sessions.
 - POLICY CONFIRMED BY OWNER 2026-07-12: whatever comes LATER (in wall-clock
   play order) supersedes whatever came prior on conflict. Canonical example
   (owner's, multiplayer): game crashes; the newest save anyone has is a month
@@ -60,7 +103,20 @@ into every stream. NOT designed yet — prerequisite for pillar 4.
   just don't form the main replay timeline. Playback follows the last-played
   branch end to end.
 
-## 5. Bare-bones settings / plug-and-play — ALIGNED BY DESIGN
+## 5. Duplex control and heartbeat — OFFLINE CONTRACT GREEN; ACTIVATION DISABLED
+
+The H4CT envelope, deadline/cancellation channel, peer/capability admission, recurring-heartbeat
+state, restrictive overlapped Windows named-pipe adapters, explicit-mode CFA1 codec, durable receipt
+contract, real paired H4CR/H4CT server, and recorder-main one-shot-injection composition seam now
+exist. Their type-state remains deliberately activation-disabled and cannot mint a product permit.
+
+Activation still requires the collector-side H4CT/CID1 client, production filesystem durable sink
+adapter, replacement of the old stdout proof path, live peer/deadline/cancellation gates, recurring
+liveness, rollover, and crash/reconnect policy. Stage B remains disabled until that complete
+lifecycle is production-wired.
+
+## 6. Bare-bones settings / plug-and-play — ALIGNED BY DESIGN
+
 Zero-config probing with optional overrides only (e.g. --pdx-user-dir); all
 correctness comes from fail-closed evidence, not user tuning. Any future
 setting must justify itself against this contract.

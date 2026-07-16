@@ -63,7 +63,7 @@ def _gfx_args(vanilla: Path, userdata: Path, allowlist: Path) -> SimpleNamespace
 
 
 def _patch_layers(monkeypatch, vanilla: Path, mod: Path | None = None):
-    def fake_build_layers(vanilla=None, mods=None, userdata=None):
+    def fake_build_layers(vanilla=None, mods=None, userdata=None, strict_mods=False):
         layers = [Layer("vanilla", Path(vanilla))]
         if mod is not None:
             layers.append(Layer("Fixture Mod", mod))

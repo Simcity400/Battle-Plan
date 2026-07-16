@@ -3,6 +3,7 @@ pub mod dll_collector;
 pub mod extractor;
 pub mod scheduled;
 pub mod static_semantics;
+pub mod stream_gate;
 
 #[allow(dead_code)]
 #[path = "../domain47_compact.rs"]

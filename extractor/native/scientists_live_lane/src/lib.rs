@@ -1,5 +1,8 @@
 use std::collections::BTreeSet;
 
+pub mod source_evidence;
+pub mod stream_certification;
+
 pub const CHARACTER_VTABLE_RVA_870EBF: usize = 0x2967E30;
 pub const SCIENTIST_VTABLE_RVA_870EBF: usize = 0x2967E88;
 
@@ -130,6 +133,9 @@ pub struct ScientistRow {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExtractionCounters {
     pub countries_seen: u32,
+    /// Countries whose optional scientist-roster root was read as absent/empty.
+    /// This is a measured empty source, not a source failure.
+    pub absent_roster_roots: u32,
     pub roster_vectors_seen: u32,
     pub observed_pins: u32,
     pub emitted_rows: u32,
@@ -137,6 +143,7 @@ pub struct ExtractionCounters {
     pub invalid_roster_slots: u32,
     pub invalid_scientist_rows: u32,
     pub duplicate_pins: u32,
+    pub duplicate_character_ids: u32,
     pub too_many: bool,
 }
 
@@ -192,25 +199,45 @@ pub fn extract_scientists<M: Memory>(
     profile: ScientistProfile,
 ) -> ExtractionResult {
     let mut counters = ExtractionCounters::default();
-    let mut seen = BTreeSet::new();
+    let mut seen_addresses = BTreeSet::new();
+    let mut seen_character_ids = BTreeSet::new();
     let mut rows = Vec::new();
     for &country_ptr in country_ptrs {
         counters.countries_seen = counters.countries_seen.saturating_add(1);
         match scientist_pins_from_country(mem, country_ptr, profile) {
-            RootRead::Absent => {}
+            RootRead::Absent => {
+                counters.absent_roster_roots = counters.absent_roster_roots.saturating_add(1);
+            }
             RootRead::Invalid => {
                 counters.invalid_roster_roots = counters.invalid_roster_roots.saturating_add(1);
             }
             RootRead::Partial(pins) => {
+                counters.roster_vectors_seen = counters.roster_vectors_seen.saturating_add(1);
                 counters.invalid_roster_slots = counters.invalid_roster_slots.saturating_add(1);
-                collect_rows(mem, profile, pins, &mut seen, &mut rows, &mut counters);
+                collect_rows(
+                    mem,
+                    profile,
+                    pins,
+                    &mut seen_addresses,
+                    &mut seen_character_ids,
+                    &mut rows,
+                    &mut counters,
+                );
             }
             RootRead::Valid(pins) => {
                 counters.roster_vectors_seen = counters.roster_vectors_seen.saturating_add(1);
-                collect_rows(mem, profile, pins, &mut seen, &mut rows, &mut counters);
+                collect_rows(
+                    mem,
+                    profile,
+                    pins,
+                    &mut seen_addresses,
+                    &mut seen_character_ids,
+                    &mut rows,
+                    &mut counters,
+                );
             }
         }
-        if seen.len() > MAX_SCIENTISTS_TOTAL {
+        if seen_addresses.len() > MAX_SCIENTISTS_TOTAL {
             counters.too_many = true;
             rows.clear();
             break;
@@ -218,12 +245,16 @@ pub fn extract_scientists<M: Memory>(
     }
     counters.emitted_rows = rows.len().min(u32::MAX as usize) as u32;
     let mut status_flags = 0;
-    if counters.too_many || (rows.is_empty() && counters.observed_pins == 0) {
+    let measured_roster_sources = counters
+        .absent_roster_roots
+        .saturating_add(counters.roster_vectors_seen);
+    if counters.too_many || measured_roster_sources == 0 {
         status_flags |= STATUS_SOURCE_UNAVAILABLE;
     }
     if counters.invalid_roster_roots > 0
         || counters.invalid_roster_slots > 0
         || counters.invalid_scientist_rows > 0
+        || counters.duplicate_character_ids > 0
         || counters.too_many
         || counters.emitted_rows < counters.observed_pins
     {
@@ -240,16 +271,19 @@ fn collect_rows<M: Memory>(
     mem: &M,
     profile: ScientistProfile,
     pins: Vec<ScientistPin>,
-    seen: &mut BTreeSet<usize>,
+    seen_addresses: &mut BTreeSet<usize>,
+    seen_character_ids: &mut BTreeSet<u32>,
     rows: &mut Vec<ScientistRow>,
     counters: &mut ExtractionCounters,
 ) {
-    counters.observed_pins = counters
-        .observed_pins
-        .saturating_add(pins.len().min(u32::MAX as usize) as u32);
     for pin in pins {
-        if !seen.insert(pin.character_addr) {
+        if !seen_addresses.insert(pin.character_addr) {
             counters.duplicate_pins = counters.duplicate_pins.saturating_add(1);
+            continue;
+        }
+        counters.observed_pins = counters.observed_pins.saturating_add(1);
+        if !seen_character_ids.insert(pin.char_id) {
+            counters.duplicate_character_ids = counters.duplicate_character_ids.saturating_add(1);
             continue;
         }
         match read_scientist_row(mem, pin, profile) {
@@ -282,8 +316,11 @@ fn scientist_pins_from_country<M: Memory>(
     else {
         return RootRead::Invalid;
     };
-    if roster_root == 0 || !heap_ptr(roster_root) {
+    if roster_root == 0 {
         return RootRead::Absent;
+    }
+    if !heap_ptr(roster_root) {
+        return RootRead::Invalid;
     }
     let header = roster_root.saturating_add(SCIENTIST_ROSTER_VECTOR);
     let Some(count) = mem.u32(header.saturating_add(SCIENTIST_ROSTER_VECTOR_COUNT)) else {
@@ -1070,8 +1107,7 @@ mod tests {
             specialization_land: 4,
             trait_count: Some(1),
         };
-        let payload =
-            encode_projects_live_scientists_payload(&[row], 0, STATUS_PARTIAL_DATA, 2);
+        let payload = encode_projects_live_scientists_payload(&[row], 0, STATUS_PARTIAL_DATA, 2);
         let decoded = decode_projects_live_scientists_payload(&payload).unwrap();
         let gate = gate_projects_live_scientist_payload(&decoded);
 
@@ -1123,5 +1159,68 @@ mod tests {
             gate.problems,
             vec!["partial_data", "observed_emitted_mismatch"]
         );
+    }
+
+    #[test]
+    fn absent_optional_roster_is_measured_empty_not_source_unavailable() {
+        let profile = ScientistProfile::vanilla_870ebf(HEAP_LO);
+        let country = HEAP_LO + 0x90_000;
+        let mut mem = FixtureMemory::default();
+        mem.put_u64(country + COUNTRY_OFF_SCIENTIST_ROSTER, 0);
+
+        let result = extract_scientists(&mem, &[country], profile);
+
+        assert!(result.rows.is_empty());
+        assert_eq!(result.counters.absent_roster_roots, 1);
+        assert_eq!(result.status_flags, 0);
+    }
+
+    #[test]
+    fn duplicate_cross_country_pin_does_not_inflate_source_observed_roster() {
+        let (mut mem, profile, first_country) = fixture(true);
+        let second_country = HEAP_LO + 0x91_000;
+        let second_roster = HEAP_LO + 0x92_000;
+        let second_slots = HEAP_LO + 0x93_000;
+        let shared_wrapper = HEAP_LO + 0x40_000;
+        mem.put_u64(
+            second_country + COUNTRY_OFF_SCIENTIST_ROSTER,
+            second_roster as u64,
+        );
+        mem.put_u64(second_roster + SCIENTIST_ROSTER_VECTOR, second_slots as u64);
+        mem.put_u32(
+            second_roster + SCIENTIST_ROSTER_VECTOR + SCIENTIST_ROSTER_VECTOR_COUNT,
+            1,
+        );
+        mem.put_u64(second_slots, shared_wrapper as u64);
+
+        let result = extract_scientists(&mem, &[first_country, second_country], profile);
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.counters.observed_pins, 1);
+        assert_eq!(result.counters.duplicate_pins, 1);
+        assert_eq!(result.status_flags, 0);
+    }
+
+    #[test]
+    fn no_country_roster_authority_fails_closed() {
+        let mem = FixtureMemory::default();
+        let profile = ScientistProfile::vanilla_870ebf(HEAP_LO);
+        let result = extract_scientists(&mem, &[], profile);
+        assert_ne!(result.status_flags & STATUS_SOURCE_UNAVAILABLE, 0);
+    }
+
+    #[test]
+    fn nonnull_invalid_roster_root_is_not_clean_absence() {
+        let profile = ScientistProfile::vanilla_870ebf(HEAP_LO);
+        let country = HEAP_LO + 0x94_000;
+        let mut mem = FixtureMemory::default();
+        mem.put_u64(country + COUNTRY_OFF_SCIENTIST_ROSTER, (HEAP_LO + 1) as u64);
+
+        let result = extract_scientists(&mem, &[country], profile);
+
+        assert_eq!(result.counters.absent_roster_roots, 0);
+        assert_eq!(result.counters.invalid_roster_roots, 1);
+        assert_ne!(result.status_flags & STATUS_SOURCE_UNAVAILABLE, 0);
+        assert_ne!(result.status_flags & STATUS_PARTIAL_DATA, 0);
     }
 }

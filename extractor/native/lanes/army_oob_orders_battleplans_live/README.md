@@ -176,7 +176,17 @@ The live proof above used the Rust collector's current `870EBF` profile.
 
 `compact_schema.rs` is the lane-local decoder/gate mirror for these two domains.
 It intentionally has no dependency on shared recorder code so schema review can
-happen without editing shared entrypoints.
+happen without editing shared entrypoints. Its H4CR framing comes from the
+dependency-free canonical module through
+`#[path = "../../compact_contract/src/record_header.rs"]`; this keeps direct
+`rustc` use standalone while preventing the record-header contract from drifting.
+
+From the repository root, compile and invoke the gate directly with:
+
+```powershell
+rustc --edition=2021 .\extractor\native\lanes\army_oob_orders_battleplans_live\compact_schema.rs -o "$env:TEMP\compact_schema.exe"
+& "$env:TEMP\compact_schema.exe" .\extractor\native\runs\<run>\collector_stream.bin 5
+```
 
 The older `direct_oob_compact.rs`, `direct_land_oob_slot_contract.json`, and
 `direct_land_oob_slot_gate.py` domain-44 slot material is retained only as
@@ -204,6 +214,15 @@ scan sources.
 `army_battleplans_depth_compact.rs`, `army_battleplans_depth_module.rs`, and
 `army_battleplans_depth_from_stream.py` are the lane-local domain-54 mini stack
 for the validated subset that does not need a redraw/toggle fixture:
+
+`army_battleplans_depth_compact.rs` uses the same canonical dependency-free
+record-header include. From the repository root, its direct build and invocation
+are:
+
+```powershell
+rustc --edition=2021 .\extractor\native\lanes\army_oob_orders_battleplans_live\army_battleplans_depth_compact.rs -o "$env:TEMP\army_battleplans_depth_compact.exe"
+& "$env:TEMP\army_battleplans_depth_compact.exe" .\extractor\native\runs\<run>\depth_stream.bin 5 --json
+```
 
 - exact type-5 target-state rows are emitted as exact depth rows;
 - assigned-unit and order-linkage status are carried on every non-deleted

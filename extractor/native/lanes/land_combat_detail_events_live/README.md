@@ -34,14 +34,30 @@ Still open for the master row:
   tests.
 - `src/bin/land_combat_detail_lane_proof.rs`: lane-local compact/replay proof
   harness.
+- `src/bin/land_combat_detail_stream_validate.rs`: read-only standalone product
+  validator for an existing compact stream.
 - `probe_870ebf_land_detail_roots.py`: bounded read-only live probe for the
   current 870ebf land-combat root and field census.
+
+The lane gate consumes a full compact stream, not an isolated DATA record. It
+requires sequence 1 followed by exact non-wrapping +1 steps, canonical record
+envelopes, consecutive hours, exactly one domain-55 DATA and PERF record per
+closed hour, and a final canonical FRAME_END. The D55 DATA/PERF pair must agree
+exactly on status, elapsed-wall timestamp, and all four PERF count fields; each
+PERF count must equal the total decoded event + side-detail + attribution row
+count. Payloads owned by other domains remain opaque. Within D55, participant
+joins/leaves must form a complete delta set whose side/division identities and
+old/new count direction reconcile exactly. `gate_stream_for_product`
+additionally requires an explicitly positive minimum game-hour advancement
+count; the inclusive authority requirement is therefore that many advancements
+plus one consecutive closed FRAME_END.
 
 ## Proof commands
 
 ```powershell
 cargo test --manifest-path extractor\native\lanes\land_combat_detail_events_live\Cargo.toml
 cargo run --manifest-path extractor\native\lanes\land_combat_detail_events_live\Cargo.toml --bin land_combat_detail_lane_proof -- --out-dir extractor\native\runs\land_combat_detail_events_live_lane_stack_870ebf_20260701_v1
+cargo run --manifest-path extractor\native\lanes\land_combat_detail_events_live\Cargo.toml --bin land_combat_detail_stream_validate -- --stream <compact.bin> --minimum-game-hour-advancements 9
 python extractor\native\lanes\land_combat_detail_events_live\probe_870ebf_land_detail_roots.py --pid 45880 --out-dir extractor\native\runs\land_combat_detail_events_live_roots_870ebf_20260701_v1
 ```
 

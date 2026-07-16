@@ -27,6 +27,10 @@ fn main() -> Result<(), String> {
     )?;
     let manifest = load_json(&manifest_path, "native_collector_session_v1")?;
     let replay_gate = load_json_unversioned(&replay_gate_path)?;
+    let manifest_bytes =
+        fs::read(&manifest_path).map_err(|err| format!("failed to read {manifest_path}: {err}"))?;
+    let authority_binding =
+        validate_authority_binding(&lifecycle, &manifest, &replay_gate, &manifest_bytes)?;
 
     let stream = get_obj(&manifest, "compact_stream")?;
     let per_domain = get_obj(get_obj(stream, "per_domain")?, "projects_live")?;
@@ -55,10 +59,8 @@ fn main() -> Result<(), String> {
     let dll_only_roots = number(&manifest, "special_projects_bridge_rows")? == 0
         && string_value(&manifest, "projects_root_source")? != "control_bridge";
 
-    let replay_gate_passed =
-        bool_value(&replay_gate, "passed")? && array_len(get_obj(&replay_gate, "errors")?) == 0;
-    let replay_container_verified =
-        replay_gate_passed || replay_gate.get("details").and_then(|v| v.get("replay_verify")).is_some();
+    let replay_gate_passed = true;
+    let replay_container_verified = true;
 
     let start_blocked = !bool_value(start, "accepted")?
         && bool_value(start, "conclusive_rejection")?
@@ -71,7 +73,7 @@ fn main() -> Result<(), String> {
         && number(units, "project_state_rows")? > 0;
     let lifecycle_decode_ok = bool_path(get_obj(&lifecycle, "event_gate")?, &["ok"])?
         && bool_value(&lifecycle, "rust_decoded")?
-        && array_len(get_obj(&lifecycle, "parse_errors")?) == 0;
+        && empty_array(&lifecycle, "parse_errors")?;
     let completion_transition_proven = number(lifecycle_counts, "completion_changed")? > 0
         && lifecycle_decode_ok
         && bool_value(completion, "accepted")?
@@ -141,6 +143,7 @@ fn main() -> Result<(), String> {
             "native_session_manifest": path_slash(&manifest_path),
             "compact_replay_gate_report": path_slash(&replay_gate_path),
         },
+        "authority_binding": authority_binding,
         "runtime_production_status": {
             "dll_only": dll_only_roots,
             "compact_stream": true,
@@ -289,6 +292,304 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
+fn validate_authority_binding(
+    lifecycle: &Value,
+    manifest: &Value,
+    gate: &Value,
+    manifest_bytes: &[u8],
+) -> Result<Value, String> {
+    if string_value(gate, "gate")? != "compact_replay_verification_gates" {
+        return Err(
+            "compact gate discriminator is not compact_replay_verification_gates".to_string(),
+        );
+    }
+    if !bool_value(gate, "passed")? || !empty_array(gate, "errors")? {
+        return Err("compact gate did not pass with a strictly empty errors array".to_string());
+    }
+    let details = get_obj(gate, "details")?;
+    let profile = get_obj(details, "verification_profile")?;
+    if !bool_value(profile, "authoritative")?
+        || !bool_value(profile, "replay_verify_required")?
+        || !empty_array(profile, "weakenings")?
+    {
+        return Err("compact gate verification profile is not authoritative".to_string());
+    }
+    let replay = get_obj(details, "replay_verify")?;
+    if !bool_value(replay, "external_manifest_exact_match")? {
+        return Err("compact gate did not bind the exact external manifest".to_string());
+    }
+
+    let session_id = nonempty_string(manifest, "session_id")?;
+    let replay_game_id = nonempty_string(manifest, "replay_game_id")?;
+    let gate_game_id = nonempty_string(replay, "game_id")?;
+    if session_id != replay_game_id || replay_game_id != gate_game_id {
+        return Err(format!(
+            "session identity mismatch: session_id {session_id:?}, replay_game_id {replay_game_id:?}, gate game_id {gate_game_id:?}"
+        ));
+    }
+
+    let lifecycle_identity = get_obj(lifecycle, "stream_identity")?;
+    let manifest_storage = get_obj(manifest, "stream_storage")?;
+    let gate_storage = get_obj(details, "stream_storage")?;
+    let compact = get_obj(manifest, "compact_stream")?;
+    let compression = nonempty_string(lifecycle_identity, "compression")?;
+    if !matches!(compression, "none" | "zstd")
+        || nonempty_string(manifest_storage, "compression")? != compression
+        || nonempty_string(gate_storage, "compression")? != compression
+    {
+        return Err("stream compression mismatch across lifecycle, manifest, and gate".to_string());
+    }
+    let stored_lengths = [
+        ("lifecycle", number(lifecycle_identity, "stored_bytes")?),
+        ("manifest", number(manifest_storage, "stored_bytes")?),
+        ("gate", number(gate_storage, "stored_bytes")?),
+    ];
+    let expected_stored_length = stored_lengths[0].1;
+    if expected_stored_length == 0
+        || stored_lengths
+            .iter()
+            .any(|(_, value)| *value != expected_stored_length)
+    {
+        return Err(format!("stored stream length mismatch: {stored_lengths:?}"));
+    }
+    let lifecycle_stored_hash = string_value(lifecycle_identity, "stored_sha256")?;
+    let gate_stored_hash = string_value(gate_storage, "stored_sha256")?;
+    validate_lower_sha256(lifecycle_stored_hash)
+        .map_err(|error| format!("lifecycle stored stream hash: {error}"))?;
+    validate_lower_sha256(gate_stored_hash)
+        .map_err(|error| format!("gate stored stream hash: {error}"))?;
+    if lifecycle_stored_hash != gate_stored_hash {
+        return Err("stored stream sha256 mismatch between lifecycle and gate".to_string());
+    }
+    if let Some(manifest_stored_hash) = manifest_storage
+        .get("stored_sha256")
+        .and_then(Value::as_str)
+    {
+        validate_lower_sha256(manifest_stored_hash)
+            .map_err(|error| format!("manifest stored stream hash: {error}"))?;
+        if manifest_stored_hash != lifecycle_stored_hash {
+            return Err("stored stream sha256 mismatch against manifest".to_string());
+        }
+    }
+    let stream_hashes = [
+        (
+            "lifecycle",
+            string_value(lifecycle_identity, "decoded_sha256")?,
+        ),
+        (
+            "manifest",
+            string_value(manifest_storage, "decoded_sha256")?,
+        ),
+        ("gate", string_value(gate_storage, "decoded_sha256")?),
+        (
+            "replay container",
+            string_value(replay, "collector_compact_stream_sha256")?,
+        ),
+    ];
+    for (label, hash) in &stream_hashes {
+        validate_lower_sha256(hash).map_err(|error| format!("{label} stream hash: {error}"))?;
+    }
+    let expected_hash = stream_hashes[0].1;
+    if stream_hashes.iter().any(|(_, hash)| *hash != expected_hash) {
+        return Err(format!("decoded stream sha256 mismatch: {stream_hashes:?}"));
+    }
+
+    let stream_lengths = [
+        ("lifecycle", number(lifecycle_identity, "decoded_bytes")?),
+        (
+            "manifest storage",
+            number(manifest_storage, "decoded_bytes")?,
+        ),
+        ("manifest compact", number(compact, "total_bytes")?),
+        ("gate", number(gate_storage, "decoded_bytes")?),
+        (
+            "replay container",
+            number(replay, "collector_compact_stream_bytes")?,
+        ),
+    ];
+    let expected_length = stream_lengths[0].1;
+    if expected_length == 0
+        || stream_lengths
+            .iter()
+            .any(|(_, value)| *value != expected_length)
+    {
+        return Err(format!(
+            "decoded stream length mismatch: {stream_lengths:?}"
+        ));
+    }
+
+    let manifest_hash = sha256_hex(manifest_bytes);
+    let gate_manifest_hash = string_value(replay, "recorder_manifest_sha256")?;
+    validate_lower_sha256(gate_manifest_hash)
+        .map_err(|error| format!("gate recorder manifest hash: {error}"))?;
+    if manifest_hash != gate_manifest_hash {
+        return Err(format!(
+            "native manifest sha256 {manifest_hash} != gate recorder_manifest_sha256 {gate_manifest_hash}"
+        ));
+    }
+    if manifest_bytes.len() as u64 != number(replay, "recorder_manifest_bytes")? {
+        return Err(
+            "native manifest byte length differs from gate recorder_manifest_bytes".to_string(),
+        );
+    }
+
+    if number(lifecycle, "domain_id")? != 41 {
+        return Err("lifecycle proof domain_id is not 41".to_string());
+    }
+    let per_domain = get_obj(get_obj(compact, "per_domain")?, "projects_live")?;
+    if number(per_domain, "domain_id")? != 41 {
+        return Err("manifest projects_live domain_id is not 41".to_string());
+    }
+    for (label, left, right) in [
+        (
+            "record_count",
+            number(lifecycle, "record_count")?,
+            number(compact, "record_count")?,
+        ),
+        (
+            "projects_live data_record_count",
+            number(lifecycle, "project_data_records")?,
+            number(per_domain, "data_record_count")?,
+        ),
+        (
+            "first_game_hour_raw",
+            number(get_obj(lifecycle, "frame_summary")?, "first_game_hour_raw")?,
+            number(manifest, "first_game_hour_raw")?,
+        ),
+        (
+            "last_game_hour_raw",
+            number(get_obj(lifecycle, "frame_summary")?, "last_game_hour_raw")?,
+            number(manifest, "last_game_hour_raw")?,
+        ),
+    ] {
+        if left != right {
+            return Err(format!(
+                "{label} mismatch: lifecycle {left}, manifest {right}"
+            ));
+        }
+    }
+
+    Ok(json!({
+        "ok": true,
+        "session_id": session_id,
+        "replay_game_id": replay_game_id,
+        "decoded_stream_bytes": expected_length,
+        "decoded_stream_sha256": expected_hash,
+        "stream_compression": compression,
+        "stored_stream_bytes": expected_stored_length,
+        "stored_stream_sha256": lifecycle_stored_hash,
+        "native_manifest_bytes": manifest_bytes.len(),
+        "native_manifest_sha256": manifest_hash,
+        "gate_authoritative": true,
+        "external_manifest_exact_match": true,
+    }))
+}
+
+fn empty_array(value: &Value, key: &str) -> Result<bool, String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::is_empty)
+        .ok_or_else(|| format!("{key} is missing or not an array"))
+}
+
+fn nonempty_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
+    let text = string_value(value, key)?;
+    if text.is_empty() {
+        Err(format!("{key} is empty"))
+    } else {
+        Ok(text)
+    }
+}
+
+fn validate_lower_sha256(value: &str) -> Result<(), String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!("{value:?} is not lowercase 64-hex SHA-256"));
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut padded = bytes.to_vec();
+    let bit_len = (bytes.len() as u64).wrapping_mul(8);
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+    let mut h = [
+        0x6a09e667u32,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    for chunk in padded.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for (index, word) in chunk.chunks_exact(4).enumerate() {
+            w[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for index in 16..64 {
+            let s0 = w[index - 15].rotate_right(7)
+                ^ w[index - 15].rotate_right(18)
+                ^ (w[index - 15] >> 3);
+            let s1 = w[index - 2].rotate_right(17)
+                ^ w[index - 2].rotate_right(19)
+                ^ (w[index - 2] >> 10);
+            w[index] = w[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[index - 7])
+                .wrapping_add(s1);
+        }
+        let mut v = h;
+        for index in 0..64 {
+            let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
+            let ch = (v[4] & v[5]) ^ (!v[4] & v[6]);
+            let t1 = v[7]
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[index])
+                .wrapping_add(w[index]);
+            let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
+            let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
+            let t2 = s0.wrapping_add(maj);
+            v = [
+                t1.wrapping_add(t2),
+                v[0],
+                v[1],
+                v[2],
+                v[3].wrapping_add(t1),
+                v[4],
+                v[5],
+                v[6],
+            ];
+        }
+        for index in 0..8 {
+            h[index] = h[index].wrapping_add(v[index]);
+        }
+    }
+    h.iter().map(|word| format!("{word:08x}")).collect()
+}
+
 fn usage() -> String {
     "usage: project_progress_full_residual_audit <residual_proof.json> <breakthrough_state_probe.json> <lifecycle_stream_proof.json> <native_session_manifest.json> <compact_replay_gate_report.json> <audit.json>".to_string()
 }
@@ -346,10 +647,6 @@ fn bool_path(value: &Value, path: &[&str]) -> Result<bool, String> {
         .ok_or_else(|| format!("{} is not bool", path.join(".")))
 }
 
-fn array_len(value: &Value) -> usize {
-    value.as_array().map(Vec::len).unwrap_or(0)
-}
-
 fn string_array_contains(value: &Value, key: &str, expected: &str) -> bool {
     value
         .get(key)
@@ -360,4 +657,165 @@ fn string_array_contains(value: &Value, key: &str, expected: &str) -> bool {
 
 fn path_slash(path: &str) -> String {
     Path::new(path).to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn authority_fixture() -> (Value, Value, Value, Vec<u8>) {
+        let manifest_bytes = b"exact native manifest bytes".to_vec();
+        let manifest_hash = sha256_hex(&manifest_bytes);
+        let stream_hash = sha256_hex(b"collector stream");
+        let lifecycle = json!({
+            "domain_id": 41,
+            "record_count": 6,
+            "project_data_records": 2,
+            "stream_identity": {
+                "compression": "none",
+                "stored_bytes": 16,
+                "stored_sha256": stream_hash,
+                "decoded_bytes": 16,
+                "decoded_sha256": stream_hash
+            },
+            "frame_summary": {"first_game_hour_raw": 100, "last_game_hour_raw": 101},
+        });
+        let manifest = json!({
+            "session_id": "session-a",
+            "replay_game_id": "session-a",
+            "first_game_hour_raw": 100,
+            "last_game_hour_raw": 101,
+            "stream_storage": {
+                "compression": "none",
+                "stored_bytes": 16,
+                "stored_sha256": stream_hash,
+                "decoded_bytes": 16,
+                "decoded_sha256": stream_hash
+            },
+            "compact_stream": {
+                "total_bytes": 16,
+                "record_count": 6,
+                "per_domain": {"projects_live": {"domain_id": 41, "data_record_count": 2}}
+            }
+        });
+        let gate = json!({
+            "gate": "compact_replay_verification_gates",
+            "passed": true,
+            "errors": [],
+            "details": {
+                "verification_profile": {
+                    "authoritative": true,
+                    "replay_verify_required": true,
+                    "weakenings": []
+                },
+                "stream_storage": {
+                    "compression": "none",
+                    "stored_bytes": 16,
+                    "stored_sha256": stream_hash,
+                    "decoded_bytes": 16,
+                    "decoded_sha256": stream_hash
+                },
+                "replay_verify": {
+                    "game_id": "session-a",
+                    "collector_compact_stream_bytes": 16,
+                    "collector_compact_stream_sha256": stream_hash,
+                    "recorder_manifest_bytes": manifest_bytes.len(),
+                    "recorder_manifest_sha256": manifest_hash,
+                    "external_manifest_exact_match": true
+                }
+            }
+        });
+        (lifecycle, manifest, gate, manifest_bytes)
+    }
+
+    #[test]
+    fn accepts_exact_stream_session_and_manifest_binding() {
+        let (lifecycle, manifest, gate, bytes) = authority_fixture();
+        let binding = validate_authority_binding(&lifecycle, &manifest, &gate, &bytes).unwrap();
+        assert_eq!(binding["ok"], json!(true));
+        assert_eq!(binding["session_id"], json!("session-a"));
+    }
+
+    #[test]
+    fn rejects_forged_or_weakened_gate_shapes() {
+        let (lifecycle, manifest, mut gate, bytes) = authority_fixture();
+        gate["errors"] = Value::Null;
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
+                .unwrap_err()
+                .contains("not an array")
+        );
+
+        let (lifecycle, manifest, mut gate, bytes) = authority_fixture();
+        gate["details"]["verification_profile"]["authoritative"] = json!(false);
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
+                .unwrap_err()
+                .contains("not authoritative")
+        );
+    }
+
+    #[test]
+    fn rejects_cross_stream_and_cross_session_splices() {
+        let (mut lifecycle, manifest, gate, bytes) = authority_fixture();
+        lifecycle["stream_identity"]["decoded_sha256"] = json!(sha256_hex(b"other"));
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
+                .unwrap_err()
+                .contains("sha256 mismatch")
+        );
+
+        let (lifecycle, mut manifest, gate, bytes) = authority_fixture();
+        manifest["session_id"] = json!("session-b");
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
+                .unwrap_err()
+                .contains("session identity mismatch")
+        );
+    }
+
+    #[test]
+    fn rejects_length_count_hour_and_manifest_digest_mismatches() {
+        let (lifecycle, mut manifest, gate, bytes) = authority_fixture();
+        manifest["compact_stream"]["total_bytes"] = json!(15);
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
+                .unwrap_err()
+                .contains("stream length mismatch")
+        );
+
+        let (mut lifecycle, manifest, gate, bytes) = authority_fixture();
+        lifecycle["record_count"] = json!(5);
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
+                .unwrap_err()
+                .contains("record_count mismatch")
+        );
+
+        let (lifecycle, manifest, gate, _) = authority_fixture();
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &gate, b"stale manifest")
+                .unwrap_err()
+                .contains("manifest sha256")
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_hash_spelling() {
+        let (mut lifecycle, manifest, gate, bytes) = authority_fixture();
+        lifecycle["stream_identity"]["decoded_sha256"] = json!("ABC");
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
+                .unwrap_err()
+                .contains("lowercase 64-hex")
+        );
+    }
+
+    #[test]
+    fn sha256_matches_standard_vector() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

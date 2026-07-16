@@ -13,10 +13,8 @@ edition = "2021"
 replay_decoder = { path = "../replay_decoder" }
 snapshot = { path = "../snapshot" }
 compact_contract = { path = "../compact_contract" }
-serde_json = "1"
-
-[dev-dependencies]
 compact_stream = { path = "../compact_stream" }
+serde_json = "1"
 
 [[bin]]
 name = "fold_check"

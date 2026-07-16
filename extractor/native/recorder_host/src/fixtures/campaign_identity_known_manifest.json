@@ -1,0 +1,21 @@
+{
+  "campaign_identity": {
+    "schema": "hoi4.campaign_identity.v1",
+    "state": "known",
+    "campaign_id": "b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f",
+    "game_unique_id": "a4b17fed-ed12-4361-9064-fb6576638110",
+    "game_unique_seed": "1026046527",
+    "source": "live_memory",
+    "source_build_profile": "profile-x",
+    "observed_game_hour_raw": 60759359,
+    "stream_header_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "resolution_note": null,
+    "witnesses": {
+      "start_date_raw": null,
+      "session": null,
+      "scenario": null,
+      "initial_human_country_tags": null,
+      "modset_identity": null
+    }
+  }
+}

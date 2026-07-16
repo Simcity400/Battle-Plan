@@ -29,6 +29,7 @@ file-level override by relpath + `replace_path`) and the tolerant
 | `parse_events` | `events/*.txt` | id → title/desc/picture/options (loc-resolved) |
 | `parse_scripted_gui` | `common/scripted_guis/*` | gui → element/variable/effect map (reads/writes, `visible_vars`, `[GET_X]` ↔ scripted_localisation) |
 | `parse_tech` | `common/technologies/*` | tech → resolved render `position` (own folder xy `@var`-resolved, or variant sub-tech inheriting parent xy + slot offset; non-tree/hidden techs proven & flagged), `research_cost`, prereq/XOR + `leads_to` edges w/ coeff, `dependencies`, effect rows |
+| `parse_technology_sharing` | `common/technology_sharing/*` | technology-sharing definitions with exact source-layer provenance; runtime numeric intern ordinals remain explicitly unjoined |
 | `parse_doctrines` | `common/doctrines/*` | folder/grand/track/subdoctrine → derived grid `position` (track column + in-track row), explicit `xor`/`mutually_exclusive`/`replaces` + implicit grand-doctrine one-of groups, effects + rewards |
 | `parse_catalogs` | many | occupation laws, leader traits, tactics, aces, operations, opinion mods, equipment modules/archetypes/upgrades, state categories, ideas/advisors/spirits, power-balance side/range thresholds |
 | `parse_focus_def` | `common/national_focus/*` | focus → xy geometry, PP cost, prereq OR-groups, mutual-exclusion, loc |
@@ -38,6 +39,15 @@ file-level override by relpath + `replace_path`) and the tolerant
 
 Shared spine: `resolver.py` (layer build + `LocDB`), `clausewitz_ops.py`
 (operator + variable-op harvesting from the tolerant parser).
+
+## Runtime static-bundle authority
+
+`build_runtime_static_bundle.py` builds all seven required roles in parallel from the exact v2
+source inventory. Definition layers preserve integrated and active-product DLC plus ordered active
+mods; asset-only namespaces are explicitly excluded from definition parsing and recorded. The
+bundle pins source inventory/namespace evidence, catalog/store/gate hashes, localisation bytes, and
+the `technology_sharing_static` unjoined-ordinal policy. Numeric runtime technology-sharing ordinals
+are sequential intern-table ids and must never be hash-guessed into static ids.
 
 ## Run
 

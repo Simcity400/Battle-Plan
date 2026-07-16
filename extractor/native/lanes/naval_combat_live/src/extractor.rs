@@ -683,6 +683,73 @@ mod tests {
     use super::*;
     use crate::domain49_50_naval_combat_live::gate_stream;
 
+    fn perf_payload(rows: u32, status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN);
+        payload.extend_from_slice(&5u64.to_le_bytes());
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn close_frame(stream: Vec<u8>, sequence_start: u64, game_hour_raw: i32) -> Vec<u8> {
+        let first_payload_len = u32::from_le_bytes(stream[24..28].try_into().unwrap()) as usize;
+        let first_end = compact_contract::COMPACT_RECORD_HEADER_LEN + first_payload_len;
+        let second_payload_len =
+            u32::from_le_bytes(stream[first_end + 24..first_end + 28].try_into().unwrap()) as usize;
+        let first_payload = &stream[compact_contract::COMPACT_RECORD_HEADER_LEN..first_end];
+        let second_payload = &stream[first_end + compact_contract::COMPACT_RECORD_HEADER_LEN
+            ..first_end + compact_contract::COMPACT_RECORD_HEADER_LEN + second_payload_len];
+        let first_status = u32::from_le_bytes(first_payload[12..16].try_into().unwrap());
+        let first_rows = u32::from_le_bytes(first_payload[16..20].try_into().unwrap());
+        let second_status = u32::from_le_bytes(second_payload[12..16].try_into().unwrap());
+        let second_rows = u32::from_le_bytes(second_payload[16..20].try_into().unwrap());
+        let mut out = Vec::new();
+        out.extend_from_slice(&compact_record(
+            sequence_start,
+            game_hour_raw,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(first_rows, first_status),
+        ));
+        out.extend_from_slice(&compact_record(
+            sequence_start + 1,
+            game_hour_raw,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            first_payload,
+        ));
+        out.extend_from_slice(&compact_record(
+            sequence_start + 2,
+            game_hour_raw,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(second_rows, second_status),
+        ));
+        out.extend_from_slice(&compact_record(
+            sequence_start + 3,
+            game_hour_raw,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            second_payload,
+        ));
+        let mut frame_end_payload = [0u8; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN];
+        frame_end_payload[16..20].copy_from_slice(&2u32.to_le_bytes());
+        frame_end_payload[20..24].copy_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&compact_record(
+            sequence_start + 4,
+            game_hour_raw,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload,
+        ));
+        out
+    }
+
     fn cship(id: u32) -> CshipSnapshotRow {
         CshipSnapshotRow {
             instance_id: id,
@@ -753,7 +820,7 @@ mod tests {
 
     #[test]
     fn builds_compact_frame_with_promoted_location_and_region() {
-        let frame = build_capture_frame(&[fixture()], &[cship(1001)], 10, 512, 5).unwrap();
+        let frame = build_capture_frame(&[fixture()], &[cship(1001)], 1, 512, 5).unwrap();
         assert_eq!(frame.lifecycle_rows.len(), 1);
         assert_eq!(frame.lifecycle_rows[0].location_id, Some(2799));
         assert_eq!(frame.lifecycle_rows[0].region_id, Some(18));
@@ -773,7 +840,8 @@ mod tests {
             .iter()
             .any(|row| row.strength_raw == Some(10_000_000)
                 && row.organisation_raw == Some(9_000_000)));
-        let gate = gate_stream(&frame.compact_stream);
+        let closed = close_frame(frame.compact_stream.clone(), 1, 512);
+        let gate = gate_stream(&closed);
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.two_sided_combat_count, 1);
         assert_eq!(gate.summary.lifecycle_location_row_count, 1);
@@ -788,7 +856,7 @@ mod tests {
         let mut snapshot = fixture();
         snapshot.lifecycle.location_id = None;
         snapshot.lifecycle.region_id = None;
-        let frame = build_capture_frame(&[snapshot], &[cship(1001)], 10, 512, 5).unwrap();
+        let frame = build_capture_frame(&[snapshot], &[cship(1001)], 1, 512, 5).unwrap();
         assert_eq!(frame.lifecycle_rows[0].location_id, None);
         assert_eq!(frame.lifecycle_rows[0].region_id, None);
         assert_ne!(
@@ -796,8 +864,13 @@ mod tests {
             0,
             "absent location/region must fail closed via the status flag"
         );
-        let gate = gate_stream(&frame.compact_stream);
-        assert!(gate.ok, "{:?}", gate.errors);
+        let closed = close_frame(frame.compact_stream.clone(), 1, 512);
+        let gate = gate_stream(&closed);
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("status bit 11 set")));
         assert_eq!(gate.summary.lifecycle_location_row_count, 0);
         assert_eq!(gate.summary.lifecycle_region_row_count, 0);
     }
@@ -836,17 +909,17 @@ mod tests {
     fn transition_frame_emits_lifecycle_end_rows() {
         let active = fixture();
         let start =
-            build_transition_capture_frame(&[], &[active.clone()], &[cship(1001)], 10, 512, 5)
+            build_transition_capture_frame(&[], &[active.clone()], &[cship(1001)], 1, 512, 5)
                 .unwrap();
         let end =
-            build_transition_capture_frame(&[active], &[], &[cship(1001)], 12, 513, 8).unwrap();
+            build_transition_capture_frame(&[active], &[], &[cship(1001)], 4, 513, 8).unwrap();
         assert_eq!(end.lifecycle_rows.len(), 1);
         assert!(end.lifecycle_rows[0].deleted);
         assert_eq!(end.member_rows.len(), 2);
         assert!(end.member_rows.iter().all(|row| row.deleted));
 
-        let mut stream = start.compact_stream;
-        stream.extend_from_slice(&end.compact_stream);
+        let mut stream = close_frame(start.compact_stream, 1, 512);
+        stream.extend_from_slice(&close_frame(end.compact_stream, 6, 513));
         let gate = gate_stream(&stream);
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.lifecycle_started_row_count, 1);

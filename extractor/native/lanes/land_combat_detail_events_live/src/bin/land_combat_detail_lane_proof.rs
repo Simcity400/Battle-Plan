@@ -3,8 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use land_combat_detail_events_live_lane::{
-    build_transition_capture_frame, gate_stream, result_json, LandCombatSnapshot, SideDetail,
-    DOMAIN_LAND_COMBAT_DETAIL_EVENTS, DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME,
+    build_transition_capture_frame, gate_stream_for_product, result_json, LandCombatSnapshot,
+    SideDetail, DOMAIN_LAND_COMBAT_DETAIL_EVENTS, DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME,
 };
 use serde_json::json;
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
@@ -55,18 +55,24 @@ fn main() {
         Ok(frame) => frame,
         Err(errors) => fail(errors),
     };
-    let frame2 = match build_transition_capture_frame(&start, &update, 2, 60_787_540, 22) {
+    let frame2 = match build_transition_capture_frame(&start, &update, 4, 60_787_540, 22) {
         Ok(frame) => frame,
         Err(errors) => fail(errors),
     };
-    let frame3 = match build_transition_capture_frame(&update, &[], 3, 60_787_541, 33) {
+    let frame3 = match build_transition_capture_frame(&update, &[], 7, 60_787_541, 33) {
         Ok(frame) => frame,
         Err(errors) => fail(errors),
     };
 
+    let frame1_row_count = frame_row_count(&frame1);
+    let frame2_row_count = frame_row_count(&frame2);
+    let frame3_row_count = frame_row_count(&frame3);
     let mut compact_stream = frame1.compact_stream;
+    append_perf_and_frame_end(&mut compact_stream, 2, 60_787_539, 11, frame1_row_count);
     compact_stream.extend_from_slice(&frame2.compact_stream);
+    append_perf_and_frame_end(&mut compact_stream, 5, 60_787_540, 22, frame2_row_count);
     compact_stream.extend_from_slice(&frame3.compact_stream);
+    append_perf_and_frame_end(&mut compact_stream, 8, 60_787_541, 33, frame3_row_count);
 
     let compact_path = out_dir.join("land_combat_detail_events_live_domain55_compact.bin");
     fs::write(&compact_path, &compact_stream).unwrap_or_else(|err| {
@@ -74,7 +80,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    let gate = gate_stream(&compact_stream);
+    let gate = gate_stream_for_product(&compact_stream, 2);
     let gate_path = out_dir.join("land_combat_detail_events_live_domain55_gate.json");
     fs::write(&gate_path, result_json(&gate)).unwrap_or_else(|err| {
         eprintln!("write {} failed: {err}", gate_path.display());
@@ -193,6 +199,69 @@ fn side_detail(committed: u32, reserve: u32) -> SideDetail {
 fn fail(errors: Vec<String>) -> ! {
     eprintln!("fixture validation failed: {errors:?}");
     std::process::exit(1);
+}
+
+fn frame_row_count(frame: &land_combat_detail_events_live_lane::CaptureFrame) -> u32 {
+    frame
+        .rows
+        .len()
+        .saturating_add(frame.side_detail_rows.len())
+        .saturating_add(frame.attribution_rows.len()) as u32
+}
+
+fn append_perf_and_frame_end(
+    stream: &mut Vec<u8>,
+    perf_sequence: u64,
+    game_hour_raw: i32,
+    elapsed_wall_ms: u64,
+    row_count: u32,
+) {
+    let mut perf_payload = [0u8; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN];
+    perf_payload[0..8].copy_from_slice(&elapsed_wall_ms.to_le_bytes());
+    for offset in [16usize, 20, 24, 28] {
+        perf_payload[offset..offset + 4].copy_from_slice(&row_count.to_le_bytes());
+    }
+    perf_payload[32..36]
+        .copy_from_slice(&compact_contract::COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+    let mut frame_end_payload = [0u8; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN];
+    frame_end_payload[16..20].copy_from_slice(&1u32.to_le_bytes());
+    frame_end_payload[20..24].copy_from_slice(&1u32.to_le_bytes());
+    append_compact_record(
+        stream,
+        perf_sequence,
+        game_hour_raw,
+        DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload,
+    );
+    append_compact_record(
+        stream,
+        perf_sequence + 1,
+        game_hour_raw,
+        compact_contract::COMPACT_DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload,
+    );
+}
+
+fn append_compact_record(
+    stream: &mut Vec<u8>,
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    payload: &[u8],
+) {
+    stream.extend_from_slice(b"H4CR");
+    stream.extend_from_slice(&1u16.to_le_bytes());
+    stream.extend_from_slice(&32u16.to_le_bytes());
+    stream.extend_from_slice(&sequence.to_le_bytes());
+    stream.extend_from_slice(&game_hour_raw.to_le_bytes());
+    stream.extend_from_slice(&domain_id.to_le_bytes());
+    stream.extend_from_slice(&record_type.to_le_bytes());
+    stream.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    stream.extend_from_slice(&0u32.to_le_bytes());
+    stream.extend_from_slice(payload);
 }
 
 struct ReplayVerifyReport {

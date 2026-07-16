@@ -14,6 +14,7 @@ collector or recorder entrypoints.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import struct
 import sys
@@ -29,6 +30,11 @@ import tag_table  # noqa: E402
 import winmem  # noqa: E402
 
 EXPECTED_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+SOURCE_IDENTITY_SCHEMA = "occupation_resistance_compliance_live_probe_source_v1"
+SOURCE_IDENTITY_PATH = (
+    "extractor/native/lanes/occupation_resistance_compliance_live/live_probe.py"
+)
+SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 DOMAIN_ID = 52
 DOMAIN_NAME = "occupation_resistance_compliance_live"
@@ -137,6 +143,15 @@ def checked_fingerprint(p) -> dict:
             % (fp.get("sha256"), EXPECTED_SHA256)
         )
     return fp
+
+
+def source_identity() -> dict:
+    return {
+        "schema": SOURCE_IDENTITY_SCHEMA,
+        "emitter_path": SOURCE_IDENTITY_PATH,
+        "emitter_sha256": SOURCE_SHA256,
+        "expected_exe_sha256": EXPECTED_SHA256,
+    }
 
 
 def read_pdx_string(p, address):
@@ -553,10 +568,10 @@ def encode_compact_stream(payload, rows, elapsed_wall_ms, read_time_us, status_f
         status_flags,
         0,
     )
-    append_record(out, 0, game_hour_raw, DOMAIN_ID, COMPACT_RECORD_TYPE_DOMAIN_PERF, perf)
-    append_record(out, 1, game_hour_raw, DOMAIN_ID, COMPACT_RECORD_TYPE_DOMAIN_DATA, payload)
+    append_record(out, 1, game_hour_raw, DOMAIN_ID, COMPACT_RECORD_TYPE_DOMAIN_PERF, perf)
+    append_record(out, 2, game_hour_raw, DOMAIN_ID, COMPACT_RECORD_TYPE_DOMAIN_DATA, payload)
     frame = struct.pack("<QQIIII", elapsed_wall_ms, read_time_us, 1, 1, status_flags, 0)
-    append_record(out, 2, game_hour_raw, COMPACT_DOMAIN_FRAME, COMPACT_RECORD_TYPE_FRAME_END, frame)
+    append_record(out, 3, game_hour_raw, COMPACT_DOMAIN_FRAME, COMPACT_RECORD_TYPE_FRAME_END, frame)
     return bytes(out)
 
 
@@ -756,12 +771,15 @@ def run(out_dir, oracle_state_detail=None, include_addresses=False):
         1 for row in rows if row["flags"] & ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN
     )
     summary = {
+        "source_identity": source_identity(),
         "domain": {"id": DOMAIN_ID, "name": DOMAIN_NAME},
         "process": {
             "pid": fp.get("pid"),
             "module": fp.get("module"),
             "base": "0x%X" % fp.get("base"),
             "size": fp.get("size"),
+            "path": fp.get("path"),
+            "python_bits": fp.get("python_bits"),
             "sha256": fp.get("sha256"),
         },
         "roots": {
@@ -779,9 +797,13 @@ def run(out_dir, oracle_state_detail=None, include_addresses=False):
         },
         "offsets": {
             "CG_STATE_DATE_OFFSET": "0x%X" % CG_STATE_DATE_OFFSET,
+            "GS_CURRENT_DATE_OFFSET": "0x%X" % GS_CURRENT_DATE_OFFSET,
             "CGAMESTATE_CPROVINCE_ARRAY": "0x%X" % CGAMESTATE_CPROVINCE_ARRAY,
             "CGAMESTATE_CPROVINCE_COUNT": "0x%X" % CGAMESTATE_CPROVINCE_COUNT,
+            "CPROVINCE_VTABLE_RVA": "0x%X" % CPROVINCE_VTABLE_RVA,
+            "CPROVINCE_OFF_ID": "0x%X" % CPROVINCE_OFF_ID,
             "CPROVINCE_OFF_STATE": "0x%X" % CPROVINCE_OFF_STATE,
+            "STATE_VTABLE_RVA": "0x%X" % STATE_VTABLE_RVA,
             "STATE_OFF_SID": "0x%X" % STATE_OFF_SID,
             "STATE_OFF_OWNER": "0x%X" % STATE_OFF_OWNER,
             "STATE_OFF_CTRL": "0x%X" % STATE_OFF_CTRL,
@@ -792,11 +814,14 @@ def run(out_dir, oracle_state_detail=None, include_addresses=False):
             "CGAMESTATE_COUNTRY_TABLE": "0x%X" % CGAMESTATE_COUNTRY_TABLE,
             "CGAMESTATE_COUNTRY_COUNT": "0x%X" % CGAMESTATE_COUNTRY_COUNT,
             "COUNTRY_VTABLE_RVA": "0x%X" % COUNTRY_VTABLE_RVA,
+            "COUNTRY_OFF_TAG_DB_ID": "0x%X" % COUNTRY_OFF_TAG_DB_ID,
             "COUNTRY_OFF_OCCUPATION_STATUS": "0x%X" % COUNTRY_OFF_OCCUPATION_STATUS,
             "COUNTRY_OCCUPATION_STATUS_VTABLE_RVA": "0x%X"
             % COUNTRY_OCCUPATION_STATUS_VTABLE_RVA,
             "COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_RVA": "0x%X"
             % COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_RVA,
+            "COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_OFF": "0x%X"
+            % COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_OFF,
             "COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF": "0x%X"
             % COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF,
             "COUNTRY_OCCUPATION_STATUS_GARRISON_TEMPLATE_OFF": "0x%X"

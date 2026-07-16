@@ -1,17 +1,30 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use compact_contract::{
+    compact_status_failure_flags_after_expected_partial_tolerance, compact_status_unknown_flags_v1,
+    parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
+    COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN, COMPACT_FRAME_END_PAYLOAD_LEN,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
+    COMPACT_STATUS_FAILURE_MASK,
+};
+use recorder_host::domain_data_authority::{summarize_domain_data_payload, DomainDataContext};
+
 pub const DOMAIN_ID: u16 = 45;
 pub const DOMAIN_NAME: &str = "focus_research_decisions_depth_live";
 
-const H4CR_MAGIC: &[u8; 4] = b"H4CR";
-const H4CR_VERSION: u16 = 1;
-const H4CR_HEADER_LEN: usize = 32;
-const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
-const RECORD_TYPE_FRAME_END: u16 = 2;
+const H4CR_MAGIC: &[u8; 4] = COMPACT_RECORD_MAGIC;
+const H4CR_VERSION: u16 = COMPACT_RECORD_VERSION;
+const H4CR_HEADER_LEN: usize = COMPACT_RECORD_HEADER_LEN;
+const RECORD_TYPE_DOMAIN_PERF: u16 = COMPACT_RECORD_TYPE_DOMAIN_PERF;
+const RECORD_TYPE_DOMAIN_DATA: u16 = COMPACT_RECORD_TYPE_DOMAIN_DATA;
+const RECORD_TYPE_FRAME_END: u16 = COMPACT_RECORD_TYPE_FRAME_END;
 const DOMAIN_FOCUS: u16 = 12;
 const DOMAIN_TECH: u16 = 13;
 const DOMAIN_DECISIONS: u16 = 16;
-const DOMAIN_FRAME: u16 = 1000;
+const DOMAIN_FRAME: u16 = COMPACT_DOMAIN_FRAME;
+const DOMAIN_RC_PROBE: u16 = 250;
+const SOURCE_DOMAIN_IDS: &[u16] = &[DOMAIN_FOCUS, DOMAIN_TECH, DOMAIN_DECISIONS];
 
 const DEPTH_HEADER_LEN: usize = 48;
 const RESEARCH_ETA_ROW_LEN: usize = 80;
@@ -90,6 +103,16 @@ const DECISION_TARGET_MAX_NUMERIC_ID: u32 = 1_000_000;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DepthGateSummary {
     pub data_records: u64,
+    pub perf_records: u64,
+    pub frame_end_records: u64,
+    pub certified_hours: u64,
+    pub first_game_hour_raw: Option<i32>,
+    pub last_game_hour_raw: Option<i32>,
+    pub game_hours_advanced: i64,
+    pub commanded_game_hour_advancements: i64,
+    pub required_closed_frames: u64,
+    pub status_flags_or: u32,
+    pub fatal_status_flags: u32,
     pub focus_event_rows: u64,
     pub focus_completed_exact_rows: u64,
     pub focus_completed_inferred_rows: u64,
@@ -850,9 +873,495 @@ fn decision_target_body_count(rows: &DepthFrameRows) -> u32 {
     })
 }
 
+#[derive(Debug, Default)]
+struct AuthoritativeStreamValidation {
+    record_count: u64,
+    owned_perf_records: u64,
+    frame_end_records: u64,
+    frame_hours: Vec<i32>,
+    perf_status_by_hour: BTreeMap<i32, u32>,
+    perf_status_by_hour_domain: BTreeMap<(i32, u16), u32>,
+    data_status_by_hour_domain: BTreeMap<(i32, u16), Option<u32>>,
+    frame_status_by_hour: BTreeMap<i32, u32>,
+    status_flags_or: u32,
+    fatal_status_flags: u32,
+    errors: Vec<String>,
+}
+
+fn validate_authoritative_stream(
+    raw: &[u8],
+    owned_domains: &[u16],
+    require_owned_schema_v2: bool,
+) -> AuthoritativeStreamValidation {
+    let mut result = AuthoritativeStreamValidation::default();
+    let mut offset = 0usize;
+    let mut previous_sequence: Option<u64> = None;
+    let mut pending_perf_hour: Option<i32> = None;
+    let mut open_frame_hour: Option<i32> = None;
+    let mut last_closed_hour: Option<i32> = None;
+    let mut final_record_is_certified_frame_end = false;
+    let mut data_counts = BTreeMap::<(i32, u16), u32>::new();
+    let mut perf_counts = BTreeMap::<(i32, u16), u32>::new();
+    let mut observed_perf_counts_by_hour = BTreeMap::<i32, u64>::new();
+
+    if raw.is_empty() {
+        result.errors.push("stream is empty".to_string());
+    }
+
+    while offset < raw.len() {
+        final_record_is_certified_frame_end = false;
+        let record = match parse_h4cr_record(raw, offset) {
+            Ok(record) => record,
+            Err(error) => {
+                result.errors.push(error);
+                break;
+            }
+        };
+        result.record_count = result.record_count.saturating_add(1);
+
+        match previous_sequence {
+            None if record.sequence != 1 => result.errors.push(format!(
+                "offset {offset}: sequence {} does not start at 1 (stream prefix is missing)",
+                record.sequence
+            )),
+            Some(previous) => match previous.checked_add(1) {
+                Some(expected) if record.sequence != expected => result.errors.push(format!(
+                    "offset {offset}: sequence discontinuity {previous} -> {} (expected {expected})",
+                    record.sequence
+                )),
+                None => result.errors.push(format!(
+                    "offset {offset}: sequence space exhausted after {previous}; wrapping is forbidden"
+                )),
+                _ => {}
+            },
+            _ => {}
+        }
+        previous_sequence = Some(record.sequence);
+
+        let semantics_ok = match validate_compact_record_semantics(
+            record.domain_id,
+            record.record_type,
+            record.record_flags,
+            record.payload,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                result.errors.push(format!("offset {offset}: {error}"));
+                false
+            }
+        };
+
+        match record.record_type {
+            RECORD_TYPE_DOMAIN_PERF => {
+                if record.domain_id != DOMAIN_RC_PROBE {
+                    *observed_perf_counts_by_hour
+                        .entry(record.game_hour_raw)
+                        .or_default() += 1;
+                }
+                if let Some(open) = open_frame_hour {
+                    if record.game_hour_raw != open {
+                        result.errors.push(format!(
+                            "offset {offset}: DOMAIN_PERF hour {} does not match open DATA frame hour {open}",
+                            record.game_hour_raw
+                        ));
+                    }
+                } else {
+                    validate_next_source_hour(
+                        &mut result.errors,
+                        last_closed_hour,
+                        record.game_hour_raw,
+                        "DOMAIN_PERF",
+                        offset,
+                    );
+                    match pending_perf_hour {
+                        Some(pending) if pending != record.game_hour_raw => {
+                            result.errors.push(format!(
+                                "offset {offset}: DOMAIN_PERF hour {} conflicts with pending frame hour {pending}",
+                                record.game_hour_raw
+                            ));
+                        }
+                        None => pending_perf_hour = Some(record.game_hour_raw),
+                        _ => {}
+                    }
+                }
+
+                if owned_domains.contains(&record.domain_id) {
+                    result.owned_perf_records = result.owned_perf_records.saturating_add(1);
+                    let count = perf_counts
+                        .entry((record.game_hour_raw, record.domain_id))
+                        .or_default();
+                    *count = count.saturating_add(1);
+                    if semantics_ok {
+                        let status_flags = read_u32_le(record.payload, 32);
+                        result.status_flags_or |= status_flags;
+                        *result
+                            .perf_status_by_hour
+                            .entry(record.game_hour_raw)
+                            .or_default() |= status_flags;
+                        result
+                            .perf_status_by_hour_domain
+                            .insert((record.game_hour_raw, record.domain_id), status_flags);
+                        let unknown = compact_status_unknown_flags_v1(status_flags);
+                        if unknown != 0 {
+                            result.errors.push(format!(
+                                "offset {offset}: domain {} PERF carries unknown v1 status flags {unknown:#010x}",
+                                record.domain_id
+                            ));
+                        }
+                        let fatal = compact_status_failure_flags_after_expected_partial_tolerance(
+                            record.domain_id,
+                            status_flags,
+                        );
+                        result.fatal_status_flags |= fatal;
+                        if fatal != 0 {
+                            result.errors.push(format!(
+                                "offset {offset}: domain {} PERF carries fatal status flags {fatal:#010x} after canonical lane-local normalization",
+                                record.domain_id
+                            ));
+                        }
+                    }
+                }
+            }
+            RECORD_TYPE_DOMAIN_DATA => {
+                if let Some(open) = open_frame_hour {
+                    if record.game_hour_raw != open {
+                        result.errors.push(format!(
+                            "offset {offset}: DOMAIN_DATA hour {} encountered before FRAME_END closed open frame hour {open}",
+                            record.game_hour_raw
+                        ));
+                    }
+                } else {
+                    validate_next_source_hour(
+                        &mut result.errors,
+                        last_closed_hour,
+                        record.game_hour_raw,
+                        "DOMAIN_DATA",
+                        offset,
+                    );
+                    if let Some(pending) = pending_perf_hour {
+                        if pending != record.game_hour_raw {
+                            result.errors.push(format!(
+                                "offset {offset}: DOMAIN_DATA hour {} conflicts with pending PERF hour {pending}",
+                                record.game_hour_raw
+                            ));
+                        }
+                    }
+                    open_frame_hour = Some(record.game_hour_raw);
+                }
+                if owned_domains.contains(&record.domain_id) {
+                    let count = data_counts
+                        .entry((record.game_hour_raw, record.domain_id))
+                        .or_default();
+                    *count = count.saturating_add(1);
+                    if require_owned_schema_v2
+                        && record.record_flags
+                            & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
+                            == 0
+                    {
+                        result.errors.push(format!(
+                            "offset {offset}: production-owned domain {} DATA is missing the canonical schema-v2 record flag",
+                            record.domain_id
+                        ));
+                    }
+                    if semantics_ok {
+                        if record.domain_id == DOMAIN_ID
+                            && record.record_flags
+                                & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
+                                == 0
+                        {
+                            // Unflagged D45 is the lane-local v1 proof wire,
+                            // whose first word is decision_target_count. The
+                            // shared production decoder's legacy v1 predates
+                            // those target rows, so validate this proof-only
+                            // form with the lane decoder. Production FRD2 must
+                            // always take the shared flag-aware path below.
+                            let local = decode_depth_payload(offset, record.payload);
+                            if local.parse_errors.is_empty() {
+                                result
+                                    .data_status_by_hour_domain
+                                    .insert((record.game_hour_raw, record.domain_id), None);
+                            } else {
+                                result.errors.extend(local.parse_errors);
+                            }
+                        } else {
+                            match summarize_domain_data_payload(
+                            record.domain_id,
+                            record.payload,
+                            DomainDataContext {
+                                stream_offset: offset,
+                                record_flags: record.record_flags,
+                                sequence: record.sequence,
+                                header_hour_raw: record.game_hour_raw,
+                                session_header_identity: None,
+                            },
+                            ) {
+                                Ok(authority) => {
+                                    result.data_status_by_hour_domain.insert(
+                                        (record.game_hour_raw, record.domain_id),
+                                        authority.status_flags,
+                                    );
+                                }
+                                Err(error)
+                                    if record.domain_id == DOMAIN_DECISIONS
+                                        && error.errors.len() == 1
+                                        && error.errors[0]
+                                            .contains("decisions data payload has")
+                                        && error.errors[0].contains("trailing byte(s)")
+                                        && decode_decisions_payload(record.payload).is_ok() =>
+                                {
+                                    // D16's lane-local target extension is newer
+                                    // than the base shared D16 authority. Accept
+                                    // only the shared decoder's sole trailing-byte
+                                    // diagnostic after the extension decoder has
+                                    // independently consumed the entire suffix.
+                                    result.data_status_by_hour_domain.insert(
+                                        (record.game_hour_raw, record.domain_id),
+                                        error.partial_authority.status_flags,
+                                    );
+                                }
+                                Err(error) => result.errors.push(format!(
+                                    "offset {offset}: domain {} DATA failed shared authority decode: {error}",
+                                    record.domain_id
+                                )),
+                            }
+                        }
+                    }
+                }
+            }
+            RECORD_TYPE_FRAME_END => {
+                result.frame_end_records = result.frame_end_records.saturating_add(1);
+                let mut certified = semantics_ok;
+                match open_frame_hour {
+                    Some(open) if open == record.game_hour_raw => {}
+                    Some(open) => {
+                        certified = false;
+                        result.errors.push(format!(
+                            "offset {offset}: FRAME_END hour {} does not close open DATA frame hour {open}",
+                            record.game_hour_raw
+                        ));
+                    }
+                    None => {
+                        certified = false;
+                        result.errors.push(format!(
+                            "offset {offset}: FRAME_END hour {} has no open DATA frame",
+                            record.game_hour_raw
+                        ));
+                    }
+                }
+                if pending_perf_hour.is_some_and(|pending| pending != record.game_hour_raw) {
+                    certified = false;
+                    result.errors.push(format!(
+                        "offset {offset}: FRAME_END hour {} conflicts with pending PERF hour {}",
+                        record.game_hour_raw,
+                        pending_perf_hour.expect("checked Some")
+                    ));
+                }
+                if !next_source_hour_is_valid(last_closed_hour, record.game_hour_raw) {
+                    certified = false;
+                    validate_next_source_hour(
+                        &mut result.errors,
+                        last_closed_hour,
+                        record.game_hour_raw,
+                        "FRAME_END",
+                        offset,
+                    );
+                }
+
+                for domain_id in owned_domains {
+                    let data_count = data_counts
+                        .get(&(record.game_hour_raw, *domain_id))
+                        .copied()
+                        .unwrap_or(0);
+                    let perf_count = perf_counts
+                        .get(&(record.game_hour_raw, *domain_id))
+                        .copied()
+                        .unwrap_or(0);
+                    if data_count != 1 {
+                        certified = false;
+                        result.errors.push(format!(
+                            "game_hour_raw {}: owned domain {domain_id} DATA record count {data_count} != 1",
+                            record.game_hour_raw
+                        ));
+                    }
+                    if perf_count != 1 {
+                        certified = false;
+                        result.errors.push(format!(
+                            "game_hour_raw {}: owned domain {domain_id} PERF record count {perf_count} != 1",
+                            record.game_hour_raw
+                        ));
+                    }
+                    if data_count == 1 && perf_count == 1 {
+                        if let Some(Some(data_status)) = result
+                            .data_status_by_hour_domain
+                            .get(&(record.game_hour_raw, *domain_id))
+                            .copied()
+                        {
+                            let perf_status = result
+                                .perf_status_by_hour_domain
+                                .get(&(record.game_hour_raw, *domain_id))
+                                .copied();
+                            if perf_status != Some(data_status) {
+                                certified = false;
+                                result.errors.push(format!(
+                                    "game_hour_raw {}: owned domain {domain_id} DATA status {data_status:#010x} does not match PERF status {:?}",
+                                    record.game_hour_raw,
+                                    perf_status.map(|value| format!("{value:#010x}"))
+                                ));
+                            }
+                            let unknown = compact_status_unknown_flags_v1(data_status);
+                            if unknown != 0 {
+                                certified = false;
+                                result.errors.push(format!(
+                                    "game_hour_raw {}: owned domain {domain_id} DATA carries unknown v1 status flags {unknown:#010x}",
+                                    record.game_hour_raw
+                                ));
+                            }
+                            let fatal =
+                                compact_status_failure_flags_after_expected_partial_tolerance(
+                                    *domain_id,
+                                    data_status,
+                                );
+                            if fatal != 0 {
+                                certified = false;
+                                result.errors.push(format!(
+                                    "game_hour_raw {}: owned domain {domain_id} DATA carries fatal status flags {fatal:#010x}",
+                                    record.game_hour_raw
+                                ));
+                            }
+                        } else if require_owned_schema_v2 {
+                            certified = false;
+                            result.errors.push(format!(
+                                "game_hour_raw {}: production-owned domain {domain_id} DATA lacks compact status authority; DATA/PERF status equality cannot be certified",
+                                record.game_hour_raw
+                            ));
+                        }
+                    }
+                }
+
+                if record.payload.len() == COMPACT_FRAME_END_PAYLOAD_LEN {
+                    let emitted_domains = read_u32_le(record.payload, 16);
+                    let scheduled_domains = read_u32_le(record.payload, 20);
+                    let frame_status = read_u32_le(record.payload, 24);
+                    let reserved = read_u32_le(record.payload, 28);
+                    let observed_perf_records = observed_perf_counts_by_hour
+                        .get(&record.game_hour_raw)
+                        .copied()
+                        .unwrap_or(0);
+                    if u64::from(emitted_domains) != observed_perf_records {
+                        certified = false;
+                        result.errors.push(format!(
+                            "offset {offset}: FRAME_END emitted_domains {emitted_domains} != independently observed DOMAIN_PERF count {observed_perf_records}"
+                        ));
+                    }
+                    if scheduled_domains != emitted_domains {
+                        certified = false;
+                        result.errors.push(format!(
+                            "offset {offset}: FRAME_END scheduled_domains {scheduled_domains} != emitted_domains {emitted_domains}"
+                        ));
+                    }
+                    if reserved != 0 {
+                        certified = false;
+                        result.errors.push(format!(
+                            "offset {offset}: FRAME_END reserved word is nonzero ({reserved:#010x})"
+                        ));
+                    }
+                    let unknown = compact_status_unknown_flags_v1(frame_status);
+                    if unknown != 0 {
+                        certified = false;
+                        result.errors.push(format!(
+                            "offset {offset}: FRAME_END status contains unknown v1 bits {unknown:#010x}"
+                        ));
+                    }
+                    result.status_flags_or |= frame_status;
+                    result
+                        .frame_status_by_hour
+                        .insert(record.game_hour_raw, frame_status);
+                    let fatal = frame_status & COMPACT_STATUS_FAILURE_MASK;
+                    result.fatal_status_flags |= fatal;
+                    if fatal != 0 {
+                        certified = false;
+                        result.errors.push(format!(
+                            "offset {offset}: FRAME_END carries fatal global status flags {fatal:#010x}"
+                        ));
+                    }
+                }
+
+                if open_frame_hour == Some(record.game_hour_raw) {
+                    open_frame_hour = None;
+                    pending_perf_hour = None;
+                    last_closed_hour = Some(record.game_hour_raw);
+                    result.frame_hours.push(record.game_hour_raw);
+                }
+                final_record_is_certified_frame_end = certified;
+            }
+            _ => {}
+        }
+
+        offset = record.next_offset;
+    }
+
+    if let Some(open) = open_frame_hour {
+        result
+            .errors
+            .push(format!("stream ended with open DATA frame hour {open}"));
+    } else if let Some(pending) = pending_perf_hour {
+        result.errors.push(format!(
+            "stream ended with pending PERF frame hour {pending} without DATA/FRAME_END"
+        ));
+    }
+    if result.frame_hours.is_empty() {
+        result
+            .errors
+            .push("stream contains no certified frame hours".to_string());
+    }
+    if !final_record_is_certified_frame_end {
+        result.errors.push(
+            "stream is not closed by a final canonical FRAME_END with exactly one owned DATA+PERF pair"
+                .to_string(),
+        );
+    }
+    result
+}
+
+fn next_source_hour_is_valid(last_closed_hour: Option<i32>, game_hour_raw: i32) -> bool {
+    match last_closed_hour {
+        None => true,
+        Some(closed) => closed.checked_add(1) == Some(game_hour_raw),
+    }
+}
+
+fn validate_next_source_hour(
+    errors: &mut Vec<String>,
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    record_label: &str,
+    offset: usize,
+) {
+    let Some(closed) = last_closed_hour else {
+        return;
+    };
+    match closed.checked_add(1) {
+        Some(expected) if game_hour_raw == expected => {}
+        Some(expected) => errors.push(format!(
+            "offset {offset}: {record_label} hour {game_hour_raw} follows closed frame hour {closed}; expected consecutive hour {expected}"
+        )),
+        None => errors.push(format!(
+            "offset {offset}: closed frame hour {closed} exhausted; another record is forbidden"
+        )),
+    }
+}
+
 pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
+    let source_validation = validate_authoritative_stream(raw, SOURCE_DOMAIN_IDS, false);
+    if !source_validation.errors.is_empty() {
+        return Err(format!(
+            "source stream failed authoritative focus/research/decisions validation: {}",
+            source_validation.errors.join("; ")
+        ));
+    }
     let mut proof = DepthProof {
         source_bytes: raw.len(),
+        source_records: source_validation.record_count,
         ..DepthProof::default()
     };
     let mut deriver = Deriver::new();
@@ -860,7 +1369,6 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
     let mut previous_sequence: Option<u64> = None;
     let mut depth_sequence = 1u64;
     let mut frame_hours = Vec::new();
-    let mut depth_gate = DepthGateSummary::default();
 
     while offset < raw.len() {
         let record = match parse_h4cr_record(raw, offset) {
@@ -870,14 +1378,10 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
                 break;
             }
         };
-        proof.source_records = proof.source_records.saturating_add(1);
         if let Some(previous) = previous_sequence {
-            if record.sequence <= previous {
-                proof.parse_errors.push(format!(
-                    "offset {offset}: sequence {} did not advance past {previous}",
-                    record.sequence
-                ));
-            }
+            debug_assert_eq!(previous.checked_add(1), Some(record.sequence));
+        } else {
+            debug_assert_eq!(record.sequence, 1);
         }
         previous_sequence = Some(record.sequence);
 
@@ -980,24 +1484,67 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
                             .count() as u64,
                     );
                 proof.badge_rows = proof.badge_rows.saturating_add(rows.badges.len() as u64);
-                let payload = encode_depth_payload(&rows);
-                let summary = decode_depth_payload(offset, &payload);
-                merge_depth_gate(&mut depth_gate, summary);
+                let perf_status = source_validation
+                    .perf_status_by_hour
+                    .get(&record.game_hour_raw)
+                    .copied()
+                    .unwrap_or(0);
+                let payload = encode_depth_payload_v3(&rows, perf_status);
+                let perf_payload = canonical_perf_payload(perf_status);
+                append_h4cr_record(
+                    &mut proof.depth_stream,
+                    depth_sequence,
+                    record.game_hour_raw,
+                    DOMAIN_ID,
+                    RECORD_TYPE_DOMAIN_PERF,
+                    0,
+                    &perf_payload,
+                );
+                depth_sequence = depth_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "derived depth stream sequence space exhausted".to_string())?;
                 append_h4cr_record(
                     &mut proof.depth_stream,
                     depth_sequence,
                     record.game_hour_raw,
                     DOMAIN_ID,
                     RECORD_TYPE_DOMAIN_DATA,
-                    0,
+                    compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
                     &payload,
                 );
-                depth_sequence = depth_sequence.saturating_add(1);
+                depth_sequence = depth_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "derived depth stream sequence space exhausted".to_string())?;
+                let frame_status = source_validation
+                    .frame_status_by_hour
+                    .get(&record.game_hour_raw)
+                    .copied()
+                    .unwrap_or(0);
+                let frame_payload = canonical_frame_end_payload(1, frame_status);
+                append_h4cr_record(
+                    &mut proof.depth_stream,
+                    depth_sequence,
+                    record.game_hour_raw,
+                    DOMAIN_FRAME,
+                    RECORD_TYPE_FRAME_END,
+                    0,
+                    &frame_payload,
+                );
+                depth_sequence = depth_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "derived depth stream sequence space exhausted".to_string())?;
                 proof.depth_data_records = proof.depth_data_records.saturating_add(1);
             }
             _ => {}
         }
         offset = record.next_offset;
+    }
+
+    if !proof.parse_errors.is_empty() {
+        return Err(format!(
+            "source stream owned payload validation failed: {}",
+            proof.parse_errors.join("; ")
+        ));
     }
 
     frame_hours.sort_unstable();
@@ -1009,6 +1556,9 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
         _ => 0,
     };
     proof.skipped_game_hours = skipped_hours(&frame_hours);
+    // Derivation uses the structural summary; the production gate requires an
+    // independently supplied positive duration target at its public boundary.
+    let depth_gate = summarize_depth_stream(&proof.depth_stream);
     proof.focus_pause_badge_rows = depth_gate.focus_pause_badge_rows;
     proof.decision_target_rows = depth_gate.decision_target_rows;
     proof.decision_country_target_rows = depth_gate.decision_country_target_rows;
@@ -1119,6 +1669,30 @@ pub fn encode_depth_payload(rows: &DepthFrameRows) -> Vec<u8> {
     payload
 }
 
+fn encode_depth_payload_v2(rows: &DepthFrameRows) -> Vec<u8> {
+    let v1 = encode_depth_payload(rows);
+    let mut v2 = Vec::with_capacity(v1.len().saturating_add(8));
+    v2.extend_from_slice(b"FRD2");
+    v2.extend_from_slice(&2u16.to_le_bytes());
+    v2.extend_from_slice(&56u16.to_le_bytes());
+    v2.extend_from_slice(&v1[8..28]);
+    v2.extend_from_slice(&v1[0..4]);
+    v2.extend_from_slice(&v1[28..48]);
+    v2.extend_from_slice(&0u32.to_le_bytes());
+    v2.extend_from_slice(&v1[48..]);
+    v2
+}
+
+fn encode_depth_payload_v3(rows: &DepthFrameRows, raw_status_flags: u32) -> Vec<u8> {
+    let mut v3 = encode_depth_payload_v2(rows);
+    v3[4..6].copy_from_slice(&3u16.to_le_bytes());
+    v3[6..8].copy_from_slice(&60u16.to_le_bytes());
+    let row_bytes = v3.split_off(56);
+    v3.extend_from_slice(&raw_status_flags.to_le_bytes());
+    v3.extend_from_slice(&row_bytes);
+    v3
+}
+
 pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
     let mut summary = DepthGateSummary::default();
     summary.data_records = 1;
@@ -1137,7 +1711,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
     let decision_status_count = read_u32_le(payload, 20) as usize;
     let decision_event_count = read_u32_le(payload, 24) as usize;
     let observed_focus_rows = read_u32_le(payload, 28);
-    let observed_decision_rows = read_u32_le(payload, 36);
+    let _observed_decision_rows = read_u32_le(payload, 36);
     let badge_count = read_u32_le(payload, 44) as usize;
     if schema_flags != 0 {
         summary.parse_errors.push(format!(
@@ -1396,6 +1970,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
 
     let mut seen_decision_status = BTreeSet::new();
     let mut targeted_timed_status_count_by_tag = BTreeMap::new();
+    let mut expected_decision_badge_affected_count = 0u32;
     for row_index in 0..decision_status_count {
         if let Err(err) = require_remaining(
             payload,
@@ -1432,6 +2007,11 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
             ));
         }
         targeted_timed_status_count_by_tag.insert(tag_db_id, counts[2]);
+        expected_decision_badge_affected_count = expected_decision_badge_affected_count
+            .saturating_add(counts[1])
+            .saturating_add(counts[2])
+            .saturating_add(counts[3])
+            .saturating_add(counts[4]);
     }
 
     for row_index in 0..decision_event_count {
@@ -1642,9 +2222,9 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                     ));
                 }
                 summary.focus_pause_badge_rows = summary.focus_pause_badge_rows.saturating_add(1);
-                if affected_count > observed_focus_rows {
+                if affected_count != observed_focus_rows {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: focus pause badge row {row_index} affected_count exceeds observed focus rows"
+                        "offset {offset}: focus pause badge row {row_index} affected_count {affected_count} != observed focus rows {observed_focus_rows}"
                     ));
                 }
             }
@@ -1661,9 +2241,9 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                 }
                 summary.decision_target_badge_rows =
                     summary.decision_target_badge_rows.saturating_add(1);
-                if observed_decision_rows == 0 && affected_count != 0 {
+                if affected_count != expected_decision_badge_affected_count {
                     summary.parse_errors.push(format!(
-                        "offset {offset}: decision target badge row {row_index} has affected decisions without observed decision rows"
+                        "offset {offset}: decision target badge row {row_index} affected_count {affected_count} != decision target-body authority {expected_decision_badge_affected_count}"
                     ));
                 }
             }
@@ -1679,6 +2259,15 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                     ));
                 }
                 summary.direct_event_badge_rows = summary.direct_event_badge_rows.saturating_add(1);
+                let expected_direct_event_count = focus_count
+                    .saturating_add(decision_event_count)
+                    .min(u32::MAX as usize)
+                    as u32;
+                if affected_count != expected_direct_event_count {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: direct event badge row {row_index} affected_count {affected_count} != derived event rows {expected_direct_event_count}"
+                    ));
+                }
             }
             _ => {}
         }
@@ -1721,21 +2310,149 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
     summary
 }
 
-pub fn gate_existing_depth_stream(raw: &[u8]) -> DepthGateSummary {
+fn decode_depth_record_payload(
+    offset: usize,
+    record_flags: u32,
+    payload: &[u8],
+) -> DepthGateSummary {
+    if record_flags & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2 == 0 {
+        return decode_depth_payload(offset, payload);
+    }
+    let normalized = match normalize_depth_versioned_payload(payload) {
+        Ok(normalized) => normalized,
+        Err(error) => {
+            let mut summary = DepthGateSummary {
+                data_records: 1,
+                ..DepthGateSummary::default()
+            };
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: {error}"));
+            return summary;
+        }
+    };
+    decode_depth_payload(offset, &normalized)
+}
+
+fn normalize_depth_versioned_payload(payload: &[u8]) -> Result<Vec<u8>, String> {
+    const V2_HEADER_LEN: usize = 56;
+    const V3_HEADER_LEN: usize = 60;
+    if payload.len() < V2_HEADER_LEN {
+        return Err(format!(
+            "{DOMAIN_NAME} versioned payload is {} byte(s), expected at least {V2_HEADER_LEN}",
+            payload.len()
+        ));
+    }
+    if payload.get(0..4) != Some(b"FRD2".as_slice()) {
+        return Err(format!(
+            "{DOMAIN_NAME} versioned payload is missing FRD2 sanity marker"
+        ));
+    }
+    let schema_version = read_u16_le(payload, 4);
+    let header_len = read_u16_le(payload, 6) as usize;
+    if !matches!(
+        (schema_version, header_len),
+        (2, V2_HEADER_LEN) | (3, V3_HEADER_LEN)
+    ) {
+        return Err(format!(
+            "{DOMAIN_NAME} versioned header has version {schema_version} and length {header_len}"
+        ));
+    }
+    if payload.len() < header_len {
+        return Err(format!(
+            "{DOMAIN_NAME} schema-v{schema_version} payload is {} byte(s), expected at least {header_len}",
+            payload.len()
+        ));
+    }
+
+    // The row wire layouts are shared by v1/v2/v3. Normalize only the header so
+    // the lane-local detailed counters remain one implementation, while the
+    // shared recorder authority remains the canonical structural/status decoder.
+    // FRD2 v3's raw compact status at +56 is intentionally omitted here: the
+    // shared authority owns it, while byte +8 remains lane-local depth status.
+    let mut normalized = Vec::with_capacity(
+        payload
+            .len()
+            .saturating_sub(header_len.saturating_sub(DEPTH_HEADER_LEN)),
+    );
+    normalized.extend_from_slice(&payload[28..32]); // decision_target_count
+    normalized.extend_from_slice(&0u32.to_le_bytes()); // v1 reserved schema word
+    normalized.extend_from_slice(&payload[8..28]); // status + four row counts
+    normalized.extend_from_slice(&payload[32..52]); // observed counts + badge count
+    normalized.extend_from_slice(&payload[header_len..]);
+    Ok(normalized)
+}
+
+/// Gate a production D45 stream for an explicit commanded number of game-hour
+/// advancements. Because both endpoints must be closed, `N` advancements
+/// require exactly `N + 1` consecutive FRAME_ENDs.
+pub fn gate_existing_depth_stream(
+    raw: &[u8],
+    commanded_game_hour_advancements: i64,
+) -> DepthGateSummary {
+    let mut summary = summarize_depth_stream(raw);
+    summary.commanded_game_hour_advancements = commanded_game_hour_advancements;
+    summary.required_closed_frames = commanded_game_hour_advancements
+        .checked_add(1)
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(u64::MAX);
+    if commanded_game_hour_advancements <= 0 {
+        summary.parse_errors.push(format!(
+            "commanded game-hour advancements must be explicitly positive, got {commanded_game_hour_advancements}"
+        ));
+    }
+    let observed_closed_frames = summary.frame_end_records;
+    if summary.game_hours_advanced != commanded_game_hour_advancements
+        || observed_closed_frames != summary.required_closed_frames
+    {
+        summary.parse_errors.push(format!(
+            "production proof duration is {} advancement(s) across {} observed closed frame(s), expected exactly {} advancement(s) / {} closed frame(s)",
+            summary.game_hours_advanced,
+            observed_closed_frames,
+            commanded_game_hour_advancements,
+            summary.required_closed_frames
+        ));
+    }
+    summary
+}
+
+fn summarize_depth_stream(raw: &[u8]) -> DepthGateSummary {
+    let validation = validate_authoritative_stream(raw, &[DOMAIN_ID], true);
+    let first_game_hour_raw = validation.frame_hours.first().copied();
+    let last_game_hour_raw = validation.frame_hours.last().copied();
+    let game_hours_advanced = first_game_hour_raw
+        .zip(last_game_hour_raw)
+        .map(|(first, last)| i64::from(last) - i64::from(first))
+        .unwrap_or(-1);
     let mut offset = 0usize;
-    let mut summary = DepthGateSummary::default();
+    let mut summary = DepthGateSummary {
+        perf_records: validation.owned_perf_records,
+        frame_end_records: validation.frame_end_records,
+        certified_hours: if validation.errors.is_empty() {
+            validation.frame_hours.len() as u64
+        } else {
+            0
+        },
+        first_game_hour_raw,
+        last_game_hour_raw,
+        game_hours_advanced,
+        status_flags_or: validation.status_flags_or,
+        fatal_status_flags: validation.fatal_status_flags,
+        parse_errors: validation.errors,
+        ..DepthGateSummary::default()
+    };
     while offset < raw.len() {
         match parse_h4cr_record(raw, offset) {
             Ok(record) => {
                 if record.domain_id == DOMAIN_ID && record.record_type == RECORD_TYPE_DOMAIN_DATA {
-                    merge_depth_gate(&mut summary, decode_depth_payload(offset, record.payload));
+                    merge_depth_gate(
+                        &mut summary,
+                        decode_depth_record_payload(offset, record.record_flags, record.payload),
+                    );
                 }
                 offset = record.next_offset;
             }
-            Err(err) => {
-                summary.parse_errors.push(err);
-                break;
-            }
+            Err(_) => break,
         }
     }
     summary
@@ -1944,6 +2661,12 @@ fn decode_decisions_payload(payload: &[u8]) -> Result<Vec<DecisionCountryState>,
     let mut rows = Vec::with_capacity(country_count);
     for _ in 0..country_count {
         require_remaining(payload, cursor, 32, "decision country row")?;
+        let country_flags = read_u32_le(payload, cursor + 4);
+        if country_flags & !0b11 != 0 {
+            return Err(format!(
+                "decision country row has unknown flags {country_flags}"
+            ));
+        }
         rows.push(DecisionCountryState {
             tag_db_id: read_u32_le(payload, cursor),
             active_timed_count: read_u32_le(payload, cursor + 8),
@@ -1992,6 +2715,9 @@ fn decode_decisions_payload(payload: &[u8]) -> Result<Vec<DecisionCountryState>,
             cursor += 12;
             let decision =
                 read_compact_string(payload, &mut cursor, "targeted timed decision token")?;
+            if decision.is_empty() {
+                return Err("targeted timed decision row has no decision token".to_string());
+            }
             if flags & !DECISION_TARGET_FLAG_KNOWN_MASK != 0 {
                 return Err(format!(
                     "targeted timed decision row has unknown target flags {flags}"
@@ -2001,9 +2727,10 @@ fn decode_decisions_payload(payload: &[u8]) -> Result<Vec<DecisionCountryState>,
             let has_record_0x20 = flags & DECISION_TARGET_FLAG_RECORD_0X20 != 0;
             let has_numeric_flag = flags & DECISION_TARGET_FLAG_NUMERIC_ID != 0;
             let has_record_0x24 = flags & DECISION_TARGET_FLAG_RECORD_0X24 != 0;
-            if has_country_flag && has_numeric_flag {
+            if has_country_flag == has_numeric_flag {
                 return Err(
-                    "targeted timed decision row has multiple target kind flags".to_string()
+                    "targeted timed decision row must have exactly one target kind flag"
+                        .to_string(),
                 );
             }
             if has_country_flag != has_record_0x20 {
@@ -2069,6 +2796,9 @@ fn decode_decisions_payload(payload: &[u8]) -> Result<Vec<DecisionCountryState>,
             row.targeted_timed_live = targeted_timed;
         }
     }
+    if !timed_by_tag.is_empty() || !targeted_timed_by_tag.is_empty() {
+        return Err("decisions payload contains rows for an undeclared country".to_string());
+    }
     Ok(rows)
 }
 
@@ -2077,35 +2807,28 @@ struct H4crRecord<'a> {
     game_hour_raw: i32,
     domain_id: u16,
     record_type: u16,
+    record_flags: u32,
     payload: &'a [u8],
     next_offset: usize,
 }
 
 fn parse_h4cr_record(raw: &[u8], offset: usize) -> Result<H4crRecord<'_>, String> {
     let remaining = raw.len().saturating_sub(offset);
-    if remaining < H4CR_HEADER_LEN {
-        return Err(format!(
-            "offset {offset}: truncated H4CR header with {remaining} byte(s)"
-        ));
-    }
-    let header = &raw[offset..offset + H4CR_HEADER_LEN];
-    if &header[0..4] != H4CR_MAGIC {
-        return Err(format!("offset {offset}: invalid H4CR magic"));
-    }
-    let version = read_u16_le(header, 4);
-    if version != H4CR_VERSION {
-        return Err(format!(
-            "offset {offset}: unsupported H4CR version {version}"
-        ));
-    }
-    let header_len = read_u16_le(header, 6) as usize;
-    if header_len != H4CR_HEADER_LEN {
-        return Err(format!(
-            "offset {offset}: unsupported H4CR header length {header_len}"
-        ));
-    }
-    let payload_len = read_u32_le(header, 24) as usize;
-    let record_len = H4CR_HEADER_LEN.saturating_add(payload_len);
+    let header = parse_compact_record_header(&raw[offset..]).map_err(|err| match err {
+        RecordFramingError::TruncatedHeader(_) => {
+            format!("offset {offset}: truncated H4CR header with {remaining} byte(s)")
+        }
+        RecordFramingError::BadMagic => format!("offset {offset}: invalid H4CR magic"),
+        RecordFramingError::UnsupportedVersion(version) => {
+            format!("offset {offset}: unsupported H4CR version {version}")
+        }
+        RecordFramingError::UnsupportedHeaderLen(header_len) => {
+            format!("offset {offset}: unsupported H4CR header length {header_len}")
+        }
+        RecordFramingError::PayloadTooLarge(_) => format!("offset {offset}: {err}"),
+    })?;
+    let payload_len = header.payload_len;
+    let record_len = header.record_len();
     if record_len > remaining {
         return Err(format!(
             "offset {offset}: payload length {payload_len} exceeds remaining stream bytes"
@@ -2114,13 +2837,28 @@ fn parse_h4cr_record(raw: &[u8], offset: usize) -> Result<H4crRecord<'_>, String
     let payload_start = offset + H4CR_HEADER_LEN;
     let payload_end = payload_start + payload_len;
     Ok(H4crRecord {
-        sequence: read_u64_le(header, 8),
-        game_hour_raw: read_i32_le(header, 16),
-        domain_id: read_u16_le(header, 20),
-        record_type: read_u16_le(header, 22),
+        sequence: header.sequence,
+        game_hour_raw: header.game_hour_raw,
+        domain_id: header.domain_id,
+        record_type: header.record_type,
+        record_flags: header.record_flags,
         payload: &raw[payload_start..payload_end],
         next_offset: payload_end,
     })
+}
+
+fn canonical_perf_payload(status_flags: u32) -> Vec<u8> {
+    let mut payload = vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN];
+    payload[32..36].copy_from_slice(&status_flags.to_le_bytes());
+    payload
+}
+
+fn canonical_frame_end_payload(emitted_domains: u32, status_flags: u32) -> Vec<u8> {
+    let mut payload = vec![0u8; COMPACT_FRAME_END_PAYLOAD_LEN];
+    payload[16..20].copy_from_slice(&emitted_domains.to_le_bytes());
+    payload[20..24].copy_from_slice(&emitted_domains.to_le_bytes());
+    payload[24..28].copy_from_slice(&status_flags.to_le_bytes());
+    payload
 }
 
 fn append_h4cr_record(
@@ -2294,10 +3032,6 @@ fn read_i32_le(bytes: &[u8], offset: usize) -> i32 {
     i32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("i32 range"))
 }
 
-fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 range"))
-}
-
 fn read_i64_le(bytes: &[u8], offset: usize) -> i64 {
     i64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("i64 range"))
 }
@@ -2336,6 +3070,172 @@ fn json_str(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_focus_payload() -> Vec<u8> {
+        let mut payload = vec![0u8; 28];
+        payload[20..24].copy_from_slice(&100_000u32.to_le_bytes());
+        payload
+    }
+
+    fn empty_tech_payload() -> Vec<u8> {
+        let mut payload = vec![0u8; 32];
+        payload[20..24].copy_from_slice(&1_000u32.to_le_bytes());
+        payload[24..28].copy_from_slice(&100_000u32.to_le_bytes());
+        payload
+    }
+
+    fn empty_decisions_payload() -> Vec<u8> {
+        vec![0u8; 24]
+    }
+
+    fn append_source_frame(
+        stream: &mut Vec<u8>,
+        sequence: &mut u64,
+        game_hour_raw: i32,
+        focus: &[u8],
+        tech: &[u8],
+        decisions: &[u8],
+    ) {
+        append_source_frame_with_status(
+            stream,
+            sequence,
+            game_hour_raw,
+            focus,
+            tech,
+            decisions,
+            [0; 3],
+            0,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_source_frame_with_status(
+        stream: &mut Vec<u8>,
+        sequence: &mut u64,
+        game_hour_raw: i32,
+        focus: &[u8],
+        tech: &[u8],
+        decisions: &[u8],
+        perf_status: [u32; 3],
+        frame_status: u32,
+    ) {
+        for ((domain_id, payload), status) in [
+            (DOMAIN_FOCUS, focus),
+            (DOMAIN_TECH, tech),
+            (DOMAIN_DECISIONS, decisions),
+        ]
+        .into_iter()
+        .zip(perf_status)
+        {
+            append_h4cr_record(
+                stream,
+                *sequence,
+                game_hour_raw,
+                domain_id,
+                RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &canonical_perf_payload(status),
+            );
+            *sequence += 1;
+            append_h4cr_record(
+                stream,
+                *sequence,
+                game_hour_raw,
+                domain_id,
+                RECORD_TYPE_DOMAIN_DATA,
+                0,
+                payload,
+            );
+            *sequence += 1;
+        }
+        append_h4cr_record(
+            stream,
+            *sequence,
+            game_hour_raw,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(3, frame_status),
+        );
+        *sequence += 1;
+    }
+
+    fn append_depth_frame(
+        stream: &mut Vec<u8>,
+        sequence: &mut u64,
+        game_hour_raw: i32,
+        rows: &DepthFrameRows,
+        perf_status: u32,
+    ) {
+        append_h4cr_record(
+            stream,
+            *sequence,
+            game_hour_raw,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(perf_status),
+        );
+        *sequence += 1;
+        append_h4cr_record(
+            stream,
+            *sequence,
+            game_hour_raw,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &encode_depth_payload_v3(rows, perf_status),
+        );
+        *sequence += 1;
+        append_h4cr_record(
+            stream,
+            *sequence,
+            game_hour_raw,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(1, 0),
+        );
+        *sequence += 1;
+    }
+
+    fn append_depth_frame_v2(
+        stream: &mut Vec<u8>,
+        sequence: &mut u64,
+        game_hour_raw: i32,
+        rows: &DepthFrameRows,
+    ) {
+        append_h4cr_record(
+            stream,
+            *sequence,
+            game_hour_raw,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(0),
+        );
+        *sequence += 1;
+        append_h4cr_record(
+            stream,
+            *sequence,
+            game_hour_raw,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &encode_depth_payload_v2(rows),
+        );
+        *sequence += 1;
+        append_h4cr_record(
+            stream,
+            *sequence,
+            game_hour_raw,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(1, 0),
+        );
+        *sequence += 1;
+    }
 
     #[test]
     fn depth_payload_round_trip_gates_transition_rows() {
@@ -2438,16 +3338,6 @@ mod tests {
             current_continuous: None,
             completed_tokens: Vec::new(),
         });
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            100,
-            DOMAIN_FOCUS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
-            &focus_1,
-        );
-        seq += 1;
         let tech_1 = tech_payload(ResearchSlotState {
             tag_db_id: 47,
             slot_index: 0,
@@ -2457,16 +3347,6 @@ mod tests {
             live_progress_raw: Some(100_000),
             base_required_points_raw: Some(1_000_000),
         });
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            100,
-            DOMAIN_TECH,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
-            &tech_1,
-        );
-        seq += 1;
         let decisions_1 = decisions_payload(DecisionCountryState {
             tag_db_id: 47,
             active_timed_count: 1,
@@ -2482,26 +3362,7 @@ mod tests {
             }],
             targeted_timed_live: Vec::new(),
         });
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            100,
-            DOMAIN_DECISIONS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
-            &decisions_1,
-        );
-        seq += 1;
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            100,
-            DOMAIN_FRAME,
-            RECORD_TYPE_FRAME_END,
-            0,
-            &[],
-        );
-        seq += 1;
+        append_source_frame(&mut stream, &mut seq, 100, &focus_1, &tech_1, &decisions_1);
 
         let focus_2 = focus_payload(FocusState {
             tag_db_id: 47,
@@ -2511,16 +3372,6 @@ mod tests {
             current_continuous: None,
             completed_tokens: Vec::new(),
         });
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            124,
-            DOMAIN_FOCUS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
-            &focus_2,
-        );
-        seq += 1;
         let tech_2 = tech_payload(ResearchSlotState {
             tag_db_id: 47,
             slot_index: 0,
@@ -2530,16 +3381,6 @@ mod tests {
             live_progress_raw: Some(220_000),
             base_required_points_raw: Some(1_000_000),
         });
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            124,
-            DOMAIN_TECH,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
-            &tech_2,
-        );
-        seq += 1;
         let decisions_2 = decisions_payload(DecisionCountryState {
             tag_db_id: 47,
             active_timed_count: 1,
@@ -2555,25 +3396,7 @@ mod tests {
             }],
             targeted_timed_live: Vec::new(),
         });
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            124,
-            DOMAIN_DECISIONS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
-            &decisions_2,
-        );
-        seq += 1;
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            124,
-            DOMAIN_FRAME,
-            RECORD_TYPE_FRAME_END,
-            0,
-            &[],
-        );
+        append_source_frame(&mut stream, &mut seq, 101, &focus_2, &tech_2, &decisions_2);
 
         let proof = derive_depth_stream(&stream).expect("derive proof");
         assert!(proof.parse_errors.is_empty(), "{:?}", proof.parse_errors);
@@ -2583,7 +3406,7 @@ mod tests {
             proof.depth_parse_errors
         );
         assert_eq!(proof.source_frames, 2);
-        assert_eq!(proof.skipped_game_hours, 23);
+        assert_eq!(proof.skipped_game_hours, 0);
         assert_eq!(proof.focus_event_rows, 2);
         assert_eq!(proof.research_eta_rows, 1);
         assert_eq!(proof.decision_event_rows, 2);
@@ -2595,6 +3418,946 @@ mod tests {
         assert_eq!(proof.focus_pause_badge_rows, 2);
         assert_eq!(proof.decision_target_badge_rows, 2);
         assert_eq!(proof.direct_event_badge_rows, 2);
+        let gate = gate_existing_depth_stream(&proof.depth_stream, 1);
+        assert!(gate.parse_errors.is_empty(), "{:?}", gate.parse_errors);
+        assert_eq!(gate.data_records, 2);
+        assert_eq!(gate.perf_records, 2);
+        assert_eq!(gate.frame_end_records, 2);
+        assert_eq!(gate.certified_hours, 2);
+    }
+
+    #[test]
+    fn authoritative_source_rejects_empty_and_unrelated_only_streams() {
+        let empty_error = derive_depth_stream(&[]).expect_err("empty source must fail");
+        assert!(empty_error.contains("stream is empty"), "{empty_error}");
+
+        let mut unrelated = Vec::new();
+        append_h4cr_record(
+            &mut unrelated,
+            1,
+            100,
+            77,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(0),
+        );
+        append_h4cr_record(
+            &mut unrelated,
+            2,
+            100,
+            77,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            b"opaque-unowned-payload",
+        );
+        append_h4cr_record(
+            &mut unrelated,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(1, 0),
+        );
+        let error = derive_depth_stream(&unrelated).expect_err("unrelated-only source must fail");
+        assert!(
+            error.contains("owned domain 12 DATA record count 0"),
+            "{error}"
+        );
+        assert!(
+            error.contains("owned domain 16 PERF record count 0"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn authoritative_source_rejects_sequence_prefix_gap_and_wrap() {
+        let mut source = Vec::new();
+        let mut sequence = 1;
+        append_source_frame(
+            &mut source,
+            &mut sequence,
+            100,
+            &empty_focus_payload(),
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+        );
+
+        let mut non_one = source.clone();
+        non_one[8..16].copy_from_slice(&2u64.to_le_bytes());
+        let error = derive_depth_stream(&non_one).expect_err("non-1 prefix must fail");
+        assert!(error.contains("does not start at 1"), "{error}");
+
+        let mut gap = source.clone();
+        let second_header = COMPACT_RECORD_HEADER_LEN + COMPACT_DOMAIN_PERF_BASE_LEN;
+        gap[second_header + 8..second_header + 16].copy_from_slice(&9u64.to_le_bytes());
+        let error = derive_depth_stream(&gap).expect_err("sequence gap must fail");
+        assert!(error.contains("sequence discontinuity"), "{error}");
+
+        let mut wrapping = Vec::new();
+        append_h4cr_record(
+            &mut wrapping,
+            1,
+            100,
+            77,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(0),
+        );
+        append_h4cr_record(
+            &mut wrapping,
+            u64::MAX,
+            100,
+            77,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            b"opaque",
+        );
+        append_h4cr_record(
+            &mut wrapping,
+            0,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(1, 0),
+        );
+        let error = derive_depth_stream(&wrapping).expect_err("sequence wrap must fail");
+        assert!(error.contains("sequence space exhausted"), "{error}");
+    }
+
+    #[test]
+    fn authoritative_source_rejects_illegal_flags_and_malformed_perf() {
+        let mut source = Vec::new();
+        let mut sequence = 1;
+        append_source_frame(
+            &mut source,
+            &mut sequence,
+            100,
+            &empty_focus_payload(),
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+        );
+        source[28..32].copy_from_slice(&1u32.to_le_bytes());
+        let error = derive_depth_stream(&source).expect_err("illegal PERF flags must fail");
+        assert!(error.contains("rejected bits"), "{error}");
+
+        let mut malformed = Vec::new();
+        append_h4cr_record(
+            &mut malformed,
+            1,
+            100,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &[0u8; COMPACT_DOMAIN_PERF_BASE_LEN - 1],
+        );
+        let error = derive_depth_stream(&malformed).expect_err("short PERF must fail");
+        assert!(error.contains("DOMAIN_PERF payload length"), "{error}");
+
+        let mut malformed_data = Vec::new();
+        let mut sequence = 1;
+        append_source_frame(
+            &mut malformed_data,
+            &mut sequence,
+            100,
+            &[],
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+        );
+        let error = derive_depth_stream(&malformed_data).expect_err("bad owned DATA must fail");
+        assert!(
+            error.contains("DATA failed shared authority decode"),
+            "{error}"
+        );
+        assert!(error.contains("expected at least 28"), "{error}");
+    }
+
+    #[test]
+    fn authoritative_source_rejects_missing_duplicate_and_wrong_hour_owned_pairs() {
+        let focus = empty_focus_payload();
+        let tech = empty_tech_payload();
+        let decisions = empty_decisions_payload();
+
+        let mut missing = Vec::new();
+        let mut sequence = 1;
+        for (domain_id, payload) in [
+            (DOMAIN_FOCUS, focus.as_slice()),
+            (DOMAIN_TECH, tech.as_slice()),
+            (DOMAIN_DECISIONS, decisions.as_slice()),
+        ] {
+            if domain_id != DOMAIN_DECISIONS {
+                append_h4cr_record(
+                    &mut missing,
+                    sequence,
+                    100,
+                    domain_id,
+                    RECORD_TYPE_DOMAIN_PERF,
+                    0,
+                    &canonical_perf_payload(0),
+                );
+                sequence += 1;
+            }
+            append_h4cr_record(
+                &mut missing,
+                sequence,
+                100,
+                domain_id,
+                RECORD_TYPE_DOMAIN_DATA,
+                0,
+                payload,
+            );
+            sequence += 1;
+        }
+        append_h4cr_record(
+            &mut missing,
+            sequence,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(2, 0),
+        );
+        let error = derive_depth_stream(&missing).expect_err("missing owned PERF must fail");
+        assert!(
+            error.contains("owned domain 16 PERF record count 0"),
+            "{error}"
+        );
+
+        let mut duplicate = Vec::new();
+        let mut sequence = 1;
+        for (domain_id, payload) in [
+            (DOMAIN_FOCUS, focus.as_slice()),
+            (DOMAIN_TECH, tech.as_slice()),
+            (DOMAIN_DECISIONS, decisions.as_slice()),
+        ] {
+            append_h4cr_record(
+                &mut duplicate,
+                sequence,
+                100,
+                domain_id,
+                RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &canonical_perf_payload(0),
+            );
+            sequence += 1;
+            append_h4cr_record(
+                &mut duplicate,
+                sequence,
+                100,
+                domain_id,
+                RECORD_TYPE_DOMAIN_DATA,
+                0,
+                payload,
+            );
+            sequence += 1;
+            if domain_id == DOMAIN_FOCUS {
+                append_h4cr_record(
+                    &mut duplicate,
+                    sequence,
+                    100,
+                    domain_id,
+                    RECORD_TYPE_DOMAIN_DATA,
+                    0,
+                    payload,
+                );
+                sequence += 1;
+            }
+        }
+        append_h4cr_record(
+            &mut duplicate,
+            sequence,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(3, 0),
+        );
+        let error = derive_depth_stream(&duplicate).expect_err("duplicate DATA must fail");
+        assert!(
+            error.contains("owned domain 12 DATA record count 2"),
+            "{error}"
+        );
+
+        let mut wrong_hour = Vec::new();
+        append_h4cr_record(
+            &mut wrong_hour,
+            1,
+            99,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(0),
+        );
+        append_h4cr_record(
+            &mut wrong_hour,
+            2,
+            100,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &focus,
+        );
+        let error = derive_depth_stream(&wrong_hour).expect_err("wrong-hour pair must fail");
+        assert!(
+            error.contains("conflicts with pending PERF hour 99"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn authoritative_source_rejects_bare_unclosed_skipped_and_trailing_frames() {
+        let mut bare = Vec::new();
+        append_h4cr_record(
+            &mut bare,
+            1,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(0, 0),
+        );
+        let error = derive_depth_stream(&bare).expect_err("bare FRAME_END must fail");
+        assert!(error.contains("has no open DATA frame"), "{error}");
+
+        let mut canonical = Vec::new();
+        let mut sequence = 1;
+        append_source_frame(
+            &mut canonical,
+            &mut sequence,
+            100,
+            &empty_focus_payload(),
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+        );
+        let mut unclosed = canonical.clone();
+        unclosed
+            .truncate(unclosed.len() - COMPACT_RECORD_HEADER_LEN - COMPACT_FRAME_END_PAYLOAD_LEN);
+        let error = derive_depth_stream(&unclosed).expect_err("unclosed frame must fail");
+        assert!(
+            error.contains("stream ended with open DATA frame"),
+            "{error}"
+        );
+
+        let mut skipped = canonical.clone();
+        append_source_frame(
+            &mut skipped,
+            &mut sequence,
+            102,
+            &empty_focus_payload(),
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+        );
+        let error = derive_depth_stream(&skipped).expect_err("skipped frame hour must fail");
+        assert!(error.contains("expected consecutive hour 101"), "{error}");
+
+        let mut reordered = canonical.clone();
+        let mut reordered_sequence = sequence - 7;
+        append_source_frame(
+            &mut reordered,
+            &mut reordered_sequence,
+            99,
+            &empty_focus_payload(),
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+        );
+        let error = derive_depth_stream(&reordered).expect_err("reordered frame must fail");
+        assert!(error.contains("expected consecutive hour 101"), "{error}");
+
+        let mut trailing = canonical;
+        trailing.push(0);
+        let error = derive_depth_stream(&trailing).expect_err("trailing byte must fail");
+        assert!(error.contains("truncated H4CR header"), "{error}");
+        assert!(
+            error.contains("not closed by a final canonical FRAME_END"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn depth_gate_requires_certified_d45_pairs_and_normalizes_fatal_status() {
+        let mut clean = Vec::new();
+        let mut sequence = 1;
+        append_depth_frame(
+            &mut clean,
+            &mut sequence,
+            100,
+            &DepthFrameRows::default(),
+            compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+        );
+        append_depth_frame(
+            &mut clean,
+            &mut sequence,
+            101,
+            &DepthFrameRows::default(),
+            compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+        );
+        let clean_summary = gate_existing_depth_stream(&clean, 1);
+        assert!(
+            clean_summary.parse_errors.is_empty(),
+            "{:?}",
+            clean_summary.parse_errors
+        );
+        assert_eq!(clean_summary.certified_hours, 2);
+        assert_eq!(clean_summary.fatal_status_flags, 0);
+
+        let mut fatal = Vec::new();
+        let mut sequence = 1;
+        append_depth_frame(
+            &mut fatal,
+            &mut sequence,
+            100,
+            &DepthFrameRows::default(),
+            compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE,
+        );
+        append_depth_frame(
+            &mut fatal,
+            &mut sequence,
+            101,
+            &DepthFrameRows::default(),
+            compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE,
+        );
+        let fatal_summary = gate_existing_depth_stream(&fatal, 1);
+        assert_ne!(fatal_summary.fatal_status_flags, 0);
+        assert!(fatal_summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("fatal status flags")));
+
+        let mut data_only = Vec::new();
+        append_h4cr_record(
+            &mut data_only,
+            1,
+            100,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &encode_depth_payload(&DepthFrameRows::default()),
+        );
+        append_h4cr_record(
+            &mut data_only,
+            2,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(0, 0),
+        );
+        let summary = gate_existing_depth_stream(&data_only, 1);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("owned domain 45 PERF record count 0")));
+    }
+
+    #[test]
+    fn production_duration_requires_positive_advancements_plus_one_closed_frames() {
+        let mut one_frame = Vec::new();
+        let mut sequence = 1;
+        append_depth_frame(
+            &mut one_frame,
+            &mut sequence,
+            200,
+            &DepthFrameRows::default(),
+            0,
+        );
+
+        let nonpositive = gate_existing_depth_stream(&one_frame, 0);
+        assert!(nonpositive.parse_errors.iter().any(|error| {
+            error.contains("commanded game-hour advancements must be explicitly positive")
+        }));
+
+        let short = gate_existing_depth_stream(&one_frame, 1);
+        assert!(short.parse_errors.iter().any(|error| {
+            error.contains("0 advancement(s) across 1 observed closed frame(s)")
+                && error.contains("1 advancement(s) / 2 closed frame(s)")
+        }));
+
+        append_depth_frame(
+            &mut one_frame,
+            &mut sequence,
+            201,
+            &DepthFrameRows::default(),
+            0,
+        );
+        let exact = gate_existing_depth_stream(&one_frame, 1);
+        assert!(!exact
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("production proof duration")));
+        assert!(exact.parse_errors.is_empty(), "{:?}", exact.parse_errors);
+        assert_eq!(exact.game_hours_advanced, 1);
+        assert_eq!(exact.certified_hours, 2);
+        assert_eq!(exact.required_closed_frames, 2);
+
+        append_depth_frame(
+            &mut one_frame,
+            &mut sequence,
+            202,
+            &DepthFrameRows::default(),
+            0,
+        );
+        let overlong = gate_existing_depth_stream(&one_frame, 1);
+        assert!(overlong.parse_errors.iter().any(|error| {
+            error.contains("2 advancement(s) across 3 observed closed frame(s)")
+                && error.contains("expected exactly 1 advancement(s) / 2 closed frame(s)")
+        }));
+    }
+
+    #[test]
+    fn frame_end_authority_is_bound_to_observed_perf_and_canonical_fields() {
+        let cases: [(u32, u32, u32, u32, &str); 5] = [
+            (2, 2, 0, 0, "independently observed DOMAIN_PERF count 1"),
+            (1, 2, 0, 0, "scheduled_domains 2 != emitted_domains 1"),
+            (1, 1, 0, 7, "reserved word is nonzero"),
+            (1, 1, 1u32 << 31, 0, "unknown v1 bits"),
+            (
+                1,
+                1,
+                compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE,
+                0,
+                "fatal global status flags",
+            ),
+        ];
+        for (emitted, scheduled, status, reserved, expected) in cases {
+            let mut stream = Vec::new();
+            append_h4cr_record(
+                &mut stream,
+                1,
+                300,
+                DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &canonical_perf_payload(0),
+            );
+            append_h4cr_record(
+                &mut stream,
+                2,
+                300,
+                DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_DATA,
+                0,
+                &encode_depth_payload(&DepthFrameRows::default()),
+            );
+            let mut frame = vec![0u8; COMPACT_FRAME_END_PAYLOAD_LEN];
+            frame[16..20].copy_from_slice(&emitted.to_le_bytes());
+            frame[20..24].copy_from_slice(&scheduled.to_le_bytes());
+            frame[24..28].copy_from_slice(&status.to_le_bytes());
+            frame[28..32].copy_from_slice(&reserved.to_le_bytes());
+            append_h4cr_record(
+                &mut stream,
+                3,
+                300,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                0,
+                &frame,
+            );
+
+            let summary = summarize_depth_stream(&stream);
+            assert!(
+                summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "expected {expected:?}, errors={:?}",
+                summary.parse_errors
+            );
+        }
+    }
+
+    #[test]
+    fn production_gate_rejects_statusless_frd2_v2_through_shared_authority() {
+        let mut stream = Vec::new();
+        let mut sequence = 1;
+        append_depth_frame_v2(&mut stream, &mut sequence, 400, &DepthFrameRows::default());
+        append_depth_frame_v2(&mut stream, &mut sequence, 401, &DepthFrameRows::default());
+        let summary = gate_existing_depth_stream(&stream, 1);
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("production-owned domain 45 DATA lacks compact status authority")
+        }));
+        assert_eq!(summary.data_records, 2);
+        assert_eq!(summary.certified_hours, 0);
+    }
+
+    #[test]
+    fn frd2_v3_exposes_raw_status_without_reinterpreting_depth_status() {
+        let raw_status = compact_contract::COMPACT_STATUS_DELTA_DATA;
+        let payload = encode_depth_payload_v3(&DepthFrameRows::default(), raw_status);
+        assert_eq!(&payload[0..4], b"FRD2");
+        assert_eq!(read_u16_le(&payload, 4), 3);
+        assert_eq!(read_u16_le(&payload, 6), 60);
+        assert_eq!(read_u32_le(&payload, 8), DEPTH_STATUS_KNOWN_MASK);
+        assert_eq!(read_u32_le(&payload, 56), raw_status);
+
+        for expected in [0, raw_status] {
+            let payload = encode_depth_payload_v3(&DepthFrameRows::default(), expected);
+            let authority = summarize_domain_data_payload(
+                DOMAIN_ID,
+                &payload,
+                DomainDataContext {
+                    stream_offset: 0,
+                    record_flags: compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+                    sequence: 1,
+                    header_hour_raw: 400,
+                    session_header_identity: None,
+                },
+            )
+            .expect("FRD2 v3 shared authority");
+            assert_eq!(authority.status_flags, Some(expected));
+        }
+    }
+
+    #[test]
+    fn production_gate_rejects_frd2_v3_data_perf_status_mismatch() {
+        let mut stream = Vec::new();
+        let mut sequence = 1;
+        append_h4cr_record(
+            &mut stream,
+            sequence,
+            400,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(0),
+        );
+        sequence += 1;
+        append_h4cr_record(
+            &mut stream,
+            sequence,
+            400,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &encode_depth_payload_v3(
+                &DepthFrameRows::default(),
+                compact_contract::COMPACT_STATUS_DELTA_DATA,
+            ),
+        );
+        sequence += 1;
+        append_h4cr_record(
+            &mut stream,
+            sequence,
+            400,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(1, 0),
+        );
+        sequence += 1;
+        append_depth_frame(
+            &mut stream,
+            &mut sequence,
+            401,
+            &DepthFrameRows::default(),
+            0,
+        );
+
+        let summary = gate_existing_depth_stream(&stream, 1);
+        let expected_data_status = format!(
+            "DATA status {:#010x}",
+            compact_contract::COMPACT_STATUS_DELTA_DATA
+        );
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains(&expected_data_status)
+                && error.contains("does not match PERF status Some(\"0x00000000\")")
+        }));
+        assert_eq!(summary.certified_hours, 0);
+    }
+
+    #[test]
+    fn versioned_lane_decoder_rejects_mismatched_and_truncated_v3_headers() {
+        let payload = encode_depth_payload_v3(&DepthFrameRows::default(), 0);
+        let truncated = decode_depth_record_payload(
+            0,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &payload[..56],
+        );
+        assert!(truncated
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("schema-v3 payload is 56 byte(s), expected at least 60")));
+
+        let mut mismatched = payload;
+        mismatched[4..6].copy_from_slice(&2u16.to_le_bytes());
+        let summary = decode_depth_record_payload(
+            0,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &mismatched,
+        );
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| { error.contains("versioned header has version 2 and length 60") }));
+    }
+
+    #[test]
+    fn production_gate_rejects_legacy_lane_local_payload_wire() {
+        let mut stream = Vec::new();
+        let mut sequence = 1;
+        for hour in [400, 401] {
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &canonical_perf_payload(0),
+            );
+            sequence += 1;
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                DOMAIN_ID,
+                RECORD_TYPE_DOMAIN_DATA,
+                0,
+                &encode_depth_payload(&DepthFrameRows::default()),
+            );
+            sequence += 1;
+            append_h4cr_record(
+                &mut stream,
+                sequence,
+                hour,
+                DOMAIN_FRAME,
+                RECORD_TYPE_FRAME_END,
+                0,
+                &canonical_frame_end_payload(1, 0),
+            );
+            sequence += 1;
+        }
+
+        let summary = gate_existing_depth_stream(&stream, 1);
+        assert_eq!(summary.certified_hours, 0);
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("production-owned domain 45 DATA")
+                && error.contains("missing the canonical schema-v2 record flag")
+        }));
+    }
+
+    #[test]
+    fn authoritative_gate_rejects_unknown_perf_status_and_cross_hour_probe() {
+        let mut unknown_perf = Vec::new();
+        append_h4cr_record(
+            &mut unknown_perf,
+            1,
+            500,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(1u32 << 31),
+        );
+        append_h4cr_record(
+            &mut unknown_perf,
+            2,
+            500,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &encode_depth_payload(&DepthFrameRows::default()),
+        );
+        append_h4cr_record(
+            &mut unknown_perf,
+            3,
+            500,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &canonical_frame_end_payload(1, 0),
+        );
+        let unknown_summary = summarize_depth_stream(&unknown_perf);
+        assert!(unknown_summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("PERF carries unknown v1 status flags")));
+
+        let mut cross_hour_probe = Vec::new();
+        append_h4cr_record(
+            &mut cross_hour_probe,
+            1,
+            999,
+            DOMAIN_RC_PROBE,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(0),
+        );
+        append_h4cr_record(
+            &mut cross_hour_probe,
+            2,
+            500,
+            DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &canonical_perf_payload(0),
+        );
+        let probe_summary = summarize_depth_stream(&cross_hour_probe);
+        assert!(probe_summary.parse_errors.iter().any(|error| {
+            error.contains("DOMAIN_PERF hour 500 conflicts with pending frame hour 999")
+        }));
+    }
+
+    #[test]
+    fn depth_badges_must_exactly_cover_their_authoritative_populations() {
+        let mut rows = DepthFrameRows {
+            focus_events: vec![FocusEventRow {
+                tag_db_id: 47,
+                kind: FOCUS_EVENT_CURRENT_STARTED,
+                focus_kind: FOCUS_KIND_NATIONAL,
+                flags: 0,
+                previous_completed_count: 0,
+                current_completed_count: 0,
+                previous_progress_raw: 0,
+                current_progress_raw: 1,
+                completed_delta: 0,
+                from_token: None,
+                to_token: Some("POR_focus".to_string()),
+                completed_token: None,
+            }],
+            decision_status: vec![DecisionStatusRow {
+                tag_db_id: 47,
+                active_timed_count: 0,
+                targeted_count: 1,
+                targeted_timed_count: 0,
+                decisions_taken_bucket_count: 0,
+                re_enable_count: 0,
+                timed_live_count: 0,
+            }],
+            decision_events: vec![DecisionEventRow {
+                tag_db_id: 47,
+                kind: DECISION_EVENT_STATUS_COUNTS_CHANGED,
+                flags: 0,
+                previous_days: 0,
+                current_days: 0,
+                previous_state: 0,
+                current_state: 0,
+                decision: None,
+            }],
+            observed_focus_rows: 1,
+            observed_decision_rows: 1,
+            ..DepthFrameRows::default()
+        };
+        apply_required_badges(&mut rows);
+        for badge in &mut rows.badges {
+            badge.affected_count = 0;
+        }
+        let summary = decode_depth_payload(0, &encode_depth_payload(&rows));
+        for expected in [
+            "affected_count 0 != observed focus rows 1",
+            "affected_count 0 != decision target-body authority 1",
+            "affected_count 0 != derived event rows 2",
+        ] {
+            assert!(
+                summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "expected {expected:?}, errors={:?}",
+                summary.parse_errors
+            );
+        }
+    }
+
+    #[test]
+    fn source_row_flags_are_rejected_by_shared_authority() {
+        let mut focus = focus_payload(FocusState {
+            tag_db_id: 47,
+            completed_count: Some(1),
+            progress_raw: Some(1),
+            current: Some("POR_focus".to_string()),
+            current_continuous: None,
+            completed_tokens: Vec::new(),
+        });
+        let flags = read_u32_le(&focus, 32) | (1u32 << 30);
+        focus[32..36].copy_from_slice(&flags.to_le_bytes());
+        let mut stream = Vec::new();
+        let mut sequence = 1;
+        append_source_frame(
+            &mut stream,
+            &mut sequence,
+            600,
+            &focus,
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+        );
+        let error = derive_depth_stream(&stream).expect_err("unknown source row flags must fail");
+        assert!(error.contains("shared authority decode"), "{error}");
+
+        let mut status_mismatch_focus = empty_focus_payload();
+        status_mismatch_focus[16..20]
+            .copy_from_slice(&compact_contract::COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+        let mut mismatch_stream = Vec::new();
+        let mut mismatch_sequence = 1;
+        append_source_frame(
+            &mut mismatch_stream,
+            &mut mismatch_sequence,
+            601,
+            &status_mismatch_focus,
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+        );
+        let error = derive_depth_stream(&mismatch_stream)
+            .expect_err("source DATA/PERF status mismatch must fail");
+        assert!(
+            error.contains(&format!(
+                "DATA status {:#010x}",
+                compact_contract::COMPACT_STATUS_DELTA_DATA
+            )),
+            "{error}"
+        );
+        assert!(error.contains("does not match PERF status"), "{error}");
+    }
+
+    #[test]
+    fn derivation_propagates_nonfatal_perf_and_frame_status() {
+        let mut source = Vec::new();
+        let mut sequence = 1;
+        let mut focus = empty_focus_payload();
+        focus[16..20].copy_from_slice(&compact_contract::COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+        append_source_frame_with_status(
+            &mut source,
+            &mut sequence,
+            100,
+            &focus,
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+            [compact_contract::COMPACT_STATUS_DELTA_DATA, 0, 0],
+            compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE,
+        );
+        let proof = derive_depth_stream(&source).expect("nonfatal status source must derive");
+        let summary = summarize_depth_stream(&proof.depth_stream);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_ne!(
+            summary.status_flags_or & compact_contract::COMPACT_STATUS_DELTA_DATA,
+            0
+        );
+        assert_ne!(
+            summary.status_flags_or & compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE,
+            0
+        );
+        assert_eq!(summary.fatal_status_flags, 0);
+
+        let mut fatal_source = Vec::new();
+        let mut sequence = 1;
+        append_source_frame_with_status(
+            &mut fatal_source,
+            &mut sequence,
+            100,
+            &empty_focus_payload(),
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
+            [compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE, 0, 0],
+            0,
+        );
+        let error = derive_depth_stream(&fatal_source).expect_err("fatal source status must fail");
+        assert!(
+            error.contains("domain 12 PERF carries fatal status"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2609,6 +4372,7 @@ mod tests {
         // reporting "focus depth row N has no token context", which is what made
         // the production compact stream NOT DECODABLE.
         let mut stream = Vec::new();
+        let mut sequence = 1;
         let focus_1 = focus_payload(FocusState {
             tag_db_id: 8,
             completed_count: Some(43),
@@ -2617,23 +4381,13 @@ mod tests {
             current_continuous: None,
             completed_tokens: Vec::new(),
         });
-        append_h4cr_record(
+        append_source_frame(
             &mut stream,
-            1,
+            &mut sequence,
             100,
-            DOMAIN_FOCUS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
             &focus_1,
-        );
-        append_h4cr_record(
-            &mut stream,
-            2,
-            100,
-            DOMAIN_FRAME,
-            RECORD_TYPE_FRAME_END,
-            0,
-            &[],
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
         );
         let focus_2 = focus_payload(FocusState {
             tag_db_id: 8,
@@ -2643,23 +4397,13 @@ mod tests {
             current_continuous: None,
             completed_tokens: Vec::new(),
         });
-        append_h4cr_record(
+        append_source_frame(
             &mut stream,
-            3,
+            &mut sequence,
             101,
-            DOMAIN_FOCUS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
             &focus_2,
-        );
-        append_h4cr_record(
-            &mut stream,
-            4,
-            101,
-            DOMAIN_FRAME,
-            RECORD_TYPE_FRAME_END,
-            0,
-            &[],
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
         );
 
         let proof = derive_depth_stream(&stream).expect("derive proof");
@@ -2752,6 +4496,7 @@ mod tests {
     #[test]
     fn derives_targeted_timed_target_rows_from_extended_decisions_payload() {
         let mut stream = Vec::new();
+        let mut sequence = 1;
         let decisions = decisions_payload(DecisionCountryState {
             tag_db_id: 47,
             active_timed_count: 0,
@@ -2769,29 +4514,19 @@ mod tests {
                 },
                 TargetedTimedDecisionState {
                     tag_db_id: 47,
-                    decision: "POR_numeric_target_decision".to_string(),
-                    target_tag_db_id: None,
-                    target_numeric_id: Some(1043),
+                    decision: "POR_second_country_target_decision".to_string(),
+                    target_tag_db_id: Some(22),
+                    target_numeric_id: None,
                 },
             ],
         });
-        append_h4cr_record(
+        append_source_frame(
             &mut stream,
-            1,
+            &mut sequence,
             200,
-            DOMAIN_DECISIONS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
+            &empty_focus_payload(),
+            &empty_tech_payload(),
             &decisions,
-        );
-        append_h4cr_record(
-            &mut stream,
-            2,
-            200,
-            DOMAIN_FRAME,
-            RECORD_TYPE_FRAME_END,
-            0,
-            &[],
         );
 
         let proof = derive_depth_stream(&stream).expect("derive proof");
@@ -2804,8 +4539,8 @@ mod tests {
         assert_eq!(proof.source_targeted_timed_decision_rows, 2);
         assert_eq!(proof.decision_status_rows, 1);
         assert_eq!(proof.decision_target_rows, 2);
-        assert_eq!(proof.decision_country_target_rows, 1);
-        assert_eq!(proof.decision_numeric_target_rows, 1);
+        assert_eq!(proof.decision_country_target_rows, 2);
+        assert_eq!(proof.decision_numeric_target_rows, 0);
         assert_eq!(proof.decision_target_badge_rows, 1);
     }
 
@@ -2822,26 +4557,14 @@ mod tests {
             current_continuous: None,
             completed_tokens: vec!["POR_prior_focus".to_string()],
         });
-        append_h4cr_record(
+        append_source_frame(
             &mut stream,
-            seq,
+            &mut seq,
             100,
-            DOMAIN_FOCUS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
             &focus_1,
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
         );
-        seq += 1;
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            100,
-            DOMAIN_FRAME,
-            RECORD_TYPE_FRAME_END,
-            0,
-            &[],
-        );
-        seq += 1;
 
         let focus_2 = focus_payload(FocusState {
             tag_db_id: 47,
@@ -2854,24 +4577,13 @@ mod tests {
                 "POR_newly_completed_focus".to_string(),
             ],
         });
-        append_h4cr_record(
+        append_source_frame(
             &mut stream,
-            seq,
+            &mut seq,
             101,
-            DOMAIN_FOCUS,
-            RECORD_TYPE_DOMAIN_DATA,
-            0,
             &focus_2,
-        );
-        seq += 1;
-        append_h4cr_record(
-            &mut stream,
-            seq,
-            101,
-            DOMAIN_FRAME,
-            RECORD_TYPE_FRAME_END,
-            0,
-            &[],
+            &empty_tech_payload(),
+            &empty_decisions_payload(),
         );
 
         let proof = derive_depth_stream(&stream).expect("derive proof");
@@ -2973,6 +4685,10 @@ mod tests {
 
         let err = decode_decisions_payload(&payload).expect_err("bad target flags rejected");
         assert!(err.contains("inconsistent country/record+0x20 flags"));
+
+        payload[68..72].copy_from_slice(&0u32.to_le_bytes());
+        let err = decode_decisions_payload(&payload).expect_err("missing target kind rejected");
+        assert!(err.contains("exactly one target kind flag"));
     }
 
     #[test]

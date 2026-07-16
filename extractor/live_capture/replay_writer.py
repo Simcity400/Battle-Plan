@@ -464,16 +464,10 @@ class ReplayRecorder:
 
         container = _write_zip(zip_files)
 
-        # atomic finalize: write <out>.tmp -> fsync -> os.replace (spec §6).
-        tmp = self._out_path + ".tmp"
-        d = os.path.dirname(os.path.abspath(self._out_path)) or "."
-        os.makedirs(_win_long_path(d), exist_ok=True)
-        with open(_win_long_path(tmp), "wb") as fh:
-            fh.write(container)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(_win_long_path(tmp), _win_long_path(self._out_path))
-        _fsync_dir(d)
+        # Verify the fsynced candidate BEFORE it can replace a previously-good
+        # recording.  A corrupt candidate is removed and the destination is left
+        # byte-for-byte unchanged (or absent on the first publication).
+        _atomic_publish_verified_container(self._out_path, container)
         return self._out_path
 
     def finalize_and_verify(self) -> bool:
@@ -734,6 +728,52 @@ def _fsync_dir(d: str) -> None:
         pass
     finally:
         os.close(fd)
+
+
+def _atomic_publish_verified_container(out_path: str, data: bytes) -> None:
+    """Fsync and verify a container candidate before atomically publishing it.
+
+    The destination is never opened or replaced until ``_verify_container`` has
+    accepted the exact bytes in ``<out_path>.tmp``.  Any write, verification, or
+    replace failure removes the candidate when possible and propagates to the
+    caller; an existing destination therefore remains the last known-good
+    artifact.
+    """
+    tmp = out_path + ".tmp"
+    out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
+    os.makedirs(_win_long_path(out_dir), exist_ok=True)
+    publish_error: Optional[BaseException] = None
+    try:
+        with open(_win_long_path(tmp), "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if _verify_container(tmp) is not True:
+            raise ValueError("temporary replay container verification failed")
+        os.replace(_win_long_path(tmp), _win_long_path(out_path))
+        _fsync_dir(out_dir)
+    except BaseException as exc:
+        publish_error = exc
+
+    # After a successful replace the temp no longer exists.  On a failed
+    # publication, removal is part of the fail-closed contract: if the platform
+    # refuses cleanup, surface the exact retained candidate path rather than
+    # silently claiming that the rejected artifact is gone.
+    try:
+        os.remove(_win_long_path(tmp))
+    except FileNotFoundError:
+        pass
+    except OSError as cleanup_exc:
+        detail = (
+            "; publication error: %s" % publish_error
+            if publish_error is not None else ""
+        )
+        raise RuntimeError(
+            "rejected replay candidate cleanup failed; candidate may remain "
+            "at %s%s" % (tmp, detail)) from cleanup_exc
+
+    if publish_error is not None:
+        raise publish_error
 
 
 def _collector_raw_stream_metadata(path: str) -> Dict[str, Any]:

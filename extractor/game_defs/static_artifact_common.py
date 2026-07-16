@@ -315,10 +315,21 @@ def add_layer_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="the game user-data dir used to resolve relative mod descriptors.",
     )
+    parser.add_argument(
+        "--strict-mods",
+        action="store_true",
+        help="fail if any explicitly requested mod descriptor/content layer is skipped",
+    )
+    parser.add_argument(
+        "--source-inventory",
+        type=Path,
+        default=None,
+        help="validated live source inventory used to add integrated and active DLC definition layers",
+    )
 
 
 def mods_from_arg(raw: str | None) -> list[str] | None:
-    if not raw:
+    if raw is None:
         return None
     return [part.strip() for part in raw.split(",") if part.strip()]
 

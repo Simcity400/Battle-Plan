@@ -32,6 +32,10 @@ import parse_localisation  # noqa: E402
 import localisation_gate  # noqa: E402
 
 
+def test_empty_explicit_modset_is_vanilla_only():
+    assert localisation_gate.mods_from_arg("") == []
+
+
 def _write(root: Path, rel: str, text: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -49,14 +49,10 @@ def patch_manifest_diagnostics(path: str, diagnostics: Dict[str, Any]) -> bool:
     files.append(rw._ZipFile("manifest.json", man_bytes, deflate=False))
     data = rw._write_zip(files)
 
-    tmp = path + ".tmp"
-    out_dir = os.path.dirname(os.path.abspath(path)) or "."
-    with open(tmp, "wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
-    rw._fsync_dir(out_dir)
+    # Use the same verify-before-replace publication choke point as the primary
+    # writer.  If the patched candidate is invalid, the prior recording remains
+    # untouched and the failure propagates to the recorder/GUI.
+    rw._atomic_publish_verified_container(path, data)
     return True
 
 

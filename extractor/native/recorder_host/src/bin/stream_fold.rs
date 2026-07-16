@@ -19,7 +19,6 @@
 #[global_allocator]
 static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -93,8 +92,9 @@ fn run() -> Result<(), String> {
     let out_dir = PathBuf::from(&positional[1]);
 
     let start = std::time::Instant::now();
-    let (files, stats) = fold_compact_stream_file_parallel(&stream_path, &game_id, &out_dir, workers)
-        .map_err(|e| format!("streaming fold {}: {e}", stream_path.display()))?;
+    let (files, stats) =
+        fold_compact_stream_file_parallel(&stream_path, &game_id, &out_dir, workers)
+            .map_err(|e| format!("streaming fold {}: {e}", stream_path.display()))?;
     let elapsed = start.elapsed();
     if let Some(breakdown) = recorder_host::world_fold::foldprof::report() {
         eprintln!("stream_fold: {breakdown}");

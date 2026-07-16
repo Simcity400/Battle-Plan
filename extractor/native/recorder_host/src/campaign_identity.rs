@@ -9,7 +9,9 @@
 //!
 //! ## Fail-closed reality at this revision
 //!
-//! Neither component is offset-proven or wired into the live d68
+//! Exact-build static serializer/deserializer evidence now proves the candidate
+//! members (`i32[CGameState+0x720]` and MSVC `std::string[CGameState+0x728]`),
+//! but neither candidate is live-accepted or wired into the live d68
 //! `session_header_live` payload yet (design "Open items"; the current wire
 //! schema carries player tag / DLC mask / start date / save version / session /
 //! ideology / cosmetic tag / build banner and *no* `game_unique_*` field — see
@@ -22,13 +24,16 @@
 //!
 //! The resolver, digest math, closed-grammar manifest validator, and stitching
 //! consumer interface are complete and test-covered so that the moment the
-//! collector sources the pair into the observation (a future, offset-proven
+//! collector sources the pair into the observation (a future, live-accepted
 //! change), a `state = "known"` binding flows through unchanged.
 
 use serde_json::{json, Map, Value};
 use snapshot::sha256::{to_hex, Sha256};
 
-use compact_contract::calendar::hour_index_from_raw;
+use compact_contract::{
+    calendar::hour_index_from_raw,
+    campaign_identity::{Cid1Witnesses, ValidatedCid1},
+};
 
 /// Manifest schema tag for the campaign identity object.
 pub const CAMPAIGN_IDENTITY_SCHEMA: &str = "hoi4.campaign_identity.v1";
@@ -156,8 +161,8 @@ pub struct CampaignIdentity {
     pub source: Option<String>,
     pub source_build_profile: Option<String>,
     pub observed_game_hour_raw: Option<i32>,
-    /// SHA-256 of the complete CID1 stream-header payload. `None` at this
-    /// revision (no CID1 record type exists yet; filled by the future decoder).
+    /// SHA-256 of the complete CID1 stream-header payload. `None` until the
+    /// production stream walker supplies an opaque validated CID1 token.
     pub stream_header_sha256: Option<String>,
     pub witnesses: CampaignIdentityWitnesses,
     /// Human-readable reason for any non-`Known` state. Always `Some` when the
@@ -181,6 +186,44 @@ impl CampaignIdentity {
                     )
             })
     }
+}
+
+/// Resolve a `Known` identity only from the opaque result of the shared CID1
+/// byte parser. Parallel manifest fields, asserted hashes, and caller booleans
+/// cannot construct `ValidatedCid1`, so this is the production authorization
+/// boundary between stream bytes and recorder metadata.
+pub fn resolve_validated_cid1(cid1: &ValidatedCid1) -> CampaignIdentity {
+    let Cid1Witnesses {
+        start_date_raw,
+        session,
+        scenario,
+        initial_human_country_tags,
+        modset_identity,
+    } = cid1.witnesses().clone();
+    let mut identity = CampaignIdentity {
+        state: CampaignIdentityState::Known,
+        campaign_id: Some(cid1.campaign_id_hex()),
+        game_unique_id: Some(cid1.game_unique_id().to_owned()),
+        game_unique_seed: Some(cid1.game_unique_seed().to_string()),
+        source: Some(SOURCE_LIVE_MEMORY.to_owned()),
+        source_build_profile: Some(cid1.source_build_profile().to_owned()),
+        observed_game_hour_raw: Some(cid1.game_hour_raw()),
+        stream_header_sha256: Some(cid1.payload_sha256_hex()),
+        witnesses: CampaignIdentityWitnesses {
+            start_date_raw,
+            session,
+            scenario,
+            initial_human_country_tags,
+            modset_identity,
+        },
+        resolution_note: None,
+        evidence_proof: None,
+    };
+    identity.evidence_proof = Some(IdentityEvidenceProof {
+        cid1_payload: cid1.payload().to_vec(),
+        binding_sha256: campaign_identity_evidence_digest(&identity, cid1.payload()),
+    });
+    identity
 }
 
 fn hash_bytes(hasher: &mut Sha256, bytes: &[u8]) {
@@ -284,9 +327,9 @@ fn payload_hash_matches(stored_hash: Option<&str>, cid1_payload: &[u8]) -> bool 
 /// Seal an observation only after the stateful decoder has validated these
 /// exact CID1 bytes and established two matching complete observations.
 ///
-/// This remains private until CID1 exists. The future decoder belongs in this
-/// module and must pass its validated payload bytes here; candidate fields or a
-/// caller-supplied hash alone can never create authorization.
+/// This legacy observation sealer remains private for the pre-CID1 observation
+/// tests. Production authorization uses `resolve_validated_cid1`; candidate
+/// fields or a caller-supplied hash alone can never create authorization.
 #[allow(dead_code)]
 fn seal_verified_observation_evidence(
     obs: &mut SessionHeaderIdentityObservation,
@@ -358,9 +401,11 @@ pub fn canonical_uuid(raw: &str) -> Option<String> {
     Some(out)
 }
 
-/// Validate + canonicalize a `game_unique_seed` as a base-10 integer string.
-/// Rejects empty, non-digit, leading-zero (`007`), and negative-zero (`-0`)
-/// forms so the canonical representation is unique.
+/// Validate + canonicalize a signed-32-bit `game_unique_seed` as a base-10
+/// integer string. Static serializer/deserializer evidence proves the member is
+/// an engine `i32`; accepting a wider value would authorize an identity that
+/// the current build cannot contain. Rejects empty, non-digit, leading-zero
+/// (`007`), negative-zero (`-0`), and values outside the i32 range.
 pub fn canonical_seed(raw: &str) -> Option<String> {
     let (neg, digits) = match raw.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -376,11 +421,13 @@ pub fn canonical_seed(raw: &str) -> Option<String> {
     if neg && digits == "0" {
         return None;
     }
-    Some(if neg {
+    let canonical = if neg {
         format!("-{digits}")
     } else {
         digits.to_string()
-    })
+    };
+    canonical.parse::<i32>().ok()?;
+    Some(canonical)
 }
 
 /// SHA-256 of the canonical preimage, lowercase hex (design "Canonical preimage").
@@ -520,8 +567,8 @@ pub fn resolve(obs: &SessionHeaderIdentityObservation) -> CampaignIdentity {
                     Some(format!(
                         "d68 session_header_live observed ({} row(s)) but does not source \
                          game_unique_id/game_unique_seed at this build revision; both components \
-                         are mandatory and absent (fail-closed pending offset-proven collector \
-                         reader -- see CAMPAIGN_IDENTITY_DESIGN.md open items)",
+                         are mandatory and absent (fail-closed pending live-accepted collector \
+                         reader -- see CAMPAIGN_IDENTITY_DESIGN.md activation gates)",
                         obs.session_header_rows
                     )),
                 )
@@ -937,6 +984,41 @@ pub fn stitch_decision(a: &CampaignIdentity, b: &CampaignIdentity) -> StitchDeci
 mod tests {
     use super::*;
 
+    fn parsed_cid1() -> ValidatedCid1 {
+        use compact_contract::campaign_identity::{
+            encode_cid1, parse_cid1_record, Cid1Fields, Cid1Observation,
+        };
+        let hour = compact_contract::calendar::DATE_EPOCH_CONST + 1936 * 365 * 24;
+        let observation = Cid1Observation {
+            game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_owned(),
+            game_unique_seed: 1_026_046_527,
+            game_hour_raw: hour,
+        };
+        let fields = Cid1Fields::from_stable_observations(
+            observation.clone(),
+            observation,
+            "vanilla_latest_2026_06_30".to_owned(),
+            Cid1Witnesses {
+                start_date_raw: Some(1_000),
+                session: Some(7),
+                scenario: Some("1936".to_owned()),
+                initial_human_country_tags: Some(vec!["ENG".to_owned(), "GER".to_owned()]),
+                modset_identity: Some("sha256:abc".to_owned()),
+            },
+        )
+        .unwrap();
+        let payload = encode_cid1(&fields).unwrap();
+        let header = compact_contract::CompactRecordHeader {
+            sequence: 0,
+            game_hour_raw: hour,
+            domain_id: compact_contract::campaign_identity::COMPACT_DOMAIN_STREAM_HEADER,
+            record_type: compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER,
+            payload_len: payload.len(),
+            record_flags: 0,
+        };
+        parse_cid1_record(&header, &payload).unwrap()
+    }
+
     fn verified_obs(uuid: &str, seed: &str) -> SessionHeaderIdentityObservation {
         let mut observation = SessionHeaderIdentityObservation {
             session_header_records_seen: 3,
@@ -979,6 +1061,23 @@ mod tests {
     }
 
     #[test]
+    fn opaque_validated_cid1_is_the_known_authority_boundary() {
+        let cid1 = parsed_cid1();
+        let identity = resolve_validated_cid1(&cid1);
+        assert!(identity.is_bound());
+        assert_eq!(identity.state, CampaignIdentityState::Known);
+        assert_eq!(
+            identity.campaign_id.as_deref(),
+            Some("b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f")
+        );
+        assert_eq!(
+            identity.stream_header_sha256.as_deref(),
+            Some(cid1.payload_sha256_hex().as_str())
+        );
+        validate_manifest_object(&to_manifest_json(&identity)).unwrap();
+    }
+
+    #[test]
     fn canonical_seed_rules() {
         assert_eq!(canonical_seed("1026046527").as_deref(), Some("1026046527"));
         assert_eq!(
@@ -986,8 +1085,15 @@ mod tests {
             Some("-1033122218")
         );
         assert_eq!(canonical_seed("0").as_deref(), Some("0"));
+        assert_eq!(
+            canonical_seed("-2147483648").as_deref(),
+            Some("-2147483648")
+        );
+        assert_eq!(canonical_seed("2147483647").as_deref(), Some("2147483647"));
         assert!(canonical_seed("007").is_none()); // leading zero
         assert!(canonical_seed("-0").is_none()); // negative zero
+        assert!(canonical_seed("-2147483649").is_none()); // below i32
+        assert!(canonical_seed("2147483648").is_none()); // above i32
         assert!(canonical_seed("").is_none());
         assert!(canonical_seed("12a").is_none());
         assert!(canonical_seed("- 5").is_none());
@@ -1242,16 +1348,9 @@ mod tests {
 
     #[test]
     fn documented_known_manifest_example_passes_validator() {
-        let design = include_str!("../../../documents/CAMPAIGN_IDENTITY_DESIGN.md");
-        let manifest_section = design
-            .split("### Recorder/replay manifest")
-            .nth(1)
-            .expect("recorder/replay manifest section");
-        let json_text = manifest_section
-            .split("```json")
-            .nth(1)
-            .and_then(|text| text.split("```").next())
-            .expect("campaign identity JSON example");
+        // Keep the executable test fixture inside the crate. Cargo's isolated source
+        // sandbox intentionally excludes the sibling extractor/documents tree.
+        let json_text = include_str!("fixtures/campaign_identity_known_manifest.json");
         let manifest: Value = serde_json::from_str(json_text).expect("valid example JSON");
 
         validate_manifest_object(&manifest["campaign_identity"])

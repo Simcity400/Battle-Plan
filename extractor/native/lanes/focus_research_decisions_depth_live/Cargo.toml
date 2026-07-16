@@ -10,3 +10,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "proof_from_stream"
 path = "src/bin/proof_from_stream.rs"
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }
+recorder_host = { path = "../../recorder_host" }

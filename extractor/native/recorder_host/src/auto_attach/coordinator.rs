@@ -436,7 +436,7 @@ impl Coordinator {
             return Ok(());
         }
         let out_dir = self.config.out_root.join(format!("run_{attempt_id}"));
-        let session_id = format!("sess_{attempt_id}");
+        let session_id = session_uuid_from_pipe_token(&pipe_token)?;
         let spec = WorkerSpec {
             key,
             attempt_id: attempt_id.clone(),
@@ -759,6 +759,24 @@ impl Coordinator {
         self.journal.append(rec)?;
         Ok(())
     }
+}
+
+fn session_uuid_from_pipe_token(pipe_token: &str) -> Result<String, String> {
+    if pipe_token.len() != 32
+        || !pipe_token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("auto-attach pipe token is not canonical 128-bit lowercase hex".to_string());
+    }
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &pipe_token[0..8],
+        &pipe_token[8..12],
+        &pipe_token[12..16],
+        &pipe_token[16..20],
+        &pipe_token[20..32],
+    ))
 }
 
 #[cfg(test)]

@@ -72,6 +72,9 @@ use std::time::SystemTime;
 use serde_json::{json, Value};
 use snapshot::sha256::{to_hex, Sha256};
 
+#[path = "auto_attach/modset.rs"]
+mod auto_attach_modset;
+
 type Handle = *mut c_void;
 
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
@@ -258,7 +261,7 @@ pub struct ModsetReport {
     pub exe_size_bytes: Option<u64>,
     pub exe_sha256: Option<String>,
     pub user_dir: Option<PathBuf>,
-    /// "override" (--pdx-user-dir) or "probed" — a wrong override is the
+    /// "override" (--pdx-user-dir) or "probed". A wrong override remains the
     /// recorded suspect when a binding later proves wrong.
     pub user_dir_source: Option<&'static str>,
     /// dlc_load.json mtime (unix seconds) and the game process creation time
@@ -388,24 +391,13 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
     };
 
     // --- Paradox user dir + dlc_load.json ---
-    let user_dir_corroborated = match locate_user_dir(user_dir_override) {
+    let user_dir_corroborated = match locate_user_dir(pid, user_dir_override) {
         Ok((dir, source)) => {
-            // G2-regen finding 2: a well-formed but WRONG directory (stale
-            // override, stale probe while the game runs a custom user dir)
-            // previously resolved. Corroborate: the attached process writes
-            // its logs into its real user dir continuously, so this dir's
-            // logs/ must have been written at/after process start. No
-            // corroboration -> fail closed (override and probed alike).
-            let corroborated = match corroborate_user_dir_live(&dir, pid) {
-                Ok(()) => true,
-                Err(e) => {
-                    fail!("user dir not corroborated against the attached process: {e}");
-                    false
-                }
-            };
+            // Discovery has already run the PID-held-log corroboration across
+            // every physical candidate and required exactly one survivor.
             report.user_dir = Some(dir);
             report.user_dir_source = Some(source);
-            corroborated
+            true
         }
         Err(e) => {
             fail!("{e}");
@@ -1186,51 +1178,46 @@ fn hash_file_streaming_stable(path: &Path) -> Result<(u64, String), String> {
     Ok((total, to_hex(&hasher.finalize())))
 }
 
-/// Locate the Paradox user dir carrying `dlc_load.json`. An explicit override
-/// must itself prove out (contain the file). Without one, both the plain and
-/// the OneDrive-redirected Documents locations are probed; exactly one match
-/// resolves, zero or several fail closed with the probed paths recorded.
-fn locate_user_dir(user_dir_override: Option<&Path>) -> Result<(PathBuf, &'static str), String> {
-    if let Some(dir) = user_dir_override {
-        if dir.join("dlc_load.json").is_file() {
-            return Ok((dir.to_path_buf(), "override"));
-        }
-        return Err(format!(
-            "--pdx-user-dir {} does not contain dlc_load.json",
-            dir.display()
-        ));
+/// Locate and prove the Paradox user directory for `pid`.
+///
+/// Product discovery includes the target command line's `-userdir`, the real
+/// `FOLDERID_Documents`, all runtime OneDrive consumer/business account roots,
+/// and both legacy profile paths. Candidate aliases are canonical-deduplicated,
+/// then the existing PID-held-log proof is run against every physical hit.
+/// Exactly one survivor is required. A support override adds a candidate but
+/// never narrows discovery or bypasses any proof.
+fn locate_user_dir(
+    pid: u32,
+    user_dir_override: Option<&Path>,
+) -> Result<(PathBuf, &'static str), String> {
+    #[cfg(windows)]
+    {
+        let env = auto_attach_modset::WindowsDiscoveryEnvironment;
+        let located =
+            auto_attach_modset::locate_user_dir_with(&env, pid, user_dir_override, |dir| {
+                match corroborate_user_dir_live(dir, pid) {
+                    Ok(()) => auto_attach_modset::CandidateCorroboration::Owned,
+                    Err(error) if error.contains("restart-manager errors:") => {
+                        auto_attach_modset::CandidateCorroboration::Indeterminate(error)
+                    }
+                    Err(error) => auto_attach_modset::CandidateCorroboration::Rejected(error),
+                }
+            })?;
+        // Preserve the manifest schema consumed by fold-and-repack. Detailed
+        // discovery provenance remains internal to the auto-attach resolver;
+        // the stable public value is still `probed` for every non-override hit.
+        let source = if located.explicit_override {
+            "override"
+        } else {
+            "probed"
+        };
+        return Ok((located.path, source));
     }
-    let profile = std::env::var("USERPROFILE")
-        .map_err(|_| "USERPROFILE not set; pass --pdx-user-dir".to_string())?;
-    let candidates = [
-        Path::new(&profile)
-            .join("Documents")
-            .join("Paradox Interactive")
-            .join("Hearts of Iron IV"),
-        Path::new(&profile)
-            .join("OneDrive")
-            .join("Documents")
-            .join("Paradox Interactive")
-            .join("Hearts of Iron IV"),
-    ];
-    let hits: Vec<&PathBuf> = candidates
-        .iter()
-        .filter(|dir| dir.join("dlc_load.json").is_file())
-        .collect();
-    match hits.as_slice() {
-        [only] => Ok(((*only).clone(), "probed")),
-        [] => Err(format!(
-            "dlc_load.json not found; probed {} and {}; pass --pdx-user-dir",
-            candidates[0].display(),
-            candidates[1].display()
-        )),
-        _ => Err(format!(
-            "AMBIGUOUS pdx user dir: dlc_load.json exists in more than one probe location ({}); pass --pdx-user-dir",
-            hits.iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
+
+    #[cfg(not(windows))]
+    {
+        let _ = (pid, user_dir_override);
+        Err("Paradox user-directory discovery is Windows-only".to_string())
     }
 }
 
@@ -1783,13 +1770,18 @@ mod tests {
         let dir = temp_dir("override");
         // Override without dlc_load.json inside: must FAIL, never fall back to
         // probing (an explicit pin that does not prove out is an error).
-        let err = locate_user_dir(Some(&dir)).unwrap_err();
-        assert!(err.contains("does not contain dlc_load.json"));
+        let err = locate_user_dir(std::process::id(), Some(&dir)).unwrap_err();
+        assert!(err.contains("does not contain dlc_load.json"), "{err}");
 
         fs::write(dir.join("dlc_load.json"), "{}").unwrap();
-        let (found, source) = locate_user_dir(Some(&dir)).unwrap();
-        assert_eq!(found, dir);
+        fs::create_dir_all(dir.join("logs")).unwrap();
+        let log = dir.join("logs").join("game.log");
+        fs::write(&log, "held").unwrap();
+        let held = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let (found, source) = locate_user_dir(std::process::id(), Some(&dir)).unwrap();
+        assert_eq!(found, fs::canonicalize(&dir).unwrap());
         assert_eq!(source, "override");
+        drop(held);
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -3,19 +3,19 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use diplomacy_intel_operatives_live::decoder_gate::{
-    decode_domain53_record, encode_domain53_data_record,
-};
 use diplomacy_intel_operatives_live::extractor::{
     build_domain53_payload, proof_fixture_rows, CURRENT_BUILD_ROOTS_870EBF,
     CURRENT_VALIDATED_SOURCE_PROOFS, EXPECTED_HOI4_SHA256_870EBF,
 };
-use diplomacy_intel_operatives_live::replay_verify::write_replay_artifacts;
+use diplomacy_intel_operatives_live::replay_verify::write_noncertifying_replay_artifacts;
+use diplomacy_intel_operatives_live::stream_gate::{
+    encode_domain53_proof_stream, verify_domain53_stream,
+};
 use diplomacy_intel_operatives_live::DOMAIN_ID;
 
 fn main() {
-    let mut out_record = PathBuf::from("domain53_validated_subset.compact.bin");
-    let mut out_report = PathBuf::from("domain53_validated_subset_proof.json");
+    let mut out_record = PathBuf::from("domain53_synthetic_noncertifying.compact.bin");
+    let mut out_report = PathBuf::from("domain53_synthetic_noncertifying_proof.json");
     let mut out_manifest = PathBuf::from("native_session_manifest.json");
     let mut out_replay = PathBuf::from("native_session.battleplan");
     let mut args = env::args().skip(1);
@@ -43,8 +43,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    let record = encode_domain53_data_record(1, 43_800_024, &extraction.payload);
-    let record_summary = decode_domain53_record(0, &record);
+    let record = encode_domain53_proof_stream(43_800_024, &extraction.payload)
+        .expect("build canonical domain53 proof stream");
+    let record_summary = verify_domain53_stream(&record);
     if !record_summary.parse_errors.is_empty() {
         eprintln!(
             "domain53 record gate failed: {:?}",
@@ -57,7 +58,7 @@ fn main() {
         fs::create_dir_all(parent).expect("create report output dir");
     }
     let replay_verification =
-        write_replay_artifacts(&out_record, &out_manifest, &out_replay, &record)
+        write_noncertifying_replay_artifacts(&out_record, &out_manifest, &out_replay, &record)
             .expect("write and verify replay artifacts");
     fs::write(
         &out_report,
@@ -77,7 +78,7 @@ fn main() {
     .expect("write proof report");
 
     println!(
-        "domain53_proof: ok record={} replay={} report={} rows={} bytes={}",
+        "domain53_proof: non-certifying synthetic artifact complete stream={} replay={} report={} rows={} bytes={}",
         out_record.display(),
         out_replay.display(),
         out_report.display(),
@@ -114,19 +115,24 @@ fn proof_json(
             "{{\n",
             "  \"lane\": \"diplomacy_intel_operatives_live\",\n",
             "  \"domain_id\": {domain_id},\n",
+            "  \"artifact_kind\": \"lane_local_synthetic_fixture_stream\",\n",
+            "  \"production_certifying\": false,\n",
+            "  \"source_capture_verified\": false,\n",
             "  \"build_sha256\": {sha},\n",
             "  \"source_proofs\": \"0x{source_proofs:X}\",\n",
-            "  \"compact_record\": {record_path},\n",
+            "  \"synthetic_compact_stream\": {record_path},\n",
             "  \"session_manifest\": {manifest_path},\n",
             "  \"hoi4replay\": {replay_path},\n",
-            "  \"record_bytes\": {record_bytes},\n",
+            "  \"synthetic_stream_bytes\": {record_bytes},\n",
             "  \"payload_bytes\": {payload_bytes},\n",
             "  \"status_flags_or\": \"0x{status_flags_or:X}\",\n",
             "  \"data_rows_total\": {data_rows_total},\n",
             "  \"data_units_total\": {units_json},\n",
-            "  \"hoi4replay_verified\": true,\n",
+            "  \"container_integrity_verified\": true,\n",
+            "  \"stream_entry_byte_identity_verified\": true,\n",
+            "  \"synthetic_stream_gate_passed\": true,\n",
             "  \"hoi4replay_bytes\": {replay_bytes},\n",
-            "  \"hoi4replay_collector_stream_bytes\": {replay_stream_bytes},\n",
+            "  \"verified_container_stream_bytes\": {replay_stream_bytes},\n",
             "  \"fail_closed\": {{\n",
             "    \"war_root_unvalidated\": false,\n",
             "    \"war_lifecycle_detail_unvalidated\": true,\n",
@@ -137,6 +143,7 @@ fn proof_json(
             "  \"current_build_roots\": [\n",
             "{roots}\n",
             "  ],\n",
+            "  \"proof_scope\": \"synthetic closed-stream and replay-container integrity only; not production capture certification\",\n",
             "  \"parse_errors\": []\n",
             "}}\n"
         ),

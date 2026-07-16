@@ -1,9 +1,9 @@
 use crate::compact::{decode_payload, Domain53GateSummary, DOMAIN_ID_PROPOSED};
 use std::collections::BTreeMap;
 
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_VERSION: u16 = 1;
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
+pub const COMPACT_RECORD_MAGIC: &[u8; 4] = compact_contract::COMPACT_RECORD_MAGIC;
+pub const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
+pub const COMPACT_RECORD_HEADER_LEN: usize = compact_contract::COMPACT_RECORD_HEADER_LEN;
 pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +64,15 @@ pub fn decode_domain53_record(offset: usize, bytes: &[u8]) -> Domain53RecordGate
         ));
         return out;
     }
+    if let Err(error) = compact_contract::validate_compact_record_semantics(
+        header.domain_id,
+        header.record_type,
+        header.flags,
+        payload,
+    ) {
+        out.parse_errors.push(format!("offset {offset}: {error}"));
+        return out;
+    }
 
     merge_payload_summary(
         &mut out,
@@ -77,48 +86,29 @@ fn parse_record<'a>(
     bytes: &'a [u8],
     errors: &mut Domain53RecordGateSummary,
 ) -> Option<(CompactRecordHeader, &'a [u8])> {
-    if bytes.len() < COMPACT_RECORD_HEADER_LEN {
-        errors.parse_errors.push(format!(
-            "offset {offset}: truncated H4CR header with {} byte(s)",
-            bytes.len()
-        ));
-        return None;
-    }
-    if &bytes[0..4] != COMPACT_RECORD_MAGIC {
-        errors
-            .parse_errors
-            .push(format!("offset {offset}: invalid H4CR magic"));
-        return None;
-    }
-    let version = read_u16(bytes, 4);
-    if version != COMPACT_RECORD_VERSION {
-        errors.parse_errors.push(format!(
-            "offset {offset}: unsupported H4CR version {version}"
-        ));
-    }
-    let header_len = read_u16(bytes, 6) as usize;
-    if header_len != COMPACT_RECORD_HEADER_LEN {
-        errors.parse_errors.push(format!(
-            "offset {offset}: unsupported H4CR header length {header_len}"
-        ));
-        return None;
-    }
-    let payload_len = read_u32(bytes, 24) as usize;
-    let expected_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+    let parsed = match compact_contract::parse_compact_record_header(bytes) {
+        Ok(header) => header,
+        Err(err) => {
+            errors.parse_errors.push(format!("offset {offset}: {err}"));
+            return None;
+        }
+    };
+    let expected_len = parsed.record_len();
     if bytes.len() != expected_len {
         errors.parse_errors.push(format!(
-            "offset {offset}: record length {} != header {COMPACT_RECORD_HEADER_LEN} + payload {payload_len}",
-            bytes.len()
+            "offset {offset}: record length {} != header {COMPACT_RECORD_HEADER_LEN} + payload {}",
+            bytes.len(),
+            parsed.payload_len
         ));
         return None;
     }
     let header = CompactRecordHeader {
-        sequence: read_u64(bytes, 8),
-        game_hour_raw: read_i32(bytes, 16),
-        domain_id: read_u16(bytes, 20),
-        record_type: read_u16(bytes, 22),
-        payload_len: payload_len as u32,
-        flags: read_u32(bytes, 28),
+        sequence: parsed.sequence,
+        game_hour_raw: parsed.game_hour_raw,
+        domain_id: parsed.domain_id,
+        record_type: parsed.record_type,
+        payload_len: parsed.payload_len as u32,
+        flags: parsed.record_flags,
     };
     Some((header, &bytes[COMPACT_RECORD_HEADER_LEN..]))
 }
@@ -134,22 +124,6 @@ fn merge_payload_summary(out: &mut Domain53RecordGateSummary, payload: Domain53G
         *entry = entry.saturating_add(count);
     }
     out.parse_errors.extend(payload.parse_errors);
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("u16"))
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32"))
-}
-
-fn read_i32(bytes: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("i32"))
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64"))
 }
 
 #[cfg(test)]
@@ -218,5 +192,22 @@ mod tests {
             .parse_errors
             .iter()
             .any(|error| error.contains("domain_id 52 != 53")));
+    }
+
+    #[test]
+    fn rejects_noncanonical_data_header_flags() {
+        let extraction =
+            build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let mut record = encode_domain53_data_record(7, 43_800_024, &extraction.payload);
+        record[28..32].copy_from_slice(
+            &compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER.to_le_bytes(),
+        );
+
+        let summary = decode_domain53_record(0, &record);
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("rejected bits")));
     }
 }

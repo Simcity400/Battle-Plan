@@ -69,20 +69,37 @@ and army-group membership, leaders, member division ids, and missing counts.
 
 ## Local gate
 
-`domain20_compact.rs` is a dependency-free Rust encoder/decoder/gate for the
-current compact `divisions` payload:
+`domain20_compact.rs` is a standalone Rust encoder/decoder/gate for the current
+compact `divisions` payload. Its H4CR framing parser is included directly from
+the dependency-free canonical source at
+`../../compact_contract/src/record_header.rs`, so these repo-root direct-`rustc`
+commands still require no external crate:
 
 ```powershell
 rustc --edition 2021 --test extractor\native\lanes\division_state_movement_live\domain20_compact.rs -o $env:TEMP\domain20_compact_tests.exe
 & $env:TEMP\domain20_compact_tests.exe --nocapture
 
 rustc --edition 2021 extractor\native\lanes\division_state_movement_live\domain20_compact.rs -o $env:TEMP\domain20_compact.exe
-& $env:TEMP\domain20_compact.exe extractor\native\runs\<run>\collector_stream.bin extractor\native\runs\<proof>\domain20_gate_summary.json
+& $env:TEMP\domain20_compact.exe `
+  extractor\native\runs\<run>\collector_stream.bin `
+  --min-game-hours <positive-advancements> `
+  extractor\native\runs\<proof>\domain20_gate_summary.json
 ```
 
-The CLI fails if the compact stream is undecodable, unordered, missing domain
-20 data records, or reports worker/source/bridge/partial failures for this
-domain.
+The production CLI requires an explicit positive minimum expressed as game-hour
+**advancements**. An `N`-advancement proof therefore requires at least `N+1`
+consecutive closed frames. Every closed frame must contain exactly one canonical
+domain-20 `DOMAIN_DATA` and one canonical domain-20 `DOMAIN_PERF` with matching
+status. Its `FRAME_END` must be the physical final record, have exact
+emitted/scheduled counts matching both the framed non-probe DATA/PERF record
+counts and their distinct domain sets (so duplicate records cannot hide behind
+a set cardinality),
+carry the exact globally interpreted OR of those PERF statuses after canonical
+lane-local normalization, use only known healthy status bits, and keep the
+reserved word zero. Reserved domain-250 instrumentation PERF is physically
+validated but excluded from coverage counts and frame status. The CLI fails on
+any framing, sequence, record-flag, payload, status, lifecycle, duration, or
+trailing-record violation.
 
 ## Gap fixture gate
 

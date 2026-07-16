@@ -1,13 +1,15 @@
 //! In-memory unit tests for the fold-equivalence gate. They build a small
 //! synthetic H4CR stream (via the same wire layout the collector emits), fold it
 //! through the production `WorldFold`, and assert stable hashing, PERF-record
-//! ignoring, mutation detection, and truncated-tail handling.
+//! ignoring, mutation detection, and fail-closed certification.
 
 use super::*;
 use compact_contract::calendar::DATE_EPOCH_CONST;
 use compact_contract::{
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
+    COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_PARTIAL_DATA,
+    COMPACT_STATUS_SOURCE_UNAVAILABLE,
 };
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -48,6 +50,26 @@ fn push_record(
     record_type: u16,
     payload: &[u8],
 ) {
+    push_record_with_flags(
+        out,
+        sequence,
+        game_hour_raw,
+        domain_id,
+        record_type,
+        0,
+        payload,
+    );
+}
+
+fn push_record_with_flags(
+    out: &mut Vec<u8>,
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    record_flags: u32,
+    payload: &[u8],
+) {
     out.extend_from_slice(COMPACT_RECORD_MAGIC);
     out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
     out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
@@ -56,7 +78,7 @@ fn push_record(
     out.extend_from_slice(&domain_id.to_le_bytes());
     out.extend_from_slice(&record_type.to_le_bytes());
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // flags
+    out.extend_from_slice(&record_flags.to_le_bytes());
     out.extend_from_slice(payload);
 }
 
@@ -77,10 +99,34 @@ fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
     p
 }
 
-/// A DOMAIN_PERF payload (>= 40 bytes) that the fold must ignore entirely.
+/// An exact base DOMAIN_PERF payload that the fold must ignore entirely.
 fn perf_payload() -> Vec<u8> {
-    vec![0u8; 48]
+    perf_payload_with_status(0)
 }
+
+fn frame_end_payload() -> Vec<u8> {
+    frame_end_payload_with(1, 1, 0)
+}
+
+fn empty_frame_end_payload() -> Vec<u8> {
+    frame_end_payload_with(0, 0, 0)
+}
+
+fn perf_payload_with_status(status_flags: u32) -> Vec<u8> {
+    let mut payload = vec![0u8; 40];
+    payload[32..36].copy_from_slice(&status_flags.to_le_bytes());
+    payload
+}
+
+fn frame_end_payload_with(emitted: u32, scheduled: u32, status_flags: u32) -> Vec<u8> {
+    let mut payload = vec![0u8; 32];
+    payload[16..20].copy_from_slice(&emitted.to_le_bytes());
+    payload[20..24].copy_from_slice(&scheduled.to_le_bytes());
+    payload[24..28].copy_from_slice(&status_flags.to_le_bytes());
+    payload
+}
+
+const DOMAIN_FRAME: u16 = 1000;
 
 const HOUR_A: i64 = 16_959_360;
 const HOUR_B: i64 = 16_959_361;
@@ -93,7 +139,7 @@ fn synthetic_stream() -> (Vec<u8>, usize) {
     let mut s = Vec::new();
     let mut seq = 1u64;
 
-    // Hour A: one country, then frame_end.
+    // Hour A: one country, its owned PERF record, then frame_end.
     let a_payload = country_identity_payload(&[(47, "GER")]);
     // header (32) + payload prefix: u64 wall(8)+u32 row(4)+u32 changed(4)+u32 status(4) = 20
     let mutation_offset = s.len() + COMPACT_RECORD_HEADER_LEN + 20;
@@ -110,9 +156,18 @@ fn synthetic_stream() -> (Vec<u8>, usize) {
         &mut s,
         seq,
         raw_for(HOUR_A),
-        0,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    seq += 1;
+    push_record(
+        &mut s,
+        seq,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
-        &[],
+        &frame_end_payload(),
     );
     seq += 1;
 
@@ -139,13 +194,13 @@ fn synthetic_stream() -> (Vec<u8>, usize) {
         &mut s,
         seq,
         raw_for(HOUR_B),
-        0,
+        DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
-        &[],
+        &frame_end_payload(),
     );
     seq += 1;
 
-    // Hour C: two countries.
+    // Hour C: two countries and the same owned PERF coverage.
     push_record(
         &mut s,
         seq,
@@ -159,9 +214,18 @@ fn synthetic_stream() -> (Vec<u8>, usize) {
         &mut s,
         seq,
         raw_for(HOUR_C),
-        0,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    seq += 1;
+    push_record(
+        &mut s,
+        seq,
+        raw_for(HOUR_C),
+        DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
-        &[],
+        &frame_end_payload(),
     );
 
     (s, mutation_offset)
@@ -205,13 +269,13 @@ fn hashing_is_stable_across_runs() {
 }
 
 #[test]
-fn perf_record_is_ignored_by_the_fold() {
+fn perf_payload_is_ignored_by_the_fold_but_presence_is_completeness() {
     // A stream identical to the synthetic one but WITHOUT hour B's PERF record
     // must fold to the identical per-hour hashes: the PERF record carries no
     // folded state.
     let (with_perf, _) = synthetic_stream();
     let run_with = fold_bytes(&with_perf);
-    assert_eq!(run_with.totals.perf_records, 1, "perf record was seen");
+    assert_eq!(run_with.totals.perf_records, 3, "PERF records were seen");
 
     // Rebuild without the perf record.
     let mut s = Vec::new();
@@ -229,9 +293,18 @@ fn perf_record_is_ignored_by_the_fold() {
         &mut s,
         seq,
         raw_for(HOUR_A),
-        0,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    seq += 1;
+    push_record(
+        &mut s,
+        seq,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
-        &[],
+        &frame_end_payload(),
     );
     seq += 1;
     push_record(
@@ -247,9 +320,9 @@ fn perf_record_is_ignored_by_the_fold() {
         &mut s,
         seq,
         raw_for(HOUR_B),
-        0,
+        DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
-        &[],
+        &empty_frame_end_payload(),
     );
     seq += 1;
     push_record(
@@ -265,18 +338,254 @@ fn perf_record_is_ignored_by_the_fold() {
         &mut s,
         seq,
         raw_for(HOUR_C),
-        0,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    seq += 1;
+    push_record(
+        &mut s,
+        seq,
+        raw_for(HOUR_C),
+        DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
-        &[],
+        &frame_end_payload(),
     );
     let run_without = fold_bytes(&s);
 
-    assert_eq!(run_without.totals.perf_records, 0);
-    assert_eq!(
+    assert_eq!(run_without.totals.perf_records, 2);
+    for (with, without) in run_with.hours.iter().zip(&run_without.hours) {
+        assert_eq!(
+            with.snapshot_hash, without.snapshot_hash,
+            "PERF must not change folded state"
+        );
+    }
+    assert_ne!(
         chain_hash(&run_with.hours),
         chain_hash(&run_without.hours),
-        "the PERF record must not change any folded snapshot"
+        "losing authoritative PERF completeness must change G1 identity"
     );
+}
+
+#[test]
+fn normalized_perf_status_changes_identity_even_when_snapshots_match() {
+    fn stream(status_flags: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_record(
+            &mut out,
+            1,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        push_record(
+            &mut out,
+            2,
+            raw_for(HOUR_A),
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(status_flags),
+        );
+        push_record(
+            &mut out,
+            3,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        out
+    }
+
+    let clean = fold_bytes(&stream(0));
+    let expected_partial = fold_bytes(&stream(COMPACT_STATUS_PARTIAL_DATA));
+    assert_eq!(
+        clean.hours[0].snapshot_hash, expected_partial.hours[0].snapshot_hash,
+        "PERF status is not folded state"
+    );
+    assert_ne!(
+        clean.hours[0].completeness,
+        expected_partial.hours[0].completeness
+    );
+    assert_ne!(
+        chain_hash(&clean.hours),
+        chain_hash(&expected_partial.hours)
+    );
+}
+
+#[test]
+fn forged_two_of_two_frame_counts_do_not_certify_one_observed_domain() {
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(2, 2, 0),
+    );
+
+    // Both FRAME_END counts agree with each other and with the external roster
+    // size, but domain 26 is absent from the actual per-hour DATA/PERF records.
+    let expected = ExpectedRoster::test(&[(18, true), (26, true)]);
+    let err = collect_certified_run(Cursor::new(stream.clone()), stream.len() as u64, &expected)
+        .err()
+        .expect("self-consistent FRAME_END counts must not define coverage");
+    assert!(err.contains("domain division_equipment (26) PERF"), "{err}");
+    assert!(err.contains("observed 0"), "{err}");
+}
+
+#[test]
+fn expected_profile_is_mandatory_and_only_production_is_authoritative() {
+    let missing = parse_expected_profile(&[]).unwrap_err();
+    assert!(missing.contains("mandatory --expected-profile production"));
+
+    let unsupported =
+        parse_expected_profile(&["--expected-profile".to_string(), "debug".to_string()])
+            .unwrap_err();
+    assert!(unsupported.contains("only \"production\" is authoritative"));
+
+    let production =
+        parse_expected_profile(&["--expected-profile".to_string(), "production".to_string()])
+            .expect("production roster");
+    assert_eq!(production.profile, "production");
+    assert_eq!(
+        production.domains.len(),
+        compact_contract::production_profile_domains().len()
+    );
+    assert!(!production.domains.contains_key(&18));
+}
+
+#[test]
+fn dropped_unchanged_data_record_changes_identity_not_snapshot() {
+    fn stream(data_records: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let payload = country_identity_payload(&[(47, "GER")]);
+        let mut sequence = 1u64;
+        for _ in 0..data_records {
+            push_record(
+                &mut out,
+                sequence,
+                raw_for(HOUR_A),
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            sequence += 1;
+        }
+        push_record(
+            &mut out,
+            sequence,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(),
+        );
+        sequence += 1;
+        push_record(
+            &mut out,
+            sequence,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        out
+    }
+
+    let repeated = fold_bytes(&stream(2));
+    let dropped = fold_bytes(&stream(1));
+    assert_eq!(
+        repeated.hours[0].snapshot_hash, dropped.hours[0].snapshot_hash,
+        "dropping an unchanged full-replace record must leave folded state equal"
+    );
+    assert_eq!(repeated.hours[0].completeness.domains[&18].data_records, 2);
+    assert_eq!(dropped.hours[0].completeness.domains[&18].data_records, 1);
+    assert_ne!(chain_hash(&repeated.hours), chain_hash(&dropped.hours));
+}
+
+#[test]
+fn non_tolerated_perf_failure_cannot_certify() {
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload_with_status(COMPACT_STATUS_SOURCE_UNAVAILABLE),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let err = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
+        .err()
+        .expect("non-tolerated PERF failure must fail certification");
+    assert!(err.contains("non-tolerated failure flags"), "{err}");
+}
+
+#[test]
+fn partial_tolerance_is_not_granted_to_unlisted_domains() {
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        29,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload_with_status(COMPACT_STATUS_PARTIAL_DATA),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let err = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
+        .err()
+        .expect("unlisted partial domain must fail certification");
+    assert!(err.contains("domain 29 PERF status"), "{err}");
+    assert!(err.contains("non-tolerated failure flags"), "{err}");
 }
 
 #[test]
@@ -308,19 +617,151 @@ fn compare_catches_a_single_mutated_payload_byte() {
 }
 
 #[test]
-fn truncated_tail_reports_complete_hours_only() {
+fn truncated_tail_is_rejected_even_when_complete_prefix_hours_exist() {
     let (stream, _) = synthetic_stream();
     // Chop the last 5 bytes → the final frame_end record is incomplete.
     let truncated = &stream[..stream.len() - 5];
-    let run = collect_run(Cursor::new(truncated.to_vec()), truncated.len() as u64)
-        .expect("fold truncated stream");
-    // Hours A and B closed; hour C's frame_end never completed.
-    assert_eq!(run.hours.len(), 2, "only complete hours are emitted");
-    assert_eq!(run.hours[0].hour_index, HOUR_A);
-    assert_eq!(run.hours[1].hour_index, HOUR_B);
+    let err = match collect_run(Cursor::new(truncated.to_vec()), truncated.len() as u64) {
+        Ok(_) => panic!("fold_check must reject a truncated stream"),
+        Err(err) => err,
+    };
+    assert!(err.contains("truncated/corrupt tail"), "{err}");
+    assert!(err.contains("stream boundary is not closed"), "{err}");
+}
+
+#[test]
+fn malformed_domain_payload_is_rejected_even_at_a_closed_hour_boundary() {
+    let mut stream = Vec::new();
+    let mut malformed = country_identity_payload(&[(47, "GER")]);
+    malformed.push(0xAA);
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &malformed,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &empty_frame_end_payload(),
+    );
+    let err = match collect_run(Cursor::new(stream.clone()), stream.len() as u64) {
+        Ok(_) => panic!("fold_check must reject malformed DOMAIN_DATA"),
+        Err(err) => err,
+    };
+    assert!(err.contains("failed exact validation"), "{err}");
+}
+
+#[test]
+fn open_hour_eof_is_rejected_without_relying_on_tail_bytes() {
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    let err = match collect_run(Cursor::new(stream.clone()), stream.len() as u64) {
+        Ok(_) => panic!("fold_check must reject an open hour at EOF"),
+        Err(err) => err,
+    };
+    assert!(err.contains("left open at EOF"), "{err}");
+}
+
+#[test]
+fn fold_check_rejects_misplaced_flags_before_data_decode() {
+    let mut stream = Vec::new();
+    push_record_with_flags(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &empty_frame_end_payload(),
+    );
+    let err = match collect_run(Cursor::new(stream.clone()), stream.len() as u64) {
+        Ok(_) => panic!("fold_check must reject misplaced record flags"),
+        Err(err) => err,
+    };
+    assert!(err.contains("rejected bits"), "{err}");
+}
+
+#[test]
+fn fold_check_rejects_noncanonical_sequence_and_final_boundary() {
+    let mut wrong_start = Vec::new();
+    push_record(
+        &mut wrong_start,
+        2,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut wrong_start,
+        3,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &empty_frame_end_payload(),
+    );
+    let err = match collect_run(Cursor::new(wrong_start.clone()), wrong_start.len() as u64) {
+        Ok(_) => panic!("fold_check must reject a sequence that does not start at one"),
+        Err(err) => err,
+    };
+    assert!(err.contains("starts at 2, expected 1"), "{err}");
+
+    let mut trailing_perf = Vec::new();
+    push_record(
+        &mut trailing_perf,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut trailing_perf,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &empty_frame_end_payload(),
+    );
+    push_record(
+        &mut trailing_perf,
+        3,
+        raw_for(HOUR_A + 1),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    let err = match collect_run(
+        Cursor::new(trailing_perf.clone()),
+        trailing_perf.len() as u64,
+    ) {
+        Ok(_) => panic!("fold_check must reject a stream not ending on FRAME_END"),
+        Err(err) => err,
+    };
     assert!(
-        run.totals.truncated_tail_bytes > 0,
-        "incomplete tail is reported"
+        err.contains("final record must be canonical FRAME_END"),
+        "{err}"
     );
 }
 
@@ -342,7 +783,7 @@ fn torn_zstd_frame_is_a_hard_fold_check_error() {
     stored.pop().expect("checksummed zstd frame is non-empty");
     std::fs::write(&zstd_path, stored).unwrap();
 
-    let err = match run_input(&zstd_path) {
+    let err = match run_input(&zstd_path, &ExpectedRoster::production()) {
         Ok(_) => panic!("fold_check must reject a torn zstd frame"),
         Err(err) => err,
     };
@@ -353,16 +794,12 @@ fn torn_zstd_frame_is_a_hard_fold_check_error() {
 }
 
 #[test]
-fn legacy_pre222_store_deflate_fixture_container_input_folds() {
+fn legacy_pre222_container_decodes_for_diagnostics_but_does_not_certify() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../snapshot/tests/data/legacy/pre222_store_deflate.battleplan");
-    let (run, kind) = run_input(&path).expect("fold legacy fixture container input");
-
-    assert_eq!(kind, "container");
-    assert_eq!(run.totals.records_total, 2);
-    assert_eq!(run.totals.data_records, 1);
-    assert_eq!(run.totals.frame_end_records, 1);
-    assert!(run.totals.stop_reason.is_none());
-    assert_eq!(run.hours.len(), 1);
-    assert_eq!(run.hours[0].hour_index, 16_959_360);
+    let err = match run_input(&path, &ExpectedRoster::production()) {
+        Ok(_) => panic!("legacy zero-payload FRAME_END must not pass current certification"),
+        Err(err) => err,
+    };
+    assert!(err.contains("FRAME_END"), "{err}");
 }

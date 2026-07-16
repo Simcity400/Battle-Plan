@@ -23,8 +23,8 @@ use replay_core::{
     open_recording, Leaf, PlayerCountry, SnowMudCell, ViewStatus, WarRelationRow, WorldFrame,
     WorldTimeline,
 };
-use std::collections::BTreeMap;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 
@@ -756,8 +756,12 @@ fn rt_topbar_ratios_alerts() {
             f.hour_index()
         );
         for tag in ["GER", "ENG", "SOV"] {
-            let r = f.topbar_ratios(tag).unwrap_or_else(|| panic!("{tag} ratios"));
-            let a = f.topbar_alerts(tag).unwrap_or_else(|| panic!("{tag} alerts"));
+            let r = f
+                .topbar_ratios(tag)
+                .unwrap_or_else(|| panic!("{tag} ratios"));
+            let a = f
+                .topbar_alerts(tag)
+                .unwrap_or_else(|| panic!("{tag} alerts"));
             let p = |k: &[&str]| {
                 let mut path = vec!["countries", tag, "scalars"];
                 path.extend_from_slice(k);
@@ -1022,8 +1026,36 @@ fn rt_research_focus() {
             "research in_progress @ {}",
             f.hour_index()
         );
+        let techs = raw(&f, &["countries", "GER", "research", "technologies"])
+            .and_then(Value::as_array)
+            .expect("technologies");
+        let want_techs: Vec<replay_core::ResearchTechnologyRow> = techs
+            .iter()
+            .map(|o| replay_core::ResearchTechnologyRow {
+                name: exp_string(o.get("name")),
+                level: exp_i64(o.get("level")),
+                date: exp_string(o.get("date")),
+                research_points: exp_f64(o.get("research_points")),
+            })
+            .collect();
+        assert_eq!(
+            r.technologies,
+            Leaf::Measured(want_techs),
+            "research technologies @ {}",
+            f.hour_index()
+        );
+        assert_eq!(
+            r.doctrine,
+            Leaf::Absent,
+            "research doctrine @ {}",
+            f.hour_index()
+        );
 
         let focus = f.focus("GER").expect("GER focus");
+        assert_eq!(
+            focus.focus_tree,
+            exp_string(raw(&f, &["countries", "GER", "focus", "focus_tree"]))
+        );
         assert_eq!(
             focus.current,
             exp_string(raw(&f, &["countries", "GER", "focus", "current"])),
@@ -1057,19 +1089,27 @@ fn rt_country_management() {
         );
         assert_eq!(
             pd.law_economy,
-            exp_string(raw(&f, &["countries", "GER", "politics", "laws", "economy"])),
+            exp_string(raw(
+                &f,
+                &["countries", "GER", "politics", "laws", "economy"]
+            )),
             "law_economy @ {}",
             f.hour_index()
         );
         assert_eq!(
             pd.appointed_advisors,
-            exp_string_list(raw(&f, &["countries", "GER", "politics", "appointed_advisors"]))
+            exp_string_list(raw(
+                &f,
+                &["countries", "GER", "politics", "appointed_advisors"]
+            ))
         );
         let pp = raw(&f, &["countries", "GER", "politics", "party_popularities"])
             .and_then(Value::as_object)
             .expect("party_popularities");
-        let want_pp: BTreeMap<String, f64> =
-            pp.iter().map(|(k, v)| (k.clone(), v.as_f64().unwrap())).collect();
+        let want_pp: BTreeMap<String, f64> = pp
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
+            .collect();
         assert_eq!(pd.party_popularities, Leaf::Measured(want_pp));
         let ab = raw(&f, &["countries", "GER", "abilities"])
             .and_then(Value::as_array)
@@ -1089,7 +1129,10 @@ fn rt_country_management() {
         let prod = f.production("GER").expect("GER production");
         assert_eq!(
             prod.stockpile_total,
-            exp_f64(raw(&f, &["countries", "GER", "production", "stockpile_total"])),
+            exp_f64(raw(
+                &f,
+                &["countries", "GER", "production", "stockpile_total"]
+            )),
             "stockpile_total @ {}",
             f.hour_index()
         );
@@ -1113,7 +1156,10 @@ fn rt_country_management() {
         );
         assert_eq!(
             intel.agency_upgrade_progress,
-            exp_f64(raw(&f, &["countries", "GER", "intel", "agency", "upgrade_progress"]))
+            exp_f64(raw(
+                &f,
+                &["countries", "GER", "intel", "agency", "upgrade_progress"]
+            ))
         );
         let running = raw(&f, &["countries", "GER", "intel", "operations", "running"])
             .and_then(Value::as_array)
@@ -1135,9 +1181,12 @@ fn rt_country_management() {
 
         // --- trade ---
         let trade = f.trade("GER").expect("GER trade");
-        let prod_res = raw(&f, &["countries", "GER", "economy", "resources", "produced"])
-            .and_then(Value::as_object)
-            .expect("produced");
+        let prod_res = raw(
+            &f,
+            &["countries", "GER", "economy", "resources", "produced"],
+        )
+        .and_then(Value::as_object)
+        .expect("produced");
         let want_prod: BTreeMap<String, f64> = prod_res
             .iter()
             .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
@@ -1173,7 +1222,10 @@ fn rt_designs_catalog() {
         assert_eq!(tmpl0.template_uid, "1:1");
         assert_eq!(
             tmpl0.n_regiments,
-            exp_i64(raw(&f, &["designs", "division_templates", "0", "n_regiments"])),
+            exp_i64(raw(
+                &f,
+                &["designs", "division_templates", "0", "n_regiments"]
+            )),
             "n_regiments @ {}",
             f.hour_index()
         );
@@ -1184,7 +1236,10 @@ fn rt_designs_catalog() {
         let var = d.equipment_variants.get("200:12").expect("variant 200:12");
         assert_eq!(
             var.obsolete,
-            exp_bool(raw(&f, &["designs", "equipment_variants", "200:12", "obsolete"])),
+            exp_bool(raw(
+                &f,
+                &["designs", "equipment_variants", "200:12", "obsolete"]
+            )),
             "obsolete @ {}",
             f.hour_index()
         );
@@ -1247,11 +1302,17 @@ fn rt_leader_roster() {
         let lr = f.leaders("GER").expect("GER leaders");
         assert_eq!(
             lr.country_leader_name,
-            exp_string(raw(&f, &["countries", "GER", "commanders", "leader", "name"]))
+            exp_string(raw(
+                &f,
+                &["countries", "GER", "commanders", "leader", "name"]
+            ))
         );
         assert_eq!(
             lr.roster_size,
-            exp_i64(raw(&f, &["countries", "GER", "commanders", "counts", "roster_size"])),
+            exp_i64(raw(
+                &f,
+                &["countries", "GER", "commanders", "counts", "roster_size"]
+            )),
             "roster_size @ {}",
             f.hour_index()
         );
@@ -1312,7 +1373,10 @@ fn rt_power_balance_combat() {
             "naval result_type @ {}",
             f.hour_index()
         );
-        assert_eq!(nc.progress, exp_f64(raw(&f, &["naval_combats", "0", "progress"])));
+        assert_eq!(
+            nc.progress,
+            exp_f64(raw(&f, &["naval_combats", "0", "progress"]))
+        );
         assert_eq!(
             nc.location_province,
             exp_u32(raw(&f, &["naval_combats", "0", "location_province"]))
@@ -1357,8 +1421,10 @@ fn rt_scripted_gui_vars() {
         let gvars = raw(&f, &["countries", "GER", "script_variables"])
             .and_then(Value::as_object)
             .expect("GER script_variables");
-        let want_g: BTreeMap<String, f64> =
-            gvars.iter().map(|(k, v)| (k.clone(), v.as_f64().unwrap())).collect();
+        let want_g: BTreeMap<String, f64> = gvars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
+            .collect();
         assert_eq!(
             sg.by_country.get("GER"),
             Some(&Leaf::Measured(want_g)),
@@ -1368,8 +1434,10 @@ fn rt_scripted_gui_vars() {
         let wvars = raw(&f, &["world", "variables"])
             .and_then(Value::as_object)
             .expect("world variables");
-        let want_w: BTreeMap<String, f64> =
-            wvars.iter().map(|(k, v)| (k.clone(), v.as_f64().unwrap())).collect();
+        let want_w: BTreeMap<String, f64> = wvars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
+            .collect();
         assert_eq!(sg.world_variables, Leaf::Measured(want_w));
         let wf = raw(&f, &["world", "flags"])
             .and_then(Value::as_object)

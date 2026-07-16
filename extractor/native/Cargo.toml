@@ -6,6 +6,7 @@ members = [
     "snapshot",
     "collector",
     "recorder_host",
+    "scientists_live_lane",
     "replay_decoder",
     "fold_check",
     "lanes/air_wings_variants_lifecycle_live",

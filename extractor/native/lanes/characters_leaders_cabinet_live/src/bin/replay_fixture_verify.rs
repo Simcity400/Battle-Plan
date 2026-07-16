@@ -1,11 +1,16 @@
 use characters_leaders_cabinet_live_lane::domain47_characters_leaders_cabinet_live as compact;
 use characters_leaders_cabinet_live_lane::extractor::{
-    appointed_advisors_from_active_ideas, encode_frame_payload, encode_frame_record,
-    validate_registry_assignment, AdvisorRecord, LaneFrame,
+    appointed_advisors_from_active_ideas, encode_frame_payload, validate_registry_assignment,
+    AdvisorRecord, LaneFrame,
+};
+use characters_leaders_cabinet_live_lane::stream_gate::{
+    encode_domain47_proof_stream, verify_domain47_stream,
 };
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const NON_CERTIFYING_RESULT: &str = "container_integrity_verified_non_certifying";
 
 fn main() {
     if let Err(err) = run() {
@@ -46,7 +51,14 @@ fn run() -> Result<(), String> {
             decoded.parse_errors
         ));
     }
-    let stream = encode_frame_record(1, 1946051909, &frame);
+    let stream = encode_domain47_proof_stream(1946051909, &payload)?;
+    let stream_gate = verify_domain47_stream(&stream);
+    if !stream_gate.parse_errors.is_empty() {
+        return Err(format!(
+            "domain47 fixture stream gate failed: {:?}",
+            stream_gate.parse_errors
+        ));
+    }
 
     let game_id = "characters_leaders_cabinet_live_domain47_fixture";
     let stream_path = "collector_raw/collector_stream.bin";
@@ -57,12 +69,17 @@ fn run() -> Result<(), String> {
     fs::write(&stream_fs_path, &stream).map_err(|err| format!("write stream failed: {err}"))?;
 
     let manifest = format!(
-        "{{\n  \"schema\": \"characters_leaders_cabinet_live.domain47.fixture_manifest.v1\",\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"stream_format\": \"compact\",\n  \"record_type\": \"DOMAIN_DATA\",\n  \"scheduled_domains\": [\"{}\"],\n  \"compact\": {{\n    \"payload_bytes\": {},\n    \"record_bytes\": {},\n    \"row_count_total\": {},\n    \"advisor_roster_rows\": {},\n    \"appointed_advisor_rows\": {},\n    \"character_portrait_rows\": {},\n    \"status_flags_or\": {},\n    \"schema_flags_or\": {}\n  }},\n  \"source\": \"lane-local fixture record, not live DLL capture\"\n}}\n",
+        "{{\n  \"schema\": \"characters_leaders_cabinet_live.domain47.synthetic_fixture_manifest.v3\",\n  \"artifact_kind\": \"lane_local_synthetic_fixture_stream\",\n  \"production_certifying\": false,\n  \"source_capture_verified\": false,\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"stream_format\": \"compact\",\n  \"synthetic_record_types\": [\"DOMAIN_PERF\", \"DOMAIN_DATA\", \"FRAME_END\"],\n  \"synthetic_scheduled_domains\": [\"{}\"],\n  \"synthetic_stream\": {{\n    \"payload_bytes\": {},\n    \"stream_bytes\": {},\n    \"record_count\": {},\n    \"domain_perf_record_count\": {},\n    \"domain_data_record_count\": {},\n    \"frame_end_record_count\": {},\n    \"closed_game_hours\": {:?},\n    \"row_count_total\": {},\n    \"advisor_roster_rows\": {},\n    \"appointed_advisor_rows\": {},\n    \"character_portrait_rows\": {},\n    \"status_flags_or\": {},\n    \"schema_flags_or\": {}\n  }},\n  \"proof_scope\": \"synthetic fixture stream and container integrity only; not source capture or production certification\"\n}}\n",
         compact::DOMAIN_NAME,
         compact::DOMAIN_ID,
         compact::DOMAIN_NAME,
         payload.len(),
         stream.len(),
+        stream_gate.record_count,
+        stream_gate.domain_perf_record_count,
+        stream_gate.domain_data_record_count,
+        stream_gate.frame_end_record_count,
+        stream_gate.closed_game_hours,
         decoded.row_count_total,
         decoded.advisor_roster_rows,
         decoded.appointed_advisor_rows,
@@ -138,7 +155,8 @@ fn run() -> Result<(), String> {
     }
 
     let summary = format!(
-        "{{\n  \"result\": \"verified\",\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"hoi4replay_path\": \"{}\",\n  \"collector_stream_path\": \"{}\",\n  \"manifest_path\": \"{}\",\n  \"hoi4replay_bytes\": {},\n  \"collector_stream_bytes\": {},\n  \"payload_bytes\": {},\n  \"row_count_total\": {},\n  \"advisor_roster_rows\": {},\n  \"appointed_advisor_rows\": {},\n  \"character_portrait_rows\": {},\n  \"schema_flags_or\": {},\n  \"status_flags_or\": {},\n  \"container_game_id\": \"{}\",\n  \"verified_stream_entry\": \"{}\",\n  \"verified_stream_bytes\": {},\n  \"parse_errors\": []\n}}\n",
+        "{{\n  \"result\": \"{}\",\n  \"artifact_kind\": \"lane_local_synthetic_fixture_stream\",\n  \"production_certifying\": false,\n  \"source_capture_verified\": false,\n  \"container_integrity_verified\": true,\n  \"stream_entry_byte_identity_verified\": true,\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"hoi4replay_path\": \"{}\",\n  \"collector_stream_path\": \"{}\",\n  \"manifest_path\": \"{}\",\n  \"hoi4replay_bytes\": {},\n  \"synthetic_stream_bytes\": {},\n  \"payload_bytes\": {},\n  \"synthetic_record_count\": {},\n  \"synthetic_domain_perf_record_count\": {},\n  \"synthetic_domain_data_record_count\": {},\n  \"synthetic_frame_end_record_count\": {},\n  \"synthetic_closed_game_hours\": {:?},\n  \"row_count_total\": {},\n  \"advisor_roster_rows\": {},\n  \"appointed_advisor_rows\": {},\n  \"character_portrait_rows\": {},\n  \"schema_flags_or\": {},\n  \"status_flags_or\": {},\n  \"container_game_id\": \"{}\",\n  \"verified_stream_entry\": \"{}\",\n  \"verified_stream_bytes\": {},\n  \"proof_scope\": \"synthetic fixture stream and container integrity only; not source capture or production certification\",\n  \"parse_errors\": []\n}}\n",
+        NON_CERTIFYING_RESULT,
         compact::DOMAIN_NAME,
         compact::DOMAIN_ID,
         json_path(&replay_path),
@@ -147,6 +165,11 @@ fn run() -> Result<(), String> {
         packed.len(),
         stream.len(),
         payload.len(),
+        stream_gate.record_count,
+        stream_gate.domain_perf_record_count,
+        stream_gate.domain_data_record_count,
+        stream_gate.frame_end_record_count,
+        stream_gate.closed_game_hours,
         decoded.row_count_total,
         decoded.advisor_roster_rows,
         decoded.appointed_advisor_rows,

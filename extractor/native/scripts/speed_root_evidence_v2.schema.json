@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "battle-plan.speed_root_evidence_transcript.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "capture", "process", "tool", "static_disasm", "roots", "speed_samples", "pause_samples", "transcript_sha256"],
+  "properties": {
+    "schema": {"const": "battle-plan.speed_root_evidence_transcript.v2"},
+    "capture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["session_id", "evidence_nonce_hex", "nonce_ledger_root", "created_filetime_utc", "completed_filetime_utc"],
+      "properties": {
+        "session_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{8,128}$"},
+        "evidence_nonce_hex": {"$ref": "#/$defs/sha256"},
+        "nonce_ledger_root": {"type": "string", "minLength": 1},
+        "created_filetime_utc": {"type": "integer", "minimum": 1},
+        "completed_filetime_utc": {"type": "integer", "minimum": 1}
+      }
+    },
+    "process": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pid", "creation_filetime_utc", "exe_path", "exe_sha256", "exe_file_id", "module_base"],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "creation_filetime_utc": {"type": "integer", "minimum": 1},
+        "exe_path": {"type": "string", "minLength": 1},
+        "exe_sha256": {"$ref": "#/$defs/sha256"},
+        "exe_file_id": {"$ref": "#/$defs/file_id"},
+        "module_base": {"$ref": "#/$defs/address"}
+      }
+    },
+    "tool": {
+      "type": "object", "additionalProperties": false,
+      "required": ["probe_path", "probe_sha256"],
+      "properties": {"probe_path": {"type": "string", "minLength": 1}, "probe_sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "static_disasm": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_path", "artifact_sha256"],
+      "properties": {"artifact_path": {"type": "string", "minLength": 1}, "artifact_sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "roots": {
+      "const": {
+        "cgame_state_singleton_rva": "0x3316e90",
+        "clock_singleton_a_rva": "0x33172e0",
+        "clock_singleton_b_rva": "0x33172e8",
+        "clock_vtable_rva": "0x2952510",
+        "tick_progress_offset": "0x4b8",
+        "speed_index_offset": "0x4bc",
+        "pause_offset": "0x6c1"
+      }
+    },
+    "speed_samples": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/sample"}},
+    "pause_samples": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/sample"}},
+    "transcript_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "address": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
+    "file_id": {
+      "type": "object", "additionalProperties": false,
+      "required": ["volume_serial_number", "file_index", "file_size"],
+      "properties": {
+        "volume_serial_number": {"type": "integer", "minimum": 0},
+        "file_index": {"type": "integer", "minimum": 0},
+        "file_size": {"type": "integer", "minimum": 0}
+      }
+    },
+    "addresses": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cgame_state_slot", "clock_slot_a", "clock_slot_b", "clock_vtable", "cgame_state", "clock", "speed", "pause", "tick"],
+      "properties": {
+        "cgame_state_slot": {"$ref": "#/$defs/address"}, "clock_slot_a": {"$ref": "#/$defs/address"},
+        "clock_slot_b": {"$ref": "#/$defs/address"}, "clock_vtable": {"$ref": "#/$defs/address"},
+        "cgame_state": {"$ref": "#/$defs/address"}, "clock": {"$ref": "#/$defs/address"},
+        "speed": {"$ref": "#/$defs/address"}, "pause": {"$ref": "#/$defs/address"}, "tick": {"$ref": "#/$defs/address"}
+      }
+    },
+    "read": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ordinal", "observed_filetime_utc", "cgame_state_value", "clock_slot_a_value", "clock_slot_b_value", "clock_vtable_value", "speed_raw", "pause_raw", "tick_progress_bits"],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 1}, "observed_filetime_utc": {"type": "integer", "minimum": 1},
+        "cgame_state_value": {"$ref": "#/$defs/address"}, "clock_slot_a_value": {"$ref": "#/$defs/address"},
+        "clock_slot_b_value": {"$ref": "#/$defs/address"}, "clock_vtable_value": {"$ref": "#/$defs/address"},
+        "speed_raw": {"type": "integer", "minimum": 0, "maximum": 4}, "pause_raw": {"type": "integer", "minimum": 0, "maximum": 1},
+        "tick_progress_bits": {"type": "string", "pattern": "^0x[0-9a-fA-F]{8}$"}
+      }
+    },
+    "sample": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "action_nonce_hex", "requested_ui_speed", "expected_raw_speed", "phase", "addresses", "reads"],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 8}, "action_nonce_hex": {"$ref": "#/$defs/sha256"},
+        "requested_ui_speed": {"type": "integer", "minimum": 1, "maximum": 5}, "expected_raw_speed": {"type": "integer", "minimum": 0, "maximum": 4},
+        "phase": {"enum": ["speed_cycle", "running_before", "paused", "running_after"]},
+        "addresses": {"$ref": "#/$defs/addresses"}, "reads": {"type": "array", "minItems": 3, "maxItems": 16, "items": {"$ref": "#/$defs/read"}}
+      }
+    }
+  }
+}

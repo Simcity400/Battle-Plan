@@ -103,6 +103,26 @@ shared collector entrypoints while another lane owns the integration slot.
 payload or the compact collector-style stream. The older `domain44_*` files are
 kept only as compatibility sources for the previously generated proof code; new
 registration should use the domain-52 named files.
+Both standalone gates include the canonical dependency-free H4CR header parser
+from `../../compact_contract/src/record_header.rs` through a Rust `#[path]`
+module, so their direct-`rustc` build remains self-contained. From this lane
+directory, build and invoke the current domain-52 gate with:
+
+`live_probe.py` emits canonical one-based contiguous H4CR record sequences
+(`1` PERF, `2` DATA, `3` FRAME_END), matching both standalone gates.
+
+```powershell
+rustc --edition 2021 domain52_gate.rs -o "$env:TEMP\domain52_gate.exe"
+& "$env:TEMP\domain52_gate.exe" --stream "path\to\collector_stream.bin"
+```
+
+The compatibility gate uses the same contract and build shape:
+
+```powershell
+rustc --edition 2021 domain44_gate.rs -o "$env:TEMP\domain44_gate.exe"
+& "$env:TEMP\domain44_gate.exe" --stream "path\to\collector_stream.bin"
+```
+
 `replay_verify/` is a lane-local Rust verifier that packs the compact stream
 into the same native `.battleplan` container shape used by the recorder host,
 opens it with the shared container reader, verifies all entry hashes, and

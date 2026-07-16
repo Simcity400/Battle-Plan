@@ -1,8 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use compact_contract::{
+    parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
+};
+
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
 pub const COMPACT_RECORD_VERSION: u16 = 1;
 pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
+pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
+pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
 pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 
 pub const DOMAIN_NAVAL_COMBAT_LIFECYCLE: u16 = 49;
@@ -19,7 +25,10 @@ pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 pub const STATUS_LOCATION_CANDIDATE_UNVALIDATED: u32 = 1 << 11;
-pub const FAILURE_STATUS_MASK: u32 = STATUS_SOURCE_UNAVAILABLE | STATUS_PARTIAL_DATA;
+/// All currently assigned global compact-status bits. Domain 49's bit 11 is a
+/// lane-local fail-closed badge and is masked before global interpretation.
+const KNOWN_COMPACT_STATUS_FLAGS: u32 = (1 << 14) - 1;
+pub const FAILURE_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
 
 pub const LIFECYCLE_ROW_DELETED: u32 = 1 << 0;
 pub const LIFECYCLE_LOCATION_PRESENT: u32 = 1 << 1;
@@ -43,6 +52,27 @@ pub const MEMBER_STRENGTH_PRESENT: u32 = 1 << 10;
 pub const MEMBER_ORGANISATION_PRESENT: u32 = 1 << 11;
 pub const MEMBER_EXPERIENCE_PRESENT: u32 = 1 << 12;
 pub const MEMBER_SUNK_CONVOYS_PRESENT: u32 = 1 << 13;
+const LIFECYCLE_KNOWN_FLAGS: u32 = LIFECYCLE_ROW_DELETED
+    | LIFECYCLE_LOCATION_PRESENT
+    | LIFECYCLE_ATTACKER_COUNT_PRESENT
+    | LIFECYCLE_DEFENDER_COUNT_PRESENT
+    | LIFECYCLE_ATTACKER_POSITIONING_PRESENT
+    | LIFECYCLE_DEFENDER_POSITIONING_PRESENT
+    | LIFECYCLE_REGION_PRESENT;
+const MEMBER_KNOWN_FLAGS: u32 = MEMBER_ROW_DELETED
+    | MEMBER_SHIP_INSTANCE_PRESENT
+    | MEMBER_OWNER_PRESENT
+    | MEMBER_DESIGNED_MAX_STRENGTH_PRESENT
+    | MEMBER_STATE_BITMASK_PRESENT
+    | MEMBER_ENGAGEMENT_WEIGHT_PRESENT
+    | MEMBER_CSHIP_JOIN_VALIDATED
+    | MEMBER_IS_CONVOY
+    | MEMBER_TASK_FORCE_PRESENT
+    | MEMBER_FLEET_PRESENT
+    | MEMBER_STRENGTH_PRESENT
+    | MEMBER_ORGANISATION_PRESENT
+    | MEMBER_EXPERIENCE_PRESENT
+    | MEMBER_SUNK_CONVOYS_PRESENT;
 
 pub const MAX_COMBAT_ID: u32 = 0x7fff_ffff;
 pub const MAX_SHIP_INSTANCE_ID: u32 = 4_000_000;
@@ -131,6 +161,7 @@ pub struct MemberRow {
 struct CompactRecord<'a> {
     offset: usize,
     sequence: u64,
+    game_hour_raw: i32,
     domain_id: u16,
     record_type: u16,
     payload: &'a [u8],
@@ -189,6 +220,15 @@ struct PayloadHeader {
     status_flags: u32,
     row_count: usize,
     string_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PerfAuthority {
+    observed_rows: u32,
+    changed_rows: u32,
+    unit_count: u32,
+    changed_unit_count: u32,
+    status_flags: u32,
 }
 
 #[derive(Debug)]
@@ -626,131 +666,611 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
         ..GateSummary::default()
     };
     let mut last_sequence: Option<u64> = None;
+    let mut pending_perf_hour: Option<i32> = None;
+    let mut open_frame_hour: Option<i32> = None;
+    let mut last_closed_hour: Option<i32> = None;
+    let mut final_record_is_clean_frame_end = false;
+    let mut frame_lifecycle_data_records = 0usize;
+    let mut frame_member_data_records = 0usize;
+    let mut frame_lifecycle_perf_records = 0usize;
+    let mut frame_member_perf_records = 0usize;
+    let mut frame_emitted_perf_records = 0u32;
+    let mut frame_lifecycle_perf = None;
+    let mut frame_member_perf = None;
+    let mut frame_lifecycle_data_status = None;
+    let mut frame_member_data_status = None;
+    let mut frame_lifecycle_data_rows = None;
+    let mut frame_member_data_rows = None;
+    let mut frame_lifecycle_parents = BTreeMap::new();
+    let mut frame_member_keys = BTreeSet::new();
+    let mut frame_live_ship_ids = BTreeSet::new();
     let mut lifecycle_keys = BTreeSet::new();
     let mut seen_lifecycle_keys = BTreeSet::new();
-    let mut member_sides: BTreeMap<(u32, u64), BTreeSet<CombatSide>> = BTreeMap::new();
+    let mut retired_lifecycle_keys = BTreeSet::new();
+    let mut active_members: BTreeMap<(u32, u64, u32, u32, u32), CombatSide> = BTreeMap::new();
+    let mut retired_member_keys = BTreeSet::new();
+    let mut non_convoy_member_count = 0u64;
+    let mut validated_non_convoy_member_count = 0u64;
 
     for record in records {
-        if let Some(previous) = last_sequence {
-            if record.sequence <= previous {
-                errors.push(format!(
-                    "offset {}: sequence {} did not advance past {}",
-                    record.offset, record.sequence, previous
-                ));
-            }
+        match last_sequence {
+            None if record.sequence != 1 => errors.push(format!(
+                "offset {}: sequence {} does not start at 1 (stream prefix is missing)",
+                record.offset, record.sequence
+            )),
+            Some(previous) => match previous.checked_add(1) {
+                Some(expected) if record.sequence != expected => errors.push(format!(
+                    "offset {}: sequence discontinuity {previous} -> {} (expected {expected})",
+                    record.offset, record.sequence
+                )),
+                None => errors.push(format!(
+                    "offset {}: sequence space exhausted after {previous}; got {} (wrapping is not allowed)",
+                    record.offset, record.sequence
+                )),
+                _ => {}
+            },
+            _ => {}
         }
         last_sequence = Some(record.sequence);
-        if record.record_type != COMPACT_RECORD_TYPE_DOMAIN_DATA {
-            errors.push(format!(
-                "offset {}: unexpected record type {}",
-                record.offset, record.record_type
-            ));
-            continue;
-        }
-        summary.domains_seen.insert(record.domain_id);
-        match record.domain_id {
-            DOMAIN_NAVAL_COMBAT_LIFECYCLE => {
-                let (header, rows) =
-                    match decode_lifecycle_payload(record.offset, record.payload, &mut errors) {
-                        Some(decoded) => decoded,
-                        None => continue,
-                    };
-                record_domain_data(&mut summary, record.domain_id, &header, rows.len());
-                summary.lifecycle_row_count = summary
-                    .lifecycle_row_count
-                    .saturating_add(rows.len() as u64);
-                for (row_index, row) in rows.into_iter().enumerate() {
-                    validate_decoded_lifecycle_row(record.offset, row_index, &row, &mut errors);
-                    if row.flags & LIFECYCLE_LOCATION_PRESENT != 0 {
-                        summary.lifecycle_location_row_count =
-                            summary.lifecycle_location_row_count.saturating_add(1);
-                    }
-                    if row.flags & LIFECYCLE_REGION_PRESENT != 0 {
-                        summary.lifecycle_region_row_count =
-                            summary.lifecycle_region_row_count.saturating_add(1);
-                    }
-                    if row.flags & LIFECYCLE_ROW_DELETED == 0 {
-                        let key = (row.combat_id, row.generation);
-                        lifecycle_keys.insert(key);
-                        if seen_lifecycle_keys.insert(key) {
-                            summary.lifecycle_started_row_count =
-                                summary.lifecycle_started_row_count.saturating_add(1);
-                        } else {
-                            summary.lifecycle_updated_row_count =
-                                summary.lifecycle_updated_row_count.saturating_add(1);
+        final_record_is_clean_frame_end = false;
+
+        match record.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+                match open_frame_hour {
+                    Some(open) if open != record.game_hour_raw => errors.push(format!(
+                        "offset {}: DOMAIN_PERF hour {} does not match open DATA frame hour {open}",
+                        record.offset, record.game_hour_raw
+                    )),
+                    Some(_) => {}
+                    None => {
+                        validate_next_frame_hour(
+                            last_closed_hour,
+                            record.game_hour_raw,
+                            "DOMAIN_PERF",
+                            record.offset,
+                            &mut errors,
+                        );
+                        match pending_perf_hour {
+                            Some(pending) if pending != record.game_hour_raw => errors.push(format!(
+                                "offset {}: DOMAIN_PERF hour {} conflicts with pending frame hour {pending}",
+                                record.offset, record.game_hour_raw
+                            )),
+                            Some(_) => {}
+                            None => pending_perf_hour = Some(record.game_hour_raw),
                         }
-                    } else {
-                        let key = (row.combat_id, row.generation);
-                        summary.lifecycle_ended_row_count =
-                            summary.lifecycle_ended_row_count.saturating_add(1);
-                        if !seen_lifecycle_keys.contains(&key) {
+                    }
+                }
+
+                // Domain 250 is recorder-excluded instrumentation and is not
+                // part of FRAME_END emitted-domain accounting.
+                if record.domain_id != 250 {
+                    frame_emitted_perf_records = frame_emitted_perf_records.saturating_add(1);
+                }
+                match record.domain_id {
+                    DOMAIN_NAVAL_COMBAT_LIFECYCLE => {
+                        frame_lifecycle_perf_records =
+                            frame_lifecycle_perf_records.saturating_add(1);
+                        if frame_lifecycle_perf_records > 1 {
                             errors.push(format!(
-                                "offset {}: lifecycle end row for combat {}:{} was not preceded by an active row",
-                                record.offset, key.0, key.1
+                                "offset {}: frame hour {} has duplicate domain 49 PERF records",
+                                record.offset, record.game_hour_raw
+                            ));
+                        }
+                        let authority = decode_perf_authority(record.payload);
+                        validate_status_health(
+                            record.domain_id,
+                            authority.status_flags,
+                            "DOMAIN_PERF",
+                            record.offset,
+                            &mut errors,
+                        );
+                        frame_lifecycle_perf.get_or_insert(authority);
+                    }
+                    DOMAIN_NAVAL_COMBAT_MEMBERS => {
+                        frame_member_perf_records = frame_member_perf_records.saturating_add(1);
+                        if frame_member_perf_records > 1 {
+                            errors.push(format!(
+                                "offset {}: frame hour {} has duplicate domain 50 PERF records",
+                                record.offset, record.game_hour_raw
+                            ));
+                        }
+                        if frame_lifecycle_perf_records != 1 {
+                            errors.push(format!(
+                                "offset {}: domain 50 PERF precedes its domain 49 PERF in frame hour {}",
+                                record.offset, record.game_hour_raw
+                            ));
+                        }
+                        let authority = decode_perf_authority(record.payload);
+                        validate_status_health(
+                            record.domain_id,
+                            authority.status_flags,
+                            "DOMAIN_PERF",
+                            record.offset,
+                            &mut errors,
+                        );
+                        frame_member_perf.get_or_insert(authority);
+                    }
+                    _ => {}
+                }
+            }
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+                match open_frame_hour {
+                    Some(open) if open != record.game_hour_raw => errors.push(format!(
+                        "offset {}: DOMAIN_DATA hour {} encountered before FRAME_END closed open frame hour {open}",
+                        record.offset, record.game_hour_raw
+                    )),
+                    Some(_) => {}
+                    None => {
+                        validate_next_frame_hour(
+                            last_closed_hour,
+                            record.game_hour_raw,
+                            "DOMAIN_DATA",
+                            record.offset,
+                            &mut errors,
+                        );
+                        if let Some(pending) = pending_perf_hour {
+                            if pending != record.game_hour_raw {
+                                errors.push(format!(
+                                    "offset {}: DOMAIN_DATA hour {} conflicts with pending PERF hour {pending}",
+                                    record.offset, record.game_hour_raw
+                                ));
+                            }
+                        }
+                        open_frame_hour = Some(record.game_hour_raw);
+                    }
+                }
+
+                summary.domains_seen.insert(record.domain_id);
+                match record.domain_id {
+                    DOMAIN_NAVAL_COMBAT_LIFECYCLE => {
+                        frame_lifecycle_data_records =
+                            frame_lifecycle_data_records.saturating_add(1);
+                        if frame_lifecycle_data_records > 1 {
+                            errors.push(format!(
+                                "offset {}: frame hour {} has duplicate domain 49 DATA records",
+                                record.offset, record.game_hour_raw
+                            ));
+                        }
+                        let (header, rows) = match decode_lifecycle_payload(
+                            record.offset,
+                            record.payload,
+                            &mut errors,
+                        ) {
+                            Some(decoded) => decoded,
+                            None => continue,
+                        };
+                        record_domain_data(&mut summary, record.domain_id, &header, rows.len());
+                        validate_status_health(
+                            record.domain_id,
+                            header.status_flags,
+                            "DOMAIN_DATA",
+                            record.offset,
+                            &mut errors,
+                        );
+                        frame_lifecycle_data_status.get_or_insert(header.status_flags);
+                        frame_lifecycle_data_rows.get_or_insert(rows.len() as u32);
+                        if header.status_flags & STATUS_LOCATION_CANDIDATE_UNVALIDATED != 0 {
+                            errors.push(format!(
+                                "offset {}: domain 49 location/region promotion is incomplete (status bit 11 set)",
+                                record.offset
+                            ));
+                        }
+                        summary.lifecycle_row_count = summary
+                            .lifecycle_row_count
+                            .saturating_add(rows.len() as u64);
+                        for (row_index, row) in rows.into_iter().enumerate() {
+                            validate_decoded_lifecycle_row(
+                                record.offset,
+                                row_index,
+                                &row,
+                                &mut errors,
+                            );
+                            let key = (row.combat_id, row.generation);
+                            let parent_deleted = row.flags & LIFECYCLE_ROW_DELETED != 0;
+                            if frame_lifecycle_parents
+                                .insert(key, parent_deleted)
+                                .is_some()
+                            {
+                                errors.push(format!(
+                                    "offset {}: duplicate/ambiguous domain 49 parent row for combat {}:{} in frame hour {}",
+                                    record.offset, key.0, key.1, record.game_hour_raw
+                                ));
+                            }
+                            if !parent_deleted
+                                && row.flags
+                                    & (LIFECYCLE_LOCATION_PRESENT | LIFECYCLE_REGION_PRESENT)
+                                    != (LIFECYCLE_LOCATION_PRESENT | LIFECYCLE_REGION_PRESENT)
+                            {
+                                errors.push(format!(
+                                    "offset {}: lifecycle row {row_index} combat {}:{} lacks promoted location/region",
+                                    record.offset, row.combat_id, row.generation
+                                ));
+                            }
+                            if row.flags & LIFECYCLE_LOCATION_PRESENT != 0 {
+                                summary.lifecycle_location_row_count =
+                                    summary.lifecycle_location_row_count.saturating_add(1);
+                            }
+                            if row.flags & LIFECYCLE_REGION_PRESENT != 0 {
+                                summary.lifecycle_region_row_count =
+                                    summary.lifecycle_region_row_count.saturating_add(1);
+                            }
+                            if row.flags & LIFECYCLE_ROW_DELETED == 0 {
+                                if retired_lifecycle_keys.contains(&key) {
+                                    errors.push(format!(
+                                        "offset {}: lifecycle row for retired combat {}:{} attempts same-generation resurrection",
+                                        record.offset, key.0, key.1
+                                    ));
+                                } else {
+                                    lifecycle_keys.insert(key);
+                                }
+                                if seen_lifecycle_keys.insert(key) {
+                                    summary.lifecycle_started_row_count =
+                                        summary.lifecycle_started_row_count.saturating_add(1);
+                                } else {
+                                    summary.lifecycle_updated_row_count =
+                                        summary.lifecycle_updated_row_count.saturating_add(1);
+                                }
+                            } else {
+                                summary.lifecycle_ended_row_count =
+                                    summary.lifecycle_ended_row_count.saturating_add(1);
+                                if !lifecycle_keys.remove(&key) {
+                                    errors.push(format!(
+                                        "offset {}: lifecycle tombstone for combat {}:{} is duplicate or was not preceded by an active row",
+                                        record.offset, key.0, key.1
+                                    ));
+                                }
+                                retired_lifecycle_keys.insert(key);
+                            }
+                        }
+                    }
+                    DOMAIN_NAVAL_COMBAT_MEMBERS => {
+                        if frame_lifecycle_data_records != 1 {
+                            errors.push(format!(
+                                "offset {}: domain 50 DATA precedes its domain 49 DATA in frame hour {}",
+                                record.offset, record.game_hour_raw
+                            ));
+                        }
+                        frame_member_data_records = frame_member_data_records.saturating_add(1);
+                        if frame_member_data_records > 1 {
+                            errors.push(format!(
+                                "offset {}: frame hour {} has duplicate domain 50 DATA records",
+                                record.offset, record.game_hour_raw
+                            ));
+                        }
+                        let (header, rows) =
+                            match decode_member_payload(record.offset, record.payload, &mut errors)
+                            {
+                                Some(decoded) => decoded,
+                                None => continue,
+                            };
+                        record_domain_data(&mut summary, record.domain_id, &header, rows.len());
+                        validate_status_health(
+                            record.domain_id,
+                            header.status_flags,
+                            "DOMAIN_DATA",
+                            record.offset,
+                            &mut errors,
+                        );
+                        frame_member_data_status.get_or_insert(header.status_flags);
+                        frame_member_data_rows.get_or_insert(rows.len() as u32);
+                        summary.member_row_count =
+                            summary.member_row_count.saturating_add(rows.len() as u64);
+                        for (row_index, row) in rows.into_iter().enumerate() {
+                            validate_decoded_member_row(
+                                record.offset,
+                                row_index,
+                                &row,
+                                &mut errors,
+                            );
+                            let parent = (row.combat_id, row.generation);
+                            let is_deleted = row.flags & MEMBER_ROW_DELETED != 0;
+                            let parent_is_active = lifecycle_keys.contains(&parent);
+                            let parent_delta = frame_lifecycle_parents.get(&parent).copied();
+                            if !is_deleted && !parent_is_active {
+                                errors.push(format!(
+                                    "offset {}: domain 50 member row {row_index} combat {}:{} is orphaned from active domain 49 lifecycle state",
+                                    record.offset, parent.0, parent.1
+                                ));
+                            } else if is_deleted && !parent_is_active && parent_delta != Some(true)
+                            {
+                                errors.push(format!(
+                                    "offset {}: deleted domain 50 member row {row_index} combat {}:{} is orphaned from domain 49 lifecycle history",
+                                    record.offset, parent.0, parent.1
+                                ));
+                            }
+                            let membership_key = (
+                                row.combat_id,
+                                row.generation,
+                                row.side,
+                                row.group_index,
+                                row.member_index,
+                            );
+                            if !frame_member_keys.insert(membership_key) {
+                                errors.push(format!(
+                                    "offset {}: duplicate/ambiguous domain 50 membership for combat {}:{} side {} group {} member {}",
+                                    record.offset,
+                                    row.combat_id,
+                                    row.generation,
+                                    row.side,
+                                    row.group_index,
+                                    row.member_index
+                                ));
+                            }
+                            let is_convoy = row.flags & MEMBER_IS_CONVOY != 0;
+                            if is_convoy {
+                                summary.convoy_member_count =
+                                    summary.convoy_member_count.saturating_add(1);
+                            } else {
+                                non_convoy_member_count = non_convoy_member_count.saturating_add(1);
+                                if row.flags & MEMBER_SHIP_INSTANCE_PRESENT == 0 {
+                                    errors.push(format!(
+                                        "offset {}: non-convoy member row {row_index} combat {}:{} lacks ship-instance identity",
+                                        record.offset, row.combat_id, row.generation
+                                    ));
+                                }
+                                if row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0 {
+                                    errors.push(format!(
+                                        "offset {}: non-convoy member row {row_index} combat {}:{} lacks a validated CShip join",
+                                        record.offset, row.combat_id, row.generation
+                                    ));
+                                }
+                                if row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
+                                    validated_non_convoy_member_count =
+                                        validated_non_convoy_member_count.saturating_add(1);
+                                }
+                                if !is_deleted
+                                    && row.flags & MEMBER_SHIP_INSTANCE_PRESENT != 0
+                                    && !frame_live_ship_ids.insert(row.ship_instance_id)
+                                {
+                                    errors.push(format!(
+                                        "offset {}: duplicate/ambiguous live ship_instance_id {} in frame hour {}",
+                                        record.offset, row.ship_instance_id, record.game_hour_raw
+                                    ));
+                                }
+                            }
+                            if row.flags & MEMBER_ROW_DELETED != 0 {
+                                summary.member_deleted_row_count =
+                                    summary.member_deleted_row_count.saturating_add(1);
+                                if active_members.remove(&membership_key).is_none() {
+                                    errors.push(format!(
+                                        "offset {}: deleted domain 50 membership combat {}:{} side {} group {} member {} was not previously active",
+                                        record.offset,
+                                        row.combat_id,
+                                        row.generation,
+                                        row.side,
+                                        row.group_index,
+                                        row.member_index
+                                    ));
+                                }
+                                retired_member_keys.insert(membership_key);
+                            } else if let Some(side) = CombatSide::from_wire_id(row.side) {
+                                if retired_member_keys.contains(&membership_key) {
+                                    errors.push(format!(
+                                        "offset {}: domain 50 membership combat {}:{} side {} group {} member {} attempts same-generation resurrection",
+                                        record.offset,
+                                        row.combat_id,
+                                        row.generation,
+                                        row.side,
+                                        row.group_index,
+                                        row.member_index
+                                    ));
+                                } else {
+                                    active_members.insert(membership_key, side);
+                                }
+                            }
+                            if row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
+                                summary.cship_validated_member_count =
+                                    summary.cship_validated_member_count.saturating_add(1);
+                            }
+                            if row.flags & MEMBER_TASK_FORCE_PRESENT != 0 {
+                                summary.task_force_linked_member_count =
+                                    summary.task_force_linked_member_count.saturating_add(1);
+                            }
+                            if row.flags & MEMBER_FLEET_PRESENT != 0 {
+                                summary.fleet_linked_member_count =
+                                    summary.fleet_linked_member_count.saturating_add(1);
+                            }
+                            if row.flags & (MEMBER_STRENGTH_PRESENT | MEMBER_ORGANISATION_PRESENT)
+                                != 0
+                            {
+                                summary.hull_telemetry_member_count =
+                                    summary.hull_telemetry_member_count.saturating_add(1);
+                            }
+                            if row.flags & MEMBER_SUNK_CONVOYS_PRESENT != 0 {
+                                summary.sunk_convoy_telemetry_member_count =
+                                    summary.sunk_convoy_telemetry_member_count.saturating_add(1);
+                            }
+                        }
+                    }
+                    _ => {
+                        // Unowned domain payloads are intentionally opaque here. Their
+                        // H4CR envelope and placement in the physical frame were already
+                        // certified above.
+                    }
+                }
+            }
+            COMPACT_RECORD_TYPE_FRAME_END => {
+                let mut clean = true;
+                let emitted_domains = read_u32(record.payload, 16);
+                let scheduled_domains = read_u32(record.payload, 20);
+                let frame_status = read_u32(record.payload, 24);
+                let reserved = read_u32(record.payload, 28);
+                validate_status_health(
+                    compact_contract::COMPACT_DOMAIN_FRAME,
+                    frame_status,
+                    "FRAME_END",
+                    record.offset,
+                    &mut errors,
+                );
+                if frame_status & !KNOWN_COMPACT_STATUS_FLAGS != 0
+                    || frame_status & compact_contract::COMPACT_STATUS_FAILURE_MASK != 0
+                {
+                    clean = false;
+                }
+                if reserved != 0 {
+                    clean = false;
+                    errors.push(format!(
+                        "offset {}: FRAME_END reserved word is nonzero ({reserved:#x})",
+                        record.offset
+                    ));
+                }
+                if emitted_domains != frame_emitted_perf_records {
+                    clean = false;
+                    errors.push(format!(
+                        "offset {}: FRAME_END emitted_domains {emitted_domains} != independently observed DOMAIN_PERF count {frame_emitted_perf_records}",
+                        record.offset
+                    ));
+                }
+                if scheduled_domains != emitted_domains {
+                    clean = false;
+                    errors.push(format!(
+                        "offset {}: FRAME_END scheduled_domains {scheduled_domains} != emitted_domains {emitted_domains}",
+                        record.offset
+                    ));
+                }
+                match open_frame_hour {
+                    Some(open) if open == record.game_hour_raw => {}
+                    Some(open) => {
+                        clean = false;
+                        errors.push(format!(
+                            "offset {}: FRAME_END hour {} does not close open DATA frame hour {open}",
+                            record.offset, record.game_hour_raw
+                        ));
+                    }
+                    None => {
+                        clean = false;
+                        errors.push(format!(
+                            "offset {}: FRAME_END hour {} has no open DATA frame",
+                            record.offset, record.game_hour_raw
+                        ));
+                    }
+                }
+                if let Some(closed) = last_closed_hour {
+                    match closed.checked_add(1) {
+                        Some(expected) if expected == record.game_hour_raw => {}
+                        Some(expected) => {
+                            clean = false;
+                            errors.push(format!(
+                                "offset {}: FRAME_END hour {} does not follow closed frame hour {closed} (expected {expected})",
+                                record.offset, record.game_hour_raw
+                            ));
+                        }
+                        None => {
+                            clean = false;
+                            errors.push(format!(
+                                "offset {}: closed frame hour {closed} exhausted; another frame is forbidden",
+                                record.offset
                             ));
                         }
                     }
                 }
-            }
-            DOMAIN_NAVAL_COMBAT_MEMBERS => {
-                let (header, rows) =
-                    match decode_member_payload(record.offset, record.payload, &mut errors) {
-                        Some(decoded) => decoded,
-                        None => continue,
-                    };
-                record_domain_data(&mut summary, record.domain_id, &header, rows.len());
-                summary.member_row_count =
-                    summary.member_row_count.saturating_add(rows.len() as u64);
-                for (row_index, row) in rows.into_iter().enumerate() {
-                    validate_decoded_member_row(record.offset, row_index, &row, &mut errors);
-                    if row.flags & MEMBER_IS_CONVOY != 0 {
-                        summary.convoy_member_count = summary.convoy_member_count.saturating_add(1);
+                if frame_lifecycle_data_records != 1 {
+                    clean = false;
+                    errors.push(format!(
+                        "offset {}: frame hour {} has {} domain 49 DATA records; expected exactly 1",
+                        record.offset, record.game_hour_raw, frame_lifecycle_data_records
+                    ));
+                }
+                if frame_member_data_records != 1 {
+                    clean = false;
+                    errors.push(format!(
+                        "offset {}: frame hour {} has {} domain 50 DATA records; expected exactly 1",
+                        record.offset, record.game_hour_raw, frame_member_data_records
+                    ));
+                }
+                if frame_lifecycle_perf_records != 1 {
+                    clean = false;
+                    errors.push(format!(
+                        "offset {}: frame hour {} has {} domain 49 PERF records; expected exactly 1",
+                        record.offset, record.game_hour_raw, frame_lifecycle_perf_records
+                    ));
+                }
+                if frame_member_perf_records != 1 {
+                    clean = false;
+                    errors.push(format!(
+                        "offset {}: frame hour {} has {} domain 50 PERF records; expected exactly 1",
+                        record.offset, record.game_hour_raw, frame_member_perf_records
+                    ));
+                }
+                validate_perf_data_authority(
+                    DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+                    frame_lifecycle_perf,
+                    frame_lifecycle_data_status,
+                    frame_lifecycle_data_rows,
+                    record.offset,
+                    &mut clean,
+                    &mut errors,
+                );
+                validate_perf_data_authority(
+                    DOMAIN_NAVAL_COMBAT_MEMBERS,
+                    frame_member_perf,
+                    frame_member_data_status,
+                    frame_member_data_rows,
+                    record.offset,
+                    &mut clean,
+                    &mut errors,
+                );
+                for (&(combat_id, generation), &deleted) in &frame_lifecycle_parents {
+                    if !deleted {
+                        continue;
                     }
-                    if row.flags & MEMBER_ROW_DELETED != 0 {
-                        summary.member_deleted_row_count =
-                            summary.member_deleted_row_count.saturating_add(1);
-                    }
-                    if row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
-                        summary.cship_validated_member_count =
-                            summary.cship_validated_member_count.saturating_add(1);
-                    }
-                    if row.flags & MEMBER_TASK_FORCE_PRESENT != 0 {
-                        summary.task_force_linked_member_count =
-                            summary.task_force_linked_member_count.saturating_add(1);
-                    }
-                    if row.flags & MEMBER_FLEET_PRESENT != 0 {
-                        summary.fleet_linked_member_count =
-                            summary.fleet_linked_member_count.saturating_add(1);
-                    }
-                    if row.flags & (MEMBER_STRENGTH_PRESENT | MEMBER_ORGANISATION_PRESENT) != 0 {
-                        summary.hull_telemetry_member_count =
-                            summary.hull_telemetry_member_count.saturating_add(1);
-                    }
-                    if row.flags & MEMBER_SUNK_CONVOYS_PRESENT != 0 {
-                        summary.sunk_convoy_telemetry_member_count =
-                            summary.sunk_convoy_telemetry_member_count.saturating_add(1);
-                    }
-                    if row.flags & MEMBER_ROW_DELETED == 0 {
-                        if let Some(side) = CombatSide::from_wire_id(row.side) {
-                            member_sides
-                                .entry((row.combat_id, row.generation))
-                                .or_default()
-                                .insert(side);
-                        }
+                    let stale_child_count = active_members
+                        .keys()
+                        .filter(|(member_combat_id, member_generation, _, _, _)| {
+                            *member_combat_id == combat_id && *member_generation == generation
+                        })
+                        .count();
+                    if stale_child_count != 0 {
+                        clean = false;
+                        errors.push(format!(
+                            "offset {}: domain 49 tombstone for combat {combat_id}:{generation} left {stale_child_count} active domain 50 member(s); complete child teardown is required in the same frame",
+                            record.offset
+                        ));
                     }
                 }
+                if clean {
+                    open_frame_hour = None;
+                    pending_perf_hour = None;
+                    last_closed_hour = Some(record.game_hour_raw);
+                    frame_lifecycle_data_records = 0;
+                    frame_member_data_records = 0;
+                    frame_lifecycle_perf_records = 0;
+                    frame_member_perf_records = 0;
+                    frame_emitted_perf_records = 0;
+                    frame_lifecycle_perf = None;
+                    frame_member_perf = None;
+                    frame_lifecycle_data_status = None;
+                    frame_member_data_status = None;
+                    frame_lifecycle_data_rows = None;
+                    frame_member_data_rows = None;
+                    frame_lifecycle_parents.clear();
+                    frame_member_keys.clear();
+                    frame_live_ship_ids.clear();
+                    final_record_is_clean_frame_end = true;
+                }
             }
-            other => errors.push(format!(
-                "offset {}: unexpected domain {other}",
-                record.offset
-            )),
+            _ => unreachable!("canonical record semantics reject unknown record types"),
         }
+    }
+
+    if let Some(open) = open_frame_hour {
+        errors.push(format!("stream ended with open DATA frame hour {open}"));
+    }
+    if !final_record_is_clean_frame_end {
+        errors.push("stream is not closed by a final canonical FRAME_END record".to_string());
     }
 
     summary.status_flags_or = summary
         .per_domain
         .values()
         .fold(0u32, |acc, domain| acc | domain.status_flags_or);
+    let mut member_sides: BTreeMap<(u32, u64), BTreeSet<CombatSide>> = BTreeMap::new();
+    for ((combat_id, generation, _, _, _), side) in &active_members {
+        member_sides
+            .entry((*combat_id, *generation))
+            .or_default()
+            .insert(*side);
+    }
     summary.active_combat_count = lifecycle_keys.len() as u64;
     summary.two_sided_combat_count = lifecycle_keys
         .iter()
@@ -779,9 +1299,6 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
             summary.status_flags_or & FAILURE_STATUS_MASK
         ));
     }
-    if lifecycle_keys.is_empty() {
-        errors.push("no active lifecycle rows".to_string());
-    }
     for key in lifecycle_keys {
         let two_sided = member_sides
             .get(&key)
@@ -796,8 +1313,11 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
             ));
         }
     }
-    if summary.member_row_count > 0 && summary.cship_validated_member_count == 0 {
-        errors.push("member rows exist but no non-convoy CShip join was validated".to_string());
+    if non_convoy_member_count > 0 && validated_non_convoy_member_count != non_convoy_member_count {
+        errors.push(format!(
+            "only {} of {non_convoy_member_count} non-convoy members have validated CShip joins",
+            validated_non_convoy_member_count
+        ));
     }
     if summary.cship_validated_member_count > 0
         && summary.task_force_linked_member_count < summary.cship_validated_member_count
@@ -819,6 +1339,102 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
         ok: errors.is_empty(),
         errors,
         summary,
+    }
+}
+
+fn validate_next_frame_hour(
+    last_closed_hour: Option<i32>,
+    game_hour_raw: i32,
+    record_label: &str,
+    offset: usize,
+    errors: &mut Vec<String>,
+) {
+    let Some(closed) = last_closed_hour else {
+        return;
+    };
+    match closed.checked_add(1) {
+        Some(expected) if game_hour_raw == expected => {}
+        Some(expected) => errors.push(format!(
+            "offset {offset}: {record_label} hour {game_hour_raw} does not follow closed frame hour {closed} (expected {expected})"
+        )),
+        None => errors.push(format!(
+            "offset {offset}: closed frame hour {closed} exhausted; another record is forbidden"
+        )),
+    }
+}
+
+fn decode_perf_authority(payload: &[u8]) -> PerfAuthority {
+    PerfAuthority {
+        observed_rows: read_u32(payload, 16),
+        changed_rows: read_u32(payload, 20),
+        unit_count: read_u32(payload, 24),
+        changed_unit_count: read_u32(payload, 28),
+        status_flags: read_u32(payload, 32),
+    }
+}
+
+fn validate_status_health(
+    domain_id: u16,
+    status_flags: u32,
+    record_label: &str,
+    offset: usize,
+    errors: &mut Vec<String>,
+) {
+    let unknown = status_flags & !KNOWN_COMPACT_STATUS_FLAGS;
+    if unknown != 0 {
+        errors.push(format!(
+            "offset {offset}: {record_label} domain {domain_id} status {status_flags:#010x} contains unknown bits {unknown:#010x}"
+        ));
+    }
+    let global =
+        compact_contract::compact_status_for_global_interpretation(domain_id, status_flags);
+    let fatal = global & compact_contract::COMPACT_STATUS_FAILURE_MASK;
+    if fatal != 0 {
+        errors.push(format!(
+            "offset {offset}: {record_label} domain {domain_id} status {status_flags:#010x} contains fatal bits {fatal:#010x}"
+        ));
+    }
+    if domain_id == DOMAIN_NAVAL_COMBAT_LIFECYCLE
+        && status_flags & STATUS_LOCATION_CANDIDATE_UNVALIDATED != 0
+    {
+        errors.push(format!(
+            "offset {offset}: {record_label} domain 49 location/region promotion is incomplete (status bit 11 set)"
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_perf_data_authority(
+    domain_id: u16,
+    perf: Option<PerfAuthority>,
+    data_status: Option<u32>,
+    data_rows: Option<u32>,
+    offset: usize,
+    clean: &mut bool,
+    errors: &mut Vec<String>,
+) {
+    let (Some(perf), Some(data_status), Some(data_rows)) = (perf, data_status, data_rows) else {
+        return;
+    };
+    if data_status != perf.status_flags {
+        *clean = false;
+        errors.push(format!(
+            "offset {offset}: domain {domain_id} DATA status {data_status:#010x} != PERF status {:#010x}",
+            perf.status_flags
+        ));
+    }
+    for (name, actual) in [
+        ("changed_rows", perf.changed_rows),
+        ("unit_count", perf.unit_count),
+        ("changed_unit_count", perf.changed_unit_count),
+    ] {
+        if actual != data_rows {
+            *clean = false;
+            errors.push(format!(
+                "offset {offset}: domain {domain_id} PERF {name} {actual} != decoded DATA row count {data_rows} (observed_rows={})",
+                perf.observed_rows
+            ));
+        }
     }
 }
 
@@ -950,42 +1566,50 @@ fn decode_records(data: &[u8]) -> Result<Vec<CompactRecord<'_>>, String> {
     let mut records = Vec::new();
     let mut cursor = 0usize;
     while cursor < data.len() {
-        require(data, cursor, COMPACT_RECORD_HEADER_LEN, "compact header")?;
-        if &data[cursor..cursor + 4] != COMPACT_RECORD_MAGIC {
-            return Err(format!("offset {cursor}: bad compact magic"));
-        }
-        let version = read_u16(data, cursor + 4);
-        let header_len = read_u16(data, cursor + 6) as usize;
-        let sequence = read_u64(data, cursor + 8);
-        let domain_id = read_u16(data, cursor + 20);
-        let record_type = read_u16(data, cursor + 22);
-        let payload_len = read_u32(data, cursor + 24) as usize;
-        let reserved = read_u32(data, cursor + 28);
-        if version != COMPACT_RECORD_VERSION {
-            return Err(format!(
-                "offset {cursor}: unsupported compact version {version}"
-            ));
-        }
-        if header_len != COMPACT_RECORD_HEADER_LEN {
-            return Err(format!(
-                "offset {cursor}: unsupported compact header length {header_len}"
-            ));
-        }
-        if reserved != 0 {
-            return Err(format!(
-                "offset {cursor}: compact header reserved field is nonzero"
-            ));
-        }
+        let header = match parse_compact_record_header(&data[cursor..]) {
+            Ok(header) => header,
+            Err(RecordFramingError::TruncatedHeader(_)) => {
+                return Err(format!(
+                    "compact header overruns buffer at offset {cursor}: need {COMPACT_RECORD_HEADER_LEN}, remaining {}",
+                    data.len().saturating_sub(cursor)
+                ));
+            }
+            Err(RecordFramingError::BadMagic) => {
+                return Err(format!("offset {cursor}: bad compact magic"));
+            }
+            Err(RecordFramingError::UnsupportedVersion(version)) => {
+                return Err(format!(
+                    "offset {cursor}: unsupported compact version {version}"
+                ));
+            }
+            Err(RecordFramingError::UnsupportedHeaderLen(header_len)) => {
+                return Err(format!(
+                    "offset {cursor}: unsupported compact header length {header_len}"
+                ));
+            }
+            Err(err @ RecordFramingError::PayloadTooLarge(_)) => {
+                return Err(format!("offset {cursor}: {err}"));
+            }
+        };
         let payload_start = cursor + COMPACT_RECORD_HEADER_LEN;
-        require(data, payload_start, payload_len, "compact payload")?;
+        require(data, payload_start, header.payload_len, "compact payload")?;
+        let payload = &data[payload_start..payload_start + header.payload_len];
+        validate_compact_record_semantics(
+            header.domain_id,
+            header.record_type,
+            header.record_flags,
+            payload,
+        )
+        .map_err(|err| format!("offset {cursor}: {err}"))?;
         records.push(CompactRecord {
             offset: cursor,
-            sequence,
-            domain_id,
-            record_type,
-            payload: &data[payload_start..payload_start + payload_len],
+            sequence: header.sequence,
+            game_hour_raw: header.game_hour_raw,
+            domain_id: header.domain_id,
+            record_type: header.record_type,
+            payload,
         });
-        cursor = payload_start + payload_len;
+        cursor = payload_start + header.payload_len;
     }
     Ok(records)
 }
@@ -1157,6 +1781,12 @@ fn validate_decoded_lifecycle_row(
     row: &DecodedLifecycleRow,
     errors: &mut Vec<String>,
 ) {
+    if row.flags & !LIFECYCLE_KNOWN_FLAGS != 0 {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} has unknown flags 0x{:08x}",
+            row.flags & !LIFECYCLE_KNOWN_FLAGS
+        ));
+    }
     if row.combat_id == 0 || row.combat_id > MAX_COMBAT_ID {
         errors.push(format!(
             "offset {offset}: lifecycle row {row_index} invalid combat_id {}",
@@ -1221,6 +1851,12 @@ fn validate_decoded_member_row(
     row: &DecodedMemberRow,
     errors: &mut Vec<String>,
 ) {
+    if row.flags & !MEMBER_KNOWN_FLAGS != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} has unknown flags 0x{:08x}",
+            row.flags & !MEMBER_KNOWN_FLAGS
+        ));
+    }
     if row.combat_id == 0 || row.combat_id > MAX_COMBAT_ID {
         errors.push(format!(
             "offset {offset}: member row {row_index} invalid combat_id {}",
@@ -1261,9 +1897,16 @@ fn validate_decoded_member_row(
             row.battle_slot_index_raw
         ));
     }
-    if row.flags & MEMBER_IS_CONVOY == 0 && row.unit_type_tag != CSHIP_TYPE_TAG {
+    let is_convoy = row.flags & MEMBER_IS_CONVOY != 0;
+    if !is_convoy && row.unit_type_tag != CSHIP_TYPE_TAG {
         errors.push(format!(
             "offset {offset}: member row {row_index} non-convoy unit_type_tag {} != {CSHIP_TYPE_TAG}",
+            row.unit_type_tag
+        ));
+    }
+    if is_convoy && row.unit_type_tag != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} convoy unit_type_tag {} is not zero",
             row.unit_type_tag
         ));
     }
@@ -1285,17 +1928,37 @@ fn validate_decoded_member_row(
             "offset {offset}: member row {row_index} has CShip validation without ship id"
         ));
     }
-    if row.flags & MEMBER_IS_CONVOY != 0 && row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
+    if is_convoy && (row.flags & MEMBER_SHIP_INSTANCE_PRESENT != 0 || row.ship_instance_id != 0) {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} convoy row must not carry ship-instance identity"
+        ));
+    }
+    if is_convoy && row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
         errors.push(format!(
             "offset {offset}: member row {row_index} convoy row must not carry CShip validation"
         ));
     }
-    if row.flags & MEMBER_IS_CONVOY == 0
-        && row.flags & MEMBER_SHIP_INSTANCE_PRESENT != 0
-        && row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0
-    {
+    if !is_convoy && row.flags & MEMBER_SHIP_INSTANCE_PRESENT == 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} non-convoy ship lacks ship-instance identity"
+        ));
+    }
+    if !is_convoy && row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0 {
         errors.push(format!(
             "offset {offset}: member row {row_index} non-convoy ship lacks CShip validation"
+        ));
+    }
+    let convoy_forbidden = MEMBER_CSHIP_JOIN_VALIDATED
+        | MEMBER_TASK_FORCE_PRESENT
+        | MEMBER_FLEET_PRESENT
+        | MEMBER_STRENGTH_PRESENT
+        | MEMBER_ORGANISATION_PRESENT
+        | MEMBER_EXPERIENCE_PRESENT
+        | MEMBER_SUNK_CONVOYS_PRESENT;
+    if is_convoy && row.flags & convoy_forbidden != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} convoy row carries CShip-derived flags 0x{:08x}",
+            row.flags & convoy_forbidden
         ));
     }
     if row.flags & MEMBER_OWNER_PRESENT != 0 && row.owner_tag_db_id > MAX_OWNER_TAG_DB_ID {
@@ -1452,11 +2115,30 @@ fn validate_member_row(row: &MemberRow) -> Result<(), String> {
             return Err("invalid member ship_instance_id".to_string());
         }
     }
-    if !row.is_convoy && row.ship_instance_id.is_some() && !row.cship_join_validated {
-        return Err("non-convoy ship member requires CShip join validation".to_string());
-    }
-    if row.is_convoy && row.cship_join_validated {
-        return Err("convoy member cannot carry CShip join validation".to_string());
+    if row.is_convoy {
+        if row.unit_type_tag != 0 || row.ship_instance_id.is_some() {
+            return Err("convoy member must carry the zero packed-handle identity".to_string());
+        }
+        if row.cship_join_validated
+            || row.task_force_id.is_some()
+            || row.fleet_id.is_some()
+            || row.strength_raw.is_some()
+            || row.organisation_raw.is_some()
+            || row.experience_raw.is_some()
+            || row.sunk_convoys.is_some()
+        {
+            return Err("convoy member cannot carry CShip-derived fields".to_string());
+        }
+    } else {
+        if row.unit_type_tag != CSHIP_TYPE_TAG {
+            return Err("non-convoy member must carry the CShip type tag".to_string());
+        }
+        if row.ship_instance_id.is_none() {
+            return Err("non-convoy ship member requires ship-instance identity".to_string());
+        }
+        if !row.cship_join_validated {
+            return Err("non-convoy ship member requires CShip join validation".to_string());
+        }
     }
     if let Some(owner) = row.owner_tag_db_id {
         if owner > MAX_OWNER_TAG_DB_ID {
@@ -1634,70 +2316,862 @@ fn push_json_str(out: &mut String, value: &str) {
 mod tests {
     use super::*;
 
-    fn passing_stream() -> Vec<u8> {
-        let lifecycle = [LifecycleRow {
-            combat_id: 240_580,
+    fn record_with_flags(
+        domain_id: u16,
+        record_type: u16,
+        record_flags: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut record = compact_record(1, 100, domain_id, record_type, payload);
+        record[28..32].copy_from_slice(&record_flags.to_le_bytes());
+        record
+    }
+
+    fn canonical_perf_payload_with_empty_pdu1() -> Vec<u8> {
+        let mut payload = vec![0; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN];
+        payload.extend_from_slice(compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC);
+        payload.extend_from_slice(
+            &compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION.to_le_bytes(),
+        );
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload
+    }
+
+    fn perf_payload(rows: usize, status_flags: u32) -> Vec<u8> {
+        let rows = rows as u32;
+        let mut payload = Vec::with_capacity(compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN);
+        payload.extend_from_slice(&42u64.to_le_bytes());
+        payload.extend_from_slice(&7u64.to_le_bytes());
+        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn append_frame_end(stream: &mut Vec<u8>, sequence: u64, game_hour_raw: i32) {
+        let mut payload = vec![0u8; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN];
+        payload[16..20].copy_from_slice(&2u32.to_le_bytes());
+        payload[20..24].copy_from_slice(&2u32.to_le_bytes());
+        stream.extend_from_slice(&compact_record(
+            sequence,
+            game_hour_raw,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &payload,
+        ));
+    }
+
+    fn lifecycle_row(combat_id: u32) -> LifecycleRow {
+        LifecycleRow {
+            combat_id,
             generation: 1,
-            body_ptr: 0x22aa_0004_000,
+            body_ptr: 0x22aa_0004_000 + u64::from(combat_id),
             deleted: false,
-            location_id: None,
-            region_id: None,
+            location_id: Some(2_799),
+            region_id: Some(18),
             attacker_member_count: Some(1),
             defender_member_count: Some(1),
             attacker_positioning_milli: Some(812),
             defender_positioning_milli: Some(765),
-        }];
+        }
+    }
+
+    fn ship_member(
+        combat_id: u32,
+        side: CombatSide,
+        member_index: u32,
+        ship_instance_id: u32,
+    ) -> MemberRow {
+        MemberRow {
+            combat_id,
+            generation: 1,
+            deleted: false,
+            side,
+            group_index: 0,
+            member_index,
+            unit_type_tag: CSHIP_TYPE_TAG,
+            ship_instance_id: Some(ship_instance_id),
+            cship_join_validated: true,
+            is_convoy: false,
+            owner_tag_db_id: Some(17),
+            designed_max_strength_raw: Some(10_000_000),
+            battle_slot_index_raw: member_index,
+            state_bitmask: Some(1),
+            engagement_weight_raw: Some(1_000),
+            task_force_id: Some(477),
+            fleet_id: Some(88),
+            strength_raw: Some(9_500_000),
+            organisation_raw: Some(8_750_000),
+            experience_raw: Some(100_000),
+            sunk_convoys: Some(0),
+        }
+    }
+
+    fn convoy_member(combat_id: u32, side: CombatSide, member_index: u32) -> MemberRow {
+        MemberRow {
+            combat_id,
+            generation: 1,
+            deleted: false,
+            side,
+            group_index: 0,
+            member_index,
+            unit_type_tag: 0,
+            ship_instance_id: None,
+            cship_join_validated: false,
+            is_convoy: true,
+            owner_tag_db_id: Some(18),
+            designed_max_strength_raw: Some(10_000_000),
+            battle_slot_index_raw: member_index,
+            state_bitmask: Some(1),
+            engagement_weight_raw: Some(500),
+            task_force_id: None,
+            fleet_id: None,
+            strength_raw: None,
+            organisation_raw: None,
+            experience_raw: None,
+            sunk_convoys: None,
+        }
+    }
+
+    fn closed_frame(
+        lifecycle_status: u32,
+        lifecycle: &[LifecycleRow],
+        members: &[MemberRow],
+    ) -> Vec<u8> {
+        let mut stream = Vec::new();
+        append_owned_frame(&mut stream, 1, 512, lifecycle_status, lifecycle, members);
+        stream
+    }
+
+    fn append_owned_frame(
+        stream: &mut Vec<u8>,
+        sequence_start: u64,
+        game_hour_raw: i32,
+        lifecycle_status: u32,
+        lifecycle: &[LifecycleRow],
+        members: &[MemberRow],
+    ) {
+        stream.extend_from_slice(&compact_record(
+            sequence_start,
+            game_hour_raw,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(lifecycle.len(), lifecycle_status),
+        ));
+        stream.extend_from_slice(&compact_record(
+            sequence_start + 1,
+            game_hour_raw,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_lifecycle_payload(42, lifecycle_status, lifecycle),
+        ));
+        stream.extend_from_slice(&compact_record(
+            sequence_start + 2,
+            game_hour_raw,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(members.len(), STATUS_DELTA_DATA),
+        ));
+        stream.extend_from_slice(&compact_record(
+            sequence_start + 3,
+            game_hour_raw,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_member_payload(42, STATUS_DELTA_DATA, members),
+        ));
+        append_frame_end(stream, sequence_start + 4, game_hour_raw);
+    }
+
+    #[test]
+    fn record_flag_policy_accepts_canonical_schema_flag() {
+        let schema = record_with_flags(
+            45,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &[],
+        );
+
+        assert!(decode_records(&schema).is_ok());
+    }
+
+    #[test]
+    fn perf_trailer_accepts_valid_announced_pdu1() {
+        let payload = canonical_perf_payload_with_empty_pdu1();
+        let perf = record_with_flags(
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &payload,
+        );
+
+        assert!(decode_records(&perf).is_ok());
+    }
+
+    #[test]
+    fn perf_trailer_rejects_missing_announced_pdu1() {
+        let payload = vec![0; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN];
+        let perf = record_with_flags(
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &payload,
+        );
+
+        let error = decode_records(&perf).expect_err("missing announced trailer rejected");
+        assert!(error.contains("diagnostic trailer header is truncated"));
+    }
+
+    #[test]
+    fn perf_trailer_rejects_unannounced_pdu1() {
+        let payload = canonical_perf_payload_with_empty_pdu1();
+        let perf = record_with_flags(
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &payload,
+        );
+
+        let error = decode_records(&perf).expect_err("unannounced trailer rejected");
+        assert!(error.contains("unannounced trailer byte(s)"));
+    }
+
+    #[test]
+    fn perf_trailer_rejects_malformed_pdu1() {
+        let mut payload = canonical_perf_payload_with_empty_pdu1();
+        payload[compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN] = b'X';
+        let perf = record_with_flags(
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &payload,
+        );
+
+        let error = decode_records(&perf).expect_err("malformed trailer rejected");
+        assert!(error.contains("diagnostic trailer magic is invalid"));
+    }
+
+    #[test]
+    fn record_flag_policy_rejects_wrong_placement_and_unknown_bits() {
+        let wrong_placement = record_with_flags(
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &[],
+        );
+        let unknown = record_with_flags(
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+            1 << 29,
+            &[],
+        );
+
+        let wrong_error = decode_records(&wrong_placement).expect_err("wrong placement rejected");
+        let unknown_error = decode_records(&unknown).expect_err("unknown flag rejected");
+        assert!(wrong_error.contains("rejected bits 0x80000000"));
+        assert!(unknown_error.contains("rejected bits 0x20000000"));
+    }
+
+    fn passing_stream() -> Vec<u8> {
+        let lifecycle = [lifecycle_row(240_580)];
         let members = [
-            MemberRow {
-                combat_id: 240_580,
-                generation: 1,
-                deleted: false,
-                side: CombatSide::Attacker,
-                group_index: 0,
-                member_index: 0,
-                unit_type_tag: CSHIP_TYPE_TAG,
-                ship_instance_id: Some(1001),
-                cship_join_validated: true,
-                is_convoy: false,
-                owner_tag_db_id: Some(17),
-                designed_max_strength_raw: Some(10_000_000),
-                battle_slot_index_raw: 0,
-                state_bitmask: Some(1),
-                engagement_weight_raw: Some(1_000),
-                task_force_id: Some(477),
-                fleet_id: Some(88),
-                strength_raw: Some(9_500_000),
-                organisation_raw: Some(8_750_000),
-                experience_raw: Some(100_000),
-                sunk_convoys: Some(0),
-            },
-            MemberRow {
-                combat_id: 240_580,
-                generation: 1,
-                deleted: false,
-                side: CombatSide::Defender,
-                group_index: 0,
-                member_index: 0,
-                unit_type_tag: 0,
-                ship_instance_id: None,
-                cship_join_validated: false,
-                is_convoy: true,
-                owner_tag_db_id: Some(18),
-                designed_max_strength_raw: Some(10_000_000),
-                battle_slot_index_raw: 1,
-                state_bitmask: Some(1),
-                engagement_weight_raw: Some(500),
-                task_force_id: None,
-                fleet_id: None,
-                strength_raw: None,
-                organisation_raw: None,
-                experience_raw: None,
-                sunk_convoys: None,
-            },
+            ship_member(240_580, CombatSide::Attacker, 0, 1001),
+            convoy_member(240_580, CombatSide::Defender, 0),
         ];
-        let status_flags = STATUS_DELTA_DATA | STATUS_LOCATION_CANDIDATE_UNVALIDATED;
-        let lifecycle_payload = encode_lifecycle_payload(42, status_flags, &lifecycle);
-        let member_payload = encode_member_payload(42, STATUS_DELTA_DATA, &members);
+        closed_frame(STATUS_DELTA_DATA, &lifecycle, &members)
+    }
+
+    fn gate_sequences(sequences: &[u64]) -> GateResult {
+        let mut stream = Vec::new();
+        for &sequence in sequences {
+            stream.extend_from_slice(&compact_record(
+                sequence,
+                512,
+                DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &[],
+            ));
+        }
+        gate_stream(&stream)
+    }
+
+    #[test]
+    fn rejects_missing_sequence_prefix() {
+        let result = gate_sequences(&[2]);
+
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("sequence 2 does not start at 1")));
+    }
+
+    #[test]
+    fn rejects_sequence_gap() {
+        let result = gate_sequences(&[1, 3]);
+
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 1 -> 3 (expected 2)")));
+    }
+
+    #[test]
+    fn rejects_repeated_sequence() {
+        let result = gate_sequences(&[1, 1]);
+
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 1 -> 1 (expected 2)")));
+    }
+
+    #[test]
+    fn rejects_sequence_regression() {
+        let result = gate_sequences(&[1, 2, 1]);
+
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 2 -> 1 (expected 3)")));
+    }
+
+    #[test]
+    fn rejects_sequence_wrap_after_max() {
+        let result = gate_sequences(&[u64::MAX, 0]);
+
+        assert!(result.errors.iter().any(|error| {
+            error.contains("sequence space exhausted after 18446744073709551615")
+                && error.contains("wrapping is not allowed")
+        }));
+    }
+
+    #[test]
+    fn two_sided_stream_passes_gate() {
+        let result = gate_stream(&passing_stream());
+        assert!(result.ok, "{:?}", result.errors);
+        assert_eq!(result.summary.lifecycle_row_count, 1);
+        assert_eq!(result.summary.member_row_count, 2);
+        assert_eq!(result.summary.two_sided_combat_count, 1);
+        assert_eq!(result.summary.lifecycle_location_row_count, 1);
+        assert_eq!(result.summary.lifecycle_region_row_count, 1);
+        assert_eq!(
+            result.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+            0
+        );
+        assert_eq!(result.summary.member_deleted_row_count, 0);
+        assert_eq!(result.summary.cship_validated_member_count, 1);
+        assert_eq!(result.summary.task_force_linked_member_count, 1);
+        assert_eq!(result.summary.fleet_linked_member_count, 1);
+        assert_eq!(result.summary.hull_telemetry_member_count, 1);
+        assert_eq!(result.summary.sunk_convoy_telemetry_member_count, 1);
+        assert_eq!(result.summary.convoy_member_count, 1);
+    }
+
+    #[test]
+    fn delta_member_update_may_reference_persistent_d49_parent() {
+        let mut stream = passing_stream();
+        let member_update = [ship_member(240_580, CombatSide::Attacker, 0, 1001)];
+        stream.extend_from_slice(&compact_record(
+            6,
+            513,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0, STATUS_DELTA_DATA),
+        ));
+        stream.extend_from_slice(&compact_record(
+            7,
+            513,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_lifecycle_payload(42, STATUS_DELTA_DATA, &[]),
+        ));
+        stream.extend_from_slice(&compact_record(
+            8,
+            513,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(member_update.len(), STATUS_DELTA_DATA),
+        ));
+        stream.extend_from_slice(&compact_record(
+            9,
+            513,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_member_payload(42, STATUS_DELTA_DATA, &member_update),
+        ));
+        append_frame_end(&mut stream, 10, 513);
+
+        let result = gate_stream(&stream);
+        assert!(result.ok, "{:?}", result.errors);
+        assert_eq!(result.summary.active_combat_count, 1);
+        assert_eq!(result.summary.two_sided_combat_count, 1);
+    }
+
+    #[test]
+    fn parent_tombstone_requires_complete_same_frame_child_teardown() {
+        let mut stream = passing_stream();
+        let mut parent_tombstone = lifecycle_row(240_580);
+        parent_tombstone.deleted = true;
+        let mut ship_tombstone = ship_member(240_580, CombatSide::Attacker, 0, 1001);
+        ship_tombstone.deleted = true;
+        append_owned_frame(
+            &mut stream,
+            6,
+            513,
+            STATUS_DELTA_DATA,
+            &[parent_tombstone],
+            &[ship_tombstone],
+        );
+
+        let result = gate_stream(&stream);
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|error| {
+            error.contains("left 1 active domain 50 member(s)") && error.contains("same frame")
+        }));
+    }
+
+    #[test]
+    fn complete_same_frame_parent_and_child_teardown_is_terminal_and_valid() {
+        let mut stream = passing_stream();
+        let mut parent_tombstone = lifecycle_row(240_580);
+        parent_tombstone.deleted = true;
+        let mut ship_tombstone = ship_member(240_580, CombatSide::Attacker, 0, 1001);
+        ship_tombstone.deleted = true;
+        let mut convoy_tombstone = convoy_member(240_580, CombatSide::Defender, 0);
+        convoy_tombstone.deleted = true;
+        append_owned_frame(
+            &mut stream,
+            6,
+            513,
+            STATUS_DELTA_DATA,
+            &[parent_tombstone],
+            &[ship_tombstone, convoy_tombstone],
+        );
+
+        let result = gate_stream(&stream);
+        assert!(result.ok, "{:?}", result.errors);
+        assert_eq!(result.summary.active_combat_count, 0);
+        assert_eq!(result.summary.two_sided_combat_count, 0);
+    }
+
+    #[test]
+    fn duplicate_tombstones_and_same_generation_resurrection_are_rejected() {
+        let mut retired_stream = passing_stream();
+        let mut parent_tombstone = lifecycle_row(240_580);
+        parent_tombstone.deleted = true;
+        let mut ship_tombstone = ship_member(240_580, CombatSide::Attacker, 0, 1001);
+        ship_tombstone.deleted = true;
+        let mut convoy_tombstone = convoy_member(240_580, CombatSide::Defender, 0);
+        convoy_tombstone.deleted = true;
+        append_owned_frame(
+            &mut retired_stream,
+            6,
+            513,
+            STATUS_DELTA_DATA,
+            &[parent_tombstone.clone()],
+            &[ship_tombstone.clone(), convoy_tombstone.clone()],
+        );
+
+        let mut duplicate = retired_stream.clone();
+        append_owned_frame(
+            &mut duplicate,
+            11,
+            514,
+            STATUS_DELTA_DATA,
+            &[parent_tombstone],
+            &[ship_tombstone, convoy_tombstone],
+        );
+        let duplicate_result = gate_stream(&duplicate);
+        assert!(duplicate_result
+            .errors
+            .iter()
+            .any(|error| { error.contains("lifecycle tombstone") && error.contains("duplicate") }));
+        assert!(duplicate_result.errors.iter().any(|error| {
+            error.contains("deleted domain 50 membership")
+                && error.contains("was not previously active")
+        }));
+
+        let mut resurrected = retired_stream;
+        append_owned_frame(
+            &mut resurrected,
+            11,
+            514,
+            STATUS_DELTA_DATA,
+            &[lifecycle_row(240_580)],
+            &[
+                ship_member(240_580, CombatSide::Attacker, 0, 1001),
+                convoy_member(240_580, CombatSide::Defender, 0),
+            ],
+        );
+        let resurrection_result = gate_stream(&resurrected);
+        assert!(resurrection_result
+            .errors
+            .iter()
+            .any(|error| error
+                .contains("retired combat 240580:1 attempts same-generation resurrection")));
+        assert!(resurrection_result.errors.iter().any(|error| {
+            error.contains("domain 50 membership combat 240580:1")
+                && error.contains("same-generation resurrection")
+        }));
+    }
+
+    #[test]
+    fn every_global_failure_bit_is_fatal_not_only_partial_and_source() {
+        for fatal in [
+            compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE,
+            compact_contract::COMPACT_STATUS_PROFILE_MISMATCH,
+            compact_contract::COMPACT_STATUS_NO_CLOCK,
+            compact_contract::COMPACT_STATUS_NO_SCALAR_SOURCE,
+            compact_contract::COMPACT_STATUS_WORKER_PANIC,
+            compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE,
+            compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+            compact_contract::COMPACT_STATUS_CONTROL_INVALID,
+        ] {
+            let result = gate_stream(&closed_frame(
+                STATUS_DELTA_DATA | fatal,
+                &[lifecycle_row(7)],
+                &[
+                    ship_member(7, CombatSide::Attacker, 0, 1001),
+                    convoy_member(7, CombatSide::Defender, 0),
+                ],
+            ));
+            assert!(
+                !result.ok
+                    && result
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("contains fatal bits")),
+                "fatal={fatal:#x}, errors={:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_data_status_and_perf_data_authority_mismatch() {
+        let unknown = gate_stream(&closed_frame(
+            STATUS_DELTA_DATA | (1 << 31),
+            &[lifecycle_row(7)],
+            &[
+                ship_member(7, CombatSide::Attacker, 0, 1001),
+                convoy_member(7, CombatSide::Defender, 0),
+            ],
+        ));
+        assert!(unknown
+            .errors
+            .iter()
+            .any(|error| error.contains("contains unknown bits")));
+
+        let mut mismatched = passing_stream();
+        let perf_changed_rows = COMPACT_RECORD_HEADER_LEN + 20;
+        mismatched[perf_changed_rows..perf_changed_rows + 4].copy_from_slice(&0u32.to_le_bytes());
+        let mismatch = gate_stream(&mismatched);
+        assert!(mismatch
+            .errors
+            .iter()
+            .any(|error| error.contains("PERF changed_rows 0 != decoded DATA row count 1")));
+    }
+
+    #[test]
+    fn owned_data_and_perf_status_authority_must_match_exactly() {
+        let mut stream = passing_stream();
+        let perf_status_offset = COMPACT_RECORD_HEADER_LEN + 32;
+        let perf_status = read_u32(&stream, perf_status_offset)
+            | compact_contract::COMPACT_STATUS_WAR_BRIDGE_APPLIED;
+        stream[perf_status_offset..perf_status_offset + 4]
+            .copy_from_slice(&perf_status.to_le_bytes());
+
+        let result = gate_stream(&stream);
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|error| {
+            error.contains("domain 49 DATA status") && error.contains("!= PERF status")
+        }));
+    }
+
+    #[test]
+    fn rejects_frame_end_health_and_accounting_corruption() {
+        let frame_end_offset = passing_stream().len()
+            - COMPACT_RECORD_HEADER_LEN
+            - compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN;
+
+        let mut fatal = passing_stream();
+        fatal[frame_end_offset + COMPACT_RECORD_HEADER_LEN + 24
+            ..frame_end_offset + COMPACT_RECORD_HEADER_LEN + 28]
+            .copy_from_slice(&compact_contract::COMPACT_STATUS_WORKER_PANIC.to_le_bytes());
+        assert!(gate_stream(&fatal)
+            .errors
+            .iter()
+            .any(|error| error.contains("FRAME_END") && error.contains("contains fatal bits")));
+
+        let mut wrong_count = passing_stream();
+        wrong_count[frame_end_offset + COMPACT_RECORD_HEADER_LEN + 16
+            ..frame_end_offset + COMPACT_RECORD_HEADER_LEN + 20]
+            .copy_from_slice(&1u32.to_le_bytes());
+        assert!(gate_stream(&wrong_count)
+            .errors
+            .iter()
+            .any(|error| error.contains("emitted_domains 1") && error.contains("PERF count 2")));
+
+        let mut reserved = passing_stream();
+        reserved[frame_end_offset + COMPACT_RECORD_HEADER_LEN + 28
+            ..frame_end_offset + COMPACT_RECORD_HEADER_LEN + 32]
+            .copy_from_slice(&1u32.to_le_bytes());
+        assert!(gate_stream(&reserved)
+            .errors
+            .iter()
+            .any(|error| error.contains("FRAME_END reserved word is nonzero")));
+    }
+
+    #[test]
+    fn per_hour_cardinality_requires_one_perf_and_one_data_for_both_domains() {
+        let lifecycle = [lifecycle_row(7)];
+        let members = [
+            ship_member(7, CombatSide::Attacker, 0, 1001),
+            convoy_member(7, CombatSide::Defender, 0),
+        ];
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&compact_record(
+            1,
+            512,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(lifecycle.len(), STATUS_DELTA_DATA),
+        ));
+        stream.extend_from_slice(&compact_record(
+            2,
+            512,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_lifecycle_payload(42, STATUS_DELTA_DATA, &lifecycle),
+        ));
+        stream.extend_from_slice(&compact_record(
+            3,
+            512,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_member_payload(42, STATUS_DELTA_DATA, &members),
+        ));
+        append_frame_end(&mut stream, 4, 512);
+
+        let result = gate_stream(&stream);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("0 domain 50 PERF records; expected exactly 1")));
+    }
+
+    #[test]
+    fn d50_perf_and_data_cannot_precede_d49_even_when_payloads_are_empty() {
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&compact_record(
+            1,
+            512,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0, STATUS_DELTA_DATA),
+        ));
+        stream.extend_from_slice(&compact_record(
+            2,
+            512,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_member_payload(42, STATUS_DELTA_DATA, &[]),
+        ));
+        stream.extend_from_slice(&compact_record(
+            3,
+            512,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0, STATUS_DELTA_DATA),
+        ));
+        stream.extend_from_slice(&compact_record(
+            4,
+            512,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_lifecycle_payload(42, STATUS_DELTA_DATA, &[]),
+        ));
+        append_frame_end(&mut stream, 5, 512);
+
+        let result = gate_stream(&stream);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("domain 50 PERF precedes its domain 49 PERF")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("domain 50 DATA precedes its domain 49 DATA")));
+    }
+
+    #[test]
+    fn d49_location_region_fail_closed_status_is_lane_fatal() {
+        let stream = closed_frame(
+            STATUS_DELTA_DATA | STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+            &[lifecycle_row(7)],
+            &[
+                ship_member(7, CombatSide::Attacker, 0, 1001),
+                convoy_member(7, CombatSide::Defender, 0),
+            ],
+        );
+
+        let result = gate_stream(&stream);
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("status bit 11 set")));
+    }
+
+    #[test]
+    fn d49_rows_cannot_hide_missing_promoted_location_region() {
+        let mut lifecycle = lifecycle_row(7);
+        lifecycle.location_id = None;
+        lifecycle.region_id = None;
+        let result = gate_stream(&closed_frame(
+            STATUS_DELTA_DATA,
+            &[lifecycle],
+            &[
+                ship_member(7, CombatSide::Attacker, 0, 1001),
+                convoy_member(7, CombatSide::Defender, 0),
+            ],
+        ));
+
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("lacks promoted location/region")));
+    }
+
+    #[test]
+    fn rejects_d50_members_before_their_d49_parent_rows() {
+        let lifecycle = [lifecycle_row(7)];
+        let members = [
+            ship_member(7, CombatSide::Attacker, 0, 1001),
+            convoy_member(7, CombatSide::Defender, 0),
+        ];
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&compact_record(
+            1,
+            512,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_member_payload(42, STATUS_DELTA_DATA, &members),
+        ));
+        stream.extend_from_slice(&compact_record(
+            2,
+            512,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_lifecycle_payload(42, STATUS_DELTA_DATA, &lifecycle),
+        ));
+        append_frame_end(&mut stream, 3, 512);
+
+        let result = gate_stream(&stream);
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("domain 50 DATA precedes its domain 49 DATA")));
+    }
+
+    #[test]
+    fn rejects_d50_rows_bound_to_a_different_d49_parent() {
+        let result = gate_stream(&closed_frame(
+            STATUS_DELTA_DATA,
+            &[lifecycle_row(7)],
+            &[
+                ship_member(8, CombatSide::Attacker, 0, 1001),
+                convoy_member(8, CombatSide::Defender, 0),
+            ],
+        ));
+
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|error| {
+            error.contains("combat 8:1 is orphaned")
+                && error.contains("active domain 49 lifecycle state")
+        }));
+    }
+
+    #[test]
+    fn rejects_active_members_dangling_under_a_deleted_parent() {
+        let mut deleted_parent = lifecycle_row(7);
+        deleted_parent.deleted = true;
+        let result = gate_stream(&closed_frame(
+            STATUS_DELTA_DATA,
+            &[deleted_parent],
+            &[
+                ship_member(7, CombatSide::Attacker, 0, 1001),
+                convoy_member(7, CombatSide::Defender, 0),
+            ],
+        ));
+
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| { error.contains("orphaned from active domain 49 lifecycle state") }));
+    }
+
+    #[test]
+    fn rejects_duplicate_parent_and_membership_identity() {
+        let parent = lifecycle_row(7);
+        let ship = ship_member(7, CombatSide::Attacker, 0, 1001);
+        let result = gate_stream(&closed_frame(
+            STATUS_DELTA_DATA,
+            &[parent.clone(), parent],
+            &[ship.clone(), ship],
+        ));
+
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("duplicate/ambiguous domain 49 parent")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("duplicate/ambiguous domain 50 membership")));
+    }
+
+    #[test]
+    fn rejects_duplicate_live_ship_across_distinct_membership_positions() {
+        let mut duplicate = ship_member(7, CombatSide::Defender, 1, 1001);
+        duplicate.owner_tag_db_id = Some(18);
+        let result = gate_stream(&closed_frame(
+            STATUS_DELTA_DATA,
+            &[lifecycle_row(7)],
+            &[ship_member(7, CombatSide::Attacker, 0, 1001), duplicate],
+        ));
+
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("duplicate/ambiguous live ship_instance_id 1001")));
+    }
+
+    #[test]
+    fn one_valid_ship_cannot_mask_an_unjoined_non_convoy_ship() {
+        let lifecycle = [lifecycle_row(7)];
+        let members = [
+            ship_member(7, CombatSide::Attacker, 0, 1001),
+            ship_member(7, CombatSide::Defender, 0, 1002),
+        ];
+        let lifecycle_payload = encode_lifecycle_payload(42, STATUS_DELTA_DATA, &lifecycle);
+        let mut member_payload = encode_member_payload(42, STATUS_DELTA_DATA, &members);
+        let second_row_flags = PAYLOAD_HEADER_LEN + MEMBER_ROW_LEN + 12;
+        let flags = read_u32(&member_payload, second_row_flags)
+            & !(MEMBER_SHIP_INSTANCE_PRESENT | MEMBER_CSHIP_JOIN_VALIDATED);
+        member_payload[second_row_flags..second_row_flags + 4]
+            .copy_from_slice(&flags.to_le_bytes());
+        let second_ship_id = PAYLOAD_HEADER_LEN + MEMBER_ROW_LEN + 32;
+        member_payload[second_ship_id..second_ship_id + 4].copy_from_slice(&0u32.to_le_bytes());
+
         let mut stream = Vec::new();
         stream.extend_from_slice(&compact_record(
             1,
@@ -1713,29 +3187,148 @@ mod tests {
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
             &member_payload,
         ));
-        stream
+        append_frame_end(&mut stream, 3, 512);
+
+        let result = gate_stream(&stream);
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("non-convoy ship lacks ship-instance identity")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("non-convoy ship lacks CShip validation")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("only 1 of 2 non-convoy members")));
     }
 
     #[test]
-    fn two_sided_stream_passes_gate() {
-        let result = gate_stream(&passing_stream());
+    fn convoy_zero_handle_semantics_reject_cship_identity() {
+        let lifecycle = [lifecycle_row(7)];
+        let members = [
+            ship_member(7, CombatSide::Attacker, 0, 1001),
+            convoy_member(7, CombatSide::Defender, 0),
+        ];
+        let lifecycle_payload = encode_lifecycle_payload(42, STATUS_DELTA_DATA, &lifecycle);
+        let mut member_payload = encode_member_payload(42, STATUS_DELTA_DATA, &members);
+        let convoy_flags_offset = PAYLOAD_HEADER_LEN + MEMBER_ROW_LEN + 12;
+        let flags = read_u32(&member_payload, convoy_flags_offset) | MEMBER_SHIP_INSTANCE_PRESENT;
+        member_payload[convoy_flags_offset..convoy_flags_offset + 4]
+            .copy_from_slice(&flags.to_le_bytes());
+        let convoy_type_offset = PAYLOAD_HEADER_LEN + MEMBER_ROW_LEN + 28;
+        member_payload[convoy_type_offset..convoy_type_offset + 4]
+            .copy_from_slice(&CSHIP_TYPE_TAG.to_le_bytes());
+        let convoy_ship_offset = PAYLOAD_HEADER_LEN + MEMBER_ROW_LEN + 32;
+        member_payload[convoy_ship_offset..convoy_ship_offset + 4]
+            .copy_from_slice(&1002u32.to_le_bytes());
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&compact_record(
+            1,
+            512,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &lifecycle_payload,
+        ));
+        stream.extend_from_slice(&compact_record(
+            2,
+            512,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &member_payload,
+        ));
+        append_frame_end(&mut stream, 3, 512);
+
+        let result = gate_stream(&stream);
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("convoy unit_type_tag 51 is not zero")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("convoy row must not carry ship-instance identity")));
+    }
+
+    #[test]
+    fn unowned_domain_payload_is_opaque_after_envelope_and_boundary_checks() {
+        let lifecycle = [lifecycle_row(7)];
+        let members = [
+            ship_member(7, CombatSide::Attacker, 0, 1001),
+            convoy_member(7, CombatSide::Defender, 0),
+        ];
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&compact_record(
+            1,
+            512,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(lifecycle.len(), STATUS_DELTA_DATA),
+        ));
+        stream.extend_from_slice(&compact_record(
+            2,
+            512,
+            DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_lifecycle_payload(42, STATUS_DELTA_DATA, &lifecycle),
+        ));
+        stream.extend_from_slice(&compact_record(
+            3,
+            512,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(members.len(), STATUS_DELTA_DATA),
+        ));
+        stream.extend_from_slice(&compact_record(
+            4,
+            512,
+            DOMAIN_NAVAL_COMBAT_MEMBERS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &encode_member_payload(42, STATUS_DELTA_DATA, &members),
+        ));
+        stream.extend_from_slice(&compact_record(
+            5,
+            512,
+            777,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[0xff, 0x00, 0x7f],
+        ));
+        append_frame_end(&mut stream, 6, 512);
+
+        let result = gate_stream(&stream);
         assert!(result.ok, "{:?}", result.errors);
-        assert_eq!(result.summary.lifecycle_row_count, 1);
-        assert_eq!(result.summary.member_row_count, 2);
-        assert_eq!(result.summary.two_sided_combat_count, 1);
-        assert_eq!(result.summary.lifecycle_location_row_count, 0);
-        assert_eq!(result.summary.lifecycle_region_row_count, 0);
-        assert_ne!(
-            result.summary.status_flags_or & STATUS_LOCATION_CANDIDATE_UNVALIDATED,
-            0
+        assert!(result.summary.domains_seen.contains(&777));
+    }
+
+    #[test]
+    fn rejects_unclosed_tail_and_mismatched_frame_end_hour() {
+        let mut unclosed = passing_stream();
+        unclosed.truncate(
+            unclosed.len()
+                - COMPACT_RECORD_HEADER_LEN
+                - compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN,
         );
-        assert_eq!(result.summary.member_deleted_row_count, 0);
-        assert_eq!(result.summary.cship_validated_member_count, 1);
-        assert_eq!(result.summary.task_force_linked_member_count, 1);
-        assert_eq!(result.summary.fleet_linked_member_count, 1);
-        assert_eq!(result.summary.hull_telemetry_member_count, 1);
-        assert_eq!(result.summary.sunk_convoy_telemetry_member_count, 1);
-        assert_eq!(result.summary.convoy_member_count, 1);
+        let unclosed_result = gate_stream(&unclosed);
+        assert!(unclosed_result
+            .errors
+            .iter()
+            .any(|error| error.contains("final canonical FRAME_END")));
+
+        let mut mismatched = passing_stream();
+        let frame_end_offset = mismatched.len()
+            - COMPACT_RECORD_HEADER_LEN
+            - compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN;
+        mismatched[frame_end_offset + 16..frame_end_offset + 20]
+            .copy_from_slice(&513i32.to_le_bytes());
+        let mismatched_result = gate_stream(&mismatched);
+        assert!(mismatched_result
+            .errors
+            .iter()
+            .any(|error| error.contains("does not close open DATA frame hour 512")));
     }
 
     #[test]
@@ -1744,11 +3337,17 @@ mod tests {
         let records = decode_records(&stream).expect("records decode");
         let lifecycle = records
             .iter()
-            .find(|record| record.domain_id == DOMAIN_NAVAL_COMBAT_LIFECYCLE)
+            .find(|record| {
+                record.domain_id == DOMAIN_NAVAL_COMBAT_LIFECYCLE
+                    && record.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+            })
             .expect("lifecycle record");
         let members = records
             .iter()
-            .find(|record| record.domain_id == DOMAIN_NAVAL_COMBAT_MEMBERS)
+            .find(|record| {
+                record.domain_id == DOMAIN_NAVAL_COMBAT_MEMBERS
+                    && record.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+            })
             .expect("member record");
 
         let lifecycle_summary = decode_lifecycle_data_payload(lifecycle.offset, lifecycle.payload);
@@ -1767,14 +3366,14 @@ mod tests {
                 .data_units_total
                 .get("naval_combat_lifecycle_location_rows")
                 .copied(),
-            Some(0)
+            Some(1)
         );
         assert_eq!(
             lifecycle_summary
                 .data_units_total
                 .get("naval_combat_lifecycle_region_rows")
                 .copied(),
-            Some(0)
+            Some(1)
         );
 
         let member_summary = decode_members_data_payload(members.offset, members.payload);

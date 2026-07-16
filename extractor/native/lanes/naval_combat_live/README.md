@@ -87,10 +87,33 @@ reported as a diagnostic candidate only.
 
 ## Fail-Closed Rules
 
+- Whole-stream certification requires sequence origin 1, exact non-wrapping
+  successors, consecutive game-hour frames, and a physical final canonical
+  `FRAME_END`. Every certified frame carries exactly one PERF and one DATA
+  record for each of d49 and d50, in canonical d49-before-d50 order. PERF
+  changed-row/unit authority must equal the decoded DATA cardinality, each
+  owned PERF status word must exactly equal its DATA status word, and
+  `FRAME_END` emitted/scheduled-domain counts, reserved word, known status
+  mask, and full global failure mask are independently checked. Each active
+  d50 membership row must bind the persistent d49 `(combat_id, generation)`
+  lifecycle state after that hour's d49 delta is applied; requiring the parent
+  row to re-emit in the same hour would falsely reject legitimate member-only
+  delta updates. Duplicate parents, member positions, or live ship identities
+  are rejected. A d49 parent tombstone must be accompanied by complete
+  same-frame d50 child teardown; lifecycle and member tombstones permanently
+  retire that generation/key, so duplicate tombstones and same-generation
+  resurrection are rejected rather than creating an impossible later cleanup
+  state. Payloads for domains other than d49/d50 remain opaque after
+  their canonical H4CR envelope and frame placement are validated.
 - `front+0xA4` is PROMOTED: live fixtures must supply `location_id` and the
-  static `region_id` join for every combat; an absent/zero location or an
+  static `region_id` join for every active combat row; an absent/zero location or an
   unmapped province is a hard error. A lifecycle row missing either promoted
-  field sets `STATUS_LOCATION_CANDIDATE_UNVALIDATED` (fail-closed signal).
+  field sets `STATUS_LOCATION_CANDIDATE_UNVALIDATED`; d49 certification treats
+  that bit and any row missing either promoted field as lane-fatal.
+- Every non-convoy d50 row carries a nonzero CShip instance identity and a
+  validated CShip join. A single good join cannot mask another unresolved ship.
+  Convoys preserve the proven zero packed-handle contract: no ship identity,
+  CShip validation, OOB linkage, or CShip-derived hull telemetry is permitted.
 - Null member array slots are skipped and recorded, never emitted; a non-null
   slot that is not a `CFEXMember` is a hard error.
 - A forward-walked CFEXGroup missing from the back-ref buckets is a hard error

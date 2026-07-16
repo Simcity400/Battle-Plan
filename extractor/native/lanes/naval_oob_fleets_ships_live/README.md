@@ -45,8 +45,23 @@ belong to the naval combat lane, not this OOB stream.
 
 `domain28_29_compact.rs` is a standalone Rust decoder/gate for the compact stream
 wire contract used by domains 28 and 29. It validates the `H4CR` record stream,
-record ordering, payload lengths, row flags, counters, member ranges, fixed-point
-scale, owner/task-force ids, definition strings, and failure status bits.
+canonical record flags and exact sequence continuity, payload lengths, row flags,
+counters, member ranges, fixed-point scale, owner/task-force ids, definition
+strings, and failure status bits. Certification requires an explicit positive
+`--min-game-hours`; `N` requested advancements require `N + 1` consecutive
+closed frames. Every closed hour must contain exactly one PERF and one DATA
+record with matching status for each of domains 28 and 29, and its terminal
+FRAME_END must have emitted/scheduled counts matching the independently
+observed non-probe PERF/DATA record counts and exact paired domain roster. Its
+status must equal the globally interpreted PERF-status OR; it also requires
+healthy known status, a zero reserved word, and no
+records or bytes after the final closure. Reserved instrumentation domain 250
+remains subject to physical sequence/hour/final-boundary checks but is excluded
+from scheduled-domain PERF authority; DATA on domain 250 is forbidden.
+The gate includes its H4CR framing parser directly from the dependency-free
+canonical source at `../../compact_contract/src/record_header.rs` and its owner
+id bound from the dependency-free `build_profile.rs`; the commands below remain
+standalone direct-`rustc` invocations from the repository root.
 
 Proof commands:
 
@@ -54,7 +69,7 @@ Proof commands:
 rustc --edition=2021 --test extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs -o extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact_tests.exe
 extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact_tests.exe
 rustc --edition=2021 extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs -o extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gate.exe
-extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gate.exe extractor/native/runs/compact_full_plus_naval_oob_870ebf_20260701_v1/collector_stream.bin
+extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gate.exe extractor/native/runs/compact_full_plus_naval_oob_870ebf_20260701_v1/collector_stream.bin --min-game-hours 48
 ```
 
 Current verified live proof source:

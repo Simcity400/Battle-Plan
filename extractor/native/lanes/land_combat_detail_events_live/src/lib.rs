@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use compact_contract::{parse_compact_record_header, RecordFramingError};
+
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
 pub const COMPACT_RECORD_VERSION: u16 = 1;
 pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
@@ -89,6 +91,9 @@ pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DA
 pub const STATUS_TRANSITION_BASELINE_RESET: u32 =
     compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
 pub const FAILURE_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
+/// D55 uses only the shared compact-status vocabulary (bits 0..=13); it has no
+/// lane-local aliases. Unknown bits must not silently become non-fatal badges.
+pub const D55_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 pub const EVENT_PHASE_STARTED: u32 = 1;
 pub const EVENT_PHASE_UPDATED: u32 = 2;
@@ -120,6 +125,11 @@ pub const MAX_DIVISION_ID: u32 = 0x7fff_ffff;
 pub const MAX_LOCATION_ID: u32 = 1_000_000;
 pub const MAX_AGE_DAYS: u32 = 100_000;
 pub const MAX_SIDE_UNITS: usize = 128;
+/// The shared collector admits at most 4,000 land combats. In the most
+/// adversarial one-hour transition, both 128-entry side vectors can be wholly
+/// replaced (four participant events per side slot) plus one phase event per
+/// combat. Bound decoded allocations to that production topology.
+pub const MAX_DETAIL_EVENT_ROWS: usize = 4_000 * (4 * MAX_SIDE_UNITS + 1);
 /// Two sides per combat; bound the side-detail family the same as MAX_LAND_COMBATS.
 pub const MAX_LAND_COMBATS_SIDE_DETAIL: usize = 8_000;
 pub const MAX_LAND_COMBATS_ATTRIBUTION: usize = 32_000;
@@ -243,6 +253,252 @@ pub struct GateResult {
     pub ok: bool,
     pub errors: Vec<String>,
     pub summary: GateSummary,
+}
+
+#[derive(Debug, Default)]
+struct GateBoundaryState {
+    open_hour: Option<i32>,
+    pending_perf_hour: Option<i32>,
+    first_closed_hour: Option<i32>,
+    last_closed_hour: Option<i32>,
+    closed_hour_count: u64,
+    last_record_type: Option<u16>,
+    d55_data_count: u32,
+    d55_perf_count: u32,
+    d55_data_authority: Option<D55DataAuthority>,
+    d55_perf_authority: Option<D55PerfAuthority>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct D55DataAuthority {
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    row_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct D55PerfAuthority {
+    elapsed_wall_ms: u64,
+    row_count: u32,
+    changed_rows: u32,
+    unit_count: u32,
+    changed_unit_count: u32,
+    status_flags: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum D55RecordAuthority {
+    Data(D55DataAuthority),
+    Perf(D55PerfAuthority),
+}
+
+impl GateBoundaryState {
+    fn observe(
+        &mut self,
+        offset: usize,
+        header: &compact_contract::CompactRecordHeader,
+        record_authority: Option<D55RecordAuthority>,
+        errors: &mut Vec<String>,
+    ) {
+        self.last_record_type = Some(header.record_type);
+        match header.record_type {
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+                if let Some(open) = self.open_hour {
+                    if open != header.game_hour_raw {
+                        errors.push(format!(
+                            "offset {offset}: DOMAIN_PERF hour {} interleaves open hour {open}",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                } else {
+                    if let Some(last_closed) = self.last_closed_hour {
+                        let Some(expected) = last_closed.checked_add(1) else {
+                            errors.push(format!(
+                                "offset {offset}: closed-hour overflow after {last_closed}"
+                            ));
+                            return;
+                        };
+                        if header.game_hour_raw != expected {
+                            errors.push(format!(
+                                "offset {offset}: non-consecutive PERF hour {}; expected {expected} after closed hour {last_closed}",
+                                header.game_hour_raw
+                            ));
+                            return;
+                        }
+                    }
+                    match self.pending_perf_hour {
+                        Some(pending) if pending != header.game_hour_raw => {
+                            errors.push(format!(
+                                "offset {offset}: PERF hour {} conflicts with pending hour {pending}",
+                                header.game_hour_raw
+                            ));
+                            return;
+                        }
+                        Some(_) => {}
+                        None => self.pending_perf_hour = Some(header.game_hour_raw),
+                    }
+                }
+                if header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS {
+                    self.d55_perf_count = self.d55_perf_count.saturating_add(1);
+                    if self.d55_perf_authority.is_none() {
+                        self.d55_perf_authority = match record_authority {
+                            Some(D55RecordAuthority::Perf(authority)) => Some(authority),
+                            _ => None,
+                        };
+                    }
+                    if self.d55_perf_count > 1 {
+                        errors.push(format!(
+                            "offset {offset}: duplicate domain-55 PERF for hour {}",
+                            header.game_hour_raw
+                        ));
+                    }
+                }
+            }
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+                if let Some(open) = self.open_hour {
+                    if open != header.game_hour_raw {
+                        errors.push(format!(
+                            "offset {offset}: DOMAIN_DATA hour {} interleaves open hour {open}",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                } else {
+                    if let Some(pending) = self.pending_perf_hour {
+                        if pending != header.game_hour_raw {
+                            errors.push(format!(
+                                "offset {offset}: DATA hour {} conflicts with pending PERF hour {pending}",
+                                header.game_hour_raw
+                            ));
+                            return;
+                        }
+                    }
+                    if let Some(last_closed) = self.last_closed_hour {
+                        let Some(expected) = last_closed.checked_add(1) else {
+                            errors.push(format!(
+                                "offset {offset}: closed-hour overflow after {last_closed}"
+                            ));
+                            return;
+                        };
+                        if header.game_hour_raw != expected {
+                            errors.push(format!(
+                                "offset {offset}: non-consecutive DATA hour {}; expected {expected} after closed hour {last_closed}",
+                                header.game_hour_raw
+                            ));
+                            return;
+                        }
+                    }
+                    self.open_hour = Some(header.game_hour_raw);
+                }
+                if header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS {
+                    self.d55_data_count = self.d55_data_count.saturating_add(1);
+                    if self.d55_data_authority.is_none() {
+                        self.d55_data_authority = match record_authority {
+                            Some(D55RecordAuthority::Data(authority)) => Some(authority),
+                            _ => None,
+                        };
+                    }
+                    if self.d55_data_count > 1 {
+                        errors.push(format!(
+                            "offset {offset}: duplicate domain-55 DATA for hour {}",
+                            header.game_hour_raw
+                        ));
+                    }
+                }
+            }
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END => {
+                match self.open_hour {
+                    Some(open) if open == header.game_hour_raw => {}
+                    Some(open) => {
+                        errors.push(format!(
+                            "offset {offset}: FRAME_END hour {} does not match open hour {open}",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                    None => {
+                        errors.push(format!(
+                            "offset {offset}: bare FRAME_END for hour {} without DOMAIN_DATA",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                }
+                if self.d55_data_count != 1 || self.d55_perf_count != 1 {
+                    errors.push(format!(
+                        "offset {offset}: hour {} has domain-55 DATA/PERF counts {}/{}; expected exactly 1/1",
+                        header.game_hour_raw, self.d55_data_count, self.d55_perf_count
+                    ));
+                }
+                if let (Some(data), Some(perf)) = (self.d55_data_authority, self.d55_perf_authority)
+                {
+                    if data.status_flags != perf.status_flags {
+                        errors.push(format!(
+                            "offset {offset}: hour {} domain-55 DATA status {:#010x} does not match PERF status {:#010x}",
+                            header.game_hour_raw,
+                            data.status_flags,
+                            perf.status_flags,
+                        ));
+                    }
+                    if data.elapsed_wall_ms != perf.elapsed_wall_ms {
+                        errors.push(format!(
+                            "offset {offset}: hour {} domain-55 DATA elapsed_wall_ms {} does not match PERF elapsed_wall_ms {}",
+                            header.game_hour_raw,
+                            data.elapsed_wall_ms,
+                            perf.elapsed_wall_ms,
+                        ));
+                    }
+                    for (label, perf_count) in [
+                        ("row_count", perf.row_count),
+                        ("changed_rows", perf.changed_rows),
+                        ("unit_count", perf.unit_count),
+                        ("changed_unit_count", perf.changed_unit_count),
+                    ] {
+                        if perf_count != data.row_count {
+                            errors.push(format!(
+                                "offset {offset}: hour {} domain-55 PERF {label} {perf_count} does not match decoded DATA row count {}",
+                                header.game_hour_raw,
+                                data.row_count,
+                            ));
+                        }
+                    }
+                } else if self.d55_data_count == 1 && self.d55_perf_count == 1 {
+                    errors.push(format!(
+                        "offset {offset}: hour {} lacks decoded domain-55 DATA/PERF authority for exact status/count binding",
+                            header.game_hour_raw
+                    ));
+                }
+                self.open_hour = None;
+                self.pending_perf_hour = None;
+                self.first_closed_hour.get_or_insert(header.game_hour_raw);
+                self.last_closed_hour = Some(header.game_hour_raw);
+                self.closed_hour_count = self.closed_hour_count.saturating_add(1);
+                self.d55_data_count = 0;
+                self.d55_perf_count = 0;
+                self.d55_data_authority = None;
+                self.d55_perf_authority = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(&self, errors: &mut Vec<String>) {
+        if let Some(open) = self.open_hour {
+            errors.push(format!("domain stream leaves hour {open} open at EOF"));
+        }
+        if let Some(pending) = self.pending_perf_hour {
+            errors.push(format!(
+                "domain stream leaves PERF-only hour {pending} pending at EOF"
+            ));
+        }
+        if self.last_closed_hour.is_none() {
+            errors.push("domain stream certifies no closed hour".to_string());
+        }
+        if self.last_record_type != Some(compact_contract::COMPACT_RECORD_TYPE_FRAME_END) {
+            errors.push("final record is not canonical FRAME_END".to_string());
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -638,71 +894,216 @@ fn append_attribution_row(payload: &mut Vec<u8>, row: &AttributionRow) {
     payload.extend_from_slice(&0u32.to_le_bytes());
 }
 
+/// Validate the compact stream's framing, per-hour D55 authority, payload
+/// joins, and terminal boundary. This is the structural gate; callers making a
+/// production-duration claim must use [`gate_stream_for_product`].
 pub fn gate_stream(data: &[u8]) -> GateResult {
+    gate_stream_internal(data, None)
+}
+
+/// Validate a product capture for an explicitly requested number of game-hour
+/// advancements. Because both endpoints must be closed, `N` advancements
+/// require at least `N + 1` consecutive authoritative FRAME_END records.
+pub fn gate_stream_for_product(data: &[u8], minimum_game_hour_advancements: i64) -> GateResult {
+    gate_stream_internal(data, Some(minimum_game_hour_advancements))
+}
+
+fn gate_stream_internal(data: &[u8], minimum_game_hour_advancements: Option<i64>) -> GateResult {
     let mut errors = Vec::new();
     let mut summary = GateSummary::default();
     let mut cursor = 0usize;
+    let mut previous_sequence: Option<u64> = None;
+    let mut boundary = GateBoundaryState::default();
     while cursor < data.len() {
-        if data.len().saturating_sub(cursor) < COMPACT_RECORD_HEADER_LEN {
-            errors.push(format!("offset {cursor}: truncated compact record header"));
-            break;
+        let header = match parse_compact_record_header(&data[cursor..]) {
+            Ok(header) => header,
+            Err(RecordFramingError::TruncatedHeader(_)) => {
+                errors.push(format!("offset {cursor}: truncated compact record header"));
+                break;
+            }
+            Err(RecordFramingError::BadMagic) => {
+                errors.push(format!("offset {cursor}: bad compact record magic"));
+                break;
+            }
+            Err(RecordFramingError::UnsupportedVersion(version)) => {
+                errors.push(format!(
+                    "offset {cursor}: unsupported compact version {version}"
+                ));
+                break;
+            }
+            Err(RecordFramingError::UnsupportedHeaderLen(header_len)) => {
+                errors.push(format!(
+                    "offset {cursor}: compact header_len {header_len} != {COMPACT_RECORD_HEADER_LEN}"
+                ));
+                break;
+            }
+            Err(err @ RecordFramingError::PayloadTooLarge(_)) => {
+                errors.push(format!("offset {cursor}: {err}"));
+                break;
+            }
+        };
+        match previous_sequence {
+            None if header.sequence != 1 => errors.push(format!(
+                "offset {cursor}: sequence {} does not start at 1 (stream prefix is missing)",
+                header.sequence
+            )),
+            Some(previous) => match previous.checked_add(1) {
+                Some(expected) if header.sequence != expected => errors.push(format!(
+                    "offset {cursor}: sequence discontinuity {previous} -> {} (expected {expected})",
+                    header.sequence
+                )),
+                None => errors.push(format!(
+                    "offset {cursor}: sequence space exhausted after {previous}; got {} (wrapping is not allowed)",
+                    header.sequence
+                )),
+                _ => {}
+            },
+            _ => {}
         }
-        if &data[cursor..cursor + 4] != COMPACT_RECORD_MAGIC {
-            errors.push(format!("offset {cursor}: bad compact record magic"));
-            break;
-        }
-        let version = read_u16(data, cursor + 4);
-        let header_len = read_u16(data, cursor + 6) as usize;
-        let domain_id = read_u16(data, cursor + 20);
-        let record_type = read_u16(data, cursor + 22);
-        let payload_len = read_u32(data, cursor + 24) as usize;
-        let reserved = read_u32(data, cursor + 28);
-        if version != COMPACT_RECORD_VERSION {
-            errors.push(format!(
-                "offset {cursor}: unsupported compact version {version}"
-            ));
-        }
-        if header_len != COMPACT_RECORD_HEADER_LEN {
-            errors.push(format!(
-                "offset {cursor}: compact header_len {header_len} != {COMPACT_RECORD_HEADER_LEN}"
-            ));
-            break;
-        }
-        if reserved != 0 {
-            errors.push(format!(
-                "offset {cursor}: compact header reserved is nonzero"
-            ));
-        }
-        let payload_start = cursor + header_len;
-        let payload_end = payload_start.saturating_add(payload_len);
+        previous_sequence = Some(header.sequence);
+        let payload_start = cursor + COMPACT_RECORD_HEADER_LEN;
+        let payload_end = payload_start.saturating_add(header.payload_len);
         if payload_end > data.len() {
             errors.push(format!("offset {cursor}: payload overruns stream"));
             break;
         }
+        let payload = &data[payload_start..payload_end];
+        let semantic_result = compact_contract::validate_compact_record_semantics(
+            header.domain_id,
+            header.record_type,
+            header.record_flags,
+            payload,
+        );
+        if let Err(error) = &semantic_result {
+            errors.push(format!("offset {cursor}: {error}"));
+        }
         summary.record_count = summary.record_count.saturating_add(1);
-        summary.domains_seen.insert(domain_id);
-        if domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS
-            && record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+        summary.domains_seen.insert(header.domain_id);
+        let data_authority = if semantic_result.is_ok()
+            && header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS
+            && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
         {
-            decode_detail_events_payload_into_summary(
-                cursor,
-                &data[payload_start..payload_end],
-                &mut summary,
-                &mut errors,
-            );
+            decode_detail_events_payload_into_summary(cursor, payload, &mut summary, &mut errors)
+        } else {
+            None
+        };
+        if semantic_result.is_ok() {
+            let record_authority = match (header.domain_id, header.record_type) {
+                (DOMAIN_LAND_COMBAT_DETAIL_EVENTS, COMPACT_RECORD_TYPE_DOMAIN_DATA) => {
+                    data_authority.map(D55RecordAuthority::Data)
+                }
+                (
+                    DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+                    compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                ) => Some(D55RecordAuthority::Perf(D55PerfAuthority {
+                    elapsed_wall_ms: read_u64(payload, 0),
+                    row_count: read_u32(payload, 16),
+                    changed_rows: read_u32(payload, 20),
+                    unit_count: read_u32(payload, 24),
+                    changed_unit_count: read_u32(payload, 28),
+                    status_flags: read_u32(payload, 32),
+                })),
+                _ => None,
+            };
+            boundary.observe(cursor, &header, record_authority, &mut errors);
+            match header.record_type {
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF
+                    if header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS =>
+                {
+                    record_gate_status(cursor, read_u32(payload, 32), &mut summary, &mut errors);
+                }
+                compact_contract::COMPACT_RECORD_TYPE_FRAME_END => {
+                    record_gate_status(cursor, read_u32(payload, 24), &mut summary, &mut errors);
+                    validate_frame_end_authority(cursor, payload, &mut errors);
+                }
+                _ => {}
+            }
         }
         cursor = payload_end;
     }
-    if summary.status_flags_or & FAILURE_STATUS_MASK != 0 {
+    boundary.finish(&mut errors);
+    if let Some(minimum) = minimum_game_hour_advancements {
+        validate_product_duration(&boundary, minimum, &mut errors);
+    }
+    let fatal_status =
+        compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            summary.status_flags_or,
+        );
+    if fatal_status != 0 {
         errors.push(format!(
             "land combat detail events status has failure flags {}",
-            summary.status_flags_or & FAILURE_STATUS_MASK
+            fatal_status
         ));
     }
     GateResult {
         ok: errors.is_empty(),
         errors,
         summary,
+    }
+}
+
+fn validate_frame_end_authority(offset: usize, payload: &[u8], errors: &mut Vec<String>) {
+    let emitted_domains = read_u32(payload, 16);
+    let scheduled_domains = read_u32(payload, 20);
+    let reserved = read_u32(payload, 28);
+    if emitted_domains == 0 || scheduled_domains == 0 {
+        errors.push(format!(
+            "offset {offset}: FRAME_END has zero emitted/scheduled domain authority ({emitted_domains}/{scheduled_domains})"
+        ));
+    }
+    if emitted_domains != scheduled_domains {
+        errors.push(format!(
+            "offset {offset}: FRAME_END emitted domain count {emitted_domains} does not match scheduled domain count {scheduled_domains}"
+        ));
+    }
+    if reserved != 0 {
+        errors.push(format!(
+            "offset {offset}: FRAME_END reserved payload word is nonzero"
+        ));
+    }
+}
+
+fn validate_product_duration(
+    boundary: &GateBoundaryState,
+    minimum_game_hour_advancements: i64,
+    errors: &mut Vec<String>,
+) {
+    if minimum_game_hour_advancements <= 0 {
+        errors.push(format!(
+            "minimum game-hour advancements must be explicitly positive, got {minimum_game_hour_advancements}"
+        ));
+        return;
+    }
+    let observed_advancements = match (boundary.first_closed_hour, boundary.last_closed_hour) {
+        (Some(first), Some(last)) => i64::from(last) - i64::from(first),
+        _ => -1,
+    };
+    let observed_closed_frames = i64::try_from(boundary.closed_hour_count).unwrap_or(i64::MAX);
+    let required_closed_frames = minimum_game_hour_advancements
+        .checked_add(1)
+        .unwrap_or(i64::MAX);
+    if observed_advancements < minimum_game_hour_advancements
+        || observed_closed_frames < required_closed_frames
+    {
+        errors.push(format!(
+            "production proof duration is {observed_advancements} advancement(s) across {observed_closed_frames} closed frame(s), below required {minimum_game_hour_advancements} advancement(s) / {required_closed_frames} closed frame(s)"
+        ));
+    }
+}
+
+fn record_gate_status(
+    offset: usize,
+    status_flags: u32,
+    summary: &mut GateSummary,
+    errors: &mut Vec<String>,
+) {
+    summary.status_flags_or |= status_flags;
+    if status_flags & !D55_KNOWN_STATUS_MASK != 0 {
+        errors.push(format!(
+            "offset {offset}: compact status has unknown bits {:#010x}",
+            status_flags & !D55_KNOWN_STATUS_MASK
+        ));
     }
 }
 
@@ -800,9 +1201,32 @@ pub fn decode_detail_events_payload(
             "offset {offset}: detail row_len {row_len} != {DETAIL_EVENT_ROW_LEN}"
         ));
     }
+    if status_flags & !D55_KNOWN_STATUS_MASK != 0 {
+        errors.push(format!(
+            "offset {offset}: detail status has unknown bits {:#010x}",
+            status_flags & !D55_KNOWN_STATUS_MASK
+        ));
+    }
+    if status_flags & STATUS_DELTA_DATA == 0 {
+        errors.push(format!(
+            "offset {offset}: detail status lacks canonical DELTA_DATA"
+        ));
+    }
+    if status_flags & STATUS_TRANSITION_BASELINE_RESET != 0
+        && status_flags & STATUS_PARTIAL_DATA == 0
+    {
+        errors.push(format!(
+            "offset {offset}: transition baseline reset is not badged PARTIAL_DATA"
+        ));
+    }
     if string_count != 0 || reserved != 0 {
         errors.push(format!(
             "offset {offset}: detail payload header reserved/string fields nonzero"
+        ));
+    }
+    if row_count > MAX_DETAIL_EVENT_ROWS {
+        errors.push(format!(
+            "offset {offset}: detail row_count {row_count} exceeds max {MAX_DETAIL_EVENT_ROWS}"
         ));
     }
     if side_detail_row_count > MAX_LAND_COMBATS_SIDE_DETAIL {
@@ -814,6 +1238,9 @@ pub fn decode_detail_events_payload(
         errors.push(format!(
             "offset {offset}: attribution_row_count {attribution_row_count} exceeds max"
         ));
+    }
+    if !errors.is_empty() {
+        return Err(errors);
     }
     let expected_len = header_len
         .saturating_add(row_count.saturating_mul(row_len))
@@ -902,6 +1329,14 @@ pub fn decode_detail_events_payload(
         cursor += ATTRIBUTION_ROW_LEN;
     }
 
+    validate_payload_referential_consistency(
+        offset,
+        &rows,
+        &side_detail_rows,
+        &attribution_rows,
+        &mut errors,
+    );
+
     if errors.is_empty() {
         Ok(DecodedDetailEventsPayload {
             elapsed_wall_ms,
@@ -945,6 +1380,11 @@ fn decode_side_detail_row(
             "offset {offset}: side detail row {row_index} invalid combat_id"
         ));
     }
+    if generation == 0 {
+        return Err(format!(
+            "offset {offset}: side detail row {row_index} has zero generation"
+        ));
+    }
     if flags & !SIDE_DETAIL_KNOWN_FLAG_MASK != 0 {
         return Err(format!(
             "offset {offset}: side detail row {row_index} unknown flags {}",
@@ -958,7 +1398,9 @@ fn decode_side_detail_row(
     }
     let side = match side_wire {
         SIDE_ATTACKER => {
-            if flags & SIDE_DETAIL_FLAG_ATTACKER == 0 {
+            if flags & (SIDE_DETAIL_FLAG_ATTACKER | SIDE_DETAIL_FLAG_DEFENDER)
+                != SIDE_DETAIL_FLAG_ATTACKER
+            {
                 return Err(format!(
                     "offset {offset}: side detail row {row_index} attacker side/flag mismatch"
                 ));
@@ -966,7 +1408,9 @@ fn decode_side_detail_row(
             CombatSide::Attacker
         }
         SIDE_DEFENDER => {
-            if flags & SIDE_DETAIL_FLAG_DEFENDER == 0 {
+            if flags & (SIDE_DETAIL_FLAG_ATTACKER | SIDE_DETAIL_FLAG_DEFENDER)
+                != SIDE_DETAIL_FLAG_DEFENDER
+            {
                 return Err(format!(
                     "offset {offset}: side detail row {row_index} defender side/flag mismatch"
                 ));
@@ -1046,6 +1490,135 @@ fn decode_side_detail_row(
     })
 }
 
+#[derive(Debug)]
+struct ParticipantDeltaSet {
+    old_count: u32,
+    new_count: u32,
+    joined: BTreeSet<u32>,
+    left: BTreeSet<u32>,
+}
+
+fn validate_payload_referential_consistency(
+    offset: usize,
+    rows: &[DetailEventRow],
+    side_detail_rows: &[SideDetailRow],
+    attribution_rows: &[AttributionRow],
+    errors: &mut Vec<String>,
+) {
+    let mut metadata_by_combat = BTreeMap::new();
+    let mut phase_by_combat = BTreeMap::new();
+    let mut participant_sets: BTreeMap<(u32, u64, CombatSide), ParticipantDeltaSet> =
+        BTreeMap::new();
+    let mut participant_identity = BTreeSet::new();
+    let side_details = side_detail_rows
+        .iter()
+        .map(|row| ((row.combat_id, row.generation, row.side), row.detail))
+        .collect::<BTreeMap<_, _>>();
+
+    for (row_index, row) in rows.iter().enumerate() {
+        let combat_key = (row.combat_id, row.generation);
+        let metadata = (row.location, row.day, row.duration);
+        match metadata_by_combat.get(&combat_key) {
+            Some(previous) if *previous != metadata => errors.push(format!(
+                "offset {offset}: detail row {row_index} disagrees on combat {}:{} location/day/duration",
+                row.combat_id, row.generation
+            )),
+            Some(_) => {}
+            None => {
+                metadata_by_combat.insert(combat_key, metadata);
+            }
+        }
+
+        if matches!(
+            row.event_kind,
+            EVENT_PHASE_STARTED | EVENT_PHASE_UPDATED | EVENT_PHASE_ENDED
+        ) {
+            if let Some(previous_kind) = phase_by_combat.insert(combat_key, row.event_kind) {
+                errors.push(format!(
+                    "offset {offset}: combat {}:{} has multiple phase events ({previous_kind} and {}) in one payload",
+                    row.combat_id, row.generation, row.event_kind
+                ));
+            }
+            continue;
+        }
+
+        if !matches!(
+            row.event_kind,
+            EVENT_PARTICIPANT_JOINED | EVENT_PARTICIPANT_LEFT_UNCLASSIFIED
+        ) {
+            continue;
+        }
+        let (Some(side), Some(division_id)) = (row.side, row.division_id) else {
+            continue;
+        };
+        if !participant_identity.insert((row.combat_id, row.generation, division_id)) {
+            errors.push(format!(
+                "offset {offset}: division {division_id} has multiple participant events for combat {}:{} in one payload",
+                row.combat_id, row.generation
+            ));
+        }
+        let key = (row.combat_id, row.generation, side);
+        let set = participant_sets
+            .entry(key)
+            .or_insert_with(|| ParticipantDeltaSet {
+                old_count: row.old_side_count,
+                new_count: row.new_side_count,
+                joined: BTreeSet::new(),
+                left: BTreeSet::new(),
+            });
+        if set.old_count != row.old_side_count || set.new_count != row.new_side_count {
+            errors.push(format!(
+                "offset {offset}: participant rows for combat {}:{} {} disagree on old/new side counts",
+                row.combat_id,
+                row.generation,
+                match side {
+                    CombatSide::Attacker => "attacker",
+                    CombatSide::Defender => "defender",
+                }
+            ));
+        }
+        if row.event_kind == EVENT_PARTICIPANT_JOINED {
+            set.joined.insert(division_id);
+        } else {
+            set.left.insert(division_id);
+        }
+    }
+
+    for ((combat_id, generation, side), set) in participant_sets {
+        let expected = i64::from(set.old_count) + set.joined.len() as i64 - set.left.len() as i64;
+        if expected != i64::from(set.new_count) {
+            errors.push(format!(
+                "offset {offset}: participant delta for combat {combat_id}:{generation} {} is partial: old {} + {} joined - {} left != new {}",
+                match side {
+                    CombatSide::Attacker => "attacker",
+                    CombatSide::Defender => "defender",
+                },
+                set.old_count,
+                set.joined.len(),
+                set.left.len(),
+                set.new_count
+            ));
+        }
+        if let Some(detail) = side_details.get(&(combat_id, generation, side)) {
+            if !detail.counts_incomplete && detail.units != set.new_count {
+                errors.push(format!(
+                    "offset {offset}: participant delta new count {} disagrees with side-detail units {} for combat {combat_id}:{generation}",
+                    set.new_count, detail.units
+                ));
+            }
+        }
+    }
+
+    for row in attribution_rows {
+        if !side_details.contains_key(&(row.combat_id, row.generation, row.side)) {
+            errors.push(format!(
+                "offset {offset}: attribution for combat {}:{} has no matching side-detail row",
+                row.combat_id, row.generation
+            ));
+        }
+    }
+}
+
 fn decode_attribution_row(
     offset: usize,
     row_index: usize,
@@ -1065,6 +1638,11 @@ fn decode_attribution_row(
     if combat_id == 0 || combat_id > MAX_COMBAT_ID {
         return Err(format!(
             "offset {offset}: attribution row {row_index} invalid combat_id"
+        ));
+    }
+    if generation == 0 {
+        return Err(format!(
+            "offset {offset}: attribution row {row_index} has zero generation"
         ));
     }
     if reserved != 0 {
@@ -1088,7 +1666,9 @@ fn decode_attribution_row(
     }
     let side = match side_wire {
         SIDE_ATTACKER => {
-            if flags & ATTRIBUTION_FLAG_ATTACKER == 0 {
+            if flags & (ATTRIBUTION_FLAG_ATTACKER | ATTRIBUTION_FLAG_DEFENDER)
+                != ATTRIBUTION_FLAG_ATTACKER
+            {
                 return Err(format!(
                     "offset {offset}: attribution row {row_index} attacker side/flag mismatch"
                 ));
@@ -1096,7 +1676,9 @@ fn decode_attribution_row(
             CombatSide::Attacker
         }
         SIDE_DEFENDER => {
-            if flags & ATTRIBUTION_FLAG_DEFENDER == 0 {
+            if flags & (ATTRIBUTION_FLAG_ATTACKER | ATTRIBUTION_FLAG_DEFENDER)
+                != ATTRIBUTION_FLAG_DEFENDER
+            {
                 return Err(format!(
                     "offset {offset}: attribution row {row_index} defender side/flag mismatch"
                 ));
@@ -1140,7 +1722,7 @@ fn decode_detail_events_payload_into_summary(
     payload: &[u8],
     summary: &mut GateSummary,
     errors: &mut Vec<String>,
-) {
+) -> Option<D55DataAuthority> {
     if payload.len() >= 16 {
         summary.status_flags_or |= read_u32(payload, 12);
     }
@@ -1148,8 +1730,18 @@ fn decode_detail_events_payload_into_summary(
         Ok(decoded) => decoded,
         Err(mut decode_errors) => {
             errors.append(&mut decode_errors);
-            return;
+            return None;
         }
+    };
+    let total_row_count = decoded
+        .rows
+        .len()
+        .saturating_add(decoded.side_detail_rows.len())
+        .saturating_add(decoded.attribution_rows.len());
+    let authority = D55DataAuthority {
+        elapsed_wall_ms: decoded.elapsed_wall_ms,
+        status_flags: decoded.status_flags,
+        row_count: u32::try_from(total_row_count).expect("validated D55 row ceilings fit u32"),
     };
     summary.row_count = summary.row_count.saturating_add(decoded.rows.len() as u64);
     summary.side_detail_rows = summary
@@ -1171,6 +1763,7 @@ fn decode_detail_events_payload_into_summary(
             _ => {}
         }
     }
+    Some(authority)
 }
 
 #[derive(Debug)]
@@ -1199,6 +1792,11 @@ fn validate_decoded_row(
     if row.combat_id == 0 || row.combat_id > MAX_COMBAT_ID {
         errors.push(format!(
             "offset {offset}: detail row {row_index} has invalid combat_id"
+        ));
+    }
+    if row.generation == 0 {
+        errors.push(format!(
+            "offset {offset}: detail row {row_index} has zero generation"
         ));
     }
     if !matches!(
@@ -1231,14 +1829,26 @@ fn validate_decoded_row(
             row.side
         ));
     }
-    if row.flags & FLAG_SIDE_PRESENT == 0 && row.side != SIDE_NONE {
+    let side_present = row.flags & FLAG_SIDE_PRESENT != 0;
+    if !side_present && row.side != SIDE_NONE {
         errors.push(format!(
             "offset {offset}: detail row {row_index} has side without flag"
         ));
     }
-    if row.flags & FLAG_DIVISION_PRESENT == 0 && row.division_id != 0 {
+    if side_present && !matches!(row.side, SIDE_ATTACKER | SIDE_DEFENDER) {
+        errors.push(format!(
+            "offset {offset}: detail row {row_index} has side flag without a canonical side"
+        ));
+    }
+    let division_present = row.flags & FLAG_DIVISION_PRESENT != 0;
+    if !division_present && row.division_id != 0 {
         errors.push(format!(
             "offset {offset}: detail row {row_index} has division without flag"
+        ));
+    }
+    if division_present && (row.division_id == 0 || row.division_id > MAX_DIVISION_ID) {
+        errors.push(format!(
+            "offset {offset}: detail row {row_index} has invalid flagged division"
         ));
     }
     if row.flags & FLAG_LOCATION_PRESENT != 0
@@ -1248,14 +1858,29 @@ fn validate_decoded_row(
             "offset {offset}: detail row {row_index} has invalid location"
         ));
     }
+    if row.flags & FLAG_LOCATION_PRESENT == 0 && row.location != 0 {
+        errors.push(format!(
+            "offset {offset}: detail row {row_index} has location without flag"
+        ));
+    }
     if row.flags & FLAG_DAY_PRESENT != 0 && row.day > MAX_AGE_DAYS {
         errors.push(format!(
             "offset {offset}: detail row {row_index} has invalid day"
         ));
     }
+    if row.flags & FLAG_DAY_PRESENT == 0 && row.day != 0 {
+        errors.push(format!(
+            "offset {offset}: detail row {row_index} has day without flag"
+        ));
+    }
     if row.flags & FLAG_DURATION_PRESENT != 0 && row.duration > MAX_AGE_DAYS {
         errors.push(format!(
             "offset {offset}: detail row {row_index} has invalid duration"
+        ));
+    }
+    if row.flags & FLAG_DURATION_PRESENT == 0 && row.duration != 0 {
+        errors.push(format!(
+            "offset {offset}: detail row {row_index} has duration without flag"
         ));
     }
     if row.reserved != 0 {
@@ -1267,6 +1892,62 @@ fn validate_decoded_row(
         errors.push(format!(
             "offset {offset}: detail row {row_index} side counts exceed max"
         ));
+    }
+    match row.event_kind {
+        EVENT_PHASE_STARTED | EVENT_PHASE_UPDATED | EVENT_PHASE_ENDED => {
+            if side_present || division_present || row.side != SIDE_NONE || row.division_id != 0 {
+                errors.push(format!(
+                    "offset {offset}: phase row {row_index} carries participant identity"
+                ));
+            }
+            if row.flags & FLAG_SEMANTIC_UNCLASSIFIED != 0 {
+                errors.push(format!(
+                    "offset {offset}: phase row {row_index} carries participant classification"
+                ));
+            }
+            if row.old_side_count != 0 {
+                errors.push(format!(
+                    "offset {offset}: phase row {row_index} has nonzero old_side_count"
+                ));
+            }
+        }
+        EVENT_PARTICIPANT_JOINED => {
+            if !side_present || !division_present {
+                errors.push(format!(
+                    "offset {offset}: participant-joined row {row_index} lacks side/division identity"
+                ));
+            }
+            if row.flags & FLAG_SEMANTIC_UNCLASSIFIED != 0 {
+                errors.push(format!(
+                    "offset {offset}: participant-joined row {row_index} is incorrectly unclassified"
+                ));
+            }
+            if row.new_side_count <= row.old_side_count {
+                errors.push(format!(
+                    "offset {offset}: participant-joined row {row_index} has non-increasing side counts {} -> {}",
+                    row.old_side_count, row.new_side_count
+                ));
+            }
+        }
+        EVENT_PARTICIPANT_LEFT_UNCLASSIFIED => {
+            if !side_present || !division_present {
+                errors.push(format!(
+                    "offset {offset}: participant-left row {row_index} lacks side/division identity"
+                ));
+            }
+            if row.flags & FLAG_SEMANTIC_UNCLASSIFIED == 0 {
+                errors.push(format!(
+                    "offset {offset}: participant-left row {row_index} lacks unclassified semantic badge"
+                ));
+            }
+            if row.new_side_count >= row.old_side_count {
+                errors.push(format!(
+                    "offset {offset}: participant-left row {row_index} has non-decreasing side counts {} -> {}",
+                    row.old_side_count, row.new_side_count
+                ));
+            }
+        }
+        _ => {}
     }
     if !seen.insert((
         row.combat_id,
@@ -1390,6 +2071,9 @@ fn validate_snapshot(row: &LandCombatSnapshot) -> Result<(), String> {
     if row.combat_id == 0 || row.combat_id > MAX_COMBAT_ID {
         return Err(format!("invalid combat_id {}", row.combat_id));
     }
+    if row.generation == 0 {
+        return Err(format!("combat {} has zero generation", row.combat_id));
+    }
     for (label, units) in [
         ("attacker", row.attacker_divisions.as_slice()),
         ("defender", row.defender_divisions.as_slice()),
@@ -1412,6 +2096,21 @@ fn validate_snapshot(row: &LandCombatSnapshot) -> Result<(), String> {
                 ));
             }
         }
+    }
+    let attacker_ids = row
+        .attacker_divisions
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if let Some(division_id) = row
+        .defender_divisions
+        .iter()
+        .find(|division_id| attacker_ids.contains(division_id))
+    {
+        return Err(format!(
+            "combat {} assigns division {division_id} to both sides",
+            row.combat_id
+        ));
     }
     if row
         .location
@@ -1447,6 +2146,9 @@ fn validate_snapshot(row: &LandCombatSnapshot) -> Result<(), String> {
 fn validate_row(row: &DetailEventRow) -> Result<(), String> {
     if row.combat_id == 0 || row.combat_id > MAX_COMBAT_ID {
         return Err("invalid combat id".to_string());
+    }
+    if row.generation == 0 {
+        return Err("invalid zero generation".to_string());
     }
     if let Some(division_id) = row.division_id {
         if division_id == 0 || division_id > MAX_DIVISION_ID {
@@ -1525,6 +2227,931 @@ fn json_string_array(values: &[String]) -> String {
 mod tests {
     use super::*;
 
+    fn perf_payload() -> Vec<u8> {
+        perf_payload_with_status(STATUS_DELTA_DATA)
+    }
+
+    fn perf_payload_with_status(status_flags: u32) -> Vec<u8> {
+        perf_payload_with_authority(1, status_flags, 0)
+    }
+
+    fn perf_payload_with_authority(
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        row_count: u32,
+    ) -> Vec<u8> {
+        let mut payload = vec![0; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN];
+        payload[0..8].copy_from_slice(&elapsed_wall_ms.to_le_bytes());
+        for offset in [16usize, 20, 24, 28] {
+            payload[offset..offset + 4].copy_from_slice(&row_count.to_le_bytes());
+        }
+        payload[32..36].copy_from_slice(&status_flags.to_le_bytes());
+        payload
+    }
+
+    fn payload_authority(payload: &[u8]) -> (u64, u32, u32) {
+        assert!(payload.len() >= PAYLOAD_HEADER_LEN_V1);
+        let version = read_u16(payload, 0);
+        let event_rows = read_u32(payload, 16);
+        let side_detail_rows = if version >= SCHEMA_VERSION_V2_SIDE_DETAIL {
+            read_u32(payload, 24)
+        } else {
+            0
+        };
+        let attribution_rows = if version >= SCHEMA_VERSION && payload.len() >= PAYLOAD_HEADER_LEN {
+            read_u32(payload, 28)
+        } else {
+            0
+        };
+        (
+            read_u64(payload, 4),
+            read_u32(payload, 12),
+            event_rows
+                .saturating_add(side_detail_rows)
+                .saturating_add(attribution_rows),
+        )
+    }
+
+    fn perf_payload_with_diagnostic_unit() -> Vec<u8> {
+        let name = b"read_us";
+        let mut payload = perf_payload();
+        payload.extend_from_slice(compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC);
+        payload.extend_from_slice(
+            &compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION.to_le_bytes(),
+        );
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&17u64.to_le_bytes());
+        payload.extend_from_slice(name);
+        payload
+    }
+
+    fn append_frame_end(stream: &mut Vec<u8>, sequence: u64, hour: i32) {
+        append_frame_end_with_status(stream, sequence, hour, 0, 0);
+    }
+
+    fn append_frame_end_with_status(
+        stream: &mut Vec<u8>,
+        sequence: u64,
+        hour: i32,
+        status_flags: u32,
+        reserved: u32,
+    ) {
+        let mut payload = [0u8; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN];
+        payload[16..20].copy_from_slice(&1u32.to_le_bytes());
+        payload[20..24].copy_from_slice(&1u32.to_le_bytes());
+        payload[24..28].copy_from_slice(&status_flags.to_le_bytes());
+        payload[28..32].copy_from_slice(&reserved.to_le_bytes());
+        append_compact_record(
+            stream,
+            sequence,
+            hour,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &payload,
+        );
+    }
+
+    fn certify_lane_data_record(mut stream: Vec<u8>) -> Vec<u8> {
+        let header = parse_compact_record_header(&stream).expect("lane DATA header");
+        let perf_sequence = header.sequence.checked_add(1).expect("test sequence");
+        let payload = &stream[COMPACT_RECORD_HEADER_LEN..];
+        let (elapsed_wall_ms, data_status, row_count) = payload_authority(payload);
+        append_compact_record(
+            &mut stream,
+            perf_sequence,
+            header.game_hour_raw,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload_with_authority(elapsed_wall_ms, data_status, row_count),
+        );
+        append_frame_end(
+            &mut stream,
+            perf_sequence.checked_add(1).expect("test sequence"),
+            header.game_hour_raw,
+        );
+        stream
+    }
+
+    fn canonical_empty_d55_payload() -> Vec<u8> {
+        encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[], &[], &[])
+    }
+
+    fn append_lane_hour(stream: &mut Vec<u8>, first_sequence: u64, hour: i32, payload: &[u8]) {
+        let (elapsed_wall_ms, data_status, row_count) = payload_authority(payload);
+        append_compact_record(
+            stream,
+            first_sequence,
+            hour,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            payload,
+        );
+        append_compact_record(
+            stream,
+            first_sequence + 1,
+            hour,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload_with_authority(elapsed_wall_ms, data_status, row_count),
+        );
+        append_frame_end(stream, first_sequence + 2, hour);
+    }
+
+    fn gate_d55_payload(payload: &[u8]) -> GateResult {
+        let mut stream = Vec::new();
+        append_lane_hour(&mut stream, 1, 100, payload);
+        gate_stream(&stream)
+    }
+
+    fn participant_event(
+        event_kind: u32,
+        side: CombatSide,
+        division_id: u32,
+        old_side_count: u32,
+        new_side_count: u32,
+    ) -> DetailEventRow {
+        let mut flags = FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | FLAG_SIDE_PRESENT
+            | FLAG_DIVISION_PRESENT
+            | FLAG_LOCATION_PRESENT
+            | FLAG_DAY_PRESENT
+            | FLAG_DURATION_PRESENT;
+        if event_kind == EVENT_PARTICIPANT_LEFT_UNCLASSIFIED {
+            flags |= FLAG_SEMANTIC_UNCLASSIFIED;
+        }
+        DetailEventRow {
+            combat_id: 42,
+            generation: 7,
+            event_kind,
+            side: Some(side),
+            division_id: Some(division_id),
+            location: Some(1000),
+            day: Some(3),
+            duration: Some(3),
+            old_side_count,
+            new_side_count,
+            flags,
+        }
+    }
+    fn gate_sequences(sequences: &[u64]) -> GateResult {
+        let mut stream = Vec::new();
+        let payload = perf_payload();
+        for &sequence in sequences {
+            append_compact_record(
+                &mut stream,
+                sequence,
+                100,
+                DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &payload,
+            );
+        }
+        gate_stream(&stream)
+    }
+
+    #[test]
+    fn compact_gate_rejects_missing_sequence_prefix() {
+        let gate = gate_sequences(&[2]);
+
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("sequence 2 does not start at 1")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_sequence_gap() {
+        let gate = gate_sequences(&[1, 3]);
+
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 1 -> 3 (expected 2)")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_repeated_sequence() {
+        let gate = gate_sequences(&[1, 1]);
+
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 1 -> 1 (expected 2)")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_sequence_regression() {
+        let gate = gate_sequences(&[1, 2, 1]);
+
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("sequence discontinuity 2 -> 1 (expected 3)")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_sequence_wrap_after_max() {
+        let gate = gate_sequences(&[u64::MAX, 0]);
+
+        assert!(!gate.ok);
+        assert!(gate.errors.iter().any(|error| {
+            error.contains("sequence space exhausted after 18446744073709551615")
+                && error.contains("wrapping is not allowed")
+        }));
+    }
+
+    #[test]
+    fn compact_gate_accepts_canonical_perf_base_and_announced_pdu1_trailer_semantics() {
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(),
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &perf_payload_with_diagnostic_unit(),
+        );
+
+        let gate = gate_stream(&stream);
+        assert!(gate
+            .errors
+            .iter()
+            .all(|error| !error.contains("DOMAIN_PERF payload")));
+        assert!(!gate.ok, "PERF-only stream must not certify");
+    }
+
+    #[test]
+    fn compact_gate_rejects_missing_announced_perf_trailer() {
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &perf_payload(),
+        );
+
+        let gate = gate_stream(&stream);
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("diagnostic trailer header is truncated")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_unannounced_perf_trailer() {
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload_with_diagnostic_unit(),
+        );
+
+        let gate = gate_stream(&stream);
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("unannounced trailer byte(s)")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_malformed_perf_trailer() {
+        let mut payload = perf_payload_with_diagnostic_unit();
+        payload[compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN] = b'X';
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &payload,
+        );
+
+        let gate = gate_stream(&stream);
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("diagnostic trailer magic is invalid")));
+    }
+
+    #[test]
+    fn record_flag_policy_accepts_canonical_schema_and_perf_flags() {
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            45,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &[],
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &perf_payload_with_diagnostic_unit(),
+        );
+
+        let gate = gate_stream(&stream);
+        assert!(gate
+            .errors
+            .iter()
+            .all(|error| !error.contains("record flags")));
+    }
+
+    #[test]
+    fn record_flag_policy_rejects_wrong_placement_and_unknown_bits() {
+        let mut stream = Vec::new();
+        append_compact_record(
+            &mut stream,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &[],
+        );
+        append_compact_record(
+            &mut stream,
+            2,
+            100,
+            0,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+            1 << 29,
+            &[],
+        );
+
+        let gate = gate_stream(&stream);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("record flags 0x80000000")));
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("record flags 0x20000000")));
+    }
+
+    #[test]
+    fn compact_gate_accepts_one_data_and_perf_in_a_canonical_closed_hour() {
+        let gate = gate_d55_payload(&canonical_empty_d55_payload());
+        assert!(gate.ok, "{:?}", gate.errors);
+    }
+
+    #[test]
+    fn product_gate_requires_explicit_positive_duration_and_inclusive_closed_frames() {
+        let payload = canonical_empty_d55_payload();
+        let mut stream = Vec::new();
+        append_lane_hour(&mut stream, 1, 100, &payload);
+        append_lane_hour(&mut stream, 4, 101, &payload);
+
+        let exact = gate_stream_for_product(&stream, 1);
+        assert!(exact.ok, "{:?}", exact.errors);
+
+        let too_long = gate_stream_for_product(&stream, 2);
+        assert!(!too_long.ok);
+        assert!(too_long.errors.iter().any(|error| {
+            error.contains("1 advancement(s) across 2 closed frame(s)")
+                && error.contains("required 2 advancement(s) / 3 closed frame(s)")
+        }));
+
+        let non_positive = gate_stream_for_product(&stream, 0);
+        assert!(!non_positive.ok);
+        assert!(non_positive
+            .errors
+            .iter()
+            .any(|error| error.contains("must be explicitly positive")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_empty_and_unrelated_only_streams() {
+        let empty = gate_stream(&[]);
+        assert!(!empty.ok);
+        assert!(empty
+            .errors
+            .iter()
+            .any(|error| error.contains("certifies no closed hour")));
+
+        let mut unrelated = Vec::new();
+        append_compact_record(
+            &mut unrelated,
+            1,
+            100,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            b"opaque-unowned-payload",
+        );
+        append_compact_record(
+            &mut unrelated,
+            2,
+            100,
+            18,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(),
+        );
+        append_frame_end(&mut unrelated, 3, 100);
+        let gate = gate_stream(&unrelated);
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("DATA/PERF counts 0/0")));
+        assert!(gate
+            .errors
+            .iter()
+            .all(|error| !error.contains("opaque-unowned")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_missing_or_duplicate_d55_records() {
+        let payload = canonical_empty_d55_payload();
+
+        let mut missing_perf = Vec::new();
+        append_compact_record(
+            &mut missing_perf,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        append_frame_end(&mut missing_perf, 2, 100);
+        let gate = gate_stream(&missing_perf);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("DATA/PERF counts 1/0")));
+
+        let mut missing_data = Vec::new();
+        append_compact_record(
+            &mut missing_data,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(),
+        );
+        append_compact_record(
+            &mut missing_data,
+            2,
+            100,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            b"opaque",
+        );
+        append_frame_end(&mut missing_data, 3, 100);
+        let gate = gate_stream(&missing_data);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("DATA/PERF counts 0/1")));
+
+        let mut duplicate_data = Vec::new();
+        append_compact_record(
+            &mut duplicate_data,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        append_compact_record(
+            &mut duplicate_data,
+            2,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        append_compact_record(
+            &mut duplicate_data,
+            3,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(),
+        );
+        append_frame_end(&mut duplicate_data, 4, 100);
+        let gate = gate_stream(&duplicate_data);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("duplicate domain-55 DATA")));
+
+        let mut duplicate_perf = Vec::new();
+        append_compact_record(
+            &mut duplicate_perf,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        for sequence in [2, 3] {
+            append_compact_record(
+                &mut duplicate_perf,
+                sequence,
+                100,
+                DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &perf_payload(),
+            );
+        }
+        append_frame_end(&mut duplicate_perf, 4, 100);
+        let gate = gate_stream(&duplicate_perf);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("duplicate domain-55 PERF")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_bare_skipped_reordered_and_trailing_boundaries() {
+        let mut bare = Vec::new();
+        append_frame_end(&mut bare, 1, 100);
+        assert!(gate_stream(&bare)
+            .errors
+            .iter()
+            .any(|error| error.contains("bare FRAME_END")));
+
+        let payload = canonical_empty_d55_payload();
+        let mut skipped = Vec::new();
+        append_lane_hour(&mut skipped, 1, 100, &payload);
+        append_lane_hour(&mut skipped, 4, 102, &payload);
+        assert!(gate_stream(&skipped)
+            .errors
+            .iter()
+            .any(|error| error.contains("non-consecutive DATA hour 102")));
+
+        let mut reordered = Vec::new();
+        append_compact_record(
+            &mut reordered,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        append_compact_record(
+            &mut reordered,
+            2,
+            101,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            b"opaque",
+        );
+        assert!(gate_stream(&reordered)
+            .errors
+            .iter()
+            .any(|error| error.contains("interleaves open hour 100")));
+
+        let mut trailing = Vec::new();
+        append_lane_hour(&mut trailing, 1, 100, &payload);
+        append_compact_record(
+            &mut trailing,
+            4,
+            101,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(),
+        );
+        let gate = gate_stream(&trailing);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("PERF-only hour 101")));
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("final record is not canonical FRAME_END")));
+    }
+
+    #[test]
+    fn compact_gate_rejects_noncanonical_and_fatal_d55_status() {
+        let unknown =
+            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA | (1 << 31), &[], &[], &[]);
+        assert!(gate_d55_payload(&unknown)
+            .errors
+            .iter()
+            .any(|error| error.contains("unknown bits")));
+
+        let fatal = encode_detail_events_payload_v3(
+            1,
+            STATUS_DELTA_DATA | STATUS_SOURCE_UNAVAILABLE,
+            &[],
+            &[],
+            &[],
+        );
+        assert!(gate_d55_payload(&fatal)
+            .errors
+            .iter()
+            .any(|error| error.contains("failure flags")));
+
+        let payload = canonical_empty_d55_payload();
+        let mut perf_fatal = Vec::new();
+        append_compact_record(
+            &mut perf_fatal,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        append_compact_record(
+            &mut perf_fatal,
+            2,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload_with_status(STATUS_SOURCE_UNAVAILABLE),
+        );
+        append_frame_end(&mut perf_fatal, 3, 100);
+        assert!(gate_stream(&perf_fatal)
+            .errors
+            .iter()
+            .any(|error| error.contains("failure flags")));
+
+        let mut frame_fatal = Vec::new();
+        append_compact_record(
+            &mut frame_fatal,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        append_compact_record(
+            &mut frame_fatal,
+            2,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(),
+        );
+        append_frame_end_with_status(&mut frame_fatal, 3, 100, STATUS_SOURCE_UNAVAILABLE, 0);
+        assert!(gate_stream(&frame_fatal)
+            .errors
+            .iter()
+            .any(|error| error.contains("failure flags")));
+
+        let mut frame_reserved = frame_fatal;
+        let frame_offset = frame_reserved.len() - compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN;
+        frame_reserved[frame_offset + 24..frame_offset + 28].copy_from_slice(&0u32.to_le_bytes());
+        frame_reserved[frame_offset + 28..frame_offset + 32].copy_from_slice(&1u32.to_le_bytes());
+        assert!(gate_stream(&frame_reserved)
+            .errors
+            .iter()
+            .any(|error| error.contains("reserved payload word")));
+
+        let mut zero_authority = Vec::new();
+        append_compact_record(
+            &mut zero_authority,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        append_compact_record(
+            &mut zero_authority,
+            2,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(),
+        );
+        let frame_payload = [0u8; compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN];
+        append_compact_record(
+            &mut zero_authority,
+            3,
+            100,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_payload,
+        );
+        assert!(gate_stream(&zero_authority)
+            .errors
+            .iter()
+            .any(|error| error.contains("zero emitted/scheduled domain authority")));
+
+        let mut mismatched_authority = frame_payload;
+        mismatched_authority[16..20].copy_from_slice(&1u32.to_le_bytes());
+        mismatched_authority[20..24].copy_from_slice(&2u32.to_le_bytes());
+        let frame_start = zero_authority.len() - compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN;
+        zero_authority[frame_start..].copy_from_slice(&mismatched_authority);
+        assert!(gate_stream(&zero_authority)
+            .errors
+            .iter()
+            .any(|error| error.contains("does not match scheduled domain count")));
+
+        let mismatched_perf = perf_payload_with_status(STATUS_PARTIAL_DATA);
+        let mut status_mismatch = Vec::new();
+        append_compact_record(
+            &mut status_mismatch,
+            1,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        append_compact_record(
+            &mut status_mismatch,
+            2,
+            100,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &mismatched_perf,
+        );
+        append_frame_end(&mut status_mismatch, 3, 100);
+        assert!(gate_stream(&status_mismatch)
+            .errors
+            .iter()
+            .any(|error| error.contains("DATA status") && error.contains("does not match PERF")));
+    }
+
+    #[test]
+    fn compact_gate_binds_perf_timestamp_and_all_four_counts_to_decoded_data() {
+        let payload = canonical_empty_d55_payload();
+        let mut canonical = Vec::new();
+        append_lane_hour(&mut canonical, 1, 100, &payload);
+        assert!(gate_stream(&canonical).ok);
+
+        let data_header = parse_compact_record_header(&canonical).expect("DATA header");
+        let perf_offset = COMPACT_RECORD_HEADER_LEN + data_header.payload_len;
+        let perf_payload = perf_offset + COMPACT_RECORD_HEADER_LEN;
+
+        let mut elapsed_mismatch = canonical.clone();
+        elapsed_mismatch[perf_payload..perf_payload + 8].copy_from_slice(&2u64.to_le_bytes());
+        assert!(gate_stream(&elapsed_mismatch)
+            .errors
+            .iter()
+            .any(|error| error.contains("elapsed_wall_ms")));
+
+        for (offset, label) in [
+            (16usize, "row_count"),
+            (20, "changed_rows"),
+            (24, "unit_count"),
+            (28, "changed_unit_count"),
+        ] {
+            let mut mismatch = canonical.clone();
+            mismatch[perf_payload + offset..perf_payload + offset + 4]
+                .copy_from_slice(&1u32.to_le_bytes());
+            let gate = gate_stream(&mismatch);
+            assert!(!gate.ok);
+            assert!(gate
+                .errors
+                .iter()
+                .any(|error| error.contains(label) && error.contains("decoded DATA row count")));
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_event_row_count_above_production_topology_before_allocation() {
+        let mut payload = canonical_empty_d55_payload();
+        payload[16..20].copy_from_slice(&((MAX_DETAIL_EVENT_ROWS as u32) + 1).to_le_bytes());
+        let errors = decode_detail_events_payload(0, &payload).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("detail row_count") && error.contains("exceeds max")));
+    }
+
+    #[test]
+    fn participant_delta_sets_must_be_complete_and_referentially_consistent() {
+        let partial_join =
+            participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Attacker, 1002, 1, 3);
+        let payload =
+            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[partial_join], &[], &[]);
+        assert!(gate_d55_payload(&payload)
+            .errors
+            .iter()
+            .any(|error| error.contains("participant delta") && error.contains("partial")));
+
+        let joined = participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Attacker, 1002, 1, 1);
+        let left = participant_event(
+            EVENT_PARTICIPANT_LEFT_UNCLASSIFIED,
+            CombatSide::Attacker,
+            1002,
+            1,
+            1,
+        );
+        let payload =
+            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[joined, left], &[], &[]);
+        assert!(gate_d55_payload(&payload)
+            .errors
+            .iter()
+            .any(|error| error.contains("multiple participant events")));
+
+        let mut missing_identity =
+            participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Defender, 2002, 1, 2);
+        missing_identity.flags &= !FLAG_DIVISION_PRESENT;
+        let payload =
+            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[missing_identity], &[], &[]);
+        assert!(gate_d55_payload(&payload).errors.iter().any(|error| {
+            error.contains("division without flag")
+                || error.contains("lacks side/division identity")
+        }));
+
+        let mut missing_side =
+            participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Defender, 2002, 1, 2);
+        missing_side.flags &= !FLAG_SIDE_PRESENT;
+        let payload =
+            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[missing_side], &[], &[]);
+        assert!(gate_d55_payload(&payload).errors.iter().any(|error| {
+            error.contains("side without flag") || error.contains("lacks side/division identity")
+        }));
+
+        let wrong_join_direction =
+            participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Attacker, 1002, 2, 1);
+        let payload = encode_detail_events_payload_v3(
+            1,
+            STATUS_DELTA_DATA,
+            &[wrong_join_direction],
+            &[],
+            &[],
+        );
+        assert!(gate_d55_payload(&payload)
+            .errors
+            .iter()
+            .any(|error| error.contains("participant-joined") && error.contains("non-increasing")));
+
+        let wrong_leave_direction = participant_event(
+            EVENT_PARTICIPANT_LEFT_UNCLASSIFIED,
+            CombatSide::Defender,
+            2002,
+            1,
+            2,
+        );
+        let payload = encode_detail_events_payload_v3(
+            1,
+            STATUS_DELTA_DATA,
+            &[wrong_leave_direction],
+            &[],
+            &[],
+        );
+        assert!(gate_d55_payload(&payload)
+            .errors
+            .iter()
+            .any(|error| error.contains("participant-left") && error.contains("non-decreasing")));
+    }
+
     struct TestMemory {
         snapshots: Vec<LandCombatSnapshot>,
     }
@@ -1555,11 +3182,11 @@ mod tests {
         let start = [snapshot(42, 7, 1000, &[1001, 1002], &[2001])];
         let update = [snapshot(42, 7, 1000, &[1001], &[2001, 2002])];
         let frame1 = build_transition_capture_frame(&[], &start, 1, 60_787_539, 1).unwrap();
-        let frame2 = build_transition_capture_frame(&start, &update, 2, 60_787_540, 2).unwrap();
-        let frame3 = build_transition_capture_frame(&update, &[], 3, 60_787_541, 3).unwrap();
-        let mut stream = frame1.compact_stream;
-        stream.extend_from_slice(&frame2.compact_stream);
-        stream.extend_from_slice(&frame3.compact_stream);
+        let frame2 = build_transition_capture_frame(&start, &update, 4, 60_787_540, 2).unwrap();
+        let frame3 = build_transition_capture_frame(&update, &[], 7, 60_787_541, 3).unwrap();
+        let mut stream = certify_lane_data_record(frame1.compact_stream);
+        stream.extend_from_slice(&certify_lane_data_record(frame2.compact_stream));
+        stream.extend_from_slice(&certify_lane_data_record(frame3.compact_stream));
         let gate = gate_stream(&stream);
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.phase_started_rows, 1);
@@ -1695,7 +3322,7 @@ mod tests {
         assert_eq!(defender.detail, def);
 
         // Gate still accepts the v2 stream and counts side-detail rows.
-        let gate = gate_stream(&frame.compact_stream);
+        let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.side_detail_rows, 2);
     }
@@ -1727,7 +3354,7 @@ mod tests {
         assert_eq!(read_u32(payload, 28), 2);
         let decoded = decode_detail_events_payload(COMPACT_RECORD_HEADER_LEN, payload).unwrap();
         assert_eq!(decoded.attribution_rows, frame.attribution_rows);
-        let gate = gate_stream(&frame.compact_stream);
+        let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.attribution_rows, 2);
     }
@@ -1810,7 +3437,7 @@ mod tests {
         assert!(decoded.side_detail_rows[0].detail.counts_incomplete);
         assert_eq!(decoded.side_detail_rows[0].detail.units, 3);
         // The flag round-trips in the wire flags.
-        let gate = gate_stream(&frame.compact_stream);
+        let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
         assert!(gate.ok, "{:?}", gate.errors);
     }
 

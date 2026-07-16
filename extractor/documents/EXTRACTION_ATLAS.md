@@ -1,7 +1,8 @@
 # Extraction Atlas
 
 **PURPOSE:** exhaustive, evidence-backed census of the game save paths, per-country schema,
-runtime-memory/UI-only state, derived values, and datum-level gaps relevant to replay extraction.
+authoritative runtime state, a historical inventory of excluded host-local presentation state,
+derived values, and datum-level gaps relevant to replay extraction.
 It records *what data exists and what evidence was found*; it is not a completion ledger or an
 execution plan. Current completion/residual status lives only in
 [`MASTER_EXTRACTION_CONTRACT.md`](MASTER_EXTRACTION_CONTRACT.md), and code-authoritative domain
@@ -14,6 +15,13 @@ strings. No live-memory write or code wiring is part of this document. The gener
 `Atlas routing`/feasibility labels are a **2026-07-05 discovery snapshot, superseded as status on
 2026-07-14**; retain them as triage provenance only and use the two authoritative sources above
 for current status.
+
+**Normative production scope:** every save-serialized datum and authoritative host-side simulation
+fact/event is in scope for semantic coverage. Host-local presentation state is not: camera,
+viewport, selections, hover targets, open screens/dialogs, map-mode/layer toggles, outliner state,
+tooltips, drag state, and other local UI preferences must not enter production replay data. The
+replay interface owns those choices and reconstructs its UI from captured facts. The historical UI
+rows in §5 are retained to make the exclusion explicit, not as an RE or fixture backlog.
 
 Generation-time support-file manifest (historical): the
 `extractor/native/runs/extraction_atlas_seed/` bundle is not present in this worktree and no
@@ -59,6 +67,15 @@ gap classification. Durable corrections/evidence retained from the audit:
   off the game-state/session roots, not `NEEDS-DISASM` reverse-engineering targets;
   most are low replay value (determinism/audit metadata) and simply un-wired, not
   hard gaps.
+- **Current correction for `game_unique_seed/id`:** W15 hash-bound static RE proves signed
+  `i32[CGameState+0x720]` and the MSVC string object at `CGameState+0x728`, and the CID1 codec plus
+  recorder-main explicit-mode validator are offline-green. The generated §3 rows do not prove d57
+  capture or live identity: the collector reader/barrier and complete live matrix remain open.
+- **Current correction for `tech_sharing_group`:** D69 TSG2 v2 pairs each validated country member
+  with its same-index signed fixed-5 bonus, carries four authority masks, and fails the whole frame
+  on invalid members. `technology_sharing_static` is the seventh required bundle role. Runtime
+  intern-table ordinals are sequential and deliberately never hash-guessed or joined to static ids;
+  only current-session S9/F6 live acceptance remains open.
 
 Current classification of any named residual must be checked in the master contract.
 
@@ -69,7 +86,7 @@ Current classification of any named residual must be checked in the master contr
 | save top-level structures | 96 seed count; 81 unique key names; 134 top-level assignments | Orchestrator seed reports 96 line-span structures; parser emits unique names in `top_level_save_census.csv` and every assignment in `top_level_save_occurrences.csv` |
 | GER per-country depth-1 entries | 249 direct entries; 77 unique schema keys | Matches orchestrator seed 249; grouped schema in `ger_country_depth1_census.csv`, occurrence list in `ger_country_depth1_entries.csv` |
 | canonical save schema paths | 82154 | `save_path_catalog.csv`; dynamic country/state/province/script tokens canonicalized |
-| memory/UI/ephemeral rows | 32 | RTTI/class-backed and replay-UI expected runtime-only state |
+| runtime/UI/ephemeral rows | 32 | mixed census: authoritative session/runtime facts remain in scope; host-local presentation rows are explicitly out of scope |
 | derived/recompute rows | 11 | DERIVED_RECOMPUTE_SPECS plus documented non-pollable UI derivations |
 | RTTI/runtime class candidates surfaced | 450 | `rtti_runtime_class_candidates.csv` |
 | doc signal lines indexed | 1701 | `doc_signal_lines.csv/json` |
@@ -1582,9 +1599,13 @@ The table is generated from `countries/GER` as the representative country block.
 
 Dynamic script key dumps: exact country/global/state `flags` and `variables` token names are in `dynamic_script_keys.json`. They are intentionally not expanded inline because they are content-script instances, not stable engine schema.
 
-## 5. Memory-only / UI / menu / ephemeral census
+## 5. Authoritative runtime state and excluded host-local presentation census
 
-These rows are not guaranteed to persist in the save. They are useful for a faithful replay viewer when the viewer wants to reproduce live-game presentation, camera, or session interaction state. RTTI/class candidates are in `rtti_runtime_class_candidates.csv`; accepted memory chains are named where already documented.
+These rows are not guaranteed to persist in the save. Authoritative session/runtime facts remain in
+scope when they affect or explain the shared multiplayer world. Host-local presentation state is
+explicitly out of production scope even if a memory chain could be found; the replay viewer owns its
+own camera, selections, hover, panels, and display state. RTTI/class candidates are retained as
+historical census evidence only and are not authorization to reverse-engineer excluded UI state.
 | Name / path | Category | Atlas routing (2026-07-05 snapshot) | Replay usefulness | Feasibility if gap | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | CGameState/current session root | meta/session/multiplayer | VALIDATED-SLICE (domain 57) | timeline/player control/pause parity | CGameState=u64[module+0x3316E90]; player map/pause chains known; speed open | CGameState class; DOMAIN_REGISTRY row 57 |
@@ -1594,31 +1615,31 @@ These rows are not guaranteed to persist in the save. They are useful for a fait
 | human player country map | meta/session/multiplayer | VALIDATED-SLICE (domain 57) | MP ownership and player labels | CGameState +0x394/+0x388/+0x310/+0x358 chain | DOMAIN_REGISTRY row 57 |
 | hotjoin/tag-switch event stream | meta/session/multiplayer | FIXTURE-BLOCKED | player timeline correctness | needs 2-player MP fixture | SESSION_EVENT_DISPOSITION |
 | chat/system messages | meta/session/multiplayer | FIXTURE-BLOCKED | chat log replay | needs 2-player MP fixture with unique text | SESSION_EVENT_DISPOSITION |
-| selected country | UI/menu/ephemeral | GAP-UNINVESTIGATED | reopen exact country screen context | suspected CGameState/UI selection roots; no accepted chain | RTTI CGameState/UI candidates |
-| selected province/state | UI/menu/ephemeral | GAP-UNINVESTIGATED | faithful map click state and side panel | needs UI selection root or mouse hover chain | RTTI province/map/UI candidates |
-| selected division/army/group | UI/menu/ephemeral | GAP-UNINVESTIGATED | restores exact selected units/order view | needs selection manager root | RTTI division/order/UI candidates |
-| selected fleet/task force/ship | UI/menu/ephemeral | GAP-UNINVESTIGATED | restores naval panel context | needs selection manager root | RTTI fleet/ship/UI candidates |
-| selected air wing/air base/air region | UI/menu/ephemeral | GAP-UNINVESTIGATED | restores air map panel context | needs strategic-air UI selection root | RTTI strategic-air/UI candidates |
-| open menu/screen/dialog | UI/menu/ephemeral | GAP-UNINVESTIGATED | viewer can resume same pane/dialog | needs GUI/application screen stack root | RTTI GUI/Menu/Interface candidates |
-| active map mode | UI/menu/ephemeral | GAP-UNINVESTIGATED | faithful political/supply/air/naval/intel overlay | needs map-mode controller root | RTTI map/UI candidates |
-| map filter/layer toggles | UI/menu/ephemeral | GAP-UNINVESTIGATED | replays exact overlay/toggle state | needs UI/map controller root | RTTI map/UI candidates |
-| camera position/zoom/rotation | UI/menu/ephemeral | GAP-UNINVESTIGATED | faithful viewport playback and screenshots | needs camera object root | RTTI camera/map candidates |
-| hovered province/object | UI/menu/ephemeral | GAP-UNINVESTIGATED | tooltip and highlight parity | needs hover/mouse target root | RTTI tooltip/interface candidates |
-| tooltip contents | UI/menu/ephemeral | GAP-UNINVESTIGATED | exact visible tooltip replay/debugging | needs tooltip formatter/output buffer; many values derived from captured facts | RTTI tooltip/interface candidates |
-| alert/notification list | UI/menu/ephemeral | DERIVED-RECOMPUTE | UI alert parity without fragile dispatch polling | polling rejected; derive alert equivalents from facts | MASTER alerts row / SESSION_EVENT_DISPOSITION |
-| outliner expansion/scroll/filters | UI/menu/ephemeral | GAP-UNINVESTIGATED | faithful side outliner and selected cards | needs outliner UI root | RTTI outliner/interface candidates |
-| message log/popups | UI/menu/ephemeral | DERIVED-RECOMPUTE / FIXTURE-BLOCKED | event/message viewer parity | SP alert polling rejected; MP chat needs fixture | SESSION_EVENT_DISPOSITION |
-| current game rule/settings UI | UI/menu/ephemeral | VALIDATED-SLICE / SAVE-PERSISTED | settings display and provenance | gameplaysettings save block exists; open UI widget state not extracted | melt gameplaysettings |
-| decision preview/target picker | UI/menu/ephemeral | FIXTURE-BLOCKED | previewing available decisions as player saw them | decision target/body/cooldown hooks open | domain 45 gaps |
-| focus preview/current focus paused UI | UI/menu/ephemeral | FIXTURE-BLOCKED | focus panel parity | needs paused-focus fixture | domain 45 / WALL |
-| research screen selected slot/preview | UI/menu/ephemeral | GAP-UNINVESTIGATED | screen-state restoration | research data extracted but UI selection not rooted | RTTI research/UI candidates |
-| production drag queue and selected line | UI/menu/ephemeral | GAP-UNINVESTIGATED | exact production-screen replay | production lines extracted; transient drag/selection not rooted | RTTI production/UI candidates |
-| construction drag queue and selected target | UI/menu/ephemeral | FIXTURE-BLOCKED | construction-screen parity | construction exact target/repair semantics still open | domain 48 gaps |
-| diplomacy selected country/action popup | UI/menu/ephemeral | FIXTURE-BLOCKED | diplomacy-screen parity | incoming/outgoing action queues and popup state open | domain 53 gaps |
-| intel agency selected operation/network view | UI/menu/ephemeral | FIXTURE-BLOCKED | intel UI parity | operation/spy-network percent graph open | domain 53 gaps |
-| air combat live widget | UI/menu/ephemeral | FIXTURE-BLOCKED | air battle UI parity | full air combat lifecycle needs live air-war fixture | domain 42 gaps |
-| naval combat live widget | UI/menu/ephemeral | VALIDATED-SLICE (domains 49/50) | naval battle UI parity | battle lifecycle/member slices validated; teardown/member-change fixtures remain | domains 49/50 |
-| land combat live widget | UI/menu/ephemeral | VALIDATED-SLICE (domains 21/55) | land battle UI parity | combat snapshot/detail scalars extracted; some fields derived | domains 21/55 + DERIVED A7 |
+| selected country | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer owns its selected country | DO NOT EXTRACT | historical RTTI census only |
+| selected province/state | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer owns map selection and side-panel context | DO NOT EXTRACT | historical RTTI census only |
+| selected division/army/group | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer owns selected land units | DO NOT EXTRACT | historical RTTI census only |
+| selected fleet/task force/ship | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer owns selected naval units | DO NOT EXTRACT | historical RTTI census only |
+| selected air wing/air base/air region | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer owns selected air objects | DO NOT EXTRACT | historical RTTI census only |
+| open menu/screen/dialog | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer opens its own panels and dialogs | DO NOT EXTRACT | historical RTTI census only |
+| active map mode | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer chooses its own map mode | DO NOT EXTRACT | historical RTTI census only |
+| map filter/layer toggles | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer chooses its own filters and layers | DO NOT EXTRACT | historical RTTI census only |
+| camera position/zoom/rotation | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer owns its viewport | DO NOT EXTRACT | historical RTTI census only |
+| hovered province/object | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer hover is local to the replay client | DO NOT EXTRACT | historical RTTI census only |
+| tooltip contents | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | replay tooltips are generated from captured facts and viewer hover | DO NOT EXTRACT HOST TOOLTIP BUFFERS | historical RTTI census only |
+| alert/notification list | UI/menu/ephemeral | OUT-OF-SCOPE AS HOST UI; REPLAY-DERIVED | replay may derive its own alerts from authoritative facts | DO NOT EXTRACT HOST ALERT STATE | MASTER C6 / SESSION_EVENT_DISPOSITION |
+| outliner expansion/scroll/filters | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | viewer owns outliner presentation | DO NOT EXTRACT | historical RTTI census only |
+| message log/popups | UI/menu/ephemeral | OUT-OF-SCOPE AS HOST UI; SHARED EVENTS IN-SCOPE | captured MP chat/system events may be rendered by the replay; local popup/log state is excluded | DO NOT EXTRACT HOST POPUP STATE | SESSION_EVENT_DISPOSITION |
+| current game rule/settings UI | UI/menu/ephemeral | OUT-OF-SCOPE UI; UNDERLYING SAVE DATA IN-SCOPE | replay renders captured `gameplaysettings`; open widget state is excluded | DO NOT EXTRACT WIDGET STATE | melt gameplaysettings |
+| decision preview/target picker | UI/menu/ephemeral | OUT-OF-SCOPE UI; UNDERLYING WORLD DATA IN-SCOPE | decisions, targets, availability, and cooldowns remain authoritative; local preview/picker state is excluded | DO NOT EXTRACT WIDGET STATE | domain 45 gaps |
+| focus preview/current focus paused UI | UI/menu/ephemeral | OUT-OF-SCOPE UI; UNDERLYING WORLD DATA IN-SCOPE | focus identity/progress/pause remain authoritative; local panel state is excluded | DO NOT EXTRACT WIDGET STATE | domain 45 / WALL |
+| research screen selected slot/preview | UI/menu/ephemeral | OUT-OF-SCOPE — HOST-LOCAL PRESENTATION | research facts remain in scope; selected slot/preview is viewer-owned | DO NOT EXTRACT | historical RTTI census only |
+| production drag queue and selected line | UI/menu/ephemeral | OUT-OF-SCOPE UI; COMMITTED QUEUE IN-SCOPE | authoritative production order remains in scope; transient drag/selection state is excluded | DO NOT EXTRACT DRAG STATE | production domains |
+| construction drag queue and selected target | UI/menu/ephemeral | OUT-OF-SCOPE UI; COMMITTED QUEUE IN-SCOPE | authoritative construction target/order remains in scope; transient drag/selection state is excluded | DO NOT EXTRACT DRAG STATE | domain 48 gaps |
+| diplomacy selected country/action popup | UI/menu/ephemeral | OUT-OF-SCOPE UI; SHARED ACTIONS IN-SCOPE | authoritative diplomatic actions/queues remain in scope; local selection/popup state is excluded | DO NOT EXTRACT WIDGET STATE | domain 53 gaps |
+| intel agency selected operation/network view | UI/menu/ephemeral | OUT-OF-SCOPE UI; UNDERLYING WORLD DATA IN-SCOPE | operations and network facts remain in scope; selected view is excluded | DO NOT EXTRACT WIDGET STATE | domain 53 gaps |
+| air combat live widget | UI/menu/ephemeral | OUT-OF-SCOPE UI; COMBAT STATE IN-SCOPE | air-combat lifecycle and attribution remain in scope; widget state is excluded | DO NOT EXTRACT WIDGET STATE | domain 42 gaps |
+| naval combat live widget | UI/menu/ephemeral | OUT-OF-SCOPE UI; COMBAT STATE IN-SCOPE | naval lifecycle/member facts remain in scope; widget state is excluded | DO NOT EXTRACT WIDGET STATE | domains 49/50 |
+| land combat live widget | UI/menu/ephemeral | OUT-OF-SCOPE UI; COMBAT STATE IN-SCOPE | land-combat facts remain in scope; widget state is excluded | DO NOT EXTRACT WIDGET STATE | domains 21/55 + derived facts |
 
 ### 5.1 Runtime class candidates
 
@@ -1790,20 +1811,25 @@ whether an item is open, blocked, derived, cracked-but-not-wired, or complete.
 | subject level/autonomy-change semantics | A16 | subject autonomy-change fixture | master A16; domain 53 |
 | garrison law/template/manpower/equipment/suppression extras | B3; cracked-items ledger | deeper equipment-bank walk for id/type/amount | master B3; cracked ledger |
 | delayed-event due semantics | A19; cracked-items ledger | unpaused decrement + originator-vs-scope fixture | master A19; domain 64 |
-| scripted GUI open/state | A13 | controlled scripted-GUI fixture or proof-backed non-replay rejection | master A13; domain 51 |
+| scripted GUI open/widget state | A13 closed — out of scope | host-local widget state is excluded; authoritative scripted flags/events/hooks remain d51/d64/X10 work | master A13/X10; domains 51/64 |
 | decision numeric state/province targets, cooldowns, body fields, direct hooks | A12 | decision target/cooldown fixture | master A12; domain 45 |
 | advisor roster, appointed advisor, portrait, unit-leader trait-token rows | per-domain table d47 | current-build `CAdvisor`/`CUnitLeaderTrait` revalidation and combined speed-5 proof | master per-domain table; domain 47 |
 | construction token/name, created date, exact target location, repair semantics/speed | A14; B8; cracked-items ledger | damaged-building repair fixture; game-file id→token join | master A14/B8; domain 48 |
-| market stockpile owner chain and full trade economy | B1; C4 | crack the global market singleton/per-country keying; derive sibling pools | master B1/C4; domain 43 |
+| market stockpile owner chain and full trade economy | B1; C4 | `CCountry+0xFB8` is the per-country save root and `(*status)+0x38` the nested stockpile object; recover only that inner iterator, then derive sibling pools separately | master B1/C4; W14 root dossier; domain 43 |
+| owned convoy total | B2 | `CCountry+0x1200` embedded convoy-object root is static-closed; recover its inner equipment iterator and admitted-static convoy classifier before exact live acceptance | master B2; W14 root dossier |
+| `sunk_convoys_history` runtime capture | B4 | root/iterator and `0x18` row layout are static-closed; exact 441-row paused acceptance and production integration remain | master B4; W14 root dossier |
+| naval-combat side `anti_air` | B6 | serializer proves the direct 64-bit side member at `+0x150`; side-root/raw decode, eight-side paused acceptance, and integration remain | master B6; W14 root dossier; domains 49–50/56 |
+| raids manager/per-raid rows | B7 | `CGameState+0x3F0` plus parent/child iterators are static-closed; exact 158-row acceptance, dummy classification, and integration remain | master B7; W14 root dossier |
 | market sibling resource pools produced/imported/used/to_export/base_export | C4 | derive from states and trade routes | master C4 |
 | country factory/resource/consumer-goods UI counters | C5; per-domain table d58 | derive from state buildings/offmap + trade/resource inputs | master C5; domain registry |
 | live template-id joins and full templates/equipment catalog live linkage | cracked-items ledger; per-domain table d59 | wire the cracked join and obtain combined speed-5 proof | cracked ledger; domain registry |
 | weather enum/particle/internal causal parity | A20; C2 | unpaused region-flag drift fixture; derive realized province values | master A20/C2; domain 24 |
 | air combat lifecycle full rows | A4; A21 | controlled live air-combat lifecycle and attribution fixture | master A4/A21; domain 42 |
 | per-entity combat killer label | A21 | one controlled combat for the finest available killer label | master A21 |
+| technology-sharing members/bonuses/static identity | X7 closed offline; S9/F6 live | current-session seven-role bundle and live D69 acceptance only; never join runtime intern ordinals by hash | master X7/S9/F6; W13 dossier; domain 69 |
 | division full multi-order membership | historical candidate; not independently listed in the 2026-07-14 master | new order-body route; primary-order pointer stores only one order | archived wave-3 evidence indexed by `doc_signal_lines` |
 | projects reward and owner-join plumbing | cracked-items ledger; coverage map d41 | wire cracked owner/reward joins; retain lifecycle fixture need | cracked ledger; domain 41 |
-| alerts/notifications/outliner/message UI polling | C6 | derive alert-equivalents from replay facts | master C6 |
+| alerts/notifications/outliner/message UI polling | X13 closed / C6 replay derivation | host-local UI state is out of scope; replay may derive alert/message presentation from captured authoritative facts | master X13/C6 |
 
 ## 8. Gap-backlog authority
 

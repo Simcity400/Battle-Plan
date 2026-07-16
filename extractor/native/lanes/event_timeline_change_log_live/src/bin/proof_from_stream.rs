@@ -4,12 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use event_timeline_change_log_live::{
-    encode_event_compact_stream, gate_event_compact_stream, gate_event_families,
-    gate_missing_source_adapters, missing_source_adapter_contracts, source_domain_name,
-    summarize_compact_source_stream, CompactSourceSummary, Confidence, EventKind, EventRecord,
-    SourceDomainUnitSnapshot, SourceKind, EVENT_FLAG_DERIVED, EVENT_FLAG_DIRECT_CAPTURE,
-    EVENT_FLAG_PROOF_FIXTURE, SOURCE_DOMAIN_DECISIONS, SOURCE_DOMAIN_DIPLOMACY,
-    SOURCE_DOMAIN_FOCUS, SOURCE_DOMAIN_LAND_COMBATS, SOURCE_DOMAIN_MAP_CONTROL, SOURCE_DOMAIN_TECH,
+    gate_event_compact_stream, gate_event_families, gate_missing_source_adapters,
+    missing_source_adapter_contracts, source_domain_name, CompactSourceSummary, EventKind,
+    SourceDomainUnitSnapshot,
 };
 use serde_json::{json, Value};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
@@ -19,38 +16,63 @@ fn main() -> Result<(), String> {
     let stream_path = args.next().ok_or_else(usage)?;
     let manifest_path = args.next().ok_or_else(usage)?;
     let out_dir = args.next().ok_or_else(usage)?;
-    if args.next().is_some() {
-        return Err(usage());
+    let mut commanded_game_hour_advancements = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--game-hours" => {
+                let raw = args.next().ok_or_else(usage)?;
+                let parsed = raw
+                    .parse::<i64>()
+                    .map_err(|_| format!("--game-hours needs an integer, got {raw:?}"))?;
+                if parsed <= 0 {
+                    return Err(format!(
+                        "--game-hours must be explicitly positive, got {parsed}"
+                    ));
+                }
+                if commanded_game_hour_advancements.replace(parsed).is_some() {
+                    return Err("--game-hours may be supplied only once".to_string());
+                }
+            }
+            _ => return Err(usage()),
+        }
     }
+    let commanded_game_hour_advancements = commanded_game_hour_advancements.ok_or_else(|| {
+        "--game-hours is required explicitly; mutable manifest fallback is forbidden".to_string()
+    })?;
 
     fs::create_dir_all(&out_dir).map_err(|err| format!("failed to create {out_dir}: {err}"))?;
     let stream = fs::read(&stream_path)
         .map_err(|err| format!("failed to read compact stream {stream_path}: {err}"))?;
-    let manifest_text = fs::read_to_string(&manifest_path)
+    let manifest_bytes = fs::read(&manifest_path)
         .map_err(|err| format!("failed to read manifest {manifest_path}: {err}"))?;
-    let manifest: Value = serde_json::from_str(&manifest_text)
+    let manifest: Value = snapshot::parse_json_strict(&manifest_bytes)
         .map_err(|err| format!("failed to parse manifest {manifest_path}: {err}"))?;
 
-    let source_summary = summarize_compact_source_stream(&stream);
-    let families = gate_event_families(&source_summary);
-    let source_domain_units = source_domain_units_from_manifest(&manifest, &source_summary);
-    let missing_source_adapter_contracts = missing_source_adapter_contracts();
-    let missing_source_adapter_gates = gate_missing_source_adapters(&source_domain_units);
-    let first_hour = source_summary.first_hour.unwrap_or(0);
-    let last_hour = source_summary.last_hour.unwrap_or(first_hour);
-    let source_sequence = source_summary.record_count.max(1);
-    let event_rows = proof_event_rows(first_hour, last_hour, source_sequence);
-    let event_stream = encode_event_compact_stream(last_hour, &event_rows);
-    let event_gate = gate_event_compact_stream(&event_stream);
+    let event_gate = gate_event_compact_stream(&stream, commanded_game_hour_advancements);
     if !event_gate.ok {
         return Err(format!(
-            "event contract gate failed before writing proof: {:?}",
+            "supplied compact event stream failed production gate: framing={:?}; ordering={:?}; event={:?}",
+            event_gate.source_summary.parse_errors,
+            event_gate.source_summary.ordering_errors,
             event_gate.payload_errors
         ));
     }
+    let source_summary = &event_gate.source_summary;
+    let manifest_errors =
+        validate_manifest_health(&manifest, source_summary, commanded_game_hour_advancements);
+    if !manifest_errors.is_empty() {
+        return Err(format!(
+            "source manifest failed production-health gate: {}",
+            manifest_errors.join("; ")
+        ));
+    }
+    let families = gate_event_families(source_summary);
+    let source_domain_units = source_domain_units_from_manifest(&manifest, source_summary);
+    let missing_source_adapter_contracts = missing_source_adapter_contracts();
+    let missing_source_adapter_gates = gate_missing_source_adapters(&source_domain_units);
 
     let compact_path = Path::new(&out_dir).join("event_timeline_change_log_live.compact.bin");
-    fs::write(&compact_path, &event_stream)
+    fs::write(&compact_path, &stream)
         .map_err(|err| format!("failed to write {}: {err}", compact_path.display()))?;
 
     let game_id = manifest
@@ -59,6 +81,11 @@ fn main() -> Result<(), String> {
         .and_then(Value::as_str)
         .unwrap_or("event_timeline_change_log_live_proof");
     let source_manifest_checks = json!({
+        "health_gate_passed": true,
+        "commanded_game_hour_advancements": commanded_game_hour_advancements,
+        "required_closed_frames": commanded_game_hour_advancements.saturating_add(1),
+        "game_hours_advanced": manifest.get("game_hours_advanced").and_then(Value::as_i64),
+        "unique_game_hour_count": manifest.get("unique_game_hour_count").and_then(Value::as_i64),
         "decodable": manifest_pointer_bool(&manifest, &["compact_stream", "decodable"]),
         "ordered": manifest_pointer_bool(&manifest, &["compact_stream", "ordered"]),
         "partial_data_seen": manifest_pointer_bool(&manifest, &["compact_stream", "partial_data_seen"]),
@@ -77,7 +104,8 @@ fn main() -> Result<(), String> {
         "event_compact_stream": path_slash_path(&compact_path),
         "event_domain_id": event_timeline_change_log_live::DOMAIN_ID,
         "production_capture_integrated": false,
-        "completion_basis": "lane-local event verification infrastructure and compact contract proof",
+        "supplied_stream_production_gate_passed": true,
+        "completion_basis": "the supplied source stream passed canonical event source/provenance/frame/status validation without proof fixtures",
         "source_stream_summary": {
             "total_bytes": source_summary.total_bytes,
             "record_count": source_summary.record_count,
@@ -153,7 +181,7 @@ fn main() -> Result<(), String> {
 
     let replay_path = Path::new(&out_dir).join("event_timeline_change_log_live.battleplan");
     let proof_path = Path::new(&out_dir).join("event_timeline_change_log_live_proof.json");
-    let container_result = pack_and_verify(game_id, &event_stream, &proof, &replay_path);
+    let container_result = pack_and_verify(game_id, &stream, &proof, &replay_path);
     proof["event_hoi4replay"] = json!({
         "path": path_slash_path(&replay_path),
         "packed": container_result.is_ok(),
@@ -176,119 +204,159 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn proof_event_rows(first_hour: i32, last_hour: i32, source_sequence: u64) -> Vec<EventRecord> {
-    let mut focus = EventRecord::new(
-        EventKind::FocusCompleted,
-        SOURCE_DOMAIN_FOCUS,
-        SourceKind::DerivedDelta,
-        Confidence::Exact,
-        last_hour,
-    )
-    .with_keys(
-        Some("TAG_HASH_PROOF"),
-        None,
-        Some("focus_id_hash_proof"),
-        None,
-        Some("completed"),
-    )
-    .with_source_position(source_sequence, 0)
-    .mark_proof_fixture();
-    focus.flags |= EVENT_FLAG_DERIVED | EVENT_FLAG_PROOF_FIXTURE;
+fn validate_manifest_health(
+    manifest: &Value,
+    source_summary: &CompactSourceSummary,
+    commanded_game_hour_advancements: i64,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let hourly = manifest.get("hourly_requirement").unwrap_or(&Value::Null);
+    require_bool(hourly, "required", true, "hourly_requirement", &mut errors);
+    require_bool(hourly, "met", true, "hourly_requirement", &mut errors);
+    require_i64(
+        hourly,
+        "requested_game_hours",
+        commanded_game_hour_advancements,
+        "hourly_requirement",
+        &mut errors,
+    );
+    match hourly.get("problems").and_then(Value::as_array) {
+        Some(problems) if problems.is_empty() => {}
+        other => errors.push(format!(
+            "hourly_requirement.problems is not an empty array: {other:?}"
+        )),
+    }
 
-    let mut tech = EventRecord::new(
-        EventKind::TechResearched,
-        SOURCE_DOMAIN_TECH,
-        SourceKind::DerivedDelta,
-        Confidence::Exact,
-        last_hour,
-    )
-    .with_keys(
-        Some("TAG_HASH_PROOF"),
-        None,
-        Some("tech_id_hash_proof"),
-        None,
-        Some("researched"),
-    )
-    .with_source_position(source_sequence, 1)
-    .mark_proof_fixture();
-    tech.flags |= EVENT_FLAG_DERIVED | EVENT_FLAG_PROOF_FIXTURE;
+    let observed_advanced = source_summary
+        .first_hour
+        .zip(source_summary.last_hour)
+        .map(|(first, last)| i64::from(last) - i64::from(first))
+        .unwrap_or(-1);
+    let observed_unique = i64::try_from(source_summary.unique_hours.len()).unwrap_or(i64::MAX);
+    require_i64(
+        manifest,
+        "game_hours_advanced",
+        observed_advanced,
+        "manifest",
+        &mut errors,
+    );
+    require_i64(
+        manifest,
+        "unique_game_hour_count",
+        observed_unique,
+        "manifest",
+        &mut errors,
+    );
+    require_i64(manifest, "skipped_game_hours", 0, "manifest", &mut errors);
+    if observed_advanced != commanded_game_hour_advancements {
+        errors.push(format!(
+            "game_hours_advanced {observed_advanced} does not equal explicit command {commanded_game_hour_advancements}"
+        ));
+    }
+    let expected_unique = observed_advanced.checked_add(1).unwrap_or(i64::MAX);
+    if observed_unique != expected_unique {
+        errors.push(format!(
+            "stream unique_game_hour_count {observed_unique} != game_hours_advanced + 1 ({expected_unique})"
+        ));
+    }
 
-    let mut decision = EventRecord::new(
-        EventKind::DecisionExpired,
-        SOURCE_DOMAIN_DECISIONS,
-        SourceKind::DerivedDelta,
-        Confidence::Exact,
-        last_hour,
-    )
-    .with_keys(
-        Some("TAG_HASH_PROOF"),
-        None,
-        Some("decision_id_hash_proof"),
-        Some("active"),
-        Some("expired"),
-    )
-    .with_source_position(source_sequence, 2)
-    .mark_proof_fixture();
-    decision.flags |= EVENT_FLAG_DERIVED | EVENT_FLAG_PROOF_FIXTURE;
+    let compact = manifest.get("compact_stream").unwrap_or(&Value::Null);
+    if compact.get("record_magic").and_then(Value::as_str) != Some("H4CR") {
+        errors.push("compact_stream.record_magic is not H4CR".to_string());
+    }
+    require_i64(
+        compact,
+        "record_header_len",
+        32,
+        "compact_stream",
+        &mut errors,
+    );
+    require_i64(compact, "record_version", 1, "compact_stream", &mut errors);
+    require_bool(compact, "decodable", true, "compact_stream", &mut errors);
+    require_bool(compact, "ordered", true, "compact_stream", &mut errors);
+    require_bool(
+        compact,
+        "worker_panic_seen",
+        false,
+        "compact_stream",
+        &mut errors,
+    );
+    require_bool(
+        compact,
+        "bridge_unavailable_seen",
+        false,
+        "compact_stream",
+        &mut errors,
+    );
+    require_bool(
+        compact,
+        "source_unavailable_seen",
+        false,
+        "compact_stream",
+        &mut errors,
+    );
+    require_bool(
+        compact,
+        "partial_data_seen",
+        false,
+        "compact_stream",
+        &mut errors,
+    );
+    require_i64(
+        compact,
+        "frame_end_record_count",
+        observed_unique,
+        "compact_stream",
+        &mut errors,
+    );
+    let coverage = compact.get("domain_coverage").unwrap_or(&Value::Null);
+    require_bool(
+        coverage,
+        "ok",
+        true,
+        "compact_stream.domain_coverage",
+        &mut errors,
+    );
+    match coverage.get("errors").and_then(Value::as_array) {
+        Some(coverage_errors) if coverage_errors.is_empty() => {}
+        other => errors.push(format!(
+            "compact_stream.domain_coverage.errors is not an empty array: {other:?}"
+        )),
+    }
+    if compact
+        .get("per_domain")
+        .and_then(Value::as_object)
+        .is_none()
+    {
+        errors.push("compact_stream.per_domain is missing or not an object".to_string());
+    }
+    if manifest
+        .get("replay_file")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        errors.push("replay_file is missing or empty".to_string());
+    }
+    errors
+}
 
-    let mut war = EventRecord::new(
-        EventKind::WarDeclared,
-        SOURCE_DOMAIN_DIPLOMACY,
-        SourceKind::DerivedDelta,
-        Confidence::Interval,
-        last_hour,
-    )
-    .with_keys(
-        Some("ATTACKER_HASH_PROOF"),
-        Some("DEFENDER_HASH_PROOF"),
-        Some("war_pair_hash_proof"),
-        None,
-        Some("at_war"),
-    )
-    .with_source_position(source_sequence, 3)
-    .mark_proof_fixture();
-    war.flags |= EVENT_FLAG_DERIVED | EVENT_FLAG_PROOF_FIXTURE;
-    war.interval_start_hour_raw = first_hour;
+fn require_bool(object: &Value, key: &str, expected: bool, prefix: &str, errors: &mut Vec<String>) {
+    if object.get(key).and_then(Value::as_bool) != Some(expected) {
+        errors.push(format!(
+            "{prefix}.{key} is {:?}, expected {expected}",
+            object.get(key)
+        ));
+    }
+}
 
-    let mut combat = EventRecord::new(
-        EventKind::CombatStarted,
-        SOURCE_DOMAIN_LAND_COMBATS,
-        SourceKind::DirectCaptured,
-        Confidence::Inferred,
-        last_hour,
-    )
-    .with_keys(
-        Some("ATTACKER_HASH_PROOF"),
-        Some("DEFENDER_HASH_PROOF"),
-        Some("combat_identity_hash_proof"),
-        None,
-        None,
-    )
-    .with_source_position(source_sequence, 4)
-    .with_generation(1)
-    .with_detail("direct land_combat source record provenance")
-    .mark_proof_fixture();
-    combat.flags |= EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_PROOF_FIXTURE;
-
-    let mut province = EventRecord::new(
-        EventKind::ProvinceControllerChange,
-        SOURCE_DOMAIN_MAP_CONTROL,
-        SourceKind::DerivedDelta,
-        Confidence::Exact,
-        last_hour,
-    )
-    .with_keys(
-        Some("NEW_CONTROLLER_HASH_PROOF"),
-        None,
-        Some("province_id_hash_proof"),
-        Some("old_controller"),
-        Some("new_controller"),
-    )
-    .with_source_position(source_sequence, 5)
-    .mark_proof_fixture();
-    province.flags |= EVENT_FLAG_DERIVED | EVENT_FLAG_PROOF_FIXTURE;
-
-    vec![focus, tech, decision, war, combat, province]
+fn require_i64(object: &Value, key: &str, expected: i64, prefix: &str, errors: &mut Vec<String>) {
+    if object.get(key).and_then(Value::as_i64) != Some(expected) {
+        errors.push(format!(
+            "{prefix}.{key} is {:?}, expected {expected}",
+            object.get(key)
+        ));
+    }
 }
 
 fn source_domain_units_from_manifest(
@@ -419,7 +487,7 @@ fn manifest_pointer_bool(manifest: &Value, path: &[&str]) -> Option<bool> {
 }
 
 fn usage() -> String {
-    "usage: event_timeline_change_log_proof <collector_stream.bin> <native_session_manifest.json> <out_dir>".to_string()
+    "usage: event_timeline_change_log_proof <collector_stream.bin> <native_session_manifest.json> <out_dir> --game-hours <positive advancements>".to_string()
 }
 
 fn path_slash(path: &str) -> String {
@@ -428,4 +496,103 @@ fn path_slash(path: &str) -> String {
 
 fn path_slash_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn source_summary(first: i32, last: i32) -> CompactSourceSummary {
+        CompactSourceSummary {
+            first_hour: Some(first),
+            last_hour: Some(last),
+            unique_hours: (first..=last).collect::<BTreeSet<_>>(),
+            frame_end_record_count: (i64::from(last) - i64::from(first) + 1) as u64,
+            ..CompactSourceSummary::default()
+        }
+    }
+
+    fn healthy_manifest(advanced: i64) -> Value {
+        json!({
+            "game_hours_advanced": advanced,
+            "unique_game_hour_count": advanced + 1,
+            "skipped_game_hours": 0,
+            "replay_file": "native_session.battleplan",
+            "hourly_requirement": {
+                "required": true,
+                "met": true,
+                "requested_game_hours": advanced,
+                "problems": []
+            },
+            "compact_stream": {
+                "record_magic": "H4CR",
+                "record_header_len": 32,
+                "record_version": 1,
+                "decodable": true,
+                "ordered": true,
+                "worker_panic_seen": false,
+                "bridge_unavailable_seen": false,
+                "source_unavailable_seen": false,
+                "partial_data_seen": false,
+                "frame_end_record_count": advanced + 1,
+                "domain_coverage": {
+                    "ok": true,
+                    "errors": []
+                },
+                "per_domain": {}
+            }
+        })
+    }
+
+    #[test]
+    fn healthy_manifest_matches_explicit_48_advancement_contract() {
+        let summary = source_summary(1_000, 1_048);
+        let errors = validate_manifest_health(&healthy_manifest(48), &summary, 48);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn unhealthy_manifest_flags_fail_closed() {
+        let summary = source_summary(1_000, 1_048);
+        let mut manifest = healthy_manifest(48);
+        manifest["compact_stream"]["decodable"] = json!(false);
+        manifest["compact_stream"]["partial_data_seen"] = json!(true);
+        manifest["hourly_requirement"]["problems"] = json!(["lost hour"]);
+        manifest["replay_file"] = json!("");
+
+        let errors = validate_manifest_health(&manifest, &summary, 48);
+        assert!(errors.iter().any(|error| error.contains("decodable")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("partial_data_seen")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("hourly_requirement.problems")));
+        assert!(errors.iter().any(|error| error.contains("replay_file")));
+    }
+
+    #[test]
+    fn manifest_cannot_override_short_stream_duration() {
+        let summary = source_summary(1_000, 1_047);
+        let forged_long_manifest = healthy_manifest(48);
+        let errors = validate_manifest_health(&forged_long_manifest, &summary, 48);
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("manifest.game_hours_advanced")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("does not equal explicit command 48")));
+    }
+
+    #[test]
+    fn manifest_must_bind_the_exact_commanded_duration() {
+        let summary = source_summary(1_000, 1_048);
+        let mut manifest = healthy_manifest(48);
+        manifest["hourly_requirement"]["requested_game_hours"] = json!(49);
+        let errors = validate_manifest_health(&manifest, &summary, 48);
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("hourly_requirement.requested_game_hours")));
+    }
 }

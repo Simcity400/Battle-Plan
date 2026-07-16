@@ -2034,6 +2034,7 @@ fn chunk3_frd_payload_versioned(include_target: bool, omitted_targets: u32) -> V
         put_u32_at(&mut out, offset, 1);
     }
     put_u32_at(&mut out, 52, omitted_targets);
+    put_u32_at(&mut out, 56, 0); // FRD2 v3 raw DATA status
     for value in [
         47,
         FRD_FOCUS_COMPLETED_COUNT_INCREASED,
@@ -2095,6 +2096,16 @@ fn chunk3_frd_payload_versioned(include_target: bool, omitted_targets: u32) -> V
         &mut out,
         "direct_event_hooks_unavailable_transitions_derived_from_compact_frames",
     );
+    out
+}
+
+fn chunk3_frd_payload_v2() -> Vec<u8> {
+    let v3 = chunk3_frd_payload_versioned(true, 0);
+    let mut out = Vec::with_capacity(v3.len() - 4);
+    out.extend_from_slice(&v3[..FRD_HEADER_LEN_V2]);
+    out[4..6].copy_from_slice(&FRD_SCHEMA_VERSION_V2.to_le_bytes());
+    out[6..8].copy_from_slice(&(FRD_HEADER_LEN_V2 as u16).to_le_bytes());
+    out.extend_from_slice(&v3[FRD_HEADER_LEN..]);
     out
 }
 
@@ -2530,6 +2541,32 @@ fn chunk3_folds_d45_depth_annotations_and_country_targets() {
         snapshot["provenance"]["collector"]["_r2_depth_badges"][0]["source_domain_id"],
         json!(45)
     );
+}
+
+#[test]
+fn chunk3_folds_d45_schema_v2_compatibility() {
+    let snapshot = snapshot_for_domain_records_with_flags(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),
+        (
+            45,
+            chunk3_frd_payload_v2(),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        ),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["decisions"]["_r2_depth_status"]["targeted_timed_count"],
+        json!(2)
+    );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_targets"][0]["target"],
+        json!("SPR")
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -3311,6 +3348,155 @@ fn unfolded_domain_data_is_listed_in_provenance() {
     assert!(!domains
         .iter()
         .any(|domain| domain == "country_economy_counters_live"));
+}
+
+fn d49_lifecycle_row(
+    location_id: Option<u32>,
+    region_id: Option<u32>,
+    deleted: bool,
+) -> naval_combat_live_lane::LifecycleRow {
+    naval_combat_live_lane::LifecycleRow {
+        combat_id: 240_580,
+        generation: 1,
+        body_ptr: 0,
+        deleted,
+        location_id,
+        region_id,
+        attacker_member_count: Some(1),
+        defender_member_count: Some(0),
+        attacker_positioning_milli: Some(812),
+        defender_positioning_milli: Some(765),
+    }
+}
+
+#[test]
+fn d49_shared_authorities_reject_or_repromote_incomplete_location_region() {
+    use naval_combat_live_lane as naval4950;
+
+    let complete_row = d49_lifecycle_row(Some(6434), Some(18), false);
+    let badged = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA | naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+        std::slice::from_ref(&complete_row),
+    );
+    let badged_error = crate::domain_data_authority::summarize_domain_data_payload(
+        49,
+        &badged,
+        crate::domain_data_authority::DomainDataContext::default(),
+    )
+    .unwrap_err();
+    assert!(badged_error
+        .errors
+        .iter()
+        .any(|error| error.contains("status bit 11 set")));
+    let badged_raw = badged_error.partial_authority.status_flags.unwrap();
+    assert_ne!(
+        badged_raw & naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+        0
+    );
+    assert_eq!(
+        compact_contract::compact_status_for_global_interpretation(49, badged_raw),
+        naval4950::STATUS_DELTA_DATA
+    );
+
+    for (location_id, region_id) in [(Some(6434), None), (None, Some(18)), (None, None)] {
+        let incomplete = naval4950::encode_lifecycle_payload(
+            5,
+            naval4950::STATUS_DELTA_DATA,
+            &[d49_lifecycle_row(location_id, region_id, false)],
+        );
+        let error = crate::domain_data_authority::summarize_domain_data_payload(
+            49,
+            &incomplete,
+            crate::domain_data_authority::DomainDataContext::default(),
+        )
+        .unwrap_err();
+        assert!(error
+            .errors
+            .iter()
+            .any(|message| message.contains("status bit 11 re-promoted")));
+        let raw = error.partial_authority.status_flags.unwrap();
+        assert_ne!(raw & naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED, 0);
+        assert_eq!(
+            compact_contract::compact_status_for_global_interpretation(49, raw),
+            naval4950::STATUS_DELTA_DATA
+        );
+        assert_eq!(error.partial_authority.emitted_rows, 1);
+    }
+
+    let tombstone = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[d49_lifecycle_row(None, None, true)],
+    );
+    let authority = crate::domain_data_authority::summarize_domain_data_payload(
+        49,
+        &tombstone,
+        crate::domain_data_authority::DomainDataContext::default(),
+    )
+    .unwrap();
+    assert_eq!(authority.status_flags, Some(naval4950::STATUS_DELTA_DATA));
+    assert_eq!(authority.emitted_rows, 1);
+
+    assert!(WorldFold::validate_domain_data_payload_exact(49, &badged, 0).is_err());
+    let missing_pair = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[d49_lifecycle_row(None, None, false)],
+    );
+    assert!(WorldFold::validate_domain_data_payload_exact(49, &missing_pair, 0).is_err());
+    assert!(WorldFold::validate_domain_data_payload_exact(49, &tombstone, 0).is_ok());
+}
+
+#[test]
+fn d49_incomplete_location_region_masks_current_hour_and_retains_accumulator() {
+    use naval_combat_live_lane as naval4950;
+
+    let valid = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[d49_lifecycle_row(Some(6434), Some(18), false)],
+    );
+    let badged = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA | naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+        &[d49_lifecycle_row(Some(7000), Some(19), false)],
+    );
+    let missing = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[d49_lifecycle_row(None, Some(20), false)],
+    );
+    let clean_empty = naval4950::encode_lifecycle_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let members_empty = naval4950::encode_member_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let snapshots = chunk1_snapshots(vec![
+        vec![(49, valid), (50, members_empty.clone())],
+        vec![(49, badged), (50, members_empty.clone())],
+        vec![(49, missing), (50, members_empty.clone())],
+        vec![(49, clean_empty), (50, members_empty)],
+    ]);
+
+    assert_eq!(
+        snapshots[0]["naval_combats"]["240580:1"]["location_province"],
+        json!(6434)
+    );
+    for snapshot in &snapshots[1..=2] {
+        assert_eq!(snapshot["naval_combats"], Value::Null);
+        assert!(snapshot["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(49)
+                && problem["problem"] == json!("location_region_promotion_incomplete")));
+    }
+    assert_eq!(
+        snapshots[3]["naval_combats"]["240580:1"]["location_province"],
+        json!(6434)
+    );
+    assert_eq!(
+        snapshots[3]["naval_combats"]["240580:1"]["region_id"],
+        json!(18)
+    );
 }
 
 #[test]
@@ -11660,27 +11846,39 @@ fn session_header_payload(
     p
 }
 
-/// W6 domain 69 tech_sharing_groups_live payload builder. Each group is
-/// (id_token, list of member tag_db_ids). Mirrors the collector's
-/// compact_tech_sharing_groups_data_payload byte layout exactly.
+/// W6 domain 69 TSG2 payload builder. The membership-only convenience path
+/// assigns zero dynamic adjustment to every member.
 fn tech_sharing_groups_payload(groups: &[(u32, &[u32])], status_flags: u32) -> Vec<u8> {
-    let mut p = Vec::new();
-    p.extend_from_slice(&0u64.to_le_bytes()); // wall
-    p.extend_from_slice(&(groups.len() as u32).to_le_bytes()); // group_count
-    p.extend_from_slice(&status_flags.to_le_bytes());
-    let mut cursor = 0u32;
-    for (id_token, members) in groups {
-        p.extend_from_slice(&id_token.to_le_bytes());
-        p.extend_from_slice(&(members.len() as u32).to_le_bytes());
-        p.extend_from_slice(&cursor.to_le_bytes());
-        cursor += members.len() as u32;
-    }
-    for (_, members) in groups {
-        for tag in *members {
-            p.extend_from_slice(&tag.to_le_bytes());
-        }
-    }
-    p
+    let groups: Vec<(u32, Vec<(u32, i64)>)> = groups
+        .iter()
+        .map(|(id_token, members)| (*id_token, members.iter().map(|tag| (*tag, 0i64)).collect()))
+        .collect();
+    tech_sharing_groups_bonus_payload(&groups, status_flags)
+}
+
+fn tech_sharing_groups_bonus_payload(
+    groups: &[(u32, Vec<(u32, i64)>)],
+    status_flags: u32,
+) -> Vec<u8> {
+    use compact_contract::tech_sharing_groups::{
+        encode_payload_with_bonuses, TechSharingGroupBonusRow, TechSharingMemberBonus,
+    };
+    let rows: Vec<TechSharingGroupBonusRow> = groups
+        .iter()
+        .map(|(id_token, members)| TechSharingGroupBonusRow {
+            id_token: *id_token,
+            members: members
+                .iter()
+                .map(
+                    |(member_tag_db_id, dynamic_bonus_raw_fixed5)| TechSharingMemberBonus {
+                        member_tag_db_id: *member_tag_db_id,
+                        dynamic_bonus_raw_fixed5: *dynamic_bonus_raw_fixed5,
+                    },
+                )
+                .collect(),
+        })
+        .collect();
+    encode_payload_with_bonuses(&rows, 0, status_flags).expect("valid D69 test payload")
 }
 
 #[test]
@@ -11995,7 +12193,7 @@ fn w6_d69_tech_sharing_groups_source_unavailable_retains_prior() {
         raw1,
         69,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
-        &tech_sharing_groups_payload(&[(0x0009, &[368, 1])], 0),
+        &tech_sharing_groups_bonus_payload(&[(0x0009, vec![(368, 10_000), (1, -5_000)])], 0),
     );
     seq += 1;
     push_record(
@@ -12044,26 +12242,144 @@ fn w6_d69_tech_sharing_groups_source_unavailable_retains_prior() {
     let tsg = &frame2["tech_sharing_group"];
     assert_eq!(tsg["count"], json!(1));
     assert_eq!(tsg["groups"][0]["member_tag_db_ids"], json!([1, 368]));
+    assert_eq!(
+        tsg["groups"][0]["member_bonuses"],
+        json!([
+            {
+                "member_tag_db_id": 1,
+                "country_tag": "GER",
+                "dynamic_bonus_raw_fixed5": -5_000,
+                "dynamic_bonus": -0.05,
+            },
+            {
+                "member_tag_db_id": 368,
+                "country_tag": "D04",
+                "dynamic_bonus_raw_fixed5": 10_000,
+                "dynamic_bonus": 0.1,
+            },
+        ])
+    );
+}
+
+#[test]
+fn w6_d69_clean_zero_group_frame_clears_prior_state() {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_bonus_payload(&[(9, vec![(1, -5_000)])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    let raw2 = raw_for(16_959_361);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_bonus_payload(&[], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d69_zero_clears");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(frame2["tech_sharing_group"]["count"], json!(0));
+    assert_eq!(frame2["tech_sharing_group"]["groups"], json!([]));
 }
 
 #[test]
 fn w6_d69_tech_sharing_groups_rejects_noncontiguous_window() {
-    // A crafted payload whose member_blob_offset is non-contiguous must fold
+    // A crafted TSG2 payload whose pair_blob_offset is non-contiguous must fold
     // closed (Err) and attach no tech_sharing_group section.
-    let mut p = Vec::new();
-    p.extend_from_slice(&0u64.to_le_bytes()); // wall
-    p.extend_from_slice(&1u32.to_le_bytes()); // group_count = 1
-    p.extend_from_slice(&0u32.to_le_bytes()); // status
-    p.extend_from_slice(&0x0009u32.to_le_bytes()); // id_token
-    p.extend_from_slice(&2u32.to_le_bytes()); // member_count = 2
-    p.extend_from_slice(&5u32.to_le_bytes()); // member_blob_offset = 5 (should be 0)
-    p.extend_from_slice(&1u32.to_le_bytes()); // member tag 1
-    p.extend_from_slice(&368u32.to_le_bytes()); // member tag 368
+    let mut p = tech_sharing_groups_bonus_payload(&[(0x0009, vec![(1, -5_000), (368, 10_000)])], 0);
+    p[32..36].copy_from_slice(&5u32.to_le_bytes());
     let snap = snapshot_for_domain_records(vec![(69, p)]);
     assert!(
         snap.get("tech_sharing_group").is_none(),
         "a non-contiguous tech_sharing_groups frame must not attach the section"
     );
+}
+
+#[test]
+fn w6_d69_tsg2_preserves_signed_member_bonus_pairing_and_empty_groups() {
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA"), (368, "D04")]);
+    let payload = tech_sharing_groups_bonus_payload(
+        &[
+            (9, vec![(368, 10_000), (1, -5_000), (68, 0)]),
+            (10, Vec::new()),
+        ],
+        0,
+    );
+    let snap = snapshot_for_domain_records(vec![(18, ident), (69, payload)]);
+    let groups = snap["tech_sharing_group"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0]["runtime_ordinal"], json!(9));
+    assert_eq!(groups[0]["member_tag_db_ids"], json!([1, 68, 368]));
+    assert_eq!(groups[0]["members"], json!(["GER", "USA", "D04"]));
+    assert_eq!(
+        groups[0]["member_bonuses"],
+        json!([
+            {
+                "member_tag_db_id": 1,
+                "country_tag": "GER",
+                "dynamic_bonus_raw_fixed5": -5_000,
+                "dynamic_bonus": -0.05,
+            },
+            {
+                "member_tag_db_id": 68,
+                "country_tag": "USA",
+                "dynamic_bonus_raw_fixed5": 0,
+                "dynamic_bonus": 0.0,
+            },
+            {
+                "member_tag_db_id": 368,
+                "country_tag": "D04",
+                "dynamic_bonus_raw_fixed5": 10_000,
+                "dynamic_bonus": 0.1,
+            },
+        ])
+    );
+    assert_eq!(groups[1]["member_tag_db_ids"], json!([]));
+    assert_eq!(groups[1]["member_bonuses"], json!([]));
+    assert_eq!(
+        snap["tech_sharing_group"]["dynamic_bonus_fixed5_scale"],
+        json!(100_000)
+    );
+}
+
+#[test]
+fn w6_d69_rejects_legacy_payload_even_when_zero_rows_is_ambiguous() {
+    let mut legacy = Vec::new();
+    legacy.extend_from_slice(&0u64.to_le_bytes());
+    legacy.extend_from_slice(&0u32.to_le_bytes());
+    legacy.extend_from_slice(&0u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(69, legacy)]);
+    assert!(snap.get("tech_sharing_group").is_none());
 }
 
 #[test]
@@ -12125,7 +12441,13 @@ fn w6_d69_tech_sharing_groups_partial_data_retains_prior() {
         raw1,
         69,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
-        &tech_sharing_groups_payload(&[(0x0007, &[68, 101]), (0x0009, &[368, 1])], 0),
+        &tech_sharing_groups_bonus_payload(
+            &[
+                (0x0007, vec![(68, 7_000), (101, -1_000)]),
+                (0x0009, vec![(368, 10_000), (1, -5_000)]),
+            ],
+            0,
+        ),
     );
     seq += 1;
     push_record(
@@ -12176,6 +12498,11 @@ fn w6_d69_tech_sharing_groups_partial_data_retains_prior() {
         tsg["count"],
         json!(2),
         "a PARTIAL_DATA frame must retain the prior 2-group set, not shrink to 1"
+    );
+    assert_eq!(
+        tsg["groups"][1]["member_bonuses"][0]["dynamic_bonus_raw_fixed5"],
+        json!(-5_000),
+        "a PARTIAL_DATA frame must retain the prior clean bonus pairing"
     );
 }
 

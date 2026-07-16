@@ -9,7 +9,8 @@
 use super::*;
 use compact_contract::calendar::DATE_EPOCH_CONST;
 use compact_contract::{
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
 };
 use recorder_host::world_fold::WorldFold;
@@ -30,6 +31,18 @@ fn push_record(
     ty: u16,
     payload: &[u8],
 ) {
+    push_record_with_flags(out, seq, game_hour_raw, domain, ty, 0, payload);
+}
+
+fn push_record_with_flags(
+    out: &mut Vec<u8>,
+    seq: u64,
+    game_hour_raw: i32,
+    domain: u16,
+    ty: u16,
+    flags: u32,
+    payload: &[u8],
+) {
     out.extend_from_slice(COMPACT_RECORD_MAGIC);
     out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
     out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
@@ -38,7 +51,7 @@ fn push_record(
     out.extend_from_slice(&domain.to_le_bytes());
     out.extend_from_slice(&ty.to_le_bytes());
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // flags
+    out.extend_from_slice(&flags.to_le_bytes());
     out.extend_from_slice(payload);
 }
 
@@ -57,6 +70,24 @@ fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
     }
     p
 }
+
+fn frame_end_payload() -> Vec<u8> {
+    vec![0u8; 32]
+}
+
+fn perf_payload_with_trailer(name: &str) -> Vec<u8> {
+    let mut payload = vec![0u8; 40];
+    payload.extend_from_slice(b"PDU1");
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&7u64.to_le_bytes());
+    payload.extend_from_slice(name.as_bytes());
+    payload
+}
+
+const DOMAIN_FRAME: u16 = 1000;
 
 const HOUR_A: i64 = 16_959_360;
 const HOUR_B: i64 = 16_959_361;
@@ -84,9 +115,9 @@ fn three_hour_stream() -> Vec<u8> {
             &mut s,
             seq,
             raw_for(h),
-            0,
+            DOMAIN_FRAME,
             COMPACT_RECORD_TYPE_FRAME_END,
-            &[],
+            &frame_end_payload(),
         );
         seq += 1;
     }
@@ -144,6 +175,10 @@ fn cursor_hours_match_reference_batch_fold() {
         stream.len() as u64,
         "fold_check",
     );
+    assert!(
+        cursor.stats().certification_verdict().is_err(),
+        "an unconsumed cursor cannot certify before EOF"
+    );
     assert_eq!(cursor.metadata().game_id, "fold_check");
 
     let mut got = Vec::new();
@@ -169,6 +204,10 @@ fn cursor_hours_match_reference_batch_fold() {
     assert_eq!(stats.data_records, 3);
     assert_eq!(stats.truncated_tail_bytes, 0);
     assert!(stats.stop_reason.is_none());
+    assert!(stats.ends_at_frame_end);
+    stats
+        .certification_verdict()
+        .expect("clean closed stream must certify");
     // domain 18 fed each hour.
     assert_eq!(stats.per_domain_data_records.get(&18), Some(&3));
     // per-hour counts land on the hours.
@@ -213,6 +252,369 @@ fn truncated_tail_yields_complete_hours_only() {
     let hours: Vec<_> = cursor.by_ref().map(|h| h.unwrap().hour_index).collect();
     assert_eq!(hours, vec![HOUR_A, HOUR_B]);
     assert!(cursor.stats().truncated_tail_bytes > 0);
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("prefix recovery must never certify a torn tail");
+    assert!(err.contains("truncated/corrupt tail"), "{err}");
+    assert!(err.contains("stream boundary is not closed"), "{err}");
+}
+
+#[test]
+fn malformed_domain_payload_degrades_for_diagnostics_but_cannot_certify() {
+    let mut stream = Vec::new();
+    let mut malformed = country_identity_payload(&[(47, "GER")]);
+    malformed.push(0xAA); // exact decoder must reject unconsumed residue
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &malformed,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut cursor = open_reader(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+    );
+    let hours = cursor
+        .by_ref()
+        .collect::<Result<Vec<WorldHour>, DecodeError>>()
+        .expect("malformed domain payload degrades without aborting diagnostics");
+    assert_eq!(hours.len(), 1);
+    assert_eq!(cursor.stats().malformed_payload_records, 1);
+    assert!(cursor.stats().ends_at_frame_end);
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("malformed payload must fail certification");
+    assert!(err.contains("failed exact validation"), "{err}");
+}
+
+#[test]
+fn open_hour_at_eof_is_not_truncation_but_cannot_certify() {
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    let mut cursor = open_reader(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+    );
+    assert!(cursor.next_hour().is_none());
+    assert_eq!(cursor.stats().truncated_tail_bytes, 0);
+    assert!(cursor.stats().stop_reason.is_none());
+    assert!(!cursor.stats().ends_at_frame_end);
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("open hour at EOF must fail certification");
+    assert!(err.contains("left open at EOF"), "{err}");
+}
+
+#[test]
+fn sequence_gap_with_closed_hour_cannot_certify() {
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut cursor = open_reader(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+    );
+    assert_eq!(cursor.by_ref().count(), 1);
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("sequence discontinuity must fail certification");
+    assert!(err.contains("sequence discontinuity"), "{err}");
+}
+
+#[test]
+fn reserved_or_misplaced_record_flags_are_rejected_before_data_decode() {
+    let mut stream = Vec::new();
+    push_record_with_flags(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut cursor = open_reader(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+    );
+    cursor.by_ref().for_each(|result| {
+        result.expect("record-envelope failure remains diagnostic-readable");
+    });
+    assert_eq!(
+        cursor.stats().malformed_payload_records,
+        0,
+        "envelope rejection is distinct from exact payload-decoder rejection"
+    );
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("misplaced PERF flag on DATA must fail certification");
+    assert!(err.contains("rejected bits"), "{err}");
+}
+
+#[test]
+fn perf_payload_and_announced_trailer_are_exact() {
+    let mut valid = Vec::new();
+    push_record(
+        &mut valid,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record_with_flags(
+        &mut valid,
+        2,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+        &perf_payload_with_trailer("read_us"),
+    );
+    push_record(
+        &mut valid,
+        3,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut cursor = open_reader(Cursor::new(valid.clone()), valid.len() as u64, "fold_check");
+    assert_eq!(cursor.by_ref().count(), 1);
+    cursor
+        .stats()
+        .certification_verdict()
+        .expect("well-formed announced PERF trailer must certify");
+
+    let mut unannounced = Vec::new();
+    push_record(
+        &mut unannounced,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut unannounced,
+        2,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &vec![0u8; 48],
+    );
+    push_record(
+        &mut unannounced,
+        3,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut cursor = open_reader(
+        Cursor::new(unannounced.clone()),
+        unannounced.len() as u64,
+        "fold_check",
+    );
+    assert_eq!(cursor.by_ref().count(), 1);
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("unannounced PERF trailer must fail certification");
+    assert!(err.contains("unannounced trailer"), "{err}");
+}
+
+#[test]
+fn frame_end_envelope_and_open_hour_are_exact() {
+    for (domain, payload, flags, expected) in [
+        (41, vec![0u8; 32], 0, "FRAME_END domain"),
+        (DOMAIN_FRAME, vec![0u8; 31], 0, "FRAME_END payload length"),
+        (
+            DOMAIN_FRAME,
+            vec![0u8; 32],
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            "rejected bits",
+        ),
+    ] {
+        let mut stream = Vec::new();
+        push_record(
+            &mut stream,
+            1,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        push_record_with_flags(
+            &mut stream,
+            2,
+            raw_for(HOUR_A),
+            domain,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            flags,
+            &payload,
+        );
+        let mut cursor = open_reader(
+            Cursor::new(stream.clone()),
+            stream.len() as u64,
+            "fold_check",
+        );
+        cursor.by_ref().for_each(|result| {
+            result.expect("invalid frame envelope remains diagnostic-readable");
+        });
+        let err = cursor
+            .stats()
+            .certification_verdict()
+            .expect_err("invalid FRAME_END envelope must fail certification");
+        assert!(err.contains(expected), "expected {expected:?} in {err:?}");
+    }
+
+    let mut bare = Vec::new();
+    push_record(
+        &mut bare,
+        1,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut cursor = open_reader(Cursor::new(bare.clone()), bare.len() as u64, "fold_check");
+    cursor.by_ref().for_each(|result| {
+        result.expect("bare FRAME_END remains diagnostic-readable");
+    });
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("bare FRAME_END must fail certification");
+    assert!(err.contains("without an open DOMAIN_DATA hour"), "{err}");
+}
+
+#[test]
+fn sequence_starts_at_one_never_wraps_and_stream_ends_on_frame_end() {
+    assert!(strict_sequence_error(None, 2, 0)
+        .expect("wrong first sequence must fail")
+        .contains("expected 1"));
+    assert!(strict_sequence_error(Some(u64::MAX), 0, 32)
+        .expect("u64 sequence wrap must fail")
+        .contains("sequence overflow"));
+
+    let mut wrapping = Vec::new();
+    push_record(
+        &mut wrapping,
+        u64::MAX,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut wrapping,
+        0,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut cursor = open_reader(
+        Cursor::new(wrapping.clone()),
+        wrapping.len() as u64,
+        "fold_check",
+    );
+    assert_eq!(cursor.by_ref().count(), 1);
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("wrapping sequence must fail certification");
+    assert!(err.contains("starts at"), "{err}");
+
+    let mut trailing_perf = Vec::new();
+    push_record(
+        &mut trailing_perf,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut trailing_perf,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut trailing_perf,
+        3,
+        raw_for(HOUR_A + 1),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &vec![0u8; 40],
+    );
+    let mut cursor = open_reader(
+        Cursor::new(trailing_perf.clone()),
+        trailing_perf.len() as u64,
+        "fold_check",
+    );
+    assert_eq!(cursor.by_ref().count(), 1);
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("trailing PERF must fail final-boundary certification");
+    assert!(
+        err.contains("final record must be canonical FRAME_END"),
+        "{err}"
+    );
 }
 
 /// The checked-in legacy `.battleplan` opens as a container source, and its one
@@ -299,8 +701,7 @@ fn zstd_stream_round_trip_and_fold_identity() {
         .unwrap()
         .open_cursor(&opts)
         .unwrap();
-    let zstd_hours: Vec<WorldHour> =
-        zstd_cursor.by_ref().map(|hour| hour.unwrap()).collect();
+    let zstd_hours: Vec<WorldHour> = zstd_cursor.by_ref().map(|hour| hour.unwrap()).collect();
     let zstd_stats = zstd_cursor.stats().clone();
 
     assert_eq!(zstd_hours, raw_hours, "zstd input changed folded hours");
@@ -394,7 +795,8 @@ fn header_corruption_in_compressed_stream_is_a_hard_decode_error() {
         .collect::<Result<Vec<WorldHour>, DecodeError>>()
         .expect_err("compressed header corruption must not end as a clean short stream");
     assert!(
-        err.to_string().contains("framing stopped before physical EOF"),
+        err.to_string()
+            .contains("framing stopped before physical EOF"),
         "unexpected error: {err}"
     );
 
@@ -407,8 +809,15 @@ fn header_corruption_in_compressed_stream_is_a_hard_decode_error() {
         .by_ref()
         .collect::<Result<Vec<WorldHour>, DecodeError>>()
         .expect("raw torn/corrupt tails keep the tolerant stop");
-    assert!(hours.is_empty(), "corruption before the first FRAME_END emits no hours");
+    assert!(
+        hours.is_empty(),
+        "corruption before the first FRAME_END emits no hours"
+    );
     assert!(raw_cursor.stats().stop_reason.is_some());
+    assert!(
+        raw_cursor.stats().certification_verdict().is_err(),
+        "diagnostic raw-prefix tolerance must not become certification"
+    );
 }
 
 /// Scripted reader: yields `prefix` once, then the scripted tail behavior —
@@ -456,7 +865,10 @@ fn drain_after_framing_stop_propagates_the_storage_root_error() {
     let reader = ScriptedReader {
         prefix: one_record_then_garbage(),
         served: false,
-        tail_error: Some((io::ErrorKind::InvalidData, "simulated zstd checksum mismatch")),
+        tail_error: Some((
+            io::ErrorKind::InvalidData,
+            "simulated zstd checksum mismatch",
+        )),
     };
     let mut cursor =
         HourCursor::from_reader_compressed(Box::new(reader), 0, "gid".to_string(), true);
@@ -486,7 +898,8 @@ fn framing_stop_with_intact_storage_is_itself_the_hard_error() {
         .collect::<Result<Vec<WorldHour>, DecodeError>>()
         .expect_err("compressed framing stop must not end cleanly");
     assert!(
-        err.to_string().contains("framing stopped before physical EOF"),
+        err.to_string()
+            .contains("framing stopped before physical EOF"),
         "unexpected error: {err}"
     );
 }
@@ -509,7 +922,9 @@ fn seek_matches_linear_iteration() {
     assert_eq!(linear.len(), 3);
 
     // Index built on the same pass; the first hour is the one cheap seek point.
-    let index = cursor.take_index();
+    let index = cursor
+        .take_index()
+        .expect("complete source-backed cursor must mint a certified index");
     assert_eq!(index.hour_range(), Some((HOUR_A, HOUR_C)));
     assert_eq!(index.cheap_seek_points(), vec![HOUR_A]);
 
@@ -532,6 +947,144 @@ fn seek_matches_linear_iteration() {
         Err(SeekError::HourNotFound(999_999)) => {}
         other => panic!("expected HourNotFound, got {other:?}"),
     }
+}
+
+fn assert_invalid_index(result: Result<WorldHour, SeekError>) {
+    match result {
+        Err(SeekError::InvalidIndex(_)) => {}
+        other => panic!("expected InvalidIndex, got {other:?}"),
+    }
+}
+
+#[test]
+fn authoritative_index_requires_eof_certification_and_a_stable_source() {
+    let stream = three_hour_stream();
+    let mut early = open_reader(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+    );
+    early.next_hour().unwrap().unwrap();
+    assert_eq!(
+        early.take_index(),
+        Err(IndexCertificationError::NotExhausted),
+        "a valid prefix must not mint an authoritative index"
+    );
+
+    let mut anonymous = open_reader(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+    );
+    anonymous.by_ref().for_each(|hour| {
+        hour.expect("reader stream is valid");
+    });
+    assert_eq!(
+        anonymous.take_index(),
+        Err(IndexCertificationError::UnidentifiedSource),
+        "reader-only decode is diagnostic/non-persistable without source identity"
+    );
+
+    let dir = TmpDir::new("malformed_suffix_index");
+    let path = dir.0.join("collector_stream.bin");
+    let mut malformed_suffix = stream;
+    malformed_suffix.extend_from_slice(b"H4C");
+    std::fs::write(&path, malformed_suffix).unwrap();
+    match build_index(
+        &Source::StreamFile(path),
+        &OpenOptions {
+            game_id: Some("fold_check".to_string()),
+        },
+    ) {
+        Err(OpenError::Certification(message)) => {
+            assert!(message.contains("not certified"), "{message}");
+        }
+        other => panic!("malformed suffix must prevent authoritative index: {other:?}"),
+    }
+}
+
+#[test]
+fn seek_authenticates_offsets_flags_and_persisted_source_binding() {
+    let dir = TmpDir::new("index_authentication");
+    let path = dir.0.join("collector_stream.bin");
+    std::fs::write(&path, three_hour_stream()).unwrap();
+    let source = Source::StreamFile(path);
+    let opts = OpenOptions {
+        game_id: Some("fold_check".to_string()),
+    };
+    let index = build_index(&source, &opts).unwrap();
+
+    let mut forged_offset = index.clone();
+    forged_offset.hours[1].start_offset += 1;
+    assert_invalid_index(seek_to_hour(&source, &forged_offset, HOUR_B, &opts));
+
+    let mut forged_flag = index.clone();
+    forged_flag.hours[1].cheap_seek_point = true;
+    assert_invalid_index(seek_to_hour(&source, &forged_flag, HOUR_B, &opts));
+
+    let mut forged_initial_offset = index.clone();
+    forged_initial_offset.hours[0].start_offset = 1;
+    assert_invalid_index(seek_to_hour(&source, &forged_initial_offset, HOUR_A, &opts));
+
+    for forged in [
+        {
+            let mut value = index.clone();
+            value.source.decoded_sha256 = "0".repeat(64);
+            value
+        },
+        {
+            let mut value = index.clone();
+            value.source.decoded_len += 1;
+            value
+        },
+        {
+            let mut value = index.clone();
+            value.source.canonical_path.push_str(".wrong-source");
+            value
+        },
+    ] {
+        let persisted = StreamIndex::from_json(&forged.to_json())
+            .expect("well-shaped forged binding survives syntax parsing");
+        assert_invalid_index(seek_to_hour(&source, &persisted, HOUR_A, &opts));
+    }
+}
+
+#[test]
+fn seek_rejects_wrong_source_and_valid_prefix_copy_mutations() {
+    let dir = TmpDir::new("index_source_mutation");
+    let original_path = dir.0.join("original.bin");
+    let copy_path = dir.0.join("copy.bin");
+    let stream = three_hour_stream();
+    std::fs::write(&original_path, &stream).unwrap();
+    std::fs::write(&copy_path, &stream).unwrap();
+    let original = Source::StreamFile(original_path.clone());
+    let copied = Source::StreamFile(copy_path);
+    let opts = OpenOptions {
+        game_id: Some("fold_check".to_string()),
+    };
+    let index = build_index(&original, &opts).unwrap();
+
+    assert_invalid_index(seek_to_hour(&copied, &index, HOUR_A, &opts));
+
+    let mut malformed_suffix = stream.clone();
+    malformed_suffix.extend_from_slice(b"H4C");
+    std::fs::write(&original_path, malformed_suffix).unwrap();
+    match seek_to_hour(&original, &index, HOUR_A, &opts) {
+        Err(SeekError::Open(OpenError::Certification(_))) => {}
+        other => panic!("malformed suffix must prevent seek result: {other:?}"),
+    }
+
+    // Preserve the complete prefix through the first two hours, but change a
+    // valid same-length payload in the final hour. An early-return seek to the
+    // unchanged first hour must still reject the altered suffix identity.
+    let mut prefix_copy_mutation = stream;
+    let fra = prefix_copy_mutation
+        .windows(3)
+        .rposition(|window| window == b"FRA")
+        .expect("third-hour FRA row exists");
+    prefix_copy_mutation[fra..fra + 3].copy_from_slice(b"ITA");
+    std::fs::write(&original_path, prefix_copy_mutation).unwrap();
+    assert_invalid_index(seek_to_hour(&original, &index, HOUR_A, &opts));
 }
 
 /// Metadata is available without folding: schema version + the compact domain

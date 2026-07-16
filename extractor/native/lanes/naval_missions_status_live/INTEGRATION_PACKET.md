@@ -767,7 +767,8 @@ cd extractor/native; cargo test -p naval_missions_status_live_lane
 error: package ID specification `naval_missions_status_live_lane` did not match any packages
 ```
 
-Lane-local standalone checks passed:
+Historical lane-local standalone checks passed before this crate adopted the
+shared `compact_contract` dependency:
 
 ```text
 rustc --edition=2021 --test extractor/native/lanes/naval_missions_status_live/src/lib.rs -o extractor/native/lanes/naval_missions_status_live/lib_tests.exe
@@ -782,3 +783,10 @@ test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
 Generated `.exe` test artifacts were removed after verification.
+
+Those bare-`rustc` commands are retained only as historical evidence and are
+not the current build contract. The supported current validation command is:
+
+```powershell
+cargo test --offline --manifest-path extractor/native/lanes/naval_missions_status_live/Cargo.toml
+```
