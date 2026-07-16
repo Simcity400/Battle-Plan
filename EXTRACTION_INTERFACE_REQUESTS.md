@@ -133,3 +133,119 @@ snapshot entries carry today — because they ARE the same fold output.
 - Flag any world-state field `world.rs` needs that is NOT already in the folded
   snapshot (there should be none — it is the same output), so it can be added
   before the snapshot term is dropped from production containers.
+
+---
+
+## X-ENDEDCOMBAT (2026-07-16, extraction→replay): consume the new `ended_combats[]` field; render ended combats distinctly from active; key by (combat_id, generation)
+
+**Context / D12 (zero data loss for land combat).** When domain 21 drops a land
+combat from the active set the battle has ENDED, and its terminal domain-55
+frame (phase `ended`, plus any per-side detail/attribution that still exists this
+hour) must not be silently dropped. Independent review found the earlier approach
+— emitting `lifecycle:"ended"` objects INTO the active `combats[]` array — is
+unsafe on the replay side, because the typed `CombatRow` consumer discards the
+`lifecycle` field and treats every element of `combats[]` as live. That would
+make an hour with an empty active set plus one ended event report `available=true`
+and display a finished battle as LIVE. Fabricating a live-looking row is worse
+than dropping.
+
+**What the extractor now emits (already shipped in `world_fold.rs`).** A new
+top-level snapshot field, SEPARATE from the active-only `combats[]`:
+
+```
+"ended_combats": [
+  {
+    "combat_id": 42,
+    "generation": 7,                       // TOP-LEVEL identity component
+    "kind": "land",
+    "lifecycle": "ended",
+    "location_province": 1000,             // from the D55 terminal frame (or null)
+    "attackers": null, "defenders": null,  // D21-sourced, unknown once ended — never zero-filled
+    "combat_width": null, "terrain": null, "progress": null, "modifiers": null,
+    "side_detail_availability": "present" | "unavailable",
+    "land_combat_detail_events_live": { ... }   // present only when detail survives
+  },
+  ...
+]
+```
+
+- `combats[]` now contains **only** combats D21 currently lists as active. No
+  ended combat ever appears there.
+- `ended_combats` is `null` when the active set is unknown this hour (fail
+  closed), an empty array when known-with-no-ended-combats, and a populated array
+  otherwise. Same absent-vs-null-vs-empty discipline as the rest of the schema.
+- `side_detail_availability` badges whether per-side detail survived. In the
+  **same-hour** end case the accumulated detail is `"present"`; in the
+  **next-hour** end case only the terminal phase row exists, so per-side detail is
+  genuinely GONE and is badged `"unavailable"` (never fabricated).
+
+**Ask (replay layer, `replay_core`).**
+
+1. **Consume `ended_combats[]`.** Add a typed reader for the new field. Ended
+   combats MUST render distinctly from active combats: do **not** set
+   `available=true` for them, and do **not** display them as live battles. They
+   are terminal records for a completed battle.
+2. **Key ended events by `(combat_id, generation)`.** Do NOT coalesce or index
+   ended events (or reconcile them against active combats) by `combat_id` alone.
+   `combat_id` is reused across generations — an active `(42, gen 8)` and an ended
+   `(42, gen 7)` can coexist in one hour. They already live in separate fields;
+   the ended element additionally carries its own top-level `generation` so the
+   consumer can identify it collision-free. Keying by `combat_id` only would drop
+   or merge one of the two.
+3. Confirm the field name (`ended_combats`) and shape above are acceptable, or
+   propose an alternative name/shape and extraction will accommodate it. Until
+   the consumer lands, ended combats are still preserved in the snapshot (no data
+   loss); they simply are not yet surfaced in the panel.
+4. **UNION `ended_combats` across coalesced same-hour snapshots — do NOT
+   first-wins or last-wins it (MAJOR zero-data-loss defect, found by independent
+   review).** The replay-layer same-hour coalescer
+   `diff_engine._merge_two_snapshots` (`replay_interface/replay/diff_engine.py`,
+   ~line 1756, driven by `_coalesce_same_hour`/`_merge_snapshots` at ~1720) builds
+   `merged = dict(a)` and then merges only a fixed set of keys (it unions
+   `combats` by `combat_id`, merges `countries`/`states`/`divisions`/etc.), but it
+   **never touches `ended_combats`** — so the merged snapshot silently retains only
+   the FIRST snapshot's value. Reviewer's scenario, verbatim: *coalescing hour-100
+   snapshots with `ended_combats:[]` followed by `ended_combats:[{combat_id:42,
+   generation:7}]` returns `ended_combats:[]`* — a genuine terminal record is
+   discarded, or a later empty/`null` overwrites an earlier populated set.
+
+   This matters because, unlike active `combats[]`, an ended combat is a
+   POINT-IN-TIME event: a combat that ends mid-hour appears in EXACTLY ONE
+   sub-hour snapshot (the one whose fold first saw D21 drop it); a later same-hour
+   snapshot no longer lists it in the active set AND no longer carries its terminal
+   D55 frame, so its `ended_combats` for that combat is empty. Any plain supersede
+   — whether first-wins or last-wins — can therefore drop a real end event.
+
+   **Required semantics in `_merge_two_snapshots`:**
+   - Add `ended_combats` to the merge as a **UNION keyed by
+     `(combat_id, generation)`**, not by `combat_id` alone and not a scalar
+     supersede. Merge `a["ended_combats"]` and `b["ended_combats"]` into the union
+     of both by that composite key.
+   - `null` means "active set unknown this hour" (fail closed) and must be
+     preserved when BOTH sides are `null`; a populated/empty array on either side
+     is real knowledge and must never be overwritten by the other side's
+     `null`/`[]` (same `_is_empty` non-clobber discipline already applied to
+     `designs`/`ideas_all`/etc.).
+   - On a `(combat_id, generation)` key collision across the two snapshots, take
+     the TERMINAL record — prefer the element whose `side_detail_availability` is
+     `"present"` (same-hour detail) over `"unavailable"`; ties keep either (they
+     describe the same terminal event). Never let a later `unavailable`/empty
+     record blank out an earlier `present` one.
+
+   **Contract asymmetry to encode:** active `combats[]` uses **last-observed**
+   (union by `combat_id`, `b` wins — the latest active snapshot is authoritative);
+   `ended_combats` uses **union by `(combat_id, generation)`** (an end event is
+   observed once and must be retained). They are NOT the same merge rule.
+
+   NOTE (extractor side is already correct — this is purely a replay-layer fix):
+   the extractor emits EXACTLY ONE snapshot per game-hour, built once at
+   `FRAME_END` (`world_fold::finish_hour` → `build_snapshot` → `build_combats`) and
+   dedup'd by `emitted_hours`. `build_combats` iterates the whole-hour
+   `combat_detail_events_this_hour` accumulator against the last-observed D21 active
+   set, so a combat that ends mid-hour is detected at that single fold and the one
+   emitted snapshot already carries the union of every ended combat for the hour
+   (fold-gate:
+   `ended_combats_are_unioned_across_all_sub_hour_folds_in_the_single_snapshot`).
+   Multiple same-hour snapshots only arise on the replay side when reload/relaunch
+   stitching concatenates snapshots that share an `hour_index` — which is exactly
+   when `_merge_two_snapshots` runs and must union the field.

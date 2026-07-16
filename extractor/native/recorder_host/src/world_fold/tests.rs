@@ -5589,8 +5589,745 @@ fn folds_land_combat_detail_events_that_arrive_before_domain21() {
     );
 }
 
+/// D12 helper: an `ended` phase-event row plus a full both-sides side-detail +
+/// attribution frame — the shape of a combat's terminal D55 frame.
+fn ended_combat_detail_payload(combat_id: u32, generation: u64) -> Vec<u8> {
+    let event_rows = vec![land_detail55::DetailEventRow {
+        combat_id,
+        generation,
+        event_kind: land_detail55::EVENT_PHASE_ENDED,
+        side: None,
+        division_id: None,
+        location: Some(1000),
+        day: Some(9),
+        duration: Some(9),
+        // Master's D55 contract requires phase rows (started/updated/ended) to
+        // carry no participant delta: old_side_count MUST be 0 (participant
+        // counts live only on JOINED/LEFT rows). The terminal per-side unit
+        // counts this test asserts come from the side-detail rows below, not
+        // from this field.
+        old_side_count: 0,
+        new_side_count: 0,
+        flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | land_detail55::FLAG_LOCATION_PRESENT
+            | land_detail55::FLAG_DAY_PRESENT
+            | land_detail55::FLAG_DURATION_PRESENT,
+    }];
+    let side_rows = vec![
+        land_detail55::SideDetailRow {
+            combat_id,
+            generation,
+            side: land_detail55::CombatSide::Attacker,
+            detail: capwar_side_detail(2, 0),
+        },
+        land_detail55::SideDetailRow {
+            combat_id,
+            generation,
+            side: land_detail55::CombatSide::Defender,
+            detail: capwar_side_detail(1, 0),
+        },
+    ];
+    let attribution_rows = vec![
+        land_detail55::AttributionRow {
+            combat_id,
+            generation,
+            side: land_detail55::CombatSide::Attacker,
+            entry: land_detail55::AttributionEntry {
+                dealer_tag_db_id: 3,
+                victim_tag_db_id: 1,
+                damage_raw: 1_421_400,
+            },
+        },
+        land_detail55::AttributionRow {
+            combat_id,
+            generation,
+            side: land_detail55::CombatSide::Defender,
+            entry: land_detail55::AttributionEntry {
+                dealer_tag_db_id: 1,
+                victim_tag_db_id: 3,
+                damage_raw: 9_571_110,
+            },
+        },
+    ];
+    land_detail55::encode_detail_events_payload_v3(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &event_rows,
+        &side_rows,
+        &attribution_rows,
+    )
+}
+
+/// D12 helper: a terminal frame that carries ONLY the `ended` phase row — the
+/// production shape of a NEXT-HOUR end, where the combat is already gone from
+/// the active set so no per-side detail or attribution rows are produced.
+fn ended_phase_only_payload(combat_id: u32, generation: u64) -> Vec<u8> {
+    let event_rows = vec![land_detail55::DetailEventRow {
+        combat_id,
+        generation,
+        event_kind: land_detail55::EVENT_PHASE_ENDED,
+        side: None,
+        division_id: None,
+        location: Some(1000),
+        day: Some(9),
+        duration: Some(9),
+        old_side_count: 0,
+        new_side_count: 0,
+        flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | land_detail55::FLAG_LOCATION_PRESENT
+            | land_detail55::FLAG_DAY_PRESENT
+            | land_detail55::FLAG_DURATION_PRESENT,
+    }];
+    land_detail55::encode_detail_events_payload_v3(9, COMPACT_STATUS_DELTA_DATA, &event_rows, &[], &[])
+}
+
+/// Assert the SAME-HOUR ended record: it lives in `ended_combats[]`, carries a
+/// top-level (combat_id, generation) identity, and the accumulated terminal
+/// per-side detail + attribution SURVIVE (they were gathered this hour before
+/// D21 dropped the combat).
+fn assert_ended_land_combat_full_detail(record: &Value) {
+    assert_eq!(record["kind"], json!("land"));
+    assert_eq!(record["lifecycle"], json!("ended"));
+    // Collision-proof identity: generation is a top-level field (Finding 3).
+    assert_eq!(record["generation"], json!(7));
+    // D21-sourced participants are unknown once the combat leaves the active
+    // set — Null, never zero-filled.
+    assert_eq!(record["attackers"], Value::Null);
+    assert_eq!(record["defenders"], Value::Null);
+    // Same-hour: the per-side detail was accumulated this hour and survives.
+    assert_eq!(record["side_detail_availability"], json!("present"));
+    let dl = &record["land_combat_detail_events_live"];
+    assert_eq!(dl["phase_event"], json!("ended"));
+    // Terminal per-side detail and attribution survive with the same schema and
+    // completeness badge the active path emits.
+    assert_eq!(dl["side_detail_completeness"], json!("both"));
+    assert_eq!(dl["attacker"]["committed"], json!(2));
+    assert_eq!(dl["defender"]["committed"], json!(1));
+    assert_eq!(
+        dl["attacker"]["damage_attribution"][0]["dealer_tag_db_id"],
+        json!(3)
+    );
+    assert_eq!(
+        dl["defender"]["damage_attribution"][0]["dealer_tag_db_id"],
+        json!(1)
+    );
+}
+
+// D12: when D21 drops a combat from the active set within the SAME hour the
+// terminal D55 frame arrives, the ended-combat detail SURVIVES as a
+// `lifecycle: "ended"` record instead of being silently dropped. This also
+// exercises the double-emission guard: the combat is active earlier in the hour
+// (first D21 snapshot) and ended (removed) later in the same hour.
 #[test]
-fn land_combat_detail_generation_mismatch_is_dropped() {
+fn land_combat_ended_detail_survives_same_hour_removal() {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    // Combat 42 active earlier in the hour.
+    let active = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &active,
+    );
+    seq += 1;
+    // Later in the SAME hour D21 drops it from the active set (empty snapshot).
+    let removed = land_combats_payload(&[]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &removed,
+    );
+    seq += 1;
+    // The terminal D55 frame for the now-ended combat.
+    let detail = ended_combat_detail_payload(42, 7);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_ended_same_hour");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    // The active-only `combats[]` is EMPTY: the combat is gone from the active
+    // set. It must NEVER carry the ended combat (Finding 1).
+    let combats = s["combats"].as_array().unwrap();
+    assert!(combats.is_empty(), "ended combat must not appear in combats[]");
+    // The ended combat lives in the SEPARATE `ended_combats[]` field. Exactly
+    // ONE record (no double-emission).
+    let ended = s["ended_combats"].as_array().unwrap();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0]["combat_id"], json!(42));
+    assert_eq!(ended[0]["generation"], json!(7));
+    assert_ended_land_combat_full_detail(&ended[0]);
+    // The terminal detail is NOT drop-noted.
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(!notes
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("unknown active combat")));
+}
+
+// D12 (EMIT-MODEL GATE — extractor answer to the "same-hour coalescer union"
+// review finding): the extractor emits EXACTLY ONE snapshot per game-hour. It is
+// built once, at FRAME_END (`finish_hour` -> `build_snapshot` -> `build_combats`),
+// and dedup'd by `emitted_hours`, so there is NO extractor-side path that produces
+// two same-hour snapshots and then coalesces them field-by-field. Every sub-hour
+// D21 active snapshot and D55 detail frame folds into `combat_detail_events_this_hour`,
+// which accumulates across the WHOLE hour and is cleared only by `reset_hour_state`
+// AFTER the snapshot is built. `build_combats` iterates that entire accumulator
+// against the LAST-observed D21 active set, so a combat that ENDS mid-hour — dropped
+// from a later same-hour D21 snapshot while its terminal D55 `ended` frame stays in
+// the accumulator — is detected as an orphan at that single FRAME_END. Therefore the
+// ONE emitted snapshot already carries the UNION of every ended combat detected
+// during the hour; a "later empty snapshot overwrites an earlier populated one" can
+// NOT happen extractor-side (there is only one snapshot).
+//
+// This gate drives THREE combats ending at three different sub-hour points (D21
+// dropping each in turn, D55 terminal frames interleaved, the last D21 snapshot
+// empty) and asserts all three survive together in the ONE hour's `ended_combats[]`.
+// A duplicate FRAME_END for the same hour is appended to prove the single-snapshot
+// dedup: it produces no second snapshot. (The union defect the reviewer found lives
+// in the REPLAY-LAYER same-hour coalescer `diff_engine._merge_two_snapshots`, which
+// merges multiple same-hour JSON snapshots arriving from reload/relaunch stitching
+// and today drops `ended_combats`; that is a different owner's file — the ask is
+// filed in EXTRACTION_INTERFACE_REQUESTS.md under X-ENDEDCOMBAT.)
+#[test]
+fn ended_combats_are_unioned_across_all_sub_hour_folds_in_the_single_snapshot() {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let combat = |id: u32| TestLandCombat {
+        combat_id: id,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    };
+
+    // All three combats active earlier in the hour.
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &land_combats_payload(&[combat(40), combat(41), combat(42)]),
+    );
+    seq += 1;
+    // Combat 40 ends: D21 drops it, terminal D55 frame (full per-side detail).
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &land_combats_payload(&[combat(41), combat(42)]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &ended_combat_detail_payload(40, 7),
+    );
+    seq += 1;
+    // Combat 41 ends later in the SAME hour (full detail).
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &land_combats_payload(&[combat(42)]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &ended_combat_detail_payload(41, 7),
+    );
+    seq += 1;
+    // Combat 42 ends last; its terminal frame carries ONLY the `ended` phase row
+    // (no per-side detail), so its availability badge differs — the union must
+    // still carry it.
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &land_combats_payload(&[]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &ended_phase_only_payload(42, 7),
+    );
+    seq += 1;
+    // Close the hour, then a DUPLICATE FRAME_END for the same hour.
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let _ = seq;
+
+    let mut fold = WorldFold::new("combat_ended_union_single_snapshot");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    // EXACTLY ONE snapshot for the hour: the duplicate FRAME_END did not emit a
+    // second one (emit-model dedup via `emitted_hours`).
+    assert_eq!(snaps.len(), 1, "exactly one snapshot per game-hour");
+    let s = parse(&snaps[0].2);
+
+    // Active-only `combats[]` is empty (all three left the active set).
+    assert!(
+        s["combats"].as_array().unwrap().is_empty(),
+        "ended combats must never appear in combats[]"
+    );
+
+    // The ONE snapshot carries the UNION of all three ended combats.
+    let ended = s["ended_combats"].as_array().unwrap();
+    assert_eq!(ended.len(), 3, "all three sub-hour ends survive in one snapshot");
+    let mut by_id: std::collections::BTreeMap<u64, &Value> = std::collections::BTreeMap::new();
+    for rec in ended {
+        by_id.insert(rec["combat_id"].as_u64().unwrap(), rec);
+    }
+    assert_eq!(
+        by_id.keys().copied().collect::<Vec<_>>(),
+        vec![40, 41, 42],
+        "union keyed by combat_id, no drops"
+    );
+    for rec in by_id.values() {
+        assert_eq!(rec["kind"], json!("land"));
+        assert_eq!(rec["lifecycle"], json!("ended"));
+        assert_eq!(rec["generation"], json!(7));
+    }
+    // 40 and 41 kept their same-hour per-side detail; 42's terminal-only frame is
+    // badged unavailable — the union preserves each combat's true availability.
+    assert_eq!(by_id[&40]["side_detail_availability"], json!("present"));
+    assert_eq!(by_id[&41]["side_detail_availability"], json!("present"));
+    assert_eq!(by_id[&42]["side_detail_availability"], json!("unavailable"));
+
+    // No ended combat was drop-noted.
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(!notes
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("unknown active combat")));
+}
+
+// D12: when the terminal D55 frame arrives the hour AFTER D21 removed the
+// combat, the ended EVENT still survives — but only what production actually
+// has. Detail (side/attribution) is accumulated from D55 and cleared each hour;
+// at hour N+1 the combat is gone from the active set, so production emits ONLY
+// the terminal `ended` phase row — the per-side detail is genuinely GONE. The
+// ended record must therefore preserve the event (combat_id, generation, ended,
+// location) and BADGE the absent per-side detail unavailable, never fabricate
+// it (Finding 2). Hour N has the live combat with its started detail; hour N+1
+// (combat gone) emits the ended-combat record with side detail unavailable.
+#[test]
+fn land_combat_ended_detail_survives_hour_after_removal() {
+    let raw_n = raw_for(16_959_360);
+    let raw_n1 = raw_for(16_959_361);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    // Hour N: combat 42 active, D55 reports it started.
+    let active = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw_n,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &active,
+    );
+    seq += 1;
+    let started_rows = vec![land_detail55::DetailEventRow {
+        combat_id: 42,
+        generation: 7,
+        event_kind: land_detail55::EVENT_PHASE_STARTED,
+        side: None,
+        division_id: None,
+        location: Some(1000),
+        day: Some(1),
+        duration: Some(1),
+        old_side_count: 0,
+        new_side_count: 2,
+        flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | land_detail55::FLAG_LOCATION_PRESENT
+            | land_detail55::FLAG_DAY_PRESENT
+            | land_detail55::FLAG_DURATION_PRESENT,
+    }];
+    let started =
+        land_detail55::encode_detail_events_payload(9, COMPACT_STATUS_DELTA_DATA, &started_rows);
+    push_record(
+        &mut stream,
+        seq,
+        raw_n,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &started,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_n,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    // Hour N+1: D21 drops combat 42; the terminal D55 frame arrives.
+    let removed = land_combats_payload(&[]);
+    push_record(
+        &mut stream,
+        seq,
+        raw_n1,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &removed,
+    );
+    seq += 1;
+    // Production reality at N+1: only the terminal `ended` phase row is emitted;
+    // the per-side detail rows are NOT produced (the combat is no longer active).
+    let ended = ended_phase_only_payload(42, 7);
+    push_record(
+        &mut stream,
+        seq,
+        raw_n1,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &ended,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_n1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_ended_hour_after");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    // Hour N: live combat with its started detail, in the active `combats[]`.
+    let n = parse(&snaps[0].2);
+    let live = &n["combats"].as_array().unwrap()[0];
+    assert_eq!(live["combat_id"], json!(42));
+    assert!(live.get("lifecycle").is_none(), "live combat is not ended");
+    assert_eq!(live["attackers"], json!([101]));
+    assert_eq!(
+        live["land_combat_detail_events_live"]["phase_event"],
+        json!("started")
+    );
+    // Hour N has no ended combats.
+    assert!(n["ended_combats"].as_array().unwrap().is_empty());
+
+    // Hour N+1: the combat is gone from the active set. The active `combats[]`
+    // is empty (Finding 1); the ended EVENT survives in `ended_combats[]`.
+    let n1 = parse(&snaps[1].2);
+    assert!(
+        n1["combats"].as_array().unwrap().is_empty(),
+        "ended combat must not appear in combats[]"
+    );
+    let ended_arr = n1["ended_combats"].as_array().unwrap();
+    assert_eq!(ended_arr.len(), 1);
+    let rec = &ended_arr[0];
+    // The ended EVENT survives: id/generation/ended/location.
+    assert_eq!(rec["combat_id"], json!(42));
+    assert_eq!(rec["generation"], json!(7));
+    assert_eq!(rec["kind"], json!("land"));
+    assert_eq!(rec["lifecycle"], json!("ended"));
+    assert_eq!(rec["location_province"], json!(1000));
+    assert_eq!(rec["land_combat_detail_events_live"]["phase_event"], json!("ended"));
+    // D21-sourced participants are unknown — Null, never zero-filled.
+    assert_eq!(rec["attackers"], Value::Null);
+    assert_eq!(rec["defenders"], Value::Null);
+    // Finding 2: the per-side detail is genuinely GONE at N+1 — it is BADGED
+    // unavailable and explicitly NOT present (never fabricated).
+    assert_eq!(rec["side_detail_availability"], json!("unavailable"));
+    let dl = &rec["land_combat_detail_events_live"];
+    assert!(dl.get("attacker").is_none(), "no fabricated attacker detail");
+    assert!(dl.get("defender").is_none(), "no fabricated defender detail");
+    assert!(
+        dl.get("side_detail_completeness").is_none(),
+        "no both-sides completeness badge when no side detail exists"
+    );
+    let notes = n1["provenance"]["notes"].as_array().unwrap();
+    assert!(!notes
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("unknown active combat")));
+}
+
+// D12 double-emission guard: if the D55 `ended` event lands at a generation
+// that STILL matches a combat D21 lists as active (a contradictory read where
+// D21 has not yet dropped it), the detail attaches to that single active record
+// — it is NOT ALSO re-emitted as a separate ended record.
+#[test]
+fn land_combat_ended_event_matching_active_generation_is_not_double_emitted() {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let active = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &active,
+    );
+    seq += 1;
+    let detail = ended_combat_detail_payload(42, 7);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_ended_matches_active");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let combats = s["combats"].as_array().unwrap();
+    // Exactly ONE record in the ACTIVE `combats[]`: the still-active combat
+    // carrying the ended detail. The ended event matched an active generation,
+    // so it attaches to the active record and is NOT ALSO emitted into
+    // `ended_combats[]` (no double-emission across the two fields).
+    assert_eq!(combats.len(), 1);
+    assert_eq!(combats[0]["combat_id"], json!(42));
+    assert!(
+        combats[0].get("lifecycle").is_none(),
+        "active record must not be tagged ended"
+    );
+    assert_eq!(combats[0]["attackers"], json!([101]));
+    assert_eq!(
+        combats[0]["land_combat_detail_events_live"]["phase_event"],
+        json!("ended")
+    );
+    // No separate ended record.
+    assert!(
+        s["ended_combats"].as_array().unwrap().is_empty(),
+        "matching-generation detail must not also be emitted as an ended record"
+    );
+}
+
+// D12 Finding 3 (generation reuse): combat_id 42 is reused across generations —
+// an ACTIVE battle (42, gen 8) coexists with a just-ENDED battle (42, gen 7) in
+// the same hour. Both must survive without colliding. Because ended combats live
+// in a SEPARATE field AND are identified by (combat_id, generation), the active
+// (42, 8) in `combats[]` and the ended (42, 7) in `ended_combats[]` share the
+// top-level combat_id 42 yet cannot coalesce into one another under a consumer
+// that keys active combats by combat_id alone.
+#[test]
+fn land_combat_generation_reuse_active_and_ended_share_id_without_collision() {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    // D21 active set: combat id 42 has been reused for a NEW battle, generation 8.
+    let active = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 8,
+        location: 2000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &active,
+    );
+    seq += 1;
+
+    // D55 for the NEW active battle (42, 8): a started phase row that attaches to
+    // the active record.
+    let active_started_rows = vec![land_detail55::DetailEventRow {
+        combat_id: 42,
+        generation: 8,
+        event_kind: land_detail55::EVENT_PHASE_STARTED,
+        side: None,
+        division_id: None,
+        location: Some(2000),
+        day: Some(1),
+        duration: Some(1),
+        old_side_count: 0,
+        new_side_count: 2,
+        flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | land_detail55::FLAG_LOCATION_PRESENT
+            | land_detail55::FLAG_DAY_PRESENT
+            | land_detail55::FLAG_DURATION_PRESENT,
+    }];
+    let active_started = land_detail55::encode_detail_events_payload(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &active_started_rows,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &active_started,
+    );
+    seq += 1;
+
+    // D55 terminal frame for the OLD battle (42, 7), which D21 has already
+    // dropped from the active set (it ended). Full same-hour detail survives.
+    let ended = ended_combat_detail_payload(42, 7);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &ended,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_generation_reuse");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+
+    // The active battle (42, 8) survives in `combats[]`, untagged.
+    let combats = s["combats"].as_array().unwrap();
+    assert_eq!(combats.len(), 1);
+    assert_eq!(combats[0]["combat_id"], json!(42));
+    assert!(combats[0].get("lifecycle").is_none());
+    assert_eq!(combats[0]["attackers"], json!([101]));
+    assert_eq!(
+        combats[0]["land_combat_detail_events_live"]["phase_event"],
+        json!("started")
+    );
+    assert_eq!(
+        combats[0]["land_combat_detail_events_live"]["generation"],
+        json!(8)
+    );
+
+    // The ended battle (42, 7) survives in `ended_combats[]`, identified by its
+    // own top-level generation — no collision with the active (42, 8).
+    let ended_arr = s["ended_combats"].as_array().unwrap();
+    assert_eq!(ended_arr.len(), 1);
+    assert_eq!(ended_arr[0]["combat_id"], json!(42));
+    assert_eq!(ended_arr[0]["generation"], json!(7));
+    assert_ended_land_combat_full_detail(&ended_arr[0]);
+
+    // Same top-level combat_id, distinct fields and distinct generations (the
+    // active generation lives in its detail; the ended generation is top-level).
+    assert_eq!(combats[0]["combat_id"], ended_arr[0]["combat_id"]);
+    assert_ne!(
+        combats[0]["land_combat_detail_events_live"]["generation"],
+        ended_arr[0]["generation"]
+    );
+
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(!notes
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("unknown active combat")));
+}
+
+// A NON-terminal orphan (a started/updated read at a generation D21 never
+// confirmed active) is NOT promoted to a fabricated ended record — it stays
+// drop-noted. Guards the ended-emission from becoming a catch-all that
+// fabricates combats.
+#[test]
+fn land_combat_non_terminal_orphan_detail_is_dropped() {
     let hi = 16_959_360i64;
     let raw = raw_for(hi);
     let mut stream = Vec::new();
@@ -5649,13 +6386,21 @@ fn land_combat_detail_generation_mismatch_is_dropped() {
         &frame_end_payload(),
     );
 
-    let mut fold = WorldFold::new("combat_generation_mismatch_game");
+    let mut fold = WorldFold::new("combat_non_terminal_orphan_game");
     fold.ingest_stream(&stream);
     let snaps = fold.finish();
     assert_eq!(snaps.len(), 1);
     let s = parse(&snaps[0].2);
-    let combat = s["combats"].as_array().unwrap()[0].as_object().unwrap();
+    let combats = s["combats"].as_array().unwrap();
+    // Only the active combat 42:7 — the orphan 42:8 is neither attached nor
+    // promoted to an ended record.
+    assert_eq!(combats.len(), 1);
+    let combat = combats[0].as_object().unwrap();
+    assert_eq!(combat["combat_id"], json!(42));
+    assert!(combat.get("lifecycle").is_none());
     assert!(!combat.contains_key("land_combat_detail_events_live"));
+    // The non-terminal orphan is NOT fabricated into an ended record either.
+    assert!(s["ended_combats"].as_array().unwrap().is_empty());
     let notes = s["provenance"]["notes"].as_array().unwrap();
     assert!(notes.iter().any(|note| note
         .as_str()
@@ -5782,11 +6527,15 @@ fn land_combat_detail_baseline_reset_gap_does_not_attach_synthetic_events() {
 
     let b = parse(&snaps[1].2);
     assert_eq!(b["combats"], Value::Null);
+    // Unknown active set this hour: the ended field is also null (never an
+    // empty/complete set).
+    assert_eq!(b["ended_combats"], Value::Null);
 
     let c = parse(&snaps[2].2);
     let combat = c["combats"].as_array().unwrap()[0].as_object().unwrap();
     assert_eq!(combat["attackers"], json!([101, 102]));
     assert!(!combat.contains_key("land_combat_detail_events_live"));
+    assert!(c["ended_combats"].as_array().unwrap().is_empty());
     let notes = c["provenance"]["notes"].as_array().unwrap();
     assert!(notes.iter().any(|note| note
         .as_str()
@@ -5850,11 +6599,92 @@ fn land_combat_detail_events_for_unknown_combat_do_not_fabricate_combat() {
     assert_eq!(snaps.len(), 1);
     let s = parse(&snaps[0].2);
     assert_eq!(s["combats"].as_array().unwrap().len(), 0);
+    // A started (non-terminal) orphan is not fabricated into an ended record.
+    assert_eq!(s["ended_combats"].as_array().unwrap().len(), 0);
     let notes = s["provenance"]["notes"].as_array().unwrap();
     assert!(notes.iter().any(|note| note
         .as_str()
         .unwrap()
         .contains("unknown active combat key(s): 999:1")));
+}
+
+// D12 tombstone/baseline-reset interaction: an `ended` orphan accumulated
+// earlier in the hour is CLEARED by a later same-hour D55 baseline reset, so no
+// ended-combat record is emitted and the reset breadcrumb explains why. A
+// baseline reset means detail sync was lost; fail closed rather than emit a
+// terminal record from pre-reset state.
+#[test]
+fn land_combat_ended_orphan_cleared_by_same_hour_baseline_reset() {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    // D21 has no active combats this hour (42 already gone from the active set).
+    let removed = land_combats_payload(&[]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &removed,
+    );
+    seq += 1;
+    // First D55 frame carries the terminal `ended` detail for orphan 42:7 ...
+    let ended = ended_combat_detail_payload(42, 7);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &ended,
+    );
+    seq += 1;
+    // ... but a later same-hour D55 frame declares a baseline reset, clearing
+    // the accumulated detail for the hour.
+    let reset = land_detail55::encode_detail_events_payload(
+        11,
+        COMPACT_STATUS_DELTA_DATA
+            | COMPACT_STATUS_PARTIAL_DATA
+            | COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+        &[],
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &reset,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_ended_reset");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    // No ended-combat record survives the reset; no orphan drop-note either
+    // (the entry was cleared, not dropped).
+    assert_eq!(s["combats"].as_array().unwrap().len(), 0);
+    assert_eq!(s["ended_combats"].as_array().unwrap().len(), 0);
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(!notes
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("unknown active combat")));
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("transition baseline reset after an unknown gap")));
 }
 
 #[test]

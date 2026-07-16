@@ -2828,7 +2828,7 @@ impl WorldFold {
         // Divisions: merge D26 equipment only when owner/div_id joins exactly
         // one live D20 division, then re-key owner country value by TAG.
         let (divisions, division_equipment_notes) = self.build_divisions(&mut unresolved);
-        let (combats, dropped_detail_event_keys) = self.build_combats();
+        let (combats, ended_combats, dropped_detail_event_keys) = self.build_combats();
 
         // map layer mirrors (raster-renderer convenience, §8), built from the
         // already-resolved state/province objects so they carry TAG values too.
@@ -3191,6 +3191,11 @@ impl WorldFold {
             "provinces": provinces_value,
             "divisions": divisions_value,
             "combats": combats,
+            // D12: ended land combats live in a SEPARATE field from the
+            // active-only `combats[]`, keyed by (combat_id, generation), so the
+            // typed replay `CombatRow` consumer never mistakes an ended battle
+            // for a live one. Null when the active set is unknown this hour.
+            "ended_combats": ended_combats,
             "diplomacy_world": Value::Object(diplomacy_world),
             "map": map_value,
             "designs": designs_value,
@@ -3226,14 +3231,50 @@ impl WorldFold {
         snapshot
     }
 
-    fn build_combats(&self) -> (Value, Vec<(u32, u64)>) {
+    /// Build the active-combat array and the SEPARATE ended-combat lifecycle
+    /// array. Returns `(active_combats, ended_combats, dropped_detail_keys)`.
+    ///
+    /// DESIGN (D12, corrected after independent review — three findings closed):
+    ///
+    /// * `combats[]` carries ONLY combats D21 currently lists as active. An
+    ///   ended combat is NEVER placed here: the typed replay-layer `CombatRow`
+    ///   consumer discards any `lifecycle` field and treats every element of
+    ///   `combats[]` as live, so an ended combat in `combats[]` would be shown
+    ///   as an active battle (`available=true`). Fabricating a live-looking row
+    ///   is worse than dropping — ended combats therefore go to a distinct
+    ///   top-level field the consumer will not mistake for active.
+    ///   (Finding 1.)
+    ///
+    /// * Ended combats land in `ended_combats[]` (see the snapshot assembly),
+    ///   each element carrying `combat_id`, `generation`, `lifecycle:"ended"`,
+    ///   `location_province`, and whatever terminal detail production ACTUALLY
+    ///   HAS. Generation is a TOP-LEVEL field so an ended `(42, gen 7)` and an
+    ///   active `(42, gen 8)` — id 42 reused across generations — never share a
+    ///   coalescing key even under a consumer that keys active combats by
+    ///   `combat_id` alone: they live in different fields AND the ended element
+    ///   is identified by `(combat_id, generation)`. (Finding 3.)
+    ///
+    /// * We preserve only what production genuinely has. Side/attribution detail
+    ///   is accumulated from the D55 stream and CLEARED each hour. In the
+    ///   SAME-HOUR end case the current hour's accumulated per-side detail is
+    ///   still present, so it survives. In the NEXT-HOUR end case only the
+    ///   terminal `ended` phase row exists this hour — the per-side detail is
+    ///   genuinely GONE, so it is BADGED unavailable via
+    ///   `side_detail_availability`, never fabricated. (Finding 2.)
+    fn build_combats(&self) -> (Value, Value, Vec<(u32, u64)>) {
         if !self.land_combats_known_this_hour {
+            // Without a current D21 active snapshot we cannot tell an ended
+            // combat (dropped from the active set) from one merely unobserved
+            // this hour, so no D55 detail can be promoted to an ended-combat
+            // record. Fail closed: every accumulated key is drop-noted, never
+            // fabricated into a combat. Both the active and the ended field are
+            // null (unknown), never an empty/complete set.
             let dropped = self
                 .combat_detail_events_this_hour
                 .keys()
                 .copied()
                 .collect();
-            return (Value::Null, dropped);
+            return (Value::Null, Value::Null, dropped);
         }
         let mut out = Vec::with_capacity(self.combats.len());
         for combat in self.combats.values() {
@@ -3252,116 +3293,181 @@ impl WorldFold {
                 .combat_detail_events_this_hour
                 .get(&(combat.combat_id, combat.generation))
             {
-                let mut detail_obj = Map::new();
-                if let Some(phase_event) = &detail.phase_event {
-                    detail_obj.insert("phase_event".into(), json!(phase_event));
-                }
-                if let Some(generation) = detail.generation {
-                    detail_obj.insert("generation".into(), json!(generation));
-                } else {
-                    detail_obj.insert("generation".into(), json!(combat.generation));
-                }
-                if let Some(location) = detail.location {
-                    detail_obj.insert("location_province".into(), json!(location));
-                }
-                if let Some(day) = detail.day {
-                    detail_obj.insert("age_days".into(), json!(day));
-                }
-                if let Some(duration) = detail.duration {
-                    detail_obj.insert("duration_days".into(), json!(duration));
-                }
-                if !detail.participant_events.is_empty() {
-                    detail_obj.insert(
-                        "participant_events".into(),
-                        Value::Array(detail.participant_events.clone()),
-                    );
-                }
-                // E2: per-side CCombatSide detail is ALL-OR-NOTHING per combat.
-                // If EITHER side failed its read (None), emit NEITHER side's
-                // detail — a consumer must never see one-sided detail and read
-                // the missing side as zero/complete. An explicit
-                // `side_detail_completeness` badge records why detail is
-                // present or absent so absence is never ambiguous.
-                match (&detail.attacker_detail, &detail.defender_detail) {
-                    (Some(attacker), Some(defender)) => {
-                        detail_obj.insert(
-                            "attacker".into(),
-                            Self::attach_side_attribution(
-                                Self::side_detail_json(attacker),
-                                &detail.attacker_attribution,
-                            ),
-                        );
-                        detail_obj.insert(
-                            "defender".into(),
-                            Self::attach_side_attribution(
-                                Self::side_detail_json(defender),
-                                &detail.defender_attribution,
-                            ),
-                        );
-                        // If either side's stable count triple was inconsistent
-                        // (a mid-combat transient), badge the pair complete-but-
-                        // counts-incomplete rather than fully authoritative.
-                        let counts_incomplete =
-                            attacker.counts_incomplete || defender.counts_incomplete;
-                        detail_obj.insert(
-                            "side_detail_completeness".into(),
-                            json!(if counts_incomplete {
-                                "both_counts_incomplete"
-                            } else {
-                                "both"
-                            }),
-                        );
-                    }
-                    (Some(_), None) => {
-                        detail_obj.insert(
-                            "side_detail_completeness".into(),
-                            json!("attacker_only_suppressed"),
-                        );
-                    }
-                    (None, Some(_)) => {
-                        detail_obj.insert(
-                            "side_detail_completeness".into(),
-                            json!("defender_only_suppressed"),
-                        );
-                    }
-                    (None, None) => {}
-                }
-                if detail.attacker_detail.is_none() {
-                    if let Some(value) =
-                        Self::attribution_only_side_json(&detail.attacker_attribution)
-                    {
-                        detail_obj.insert("attacker".into(), value);
-                    }
-                }
-                if detail.defender_detail.is_none() {
-                    if let Some(value) =
-                        Self::attribution_only_side_json(&detail.defender_attribution)
-                    {
-                        detail_obj.insert("defender".into(), value);
-                    }
-                }
-                if !detail_obj.is_empty() {
-                    obj.insert(
-                        "land_combat_detail_events_live".into(),
-                        Value::Object(detail_obj),
-                    );
+                if let Some(detail_json) = Self::combat_detail_json(detail, combat.generation) {
+                    obj.insert("land_combat_detail_events_live".into(), detail_json);
                 }
             }
 
             out.push(Value::Object(obj));
         }
-        let dropped = self
-            .combat_detail_events_this_hour
-            .keys()
-            .copied()
-            .filter(|(combat_id, generation)| {
-                !self
-                    .combats
-                    .get(combat_id)
-                    .is_some_and(|combat| combat.generation == *generation)
-            })
-            .collect();
-        (Value::Array(out), dropped)
+
+        // D12 (zero data loss): a D55 detail entry whose (combat_id, generation)
+        // has no matching combat in the current D21 active snapshot is an
+        // ORPHAN. When D21 removes a battle from the active set the combat has
+        // ended, and its final D55 frame — phase `ended` plus whatever terminal
+        // per-side detail and attribution survive this hour — must be preserved,
+        // not dropped. Those terminal orphans go into the SEPARATE
+        // `ended_combats[]` field (NOT `combats[]`), keyed by
+        // (combat_id, generation). A non-terminal orphan (no `ended` phase event
+        // — e.g. a started/updated read torn ahead of or behind D21) is NOT
+        // promoted: fabricating a combat D21 never confirmed as active would
+        // violate "absent is absent". Those stay drop-noted.
+        //
+        // Double-emission across the two fields is impossible: an orphan is by
+        // definition a key that did NOT match any active combat's generation, so
+        // a key emitted inside an active record above is never re-emitted here.
+        let ended_phase = detail_event_kind_name(land_detail55::EVENT_PHASE_ENDED);
+        let mut ended_out = Vec::new();
+        let mut dropped = Vec::new();
+        for ((combat_id, generation), detail) in self.combat_detail_events_this_hour.iter() {
+            if self
+                .combats
+                .get(combat_id)
+                .is_some_and(|combat| combat.generation == *generation)
+            {
+                continue;
+            }
+            if detail.phase_event.as_deref() == ended_phase {
+                let mut obj = Map::new();
+                obj.insert("combat_id".into(), json!(*combat_id));
+                // Top-level generation: the ended element's collision-proof
+                // identity is (combat_id, generation) (Finding 3).
+                obj.insert("generation".into(), json!(*generation));
+                obj.insert("kind".into(), json!("land"));
+                obj.insert("lifecycle".into(), json!("ended"));
+                // D21-sourced fields are unknown (the combat is gone from the
+                // active set); the D55 detail carries its own location. Absent
+                // participants stay Null — never zero-filled from a stale snap.
+                obj.insert("location_province".into(), option_u32_json(detail.location));
+                obj.insert("attackers".into(), Value::Null);
+                obj.insert("defenders".into(), Value::Null);
+                obj.insert("combat_width".into(), Value::Null);
+                obj.insert("terrain".into(), Value::Null);
+                obj.insert("progress".into(), Value::Null);
+                obj.insert("modifiers".into(), Value::Null);
+                // Finding 2: preserve only what production actually has. Per-side
+                // detail/attribution survives ONLY in the same-hour end case;
+                // in the next-hour case the terminal phase row is all that
+                // exists — badge the per-side detail explicitly unavailable so a
+                // consumer never reads its absence as zero/complete.
+                let side_detail_present = detail.attacker_detail.is_some()
+                    || detail.defender_detail.is_some()
+                    || !detail.attacker_attribution.is_empty()
+                    || !detail.defender_attribution.is_empty();
+                obj.insert(
+                    "side_detail_availability".into(),
+                    json!(if side_detail_present {
+                        "present"
+                    } else {
+                        "unavailable"
+                    }),
+                );
+                if let Some(detail_json) = Self::combat_detail_json(detail, *generation) {
+                    obj.insert("land_combat_detail_events_live".into(), detail_json);
+                }
+                ended_out.push(Value::Object(obj));
+            } else {
+                dropped.push((*combat_id, *generation));
+            }
+        }
+        (Value::Array(out), Value::Array(ended_out), dropped)
+    }
+
+    /// Build the `land_combat_detail_events_live` sub-object for one combat's
+    /// accumulated D55 enrichment. Shared by the active-combat path and the D12
+    /// ended-combat path so both carry byte-identical detail + completeness
+    /// badges. `fallback_generation` is used only when the enrichment never
+    /// recorded its own generation. Returns `None` when no detail field is
+    /// present, so the caller omits the key entirely (fail closed).
+    fn combat_detail_json(detail: &CombatDetailEnrichment, fallback_generation: u64) -> Option<Value> {
+        let mut detail_obj = Map::new();
+        if let Some(phase_event) = &detail.phase_event {
+            detail_obj.insert("phase_event".into(), json!(phase_event));
+        }
+        if let Some(generation) = detail.generation {
+            detail_obj.insert("generation".into(), json!(generation));
+        } else {
+            detail_obj.insert("generation".into(), json!(fallback_generation));
+        }
+        if let Some(location) = detail.location {
+            detail_obj.insert("location_province".into(), json!(location));
+        }
+        if let Some(day) = detail.day {
+            detail_obj.insert("age_days".into(), json!(day));
+        }
+        if let Some(duration) = detail.duration {
+            detail_obj.insert("duration_days".into(), json!(duration));
+        }
+        if !detail.participant_events.is_empty() {
+            detail_obj.insert(
+                "participant_events".into(),
+                Value::Array(detail.participant_events.clone()),
+            );
+        }
+        // E2: per-side CCombatSide detail is ALL-OR-NOTHING per combat.
+        // If EITHER side failed its read (None), emit NEITHER side's
+        // detail — a consumer must never see one-sided detail and read
+        // the missing side as zero/complete. An explicit
+        // `side_detail_completeness` badge records why detail is
+        // present or absent so absence is never ambiguous.
+        match (&detail.attacker_detail, &detail.defender_detail) {
+            (Some(attacker), Some(defender)) => {
+                detail_obj.insert(
+                    "attacker".into(),
+                    Self::attach_side_attribution(
+                        Self::side_detail_json(attacker),
+                        &detail.attacker_attribution,
+                    ),
+                );
+                detail_obj.insert(
+                    "defender".into(),
+                    Self::attach_side_attribution(
+                        Self::side_detail_json(defender),
+                        &detail.defender_attribution,
+                    ),
+                );
+                // If either side's stable count triple was inconsistent
+                // (a mid-combat transient), badge the pair complete-but-
+                // counts-incomplete rather than fully authoritative.
+                let counts_incomplete = attacker.counts_incomplete || defender.counts_incomplete;
+                detail_obj.insert(
+                    "side_detail_completeness".into(),
+                    json!(if counts_incomplete {
+                        "both_counts_incomplete"
+                    } else {
+                        "both"
+                    }),
+                );
+            }
+            (Some(_), None) => {
+                detail_obj.insert(
+                    "side_detail_completeness".into(),
+                    json!("attacker_only_suppressed"),
+                );
+            }
+            (None, Some(_)) => {
+                detail_obj.insert(
+                    "side_detail_completeness".into(),
+                    json!("defender_only_suppressed"),
+                );
+            }
+            (None, None) => {}
+        }
+        if detail.attacker_detail.is_none() {
+            if let Some(value) = Self::attribution_only_side_json(&detail.attacker_attribution) {
+                detail_obj.insert("attacker".into(), value);
+            }
+        }
+        if detail.defender_detail.is_none() {
+            if let Some(value) = Self::attribution_only_side_json(&detail.defender_attribution) {
+                detail_obj.insert("defender".into(), value);
+            }
+        }
+        if detail_obj.is_empty() {
+            None
+        } else {
+            Some(Value::Object(detail_obj))
+        }
     }
 
     fn country_ref_json(&self, tag_db_id: u32, unresolved: &mut BTreeSet<u32>) -> Value {
