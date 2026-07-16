@@ -13536,3 +13536,318 @@ fn two_segment_folds_of_one_hour_do_not_collide() {
         .unwrap()
         .starts_with("s00000001."));
 }
+
+// X11 expected-partial fold-scope audit regression (army_orders / domain 27):
+// domain 27 is one of the COMPACT_EXPECTED_PARTIAL_TOLERANCES domains routed
+// through the generic `handle_compact_failure` helper. This locks in both arms
+// of that helper for a domain whose prior coverage was thin: the tolerated
+// COMPACT_STATUS_PARTIAL_DATA frame folds and records ONLY the `partial_data`
+// badge (never a fail-closed `compact_status_failure`), while a hard
+// COMPACT_STATUS_SOURCE_UNAVAILABLE frame is rejected fail-closed with a
+// `compact_status_failure` badge and no `partial_data`. Both badges must reach
+// the `provenance.collector.domain_problems` list the typed consumer reads.
+#[test]
+fn army_orders_expected_partial_tolerance_folds_and_badges_partial_data() {
+    let snapshot = snapshot_for_domain_records(vec![(
+        27,
+        d27_order_payload(COMPACT_STATUS_PARTIAL_DATA, 10, &[5, 6]),
+    )]);
+
+    let problems = snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(27)
+                && problem["problem"] == json!("partial_data")),
+        "tolerated partial frame must record the partial_data badge: {problems:?}"
+    );
+    assert!(
+        !problems
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(27)
+                && problem["problem"] == json!("compact_status_failure")),
+        "a tolerated partial must NOT be treated as a fail-closed failure: {problems:?}"
+    );
+    // Tolerance keeps the domain folded (not unknown), so it appears in the
+    // hour's folded-domains list.
+    assert!(
+        snapshot["provenance"]["collector"]["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|domain| domain == &json!("army_orders")),
+        "tolerated partial army_orders frame must still fold"
+    );
+    assert!(snapshot["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("expected partial tolerance applied")));
+}
+
+#[test]
+fn army_orders_hard_failure_status_is_rejected_fail_closed() {
+    let snapshot = snapshot_for_domain_records(vec![(
+        27,
+        d27_order_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, 10, &[5, 6]),
+    )]);
+
+    let problems = snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(27)
+                && problem["problem"] == json!("compact_status_failure")),
+        "a non-tolerated failure status must fail closed with compact_status_failure: {problems:?}"
+    );
+    assert!(
+        !problems
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(27)
+                && problem["problem"] == json!("partial_data")),
+        "a hard failure must not be mislabelled as a tolerated partial: {problems:?}"
+    );
+    // The domain is marked SEEN (it was processed) but flagged unknown via the
+    // compact_status_failure badge; that badge — not absence from `domains` — is
+    // the fail-closed signal the typed consumer downgrades on. Assert the
+    // seen-domain membership the dossier (W12_X11_EXPECTED_PARTIAL_FOLD_AUDIT.md)
+    // claims this test pins, so absence-from-`domains` can never silently become
+    // the (wrong) fail-closed signal.
+    assert!(
+        snapshot["provenance"]["collector"]["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|domain| domain == &json!("army_orders")),
+        "a fail-closed army_orders frame must still be marked seen in `domains`: {:?}",
+        snapshot["provenance"]["collector"]["domains"]
+    );
+    // The note names the rejected failure mask.
+    assert!(snapshot["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("army_orders state unknown this hour")));
+    // Accumulator non-mutation, IN-HOUR proxy only: `battle_plan_orders` renders
+    // Null here because `build_order_of_battle` short-circuits on the fold-unknown
+    // badge WITHOUT reading `self.army_orders` (world_fold.rs ~3851). So this Null
+    // is bought by the unknown badge alone — it does NOT prove the accumulator was
+    // left untouched. A wrongly-inserted row would be masked this hour and only
+    // surface AFTER the hourly unknown flag resets. The real accumulator-non-mutation
+    // guarantee is proven across an hour boundary by
+    // `army_orders_hard_failure_does_not_poison_a_later_snapshot` below.
+    assert_eq!(
+        snapshot["order_of_battle"]["battle_plan_orders"],
+        Value::Null,
+        "a fail-closed army_orders frame must not fabricate battle_plan_orders rows this hour: {:?}",
+        snapshot["order_of_battle"]["battle_plan_orders"]
+    );
+}
+
+// Finding 2 (re-review): the in-hour `battle_plan_orders == Null` proxy above is
+// bought by the fold-unknown badge, which is CLEARED every hour by
+// `reset_hour_state`. The accumulator (`self.army_orders`) and the
+// `successful_fold_domains_seen` set, by contrast, PERSIST across hours. So the only
+// way to actually prove the hard failure left the accumulator untouched is to reset
+// the hourly unknown flag (advance one game hour) and build a SUBSEQUENT snapshot
+// with no d27 frame: if the hard failure had wrongly cleared+inserted the failure
+// row (army 10, states 5/6) and marked the domain seen, that poisoned row would now
+// surface (unknown=false this hour, seen persisted -> the array branch of
+// `build_order_of_battle` at world_fold.rs ~3853 emits it). The correct fold bails
+// before `mark_fold_domain_success`, so the domain is never `seen`, the accumulator
+// stays empty, and hour 2 still renders `battle_plan_orders` Null. An array here —
+// or one carrying army 10 — is the poisoned-row regression this test locks out.
+#[test]
+fn army_orders_hard_failure_does_not_poison_a_later_snapshot() {
+    let raw0 = raw_for(16_959_360);
+    let raw1 = raw_for(16_959_361);
+    let mut stream = Vec::new();
+    let mut seq = 1;
+    // Hour 0: the hard-failure d27 frame (SOURCE_UNAVAILABLE) carrying a
+    // valid-looking order row that must NOT be committed to the accumulator.
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        27,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &d27_order_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, 10, &[5, 6]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Hour 1: a NEW game hour with NO d27 frame at all (an unrelated country_identity
+    // record just guarantees a snapshot is produced). The hourly unknown flag has
+    // reset; the persisted accumulator is all that can surface army_orders now.
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "ENG")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("chunk3_army_orders_no_poison_later_hour");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2, "one snapshot per game hour");
+    let later = parse(&snaps[1].2);
+
+    // The hard failure never marked the domain `seen`, so with the hourly unknown
+    // flag reset the later hour emits NEITHER the Null (unknown) nor the array
+    // (seen) branch: `battle_plan_orders` is absent -> Value::Null. A poisoned
+    // accumulator would instead surface the `seen` array branch here.
+    let bpo = &later["order_of_battle"]["battle_plan_orders"];
+    assert_eq!(
+        *bpo,
+        Value::Null,
+        "a hard-failure army_orders frame must not leave a row that surfaces a later hour: {bpo:?}"
+    );
+    // Belt-and-braces: even if a future refactor makes this an array, it must never
+    // contain the failure row's army id (10).
+    if let Some(rows) = bpo.as_array() {
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row["army"] == json!(10)),
+            "the SOURCE_UNAVAILABLE failure row (army 10) leaked into a later snapshot: {rows:?}"
+        );
+    }
+}
+
+// Finding 2 (re-review, seen==true teeth): the sibling test above proves the hard
+// failure never MARKS domain 27 seen -- but that makes its later-hour Null bought by
+// `successful_fold_domains_seen == false`, which SHIELDS a poisoned accumulator: the
+// `seen` gate at `build_order_of_battle` (world_fold.rs ~3853) never fires, so NO
+// array is emitted no matter what `self.army_orders` holds. A leaked row would be
+// invisible. This variant removes that shield. It first SEEDS a SUCCESSFUL d27
+// baseline (army 7) so `successful_fold_domains_seen` contains 27 and the accumulator
+// is non-empty, THEN folds the SOURCE_UNAVAILABLE d27 frame (army 10) in the same
+// hour, THEN builds a later-hour snapshot. Because the domain is now genuinely `seen`,
+// the array branch DOES render from the accumulator, so a poisoned row WOULD surface.
+// The correct fold bails inside `handle_compact_failure` (world_fold.rs ~6481) BEFORE
+// touching `self.army_orders`, so the later hour must render ONLY the seeded baseline
+// (army 7, states 3/4) and never the failure row (army 10). Mutation-verified: making
+// the `handle_compact_failure` early-return in `fold_army_orders` non-returning makes
+// THIS test fail on the leaked army-10 row EVEN WITH seen==true -- the leak the
+// sibling (seen==false) test structurally cannot catch.
+#[test]
+fn army_orders_hard_failure_does_not_poison_a_seeded_baseline_later_snapshot() {
+    let raw0 = raw_for(16_959_360);
+    let raw1 = raw_for(16_959_361);
+    let mut stream = Vec::new();
+    let mut seq = 1;
+    // Hour 0, record 1: a SUCCESSFUL d27 baseline (status OK == 0) that marks domain
+    // 27 seen and populates the accumulator with army 7 / states 3,4.
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        27,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &d27_order_payload(0, 7, &[3, 4]),
+    );
+    seq += 1;
+    // Hour 0, record 2: the hard-failure d27 frame (SOURCE_UNAVAILABLE) carrying a
+    // DIFFERENT, valid-looking order row (army 10) that must NOT overwrite, augment,
+    // or clear the seeded baseline in the accumulator.
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        27,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &d27_order_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, 10, &[5, 6]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Hour 1: a NEW game hour with NO d27 frame (an unrelated country_identity record
+    // just guarantees a snapshot is produced). The hourly unknown flag has reset; the
+    // persisted `seen` flag + accumulator are all that can surface army_orders now.
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "ENG")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("chunk3_army_orders_seeded_baseline_no_poison");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2, "one snapshot per game hour");
+    let later = parse(&snaps[1].2);
+
+    // seen==true (from the baseline) + hourly unknown flag reset -> the array branch
+    // renders from the persisted accumulator. It must be EXACTLY the seeded baseline.
+    let bpo = &later["order_of_battle"]["battle_plan_orders"];
+    let rows = bpo.as_array().unwrap_or_else(|| {
+        panic!("a seeded (seen==true) baseline must surface battle_plan_orders as an array in a later hour: {bpo:?}")
+    });
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the seeded baseline row must survive the hard failure: {rows:?}"
+    );
+    assert_eq!(
+        rows[0]["army"],
+        json!(7),
+        "the surviving row must be the seeded baseline (army 7), not the failure row: {rows:?}"
+    );
+    assert_eq!(
+        rows[0]["order_instance"]["states"],
+        json!([3, 4]),
+        "the seeded baseline states must be intact and un-poisoned: {rows:?}"
+    );
+    // The SOURCE_UNAVAILABLE failure row (army 10) must NEVER appear on top of the
+    // seeded baseline -- this is the poisoned-accumulator regression seen==true catches.
+    assert!(
+        !rows.iter().any(|row| row["army"] == json!(10)),
+        "the hard-failure row (army 10) poisoned the seeded accumulator: {rows:?}"
+    );
+}

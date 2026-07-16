@@ -2307,6 +2307,11 @@ def _wire_naval_combat_stats(snap: Dict[str, Any], pid: Optional[int]) -> bool:
         cid = s.get("combat_id") if isinstance(s, dict) else None
         if not isinstance(cid, int):
             return False
+        # Store the FULL per-side dicts unchanged. Each side carries an explicit
+        # damage_map_status (complete/empty/partial/unavailable) from
+        # read_side_stats; keeping the side dict intact means a partial/unavailable
+        # per-equipment damage read stays BADGED as such in naval_stats and is never
+        # silently promoted to a fully-read "complete" statistic (finding 2).
         by_id[str(cid)] = {"attacker": s.get("attacker"),
                            "defender": s.get("defender")}
     if not by_id:
