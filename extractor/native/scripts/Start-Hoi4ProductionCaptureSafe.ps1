@@ -29,9 +29,11 @@ param(
     [int]$MaxFinalizeSeconds = 1800,
     [int]$CancellationGraceSeconds = 5,
     [string]$AttemptStateRoot = "",
+    [string]$Rung = "",
     [switch]$SkipBuild,
     [switch]$DryRun,
-    [switch]$AllowOneDriveOutput
+    [switch]$AllowOneDriveOutput,
+    [switch]$AllowExistingEmptyOutDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,8 +121,18 @@ if (-not $AllowOneDriveOutput) {
         }
     }
 }
-if (Test-Path -LiteralPath $OutDir) { throw "refusing to reuse an existing session directory: $OutDir" }
-New-Item -ItemType Directory -Path $OutDir | Out-Null
+if (Test-Path -LiteralPath $OutDir) {
+    # Default (fail-closed) behaviour is unchanged: an existing OutDir is refused so a
+    # stale/planted directory can never be adopted. -AllowExistingEmptyOutDir is an
+    # explicit opt-in for a caller (the acceptance ladder) that pre-allocates a FRESH,
+    # EMPTY run directory of its own: an existing dir is then permitted ONLY when it is
+    # a directory AND contains nothing, so the anti-stale-artifact property still holds.
+    # A non-empty existing dir is still refused, switch or not.
+    $existingEmptyOk = $AllowExistingEmptyOutDir -and (Test-Path -LiteralPath $OutDir -PathType Container) -and (@(Get-ChildItem -LiteralPath $OutDir -Force).Count -eq 0)
+    if (-not $existingEmptyOk) { throw "refusing to reuse an existing session directory: $OutDir" }
+} else {
+    New-Item -ItemType Directory -Path $OutDir | Out-Null
+}
 if ([string]::IsNullOrWhiteSpace($EmittedTokensPath)) {
     $EmittedTokensPath = Join-Path $OutDir "emitted_token_inventory.json"
 } else {
@@ -238,6 +250,11 @@ $plan = [ordered]@{
     production_profile_domain_ids = @(Get-RegistryCaptureDomains $registryPath | ForEach-Object { [int]$_.id })
     recorder_arguments = $args
 }
+# Optional rung-identity binding (additive): when the acceptance ladder drives this
+# launcher for a specific F6 rung it passes -Rung, which is recorded in the plan so the
+# produced run is BOUND to that rung (Invoke-AcceptanceLadder Get-RunDirBoundRung). Absent
+# (default) the plan carries no `rung` key and every prior behaviour is unchanged.
+if (-not [string]::IsNullOrWhiteSpace($Rung)) { $plan["rung"] = $Rung }
 $planPath = Join-Path $OutDir "production_capture_plan.json"
 Write-DurableJson -Path $planPath -Value $plan
 if ($DryRun) { Write-Host "DRY RUN: one recorder invocation planned; no process opened and no injection performed"; exit 0 }
