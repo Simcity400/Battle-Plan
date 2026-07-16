@@ -9,8 +9,12 @@ use crate::control_transport::{
 };
 
 const PAYLOAD_SCHEMA: u16 = 1;
-const COLLECTOR_HELLO_LEN: usize = 68;
-const COLLECTOR_HELLO_WITH_CAPABILITIES_LEN: usize = 72;
+// Pinned to the shared codec's constants so the recorder's admission lengths
+// and the collector client's shared encoder can never drift.
+const COLLECTOR_HELLO_LEN: usize =
+    compact_contract::control_transport::payloads::COLLECTOR_HELLO_LEN;
+const COLLECTOR_HELLO_WITH_CAPABILITIES_LEN: usize =
+    compact_contract::control_transport::payloads::COLLECTOR_HELLO_WITH_CAPABILITIES_LEN;
 const HEARTBEAT_PROOF_LEN: usize = 32;
 const HEARTBEAT_STATE_PRODUCING: u16 = 2;
 
@@ -67,16 +71,20 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 pub fn collector_hello_payload(expectation: &ProofExpectation) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(COLLECTOR_HELLO_LEN);
-    payload.extend_from_slice(&PAYLOAD_SCHEMA.to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes());
-    payload.extend_from_slice(&expectation.pid.to_le_bytes());
-    payload.extend_from_slice(&expectation.creation_filetime.to_le_bytes());
-    payload.extend_from_slice(&expectation.h4cr_version.to_le_bytes());
-    payload.extend_from_slice(&CONTROL_VERSION.to_le_bytes());
-    payload.extend_from_slice(&expectation.dll_sha256);
-    payload.extend_from_slice(&expectation.challenge);
-    payload
+    // Single implementation of the H4CT payload layout lives in the shared
+    // `compact_contract` codec; this stays a thin, byte-identical adapter over
+    // the recorder's `ProofExpectation` so the collector and recorder can never
+    // encode a different CollectorHello.
+    compact_contract::control_transport::payloads::encode_collector_hello(
+        &compact_contract::control_transport::payloads::CollectorHelloV1 {
+            pid: expectation.pid,
+            creation_filetime: expectation.creation_filetime,
+            h4cr_version: expectation.h4cr_version,
+            control_version: CONTROL_VERSION,
+            dll_sha256: expectation.dll_sha256,
+            challenge: expectation.challenge,
+        },
+    )
 }
 
 pub fn validate_collector_hello(
@@ -97,10 +105,20 @@ pub fn collector_hello_with_capabilities_payload(
     expectation: &ProofExpectation,
     capabilities: ControlCapabilities,
 ) -> Vec<u8> {
-    let mut payload = collector_hello_payload(expectation);
-    payload.reserve_exact(COLLECTOR_HELLO_WITH_CAPABILITIES_LEN - payload.len());
-    payload.extend_from_slice(&capabilities.bits().to_le_bytes());
-    payload
+    // Byte-identical adapter over the shared H4CT codec: the collector client
+    // encodes its hello through the exact same function, so the two endpoints
+    // cannot produce different admission bytes.
+    compact_contract::control_transport::payloads::encode_collector_hello_with_capabilities(
+        &compact_contract::control_transport::payloads::CollectorHelloV1 {
+            pid: expectation.pid,
+            creation_filetime: expectation.creation_filetime,
+            h4cr_version: expectation.h4cr_version,
+            control_version: CONTROL_VERSION,
+            dll_sha256: expectation.dll_sha256,
+            challenge: expectation.challenge,
+        },
+        capabilities.bits(),
+    )
 }
 
 /// Decode and bind a collector-originated hello to the retained attempt facts.
@@ -129,14 +147,14 @@ pub fn decode_collector_hello_capabilities(
 }
 
 pub fn heartbeat_proof_payload(expectation: &ProofExpectation, sequence: u64) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(HEARTBEAT_PROOF_LEN);
-    payload.extend_from_slice(&PAYLOAD_SCHEMA.to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes());
-    payload.extend_from_slice(&expectation.challenge);
-    payload.extend_from_slice(&sequence.to_le_bytes());
-    payload.extend_from_slice(&HEARTBEAT_STATE_PRODUCING.to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes());
-    payload
+    // Byte-identical adapter over the shared H4CT codec (see above).
+    compact_contract::control_transport::payloads::encode_heartbeat_proof(
+        &compact_contract::control_transport::payloads::HeartbeatProofV1 {
+            challenge: expectation.challenge,
+            last_h4cr_sequence: sequence,
+            state: compact_contract::control_transport::payloads::HEARTBEAT_STATE_PRODUCING,
+        },
+    )
 }
 
 pub fn validate_heartbeat_proof(

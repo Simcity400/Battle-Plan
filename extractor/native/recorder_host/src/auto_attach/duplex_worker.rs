@@ -52,13 +52,10 @@ pub fn auto_attach_duplex_product_permit(
 }
 
 pub fn required_auto_attach_duplex_capabilities() -> ControlCapabilities {
-    ControlCapabilities::from_bits(
-        ControlCapabilities::HEARTBEAT
-            | ControlCapabilities::FIRST_COMPACT_ACK
-            | ControlCapabilities::TRANSPORT_STATUS
-            | ControlCapabilities::CAMPAIGN_IDENTITY,
-    )
-    .expect("closed auto-attach capability set")
+    // Single source of truth in the shared codec: the collector client's hello
+    // advertises `ControlCapabilities::auto_attach_duplex_v1()` and admission
+    // here requires exactly the same closed word, so they cannot drift.
+    ControlCapabilities::auto_attach_duplex_v1()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2413,4 +2410,413 @@ mod tests {
         assert_eq!(session.sink_failure(), Some(&report));
         assert_eq!(session.state(), DuplexWorkerState::Failed);
     }
+
+    // --- cross-crate loopback: REAL collector client vs REAL worker admission ---
+
+    /// In-memory transport for the real collector client that captures the
+    /// exact bytes it puts on the wire.
+    struct ClientCaptureIo {
+        outbound: Rc<RefCell<Vec<u8>>>,
+    }
+
+    impl collector::duplex_client::DeadlineControlIo for ClientCaptureIo {
+        fn send_all(
+            &mut self,
+            bytes: &[u8],
+            _deadline: collector::duplex_client::MonotonicDeadline,
+        ) -> Result<(), collector::duplex_client::DuplexIoError> {
+            self.outbound.borrow_mut().extend_from_slice(bytes);
+            Ok(())
+        }
+
+        fn recv_exact(
+            &mut self,
+            _bytes: &mut [u8],
+            _deadline: collector::duplex_client::MonotonicDeadline,
+        ) -> Result<(), collector::duplex_client::DuplexIoError> {
+            // The loopback only drives the collector-first hello send.
+            Err(collector::duplex_client::DuplexIoError::PeerClosed)
+        }
+    }
+
+    struct ClientZeroClock;
+
+    impl collector::duplex_client::MonotonicClock for ClientZeroClock {
+        fn now(&self) -> collector::duplex_client::MonotonicInstant {
+            collector::duplex_client::MonotonicInstant(0)
+        }
+    }
+
+    /// Drive the REAL collector client's `perform_handshake` over an in-memory
+    /// transport and return the exact wire bytes it produced.
+    fn real_collector_client_hello_bytes(client_session: [u8; 16]) -> Vec<u8> {
+        let outbound = Rc::new(RefCell::new(Vec::new()));
+        let session =
+            crate::control_transport::claim_session_capability(client_session).unwrap();
+        let expected = expectation();
+        let mut client = collector::duplex_client::CollectorControlClient::new(
+            &collector::duplex_client::test_duplex_client_permit(),
+            ClientCaptureIo {
+                outbound: Rc::clone(&outbound),
+            },
+            ClientZeroClock,
+            session,
+            collector::duplex_client::CollectorIdentity::from_attach(
+                expected.pid,
+                expected.creation_filetime,
+                expected.h4cr_version,
+                expected.dll_sha256,
+                expected.challenge,
+            ),
+            collector::duplex_client::DuplexClientPolicy::DEFAULT,
+        );
+        let deadline = collector::duplex_client::MonotonicDeadline::from_now(
+            &ClientZeroClock,
+            Duration::from_secs(30),
+        );
+        client.perform_handshake(&collector::duplex_client::test_duplex_client_permit(), deadline).unwrap();
+        let bytes = outbound.borrow().clone();
+        bytes
+    }
+
+    /// Compatibility loopback: the REAL collector client's collector-first hello
+    /// is accepted by the REAL recorder worker-session admission.
+    ///
+    /// In production the two endpoints live in separate processes and each
+    /// claims the per-attach session id once; a single test process cannot claim
+    /// one id twice, so after the client's own framing is validated wire-exactly
+    /// (same codec both sides: session id, sequence 0, kind), the byte-identical
+    /// hello payload is re-framed under the worker's session id. The payload —
+    /// the 72-byte capabilities form, the identity binding, and the capability
+    /// word, i.e. everything admission judges — passes through untouched.
+    #[test]
+    fn real_collector_client_hello_is_admitted_by_the_worker_session() {
+        let client_session = [0xD1; 16];
+        let bytes = real_collector_client_hello_bytes(client_session);
+
+        // The client framed exactly one CollectorHello at ITS sequence 0.
+        let client_sid = SessionId::from_bytes(client_session).unwrap();
+        let frame = crate::control_transport::decode_frame(&bytes, client_sid, 0).unwrap();
+        assert_eq!(frame.kind, MessageKind::CollectorHello);
+        assert_eq!(bytes.len(), crate::control_transport::CONTROL_HEADER_LEN + 72);
+
+        // The payload decodes through the recorder's REAL admission decoder,
+        // binds to the retained attempt facts, and claims exactly the required
+        // capability word.
+        let observed =
+            super::super::proof::decode_collector_hello_capabilities(&frame.payload, &expectation())
+                .unwrap();
+        assert_eq!(observed, required_auto_attach_duplex_capabilities());
+
+        // Full REAL worker-session admission over the identical payload.
+        let worker_session = [0xD2; 16];
+        let worker_sid = SessionId::from_bytes(worker_session).unwrap();
+        let inbound =
+            encode_frame(worker_sid, 0, MessageKind::CollectorHello, &frame.payload).unwrap();
+        let mut session = accept(prepared_with_inbound(worker_session, inbound));
+        session.receive_collector_hello(Instant::now()).unwrap();
+        assert_eq!(session.state(), DuplexWorkerState::WaitingForWorld);
+    }
+
+    /// Negative loopback: the historical 68-byte hello — even byte-built by the
+    /// shared codec with the exact expected identity — is rejected by product
+    /// admission, which accepts only the 72-byte capabilities form.
+    #[test]
+    fn base_68_byte_collector_hello_is_rejected_by_worker_admission() {
+        let expected = expectation();
+        let payload = compact_contract::control_transport::payloads::encode_collector_hello(
+            &compact_contract::control_transport::payloads::CollectorHelloV1 {
+                pid: expected.pid,
+                creation_filetime: expected.creation_filetime,
+                h4cr_version: expected.h4cr_version,
+                control_version: crate::control_transport::CONTROL_VERSION,
+                dll_sha256: expected.dll_sha256,
+                challenge: expected.challenge,
+            },
+        );
+        assert_eq!(payload.len(), 68);
+
+        let worker_session = [0xD3; 16];
+        let worker_sid = SessionId::from_bytes(worker_session).unwrap();
+        let inbound =
+            encode_frame(worker_sid, 0, MessageKind::CollectorHello, &payload).unwrap();
+        let mut session = accept(prepared_with_inbound(worker_session, inbound));
+        let err = session.receive_collector_hello(Instant::now()).unwrap_err();
+        assert!(
+            matches!(err, DuplexWorkerError::CollectorHello(_)),
+            "got {err:?}"
+        );
+        assert_eq!(session.state(), DuplexWorkerState::Failed);
+    }
+
+    // --- all four advertised capabilities, end-to-end against real host code ---
+
+    /// In-memory duplex transport for the real client with BOTH a captured
+    /// outbound stream and a scripted inbound stream (recorder->collector).
+    struct ClientPairIo {
+        outbound: Rc<RefCell<Vec<u8>>>,
+        inbound: Rc<RefCell<std::collections::VecDeque<u8>>>,
+    }
+
+    impl collector::duplex_client::DeadlineControlIo for ClientPairIo {
+        fn send_all(
+            &mut self,
+            bytes: &[u8],
+            _deadline: collector::duplex_client::MonotonicDeadline,
+        ) -> Result<(), collector::duplex_client::DuplexIoError> {
+            self.outbound.borrow_mut().extend_from_slice(bytes);
+            Ok(())
+        }
+
+        fn recv_exact(
+            &mut self,
+            bytes: &mut [u8],
+            _deadline: collector::duplex_client::MonotonicDeadline,
+        ) -> Result<(), collector::duplex_client::DuplexIoError> {
+            let mut inbound = self.inbound.borrow_mut();
+            if inbound.len() < bytes.len() {
+                return Err(collector::duplex_client::DuplexIoError::PeerClosed);
+            }
+            for slot in bytes.iter_mut() {
+                *slot = inbound.pop_front().expect("length checked");
+            }
+            Ok(())
+        }
+    }
+
+    fn client_identity() -> collector::duplex_client::CollectorIdentity {
+        let expected = expectation();
+        collector::duplex_client::CollectorIdentity::from_attach(
+            expected.pid,
+            expected.creation_filetime,
+            expected.h4cr_version,
+            expected.dll_sha256,
+            expected.challenge,
+        )
+    }
+
+    fn far_client_deadline() -> collector::duplex_client::MonotonicDeadline {
+        collector::duplex_client::MonotonicDeadline::from_now(&ClientZeroClock, Duration::from_secs(30))
+    }
+
+    /// TRANSPORT_STATUS loopback: the REAL client's `report_sink_failure`
+    /// produces a frame the REAL worker-session admission routes and surfaces
+    /// as an authoritative terminal sink failure.
+    #[test]
+    fn real_client_sink_failure_is_routed_and_surfaced_by_the_worker() {
+        let report = terminal_sink_failure();
+
+        // Drive the real client: handshake, then report the sink failure.
+        let outbound = Rc::new(RefCell::new(Vec::new()));
+        let mut client = collector::duplex_client::CollectorControlClient::new(
+            &collector::duplex_client::test_duplex_client_permit(),
+            ClientPairIo {
+                outbound: Rc::clone(&outbound),
+                inbound: Rc::new(RefCell::new(std::collections::VecDeque::new())),
+            },
+            ClientZeroClock,
+            crate::control_transport::claim_session_capability([0xE1; 16]).unwrap(),
+            client_identity(),
+            collector::duplex_client::DuplexClientPolicy::DEFAULT,
+        );
+        let deadline = far_client_deadline();
+        client.perform_handshake(&collector::duplex_client::test_duplex_client_permit(), deadline).unwrap();
+        client.report_sink_failure(&report, deadline).unwrap();
+
+        // The client's second frame (after the hello) is the sink failure. Decode
+        // its framing with the shared codec, then re-frame the identical payload
+        // at the worker's admission sequence 0 (a single test process cannot
+        // claim one per-attach id twice).
+        let bytes = outbound.borrow().clone();
+        let hello_wire = crate::control_transport::CONTROL_HEADER_LEN + 72;
+        let sink_frame = crate::control_transport::decode_frame(
+            &bytes[hello_wire..],
+            SessionId::from_bytes([0xE1; 16]).unwrap(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(sink_frame.kind, MessageKind::SinkTerminalFailure);
+
+        // The REAL worker session, waiting for the collector hello, routes a
+        // sink-failure frame to its authoritative consumer and surfaces it.
+        let worker_session = [0xE2; 16];
+        let worker_sid = SessionId::from_bytes(worker_session).unwrap();
+        let inbound =
+            encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
+        let mut session = accept(prepared_with_inbound(worker_session, inbound));
+        let err = session.receive_collector_hello(Instant::now()).unwrap_err();
+        assert!(matches!(err, DuplexWorkerError::SinkFailure(_)), "got {err:?}");
+        assert_eq!(session.sink_failure(), Some(&report));
+    }
+
+    /// TRANSPORT_STATUS pre-hello loopback: the REAL client's PRE-HELLO sink
+    /// SETUP failure (its very first frame, no hello) is accepted by the REAL
+    /// worker session's first-frame window and surfaced as a structured failure
+    /// rather than a bare timeout.
+    #[test]
+    fn real_client_pre_hello_sink_setup_failure_is_admitted_by_the_worker() {
+        let report = setup_sink_failure();
+
+        // Drive the real client: report the sink SETUP failure BEFORE any hello.
+        let outbound = Rc::new(RefCell::new(Vec::new()));
+        let mut client = collector::duplex_client::CollectorControlClient::new(
+            &collector::duplex_client::test_duplex_client_permit(),
+            ClientPairIo {
+                outbound: Rc::clone(&outbound),
+                inbound: Rc::new(RefCell::new(std::collections::VecDeque::new())),
+            },
+            ClientZeroClock,
+            crate::control_transport::claim_session_capability([0xE4; 16]).unwrap(),
+            client_identity(),
+            collector::duplex_client::DuplexClientPolicy::DEFAULT,
+        );
+        let deadline = far_client_deadline();
+        client.report_sink_failure(&report, deadline).unwrap();
+
+        // The client's FIRST and only frame is the sink setup failure at seq 0.
+        let bytes = outbound.borrow().clone();
+        let sink_frame = crate::control_transport::decode_frame(
+            &bytes,
+            SessionId::from_bytes([0xE4; 16]).unwrap(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(sink_frame.kind, MessageKind::SinkSetupFailure);
+
+        // The REAL worker session admits it through recv_handshake_until's
+        // pre-hello window and surfaces the structured report.
+        let worker_session = [0xE5; 16];
+        let worker_sid = SessionId::from_bytes(worker_session).unwrap();
+        let inbound = encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
+        let mut session = accept(prepared_with_inbound(worker_session, inbound));
+        let err = session.receive_collector_hello(Instant::now()).unwrap_err();
+        assert!(matches!(err, DuplexWorkerError::SinkFailure(_)), "got {err:?}");
+        assert_eq!(session.sink_failure(), Some(&report));
+    }
+
+    /// TRANSPORT_STATUS loopback (Terminal variant): a sink TERMINAL failure is
+    /// ALSO a valid pre-hello first frame (both sinks opened, then the first
+    /// sequence-0 write failed before the hello). The REAL client emits it at
+    /// seq 0 and the REAL worker admits it through the same pre-hello window.
+    #[test]
+    fn real_client_pre_hello_sink_terminal_failure_is_admitted_by_the_worker() {
+        let report = terminal_sink_failure();
+
+        let outbound = Rc::new(RefCell::new(Vec::new()));
+        let mut client = collector::duplex_client::CollectorControlClient::new(
+            &collector::duplex_client::test_duplex_client_permit(),
+            ClientPairIo {
+                outbound: Rc::clone(&outbound),
+                inbound: Rc::new(RefCell::new(std::collections::VecDeque::new())),
+            },
+            ClientZeroClock,
+            crate::control_transport::claim_session_capability([0xE6; 16]).unwrap(),
+            client_identity(),
+            collector::duplex_client::DuplexClientPolicy::DEFAULT,
+        );
+        let deadline = far_client_deadline();
+        client.report_sink_failure(&report, deadline).unwrap();
+
+        let bytes = outbound.borrow().clone();
+        let sink_frame = crate::control_transport::decode_frame(
+            &bytes,
+            SessionId::from_bytes([0xE6; 16]).unwrap(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(sink_frame.kind, MessageKind::SinkTerminalFailure);
+
+        let worker_session = [0xE7; 16];
+        let worker_sid = SessionId::from_bytes(worker_session).unwrap();
+        let inbound = encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
+        let mut session = accept(prepared_with_inbound(worker_session, inbound));
+        let err = session.receive_collector_hello(Instant::now()).unwrap_err();
+        assert!(matches!(err, DuplexWorkerError::SinkFailure(_)), "got {err:?}");
+        assert_eq!(session.sink_failure(), Some(&report));
+    }
+
+    /// CAMPAIGN_IDENTITY loopback: the REAL client's `report_identity_failure`
+    /// produces a CIF1 the REAL host decoder accepts, and the client surfaces
+    /// the REAL host's CIA1 ack (both sides now share the one identity codec).
+    #[test]
+    fn real_client_identity_failure_is_decoded_and_acked_end_to_end() {
+        use crate::duplex_session::identity_control::{
+            decode_identity_failure, encode_identity_failure_ack, IdentityFailureAckDisposition,
+            IdentityFailureAckV1, IdentityFailureReason, IdentityFailureV1,
+        };
+
+        let failure = IdentityFailureV1 {
+            reason: IdentityFailureReason::UnreadableRoot,
+            current_logical_id: Some(5),
+            attempt_id: 77,
+            attempted_hour: None,
+            uuid_raw: None,
+            seed_raw: None,
+            profile_raw: None,
+            first_read_complete: false,
+            second_read_complete: false,
+            reads_equal: false,
+            last_admitted_sequence: Some(3),
+            current_cid1_hash: Some([9; 32]),
+        };
+
+        // The REAL host durable-recorded ack it would return (as
+        // dispatch_identity_failure_frame builds), scripted as the recorder's
+        // sequence-0 inbound frame for the client to receive.
+        let client_sid = SessionId::from_bytes([0xE3; 16]).unwrap();
+        let ack = IdentityFailureAckV1 {
+            attempt_id: failure.attempt_id,
+            logical_id: failure.current_logical_id,
+            disposition: IdentityFailureAckDisposition::DurablyRecorded,
+            error: 0,
+        };
+        let ack_frame = encode_frame(
+            client_sid,
+            0,
+            MessageKind::IdentityFailureAck,
+            &encode_identity_failure_ack(ack).unwrap(),
+        )
+        .unwrap();
+
+        let outbound = Rc::new(RefCell::new(Vec::new()));
+        let inbound = Rc::new(RefCell::new(std::collections::VecDeque::from(ack_frame)));
+        let mut client = collector::duplex_client::CollectorControlClient::new(
+            &collector::duplex_client::test_duplex_client_permit(),
+            ClientPairIo {
+                outbound: Rc::clone(&outbound),
+                inbound: Rc::clone(&inbound),
+            },
+            ClientZeroClock,
+            crate::control_transport::claim_session_capability([0xE3; 16]).unwrap(),
+            client_identity(),
+            collector::duplex_client::DuplexClientPolicy::DEFAULT,
+        );
+        let deadline = far_client_deadline();
+        client.perform_handshake(&collector::duplex_client::test_duplex_client_permit(), deadline).unwrap();
+        client.report_identity_failure(&failure, deadline).unwrap();
+
+        // The client's CIF1 decodes through the REAL host codec, unchanged.
+        let bytes = outbound.borrow().clone();
+        let hello_wire = crate::control_transport::CONTROL_HEADER_LEN + 72;
+        let cif1 = crate::control_transport::decode_frame(&bytes[hello_wire..], client_sid, 1)
+            .unwrap();
+        assert_eq!(cif1.kind, MessageKind::IdentityFailure);
+        assert_eq!(decode_identity_failure(&cif1.payload).unwrap(), failure);
+
+        // The client surfaces the REAL host's CIA1 ack.
+        let event = client.serve_next(deadline).unwrap();
+        assert_eq!(
+            event,
+            collector::duplex_client::ClientEvent::IdentityFailureAcked(
+                compact_contract::identity_control::IdentityFailureAckV1 {
+                    attempt_id: 77,
+                    logical_id: Some(5),
+                    disposition:
+                        compact_contract::identity_control::IdentityFailureAckDisposition::DurablyRecorded,
+                    error: 0,
+                }
+            )
+        );
+    }
+
 }

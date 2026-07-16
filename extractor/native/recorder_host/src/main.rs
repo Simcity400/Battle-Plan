@@ -1011,7 +1011,12 @@ fn run() -> Result<(), String> {
         .as_ref()
         .map(|context| context.pipe_token.clone())
         .unwrap_or_else(pipe_token);
-    write_control_file(&cfg, &pipe_token)?;
+    // Duplex auto-attach carries a per-attach control challenge; the manual path
+    // has none, so this stays `None` and the control file is byte-identical.
+    let control_challenge = auto_attach_worker
+        .as_ref()
+        .map(|context| context.expectation.challenge);
+    write_control_file(&cfg, &pipe_token, control_challenge.as_ref())?;
 
     let hook_hold_ms = u64::from(cfg.duration_ms)
         .saturating_add(cfg.dwell_ms)
@@ -6294,7 +6299,11 @@ fn require_domain57_transcript_file_sha256(
     Ok(())
 }
 
-fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
+fn write_control_file(
+    cfg: &Config,
+    pipe_token: &str,
+    control_challenge: Option<&[u8; 16]>,
+) -> Result<(), String> {
     let control_path = cfg
         .dll
         .parent()
@@ -6377,6 +6386,20 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
             .insert(
                 "domain57_game_speed_transcript_file_sha256".to_string(),
                 Value::String(sha256.clone()),
+            );
+    }
+    // ADDITIVE, behavior-gated: the per-attach H4CT control challenge is written
+    // into the SAME control block the injected DLL reads, mirroring `pipe_token`,
+    // ONLY for the auto-attach duplex path that supplies one. Ordinary (manual /
+    // non-duplex) invocations pass `None`, so the key is never inserted and the
+    // serialized control file is byte-identical to before this field existed.
+    if let Some(challenge) = control_challenge {
+        payload
+            .as_object_mut()
+            .expect("collector control payload is an object")
+            .insert(
+                "control_challenge".to_string(),
+                Value::String(recorder_host::auto_attach::proof::encode_hex(challenge)),
             );
     }
     let mut bytes = serde_json::to_vec(&payload)
@@ -22947,7 +22970,7 @@ mod tests {
         }));
         cfg.domain57_game_speed_transcript_file_sha256 = Some(sha256.clone());
 
-        write_control_file(&cfg, "d57-token").unwrap();
+        write_control_file(&cfg, "d57-token", None).unwrap();
         let control: Value =
             serde_json::from_slice(&fs::read(dir.join("collector_control.json")).unwrap()).unwrap();
         assert_eq!(
@@ -23271,7 +23294,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let cfg = parse_args(profile_test_args(&dir, &["--profile", "debug"])).unwrap();
-        write_control_file(&cfg, "tok").unwrap();
+        write_control_file(&cfg, "tok", None).unwrap();
         let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
 
         assert!(
@@ -23295,7 +23318,7 @@ mod tests {
         // No profile is resolved to the host's legacy debug-mode settings; JSON
         // null is never emitted because the collector rejects it as malformed.
         let cfg_legacy = parse_args(profile_test_args(&dir, &[])).unwrap();
-        write_control_file(&cfg_legacy, "tok").unwrap();
+        write_control_file(&cfg_legacy, "tok", None).unwrap();
         let legacy = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(legacy.contains("\"profile\":\"debug\""), "legacy: {legacy}");
         assert!(!legacy.contains("\"domain57_game_speed_gate\""));
@@ -23353,7 +23376,7 @@ mod tests {
             cfg_shadow.d53_relation_read_mode,
             D53RelationReadMode::Shadow
         );
-        write_control_file(&cfg_shadow, "tok").unwrap();
+        write_control_file(&cfg_shadow, "tok", None).unwrap();
         let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(
             control.contains("\"d53_relation_read_mode\":\"shadow\""),
@@ -23366,6 +23389,51 @@ mod tests {
             &["--d53-relation-read-mode", "nope"],
         ))
         .is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // BLOCKER 2 writer: the per-attach H4CT control challenge is written into the
+    // SAME control block the injected DLL reads (mirroring `pipe_token`), and its
+    // absence leaves the control file byte-identical to before the field existed.
+    #[test]
+    fn write_control_file_emits_challenge_only_when_present() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_control_challenge_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = parse_args(profile_test_args(&dir, &["--profile", "debug"])).unwrap();
+
+        // Baseline: no challenge => the key is never written.
+        write_control_file(&cfg, "tok", None).unwrap();
+        let without = fs::read_to_string(dir.join("collector_control.json")).unwrap();
+        assert!(!without.contains("control_challenge"), "without: {without}");
+
+        // With a challenge => `"control_challenge":"<hex>"` is present and the
+        // hex decodes back to the exact bytes the recorder later admits.
+        let challenge: [u8; 16] = [
+            0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2,
+            0xe1, 0xf0,
+        ];
+        let hex = recorder_host::auto_attach::proof::encode_hex(&challenge);
+        write_control_file(&cfg, "tok", Some(&challenge)).unwrap();
+        let with = fs::read_to_string(dir.join("collector_control.json")).unwrap();
+        assert!(
+            with.contains(&format!("\"control_challenge\":\"{hex}\"")),
+            "with: {with}"
+        );
+        assert_eq!(
+            recorder_host::auto_attach::proof::decode_hex_16(&hex).unwrap(),
+            challenge
+        );
+
+        // Absent-challenge output is byte-identical to the with-challenge output
+        // once the single added key is removed (serde emits object keys sorted,
+        // so the challenge key lands between `compact_country_frame` and
+        // `country_object_scan`; removing it reconstructs the baseline exactly).
+        let stripped = with.replace(&format!("\"control_challenge\":\"{hex}\","), "");
+        assert_eq!(stripped, without, "absent challenge must be byte-identical");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -23383,7 +23451,7 @@ mod tests {
         let cfg_default = parse_args(profile_test_args(&dir, &[])).unwrap();
         assert_eq!(cfg_default.prefetch_dist_relation, None);
         assert_eq!(cfg_default.prefetch_dist_candidates, None);
-        write_control_file(&cfg_default, "tok").unwrap();
+        write_control_file(&cfg_default, "tok", None).unwrap();
         let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(
             control.contains("\"prefetch_dist_relation\":null"),
@@ -23405,7 +23473,7 @@ mod tests {
         .unwrap();
         assert_eq!(cfg_set.prefetch_dist_relation, Some(8));
         assert_eq!(cfg_set.prefetch_dist_candidates, Some(0));
-        write_control_file(&cfg_set, "tok").unwrap();
+        write_control_file(&cfg_set, "tok", None).unwrap();
         let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(
             control.contains("\"prefetch_dist_relation\":8"),

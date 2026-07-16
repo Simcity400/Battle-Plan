@@ -396,6 +396,7 @@ dependencies = [
  "army_battleplans_depth_live_lane",
  "capitulation_war_state_live",
  "characters_leaders_cabinet_live",
+ "collector",
  "compact_contract",
  "compact_stream",
  "construction_buildings_state_damage_live",

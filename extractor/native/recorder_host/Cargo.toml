@@ -25,6 +25,19 @@ serde_json = "1"
 snapshot = { path = "../snapshot" }
 mimalloc = "0.1.52"
 
+[dev-dependencies]
+# Enables the shared codec's test-support surface (bounded session-claim retry
+# and the read-only `ControlChannel::io` accessor) for this crate's own test
+# builds. Resolver v2 keeps this out of the production `cargo build`, so the
+# shipped API surface and the fail-closed claim behavior are unchanged.
+compact_contract = { path = "../compact_contract", features = ["test-support"] }
+# The REAL collector duplex client, driven against this crate's REAL worker
+# admission by the cross-crate loopback tests in auto_attach/duplex_worker.rs.
+# Dev-only: the production recorder never links the collector DLL crate. The
+# `test-support` feature exposes the test-only activation permit constructor so
+# the loopback can drive the permit-gated client while the const stays false.
+collector = { path = "../collector", features = ["test-support"] }
+
 [[bin]]
 name = "collector_record"
 path = "src/main.rs"

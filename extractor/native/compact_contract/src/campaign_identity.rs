@@ -810,7 +810,10 @@ const SHA256_K: [u32; 64] = [
     0xc671_78f2,
 ];
 
-struct Sha256 {
+// `pub(crate)` (widened from private) so the shared `identity_control` codec can
+// reuse this crate's self-contained SHA-256 for its CIF1 suffix hash instead of
+// pulling in an external hash dependency.
+pub(crate) struct Sha256 {
     h: [u32; 8],
     len: u64,
     buffer: [u8; 64],
@@ -827,7 +830,7 @@ impl Sha256 {
         }
     }
 
-    fn digest(bytes: &[u8]) -> [u8; 32] {
+    pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
         let mut hasher = Self::new();
         hasher.update(bytes);
         hasher.finalize()
