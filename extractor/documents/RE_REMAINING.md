@@ -9,11 +9,9 @@ it. Owner constraint in force: **RE is out of scope** until the owner lifts it, 
 guessing.
 
 **What counts as RE here.** A gap where the extractor cannot emit a datum because the *location or
-meaning of the bytes in memory is unknown*. This is distinct from:
-- **Owner-run live gates** (the data is emitted; it just needs a live capture to certify) → those
-  live in [LIVE_ACCEPTANCE_RUNBOOK.md](LIVE_ACCEPTANCE_RUNBOOK.md).
-- **Activation-gated / delicate wiring** (the code exists but is frozen or needs a production call
-  site) → listed at the bottom of this file, *not* RE.
+meaning of the bytes in memory is unknown*. (Gaps where the data is already emitted and only needs a
+live capture to certify are **not** RE — those live in
+[LIVE_ACCEPTANCE_RUNBOOK.md](LIVE_ACCEPTANCE_RUNBOOK.md).)
 
 Build pin for all offsets: `hoi4.exe` SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
@@ -36,20 +34,6 @@ Build pin for all offsets: `hoi4.exe` SHA-256 `870ebf1f615262facca48a3b947775c41
 | ID | What's missing | Path A (RE) | Path B (live) | Source |
 |----|----------------|-------------|---------------|--------|
 | **B8 / X6** | The building-token registry join (`id → token` map) used to name building/registry entries. | RE the id→token registry layout. | Or harvest the mapping from a live capture that observes both sides. | session-state memory `residuals-and-no-re-directive`; contract B8/X6 rows |
-
----
-
-## NOT reverse-engineering — deferred for other reasons (do not conflate with the above)
-
-These are **activation-gated or production-wiring** items. The bytes are understood; the code exists
-or is straightforward — they are frozen or need a call site / owner decision, *not* RE.
-
-| Item | Why deferred (not RE) |
-|------|-----------------------|
-| **CID1 producer barrier** (sequence-0/CFA1) | Collector code path exists but the active path is Legacy; applying it is an **activation flip** (owner-gated). The read-only identity probe is already built + merged. |
-| **P4 stitching live-driver** | The stitching engine is merged; it needs a **production call site** in `main.rs` (segmentation / per-segment folds / atomic publish) — offline code work, not RE. |
-| **P1 packaging / tray UI** | The auto-attach supervisor exists; missing is **packaging + a graceful-quit tray UI** — product/UI work, not RE. |
-| **P2 duplex activation** | Explicit product kill switch `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED = false` + the H4CT client (built, held on `port/w1-h4ct`); **owner-gated activation**, not RE. |
 
 ---
 
