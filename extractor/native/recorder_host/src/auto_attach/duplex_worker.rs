@@ -1520,7 +1520,8 @@ mod tests {
     use crate::control_transport::{encode_frame, SessionId};
     use crate::duplex_session::{encode_heartbeat_proof, HeartbeatState};
     use crate::transport_status::{
-        encode_sink_failure, SinkErrorClass, SinkFailureKind, SinkTerminality, SinkTopology,
+        encode_sink_failure, SinkErrorClass, SinkFailureKind, SinkFailureMessageKind,
+        SinkTerminality, SinkTopology,
     };
 
     #[derive(Default)]

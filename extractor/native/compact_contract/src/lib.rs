@@ -16,6 +16,7 @@ pub mod campaign_identity;
 pub mod first_compact_ack;
 pub mod record_header;
 pub mod record_semantics;
+pub mod sink_failure;
 pub mod status_flags_base;
 pub mod status_origins;
 pub mod stream_validator;
