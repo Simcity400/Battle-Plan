@@ -12,8 +12,65 @@ $cargo=(Get-Command cargo -ErrorAction Stop).Source
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("hoi4_capture_script_test_" + [guid]::NewGuid().ToString("N"))
 $passes = 0; $failures = [System.Collections.Generic.List[string]]::new()
 function Assert-Case([string]$Name, [bool]$Condition) { if ($Condition) { $script:passes++ } else { $script:failures.Add($Name) } }
+
+# --- F5/F6 acceptance-tooling self-test orchestration ----------------------
+# Resolve the current PowerShell host exe (no hardcoded path) so child self-tests
+# run in an isolated process and their exit codes are unambiguous.
+$psExe = (Get-Process -Id $PID).Path
+if ([string]::IsNullOrEmpty($psExe)) { $psExe = "powershell.exe" }
+
+function Test-ScriptSyntax {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @("script not found: $Path")
+    }
+    $tokens = $null
+    $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    $problems = @()
+    foreach ($e in $errors) {
+        $problems += ("{0}:{1} {2}" -f (Split-Path -Leaf $Path), $e.Extent.StartLineNumber, $e.Message)
+    }
+    return $problems
+}
+
+function Invoke-ChildSelfTest {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    # Fresh child process; -SelfTest scripts `exit 0/1` so $LASTEXITCODE is clean.
+    # Route the child's stdout straight to the host so this function's return value
+    # is ONLY the exit code, not the captured output lines.
+    & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Path -SelfTest | Out-Host
+    return $LASTEXITCODE
+}
+
 try {
     New-Item -ItemType Directory -Path $root | Out-Null
+
+    # Phase 0 (lane F5/F6): PowerShell syntax gate over every acceptance-tooling
+    # script, then the -SelfTest of each script that carries one, in an isolated
+    # child process. Folds into the same pass/fail accounting as the heavyweight
+    # fixture and cargo gates below. Runs no game.
+    $syntaxTargets = @(
+        "ProductionCapture.Validation.ps1",
+        "Get-FullGameSizeProjection.ps1",
+        "Invoke-AcceptanceLadder.ps1",
+        "Test-ProductionCaptureScripts.ps1",
+        # The ladder reuses the launcher; a syntax break there breaks the ladder.
+        "Start-Hoi4ProductionSpeed5Capture.ps1"
+    )
+    foreach ($name in $syntaxTargets) {
+        $problems = @(Test-ScriptSyntax -Path (Join-Path $scriptDir $name))
+        Assert-Case ("acceptance-tooling syntax: $name " + ($problems -join '; ')) ($problems.Count -eq 0)
+    }
+    $selfTestTargets = @(
+        "ProductionCapture.Validation.ps1",
+        "Get-FullGameSizeProjection.ps1",
+        "Invoke-AcceptanceLadder.ps1"
+    )
+    foreach ($name in $selfTestTargets) {
+        $code = Invoke-ChildSelfTest -Path (Join-Path $scriptDir $name)
+        Assert-Case ("acceptance-tooling self-test (exit $code): $name") ($code -eq 0)
+    }
     $domains = @(Get-RegistryCaptureDomains $registry)
     $perDomain = [ordered]@{}
     foreach ($d in $domains) {
@@ -26,9 +83,13 @@ try {
         parse_errors=@(); ordering_errors=@(); hourly_requirement=[ordered]@{met=$true;requested_game_hours=9}
         production_profile=[ordered]@{enabled=$true;profile_domains_not_scheduled=@();missing_required_static_artifacts=@()}
         compact_stream=[ordered]@{
-            frame_end_record_count=10;frame_time_us=[ordered]@{count=10;avg=20000;p95=30000;max=99000};decodable=$true;parse_errors=@();ordering_errors=@();failure_status_flags_or=0;failure_status_seen=$false
+            frame_end_record_count=10;frame_time_us=[ordered]@{count=10;avg=20000;p50=25000;p95=30000;p99=32000;max=99000};decodable=$true;parse_errors=@();ordering_errors=@();failure_status_flags_or=0;failure_status_seen=$false
             domain_coverage=[ordered]@{ok=$true;errors=@()};per_domain=$perDomain
             hour_latch=[ordered]@{requested=$true;enabled=$true;latch_requested_but_inactive=$false;coverage_invariant_ok=$true;hours_unaccounted=0;capture_attempts=10;frames_emitted_to_sink=10;sink_write_success_verified=$true;hours_coalesced=0;capture_failed=0;recorded_failed=0}
+        }
+        acceptance_telemetry=[ordered]@{
+            sink_write_us=[ordered]@{count=10;avg=25;p50=20;p95=60;p99=100;max=120}
+            clock_skew=[ordered]@{wall_elapsed_us=300000000;mono_elapsed_us=300000100;drift_us=-100;wall_monotonic_ok=$true}
         }
         host_finalize=[ordered]@{stream_sha256=('d'*64);fold=[ordered]@{skipped=$false;truncated_tail_bytes=0;stop_reason=$null;ends_at_frame_end=$true;malformed_payload_records=0};verify=[ordered]@{stream_sha256_matches_capture=$true;entries_verified=10}}
         replay_packaging=[ordered]@{static_artifacts=@()}

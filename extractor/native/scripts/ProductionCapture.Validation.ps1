@@ -1,4 +1,38 @@
+<#
+.SYNOPSIS
+    Shared, fail-closed validation for a production capture run.
+
+.DESCRIPTION
+    Dot-source this file to reuse the gate functions. It carries two layers that
+    the acceptance-ladder orchestrator (Invoke-AcceptanceLadder.ps1) and the
+    offline test harness (Test-ProductionCaptureScripts.ps1) both rely on:
+
+      * Test-ProductionCaptureArtifacts - the heavyweight production gate over a
+        real run directory: registry roster, per-domain effective-failure
+        fail-closed checks, hour-latch accounting, container/fold/speed
+        independent verifiers, AND the acceptance-telemetry schema gate below.
+
+      * Test-ProductionCaptureManifest + Get-AcceptanceTelemetryProblems - the
+        fail-closed acceptance-telemetry (MASTER_EXTRACTION_CONTRACT F5) schema
+        and numeric gates over a parsed manifest, reusable without a live run.
+
+    Every check is FAIL-CLOSED: a missing manifest, a missing telemetry field, or
+    an out-of-range value is a FAILURE, never a silent pass. A field that the
+    recorder emits as JSON null (e.g. a percentile over an empty sample) counts as
+    PRESENT for the schema gate but FAILS any numeric threshold, so an empty or
+    truncated capture cannot masquerade as a good one.
+
+    Invoke directly with -SelfTest to run the offline unit tests over fabricated
+    manifests (no live game, no capture required).
+
+    PowerShell 5.1 compatible. No rig hardcoding.
+#>
+param(
+    [switch]$SelfTest
+)
+
 Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 $script:CanonicalCompactFailureMask = [uint32]0x13CF
 $script:RequiredStaticArtifactNames = @(
@@ -18,6 +52,14 @@ $script:ProductionDomainStatuses = @(
     "validated_partial_slice",
     "validated_slice_open_gaps"
 )
+
+# Acceptance-telemetry (F5) schema fields. Per-frame extraction time lives under
+# compact_stream; the new p50/p99 join the pre-existing avg/p95/max. Sink-write
+# latency and clock-skew live in the dedicated acceptance_telemetry block the
+# recorder emits alongside stream_storage.
+$script:RequiredFrameTimeFields = @("count", "avg", "p50", "p95", "p99", "max")
+$script:RequiredSinkWriteFields = @("count", "avg", "p50", "p95", "p99", "max")
+$script:RequiredClockSkewFields = @("wall_elapsed_us", "mono_elapsed_us", "drift_us", "wall_monotonic_ok")
 
 function Get-ObjectProperty {
     param($Object, [Parameter(Mandatory = $true)][string]$Name)
@@ -183,6 +225,11 @@ function Test-ProductionCaptureArtifacts {
         if ([int64](Get-ObjectProperty $frameTiming "count") -ne $frameCount) { Add-CaptureProblem $problems "frame_time_sample_count_mismatch" }
         if ($null -eq (Get-ObjectProperty $frameTiming "max") -or [double](Get-ObjectProperty $frameTiming "max") -ge 100000.0) { Add-CaptureProblem $problems "frame_time_over_100ms" }
     }
+    # Acceptance-telemetry schema gate (F5): fail-closed on any absent frame_time
+    # percentile (incl. the new p50/p99) or any missing acceptance_telemetry
+    # sink_write_us / clock_skew field. Keeps this validator in lockstep with the
+    # recorder's acceptance_telemetry manifest block and timing_summary_json shape.
+    foreach ($p in (Get-AcceptanceTelemetryProblems -Manifest $manifest)) { Add-CaptureProblem $problems ("acceptance_telemetry_$p") }
     if ((Get-ObjectProperty $compact "decodable") -ne $true) { Add-CaptureProblem $problems "compact_stream_not_decodable" }
     if (@(Get-ObjectProperty $manifest "parse_errors").Count -ne 0 -or @(Get-ObjectProperty $compact "parse_errors").Count -ne 0) { Add-CaptureProblem $problems "parse_errors_present" }
     if (@(Get-ObjectProperty $manifest "ordering_errors").Count -ne 0 -or @(Get-ObjectProperty $compact "ordering_errors").Count -ne 0) { Add-CaptureProblem $problems "ordering_errors_present" }
@@ -365,6 +412,12 @@ function Test-ProductionCaptureArtifacts {
         foreach ($toolResult in $toolResults) { if (-not $toolResult.passed) { Add-CaptureProblem $problems ("independent_{0}_failed" -f $toolResult.name) } }
     }
 
+    # Attempt-binding fields: a consumer (the acceptance ladder) can prove this
+    # report was produced for THIS capture attempt by matching the manifest it
+    # graded (path + content sha) and the capture/session identity it carries. A
+    # hand-written {schema, ok:true} report cannot supply a manifest_sha256 that
+    # matches the run's actual manifest, so it fails the ladder's binding check.
+    $manifestSha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
     return [pscustomobject]@{
         schema = "battle-plan.production_capture_validation.v2"
         ok = ($problems.Count -eq 0)
@@ -372,7 +425,591 @@ function Test-ProductionCaptureArtifacts {
         expected_domain_count = $expectedIds.Count
         frame_count = $frameCount
         manifest_path = $manifestPath
+        manifest_sha256 = $manifestSha256
+        capture_id = $expectedCaptureId
+        session_id = $expectedSessionId
+        stream_sha256 = $expectedStreamSha256
         problems = @($problems)
         independent_gates = @($toolResults)
     }
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance-telemetry (F5) schema/threshold gate + offline self-tests. Reused
+# by the ladder orchestrator and wired into Test-ProductionCaptureArtifacts above.
+# ---------------------------------------------------------------------------
+
+function Get-ManifestPath {
+    param([Parameter(Mandatory = $true)][string]$RunDir)
+    return (Join-Path $RunDir "native_session_manifest.json")
+}
+
+function Read-CaptureManifest {
+    <#
+        Load and parse a run's native_session_manifest.json. Throws (fail-closed)
+        when the directory or manifest is missing or is not valid JSON.
+    #>
+    param([Parameter(Mandatory = $true)][string]$RunDir)
+    if (-not (Test-Path -LiteralPath $RunDir -PathType Container)) {
+        throw "run directory not found: $RunDir"
+    }
+    $manifestPath = Get-ManifestPath -RunDir $RunDir
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "native_session_manifest.json not found in run directory: $manifestPath"
+    }
+    $raw = Get-Content -LiteralPath $manifestPath -Raw
+    if ($null -eq $raw -or $raw.Trim().Length -eq 0) {
+        throw "manifest is empty: $manifestPath"
+    }
+    try {
+        return $raw | ConvertFrom-Json
+    } catch {
+        throw "manifest is not valid JSON ($manifestPath): $($_.Exception.Message)"
+    }
+}
+
+function Test-HasProperty {
+    # PS 5.1: distinguish an ABSENT member from a member whose value is $null.
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($null -eq $Object) { return $false }
+    if ($Object -isnot [psobject]) { return $false }
+    return ($Object.PSObject.Properties.Name -contains $Name)
+}
+
+function Test-IsJsonNumber {
+    <#
+        A real numeric JSON value round-trips through ConvertFrom-Json as a numeric
+        .NET type, NEVER a bool and NEVER a string. A hand-written "not-a-number"
+        (string) or a JSON bool must not masquerade as a timing statistic. Used to
+        reject malformed non-null telemetry values, not just nulls.
+    #>
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [bool]) { return $false }
+    $isNumericType = ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or
+            $Value -is [single] -or $Value -is [decimal] -or $Value -is [int16] -or
+            $Value -is [uint16] -or $Value -is [uint32] -or $Value -is [uint64] -or $Value -is [byte])
+    if (-not $isNumericType) { return $false }
+    # A telemetry number must be FINITE (finding 2). PS 5.1 ConvertFrom-Json parses
+    # bare JSON NaN / Infinity / -Infinity as System.Double, so a count=1 manifest
+    # with non-finite percentiles or clock-skew values would otherwise sail through
+    # as a "real number". A NaN/Infinity timing statistic is malformed -> reject.
+    if (($Value -is [double]) -and ([double]::IsNaN($Value) -or [double]::IsInfinity($Value))) { return $false }
+    if (($Value -is [single]) -and ([single]::IsNaN($Value) -or [single]::IsInfinity($Value))) { return $false }
+    return $true
+}
+
+function Test-IsJsonInteger {
+    <#
+        A count/positive-integer field must be a genuine whole JSON number
+        (ConvertFrom-Json parses JSON integers as [long]). Reject bools, strings,
+        and fractional doubles; accept whole-valued doubles (e.g. 10.0).
+    #>
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [bool]) { return $false }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [int16] -or
+        $Value -is [uint16] -or $Value -is [uint32] -or $Value -is [uint64] -or $Value -is [byte]) { return $true }
+    if ($Value -is [double] -or $Value -is [single] -or $Value -is [decimal]) {
+        return ([math]::Floor([double]$Value) -eq [double]$Value)
+    }
+    return $false
+}
+
+function Resolve-JsonPath {
+    <#
+        Navigate a dotted path (e.g. "compact_stream.frame_time_us") through a
+        parsed manifest. Returns a result object with:
+          Found   - $true only if every segment is a PRESENT member
+          Value   - the resolved value (may itself be $null if the leaf is null)
+          Missing - the first path prefix that did not resolve
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $current = $Manifest
+    $walked = @()
+    foreach ($segment in ($Path -split "\.")) {
+        $walked += $segment
+        if (-not (Test-HasProperty -Object $current -Name $segment)) {
+            return [pscustomobject]@{
+                Found   = $false
+                Value   = $null
+                Missing = ($walked -join ".")
+            }
+        }
+        $current = $current.$segment
+    }
+    return [pscustomobject]@{
+        Found   = $true
+        Value   = $current
+        Missing = $null
+    }
+}
+
+function Test-TimingSummaryFields {
+    <#
+        Assert a timing-summary object carries every required percentile field.
+        Appends "<label>.<field> missing" problems (fail-closed) for absentees.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Summary,
+        [Parameter(Mandatory = $true)][string[]]$RequiredFields,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Problems
+    )
+    foreach ($field in $RequiredFields) {
+        if (-not (Test-HasProperty -Object $Summary -Name $field)) {
+            $Problems.Add("$Label.$field missing")
+        }
+    }
+}
+
+function Get-AcceptanceTelemetryProblems {
+    <#
+        Fail-closed schema gate for the acceptance-telemetry fields (F5). Returns
+        a (possibly empty) string list of problems. Empty == the manifest carries
+        every required frame-time / sink-write / clock-skew field.
+    #>
+    param([Parameter(Mandatory = $true)]$Manifest)
+    $problems = [System.Collections.Generic.List[string]]::new()
+
+    # frame_time_us (per-frame extraction time) under compact_stream.
+    $frame = Resolve-JsonPath -Manifest $Manifest -Path "compact_stream.frame_time_us"
+    if (-not $frame.Found) {
+        $problems.Add("compact_stream.frame_time_us missing (at $($frame.Missing))")
+    } else {
+        Test-TimingSummaryFields -Summary $frame.Value -RequiredFields $script:RequiredFrameTimeFields `
+            -Label "compact_stream.frame_time_us" -Problems $problems
+    }
+
+    # sink_write_us under acceptance_telemetry.
+    $sink = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.sink_write_us"
+    if (-not $sink.Found) {
+        $problems.Add("acceptance_telemetry.sink_write_us missing (at $($sink.Missing))")
+    } else {
+        Test-TimingSummaryFields -Summary $sink.Value -RequiredFields $script:RequiredSinkWriteFields `
+            -Label "acceptance_telemetry.sink_write_us" -Problems $problems
+        # VALUE gate (not just presence): count == 0 means no sink-write samples
+        # were captured, and the recorder emits null percentiles over an empty
+        # sample. Either signals NO DATA and must FAIL, never pass on presence.
+        # count must be a genuine POSITIVE INTEGER, consistent with the percentiles.
+        # A malformed non-null count (e.g. the string "1", a bool, a fractional
+        # double) is as bad as a null one and must FAIL, not pass on non-nullness.
+        $sinkCount = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.sink_write_us.count"
+        if ($sinkCount.Found) {
+            if ($null -eq $sinkCount.Value) {
+                $problems.Add("acceptance_telemetry.sink_write_us.count is null (no sink-write telemetry)")
+            } elseif (-not (Test-IsJsonInteger $sinkCount.Value)) {
+                $problems.Add("acceptance_telemetry.sink_write_us.count is not an integer ('$($sinkCount.Value)')")
+            } elseif ([int64]$sinkCount.Value -le 0) {
+                $problems.Add("acceptance_telemetry.sink_write_us.count is $($sinkCount.Value) (no sink-write samples captured)")
+            }
+        }
+        # Each percentile must be a REAL NUMBER. Reject null (empty distribution)
+        # AND malformed non-numeric values (e.g. "not-a-number"), so a count=1 with
+        # non-numeric timing stats cannot pass on presence alone.
+        foreach ($pf in @("avg", "p50", "p95", "p99", "max")) {
+            $pv = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.sink_write_us.$pf"
+            if ($pv.Found) {
+                if ($null -eq $pv.Value) {
+                    $problems.Add("acceptance_telemetry.sink_write_us.$pf is null (empty/absent sample distribution)")
+                } elseif (-not (Test-IsJsonNumber $pv.Value)) {
+                    $problems.Add("acceptance_telemetry.sink_write_us.$pf is not numeric ('$($pv.Value)')")
+                }
+            }
+        }
+    }
+
+    # clock_skew under acceptance_telemetry.
+    $skew = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.clock_skew"
+    if (-not $skew.Found) {
+        $problems.Add("acceptance_telemetry.clock_skew missing (at $($skew.Missing))")
+    } elseif ($null -eq $skew.Value) {
+        # unmeasured() now serializes as JSON null (a distinct "no live loop ran
+        # here" state), NOT a zero-drift wall_monotonic_ok=true sample. Treat it
+        # as unmeasured and FAIL a live acceptance capture fail-closed, rather
+        # than accepting a fabricated passing measurement.
+        $problems.Add("acceptance_telemetry.clock_skew is null (unmeasured: no live capture loop ran; not a passing clock sample)")
+    } else {
+        foreach ($field in $script:RequiredClockSkewFields) {
+            if (-not (Test-HasProperty -Object $skew.Value -Name $field)) {
+                $problems.Add("acceptance_telemetry.clock_skew.$field missing")
+            }
+        }
+        # VALUE gate: the numeric skew fields must be REAL NUMBERS. A present but
+        # null/non-numeric elapsed or drift value is a malformed timing statistic
+        # and must FAIL, not pass on mere presence.
+        foreach ($nf in @("wall_elapsed_us", "mono_elapsed_us", "drift_us")) {
+            if (Test-HasProperty -Object $skew.Value -Name $nf) {
+                $nv = $skew.Value.$nf
+                if ($null -eq $nv) {
+                    $problems.Add("acceptance_telemetry.clock_skew.$nf is null (unmeasured timing value)")
+                } elseif (-not (Test-IsJsonNumber $nv)) {
+                    $problems.Add("acceptance_telemetry.clock_skew.$nf is not numeric ('$nv')")
+                }
+            }
+        }
+        # VALUE gate: wall_monotonic_ok must be a REAL BOOLEAN true. A present-but-
+        # false flag means the wall clock ran backwards; a non-boolean truthy value
+        # (numeric 1, the string "true") is a forged/malformed flag. Either must
+        # FAIL, not pass on presence or on PowerShell's loose truthiness coercion.
+        if (Test-HasProperty -Object $skew.Value -Name "wall_monotonic_ok") {
+            $wmo = $skew.Value.wall_monotonic_ok
+            if ($wmo -isnot [bool] -or $wmo -ne $true) {
+                $problems.Add("acceptance_telemetry.clock_skew.wall_monotonic_ok is not true (must be boolean true; got '$wmo' - wall clock non-monotonic or malformed flag)")
+            }
+        }
+    }
+
+    return , $problems.ToArray()
+}
+
+function Test-NumericThreshold {
+    <#
+        Compare a resolved numeric telemetry value against a maximum. Fail-closed:
+        an absent field, a null value, or a non-numeric value is a PROBLEM, as is a
+        value strictly greater than $Max.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][double]$Max,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Problems
+    )
+    $resolved = Resolve-JsonPath -Manifest $Manifest -Path $Path
+    if (-not $resolved.Found) {
+        $Problems.Add("$Path missing (threshold check)")
+        return
+    }
+    $value = $resolved.Value
+    if ($null -eq $value) {
+        $Problems.Add("$Path is null (threshold check <= $Max)")
+        return
+    }
+    $parsed = 0.0
+    if (-not [double]::TryParse(
+            [string]$value,
+            [System.Globalization.NumberStyles]::Float,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsed)) {
+        $Problems.Add("$Path is not numeric ('$value')")
+        return
+    }
+    if ($parsed -gt $Max) {
+        $Problems.Add("$Path = $parsed exceeds max $Max")
+    }
+}
+
+function Test-ProductionCaptureManifest {
+    <#
+        The reusable production-capture gate. Runs the fail-closed schema gate, the
+        hourly-requirement gate, and the optional per-rung numeric gates, returning
+        a verdict object the ladder can persist:
+          Passed   - [bool] every gate held
+          Problems - [string[]] each failure, empty when Passed
+
+        Optional per-rung gates:
+          -MaxFrameTimeUs        frame_time_us.p95 <= this (e.g. 100000 for the
+                                 speed-5 "<100ms/frame" rung)
+          -RequireZeroSkipped    skipped_game_hours must be 0
+          -RequireZeroCoalesced  compact_stream.hour_latch.hours_coalesced must be 0
+          -RequireHourlyMet      hourly_requirement.met must be $true
+    #>
+    param(
+        [Parameter(Mandatory = $true, ParameterSetName = "RunDir")]
+        [string]$RunDir,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "Manifest")]
+        $Manifest,
+
+        [double]$MaxFrameTimeUs = 0,
+        [switch]$RequireZeroSkipped,
+        [switch]$RequireZeroCoalesced,
+        [switch]$RequireHourlyMet
+    )
+
+    $problems = [System.Collections.Generic.List[string]]::new()
+
+    if ($PSCmdlet.ParameterSetName -eq "RunDir") {
+        try {
+            $Manifest = Read-CaptureManifest -RunDir $RunDir
+        } catch {
+            return [pscustomobject]@{
+                Passed   = $false
+                Problems = @("manifest load failed: $($_.Exception.Message)")
+            }
+        }
+    }
+
+    # 1. Acceptance-telemetry schema gate (fail-closed if any field absent).
+    foreach ($p in (Get-AcceptanceTelemetryProblems -Manifest $Manifest)) {
+        $problems.Add($p)
+    }
+
+    # 2. Hourly-requirement gate (the standing "met" flag).
+    if ($RequireHourlyMet) {
+        $met = Resolve-JsonPath -Manifest $Manifest -Path "hourly_requirement.met"
+        if (-not $met.Found) {
+            $problems.Add("hourly_requirement.met missing")
+        } elseif ($met.Value -ne $true) {
+            $problems.Add("hourly_requirement.met is not true")
+        }
+    }
+
+    # 3. Zero-skipped-hours gate.
+    if ($RequireZeroSkipped) {
+        $skipped = Resolve-JsonPath -Manifest $Manifest -Path "skipped_game_hours"
+        if (-not $skipped.Found) {
+            $problems.Add("skipped_game_hours missing")
+        } elseif ([int64]$skipped.Value -ne 0) {
+            $problems.Add("skipped_game_hours = $($skipped.Value) (must be 0)")
+        }
+    }
+
+    # 4. Zero-coalesced-hours gate (hour-latch accounting).
+    if ($RequireZeroCoalesced) {
+        $coalesced = Resolve-JsonPath -Manifest $Manifest -Path "compact_stream.hour_latch.hours_coalesced"
+        if (-not $coalesced.Found) {
+            $problems.Add("compact_stream.hour_latch.hours_coalesced missing")
+        } elseif ([int64]$coalesced.Value -ne 0) {
+            $problems.Add("compact_stream.hour_latch.hours_coalesced = $($coalesced.Value) (must be 0)")
+        }
+    }
+
+    # 5. Per-frame time ceiling (speed-5 rung: p95 frame time under the budget).
+    if ($MaxFrameTimeUs -gt 0) {
+        Test-NumericThreshold -Manifest $Manifest -Path "compact_stream.frame_time_us.p95" `
+            -Max $MaxFrameTimeUs -Problems $problems
+    }
+
+    return [pscustomobject]@{
+        Passed   = ($problems.Count -eq 0)
+        Problems = $problems.ToArray()
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Offline self-tests: fabricate manifests and assert the fail-closed behavior.
+# ---------------------------------------------------------------------------
+
+function New-TestTimingSummary {
+    param(
+        [int]$Count = 10,
+        [double]$Avg = 500,
+        [int]$P50 = 400,
+        [int]$P95 = 900,
+        [int]$P99 = 980,
+        [int]$Max = 1000
+    )
+    return [ordered]@{
+        count = $Count
+        avg   = $Avg
+        p50   = $P50
+        p95   = $P95
+        p99   = $P99
+        max   = $Max
+    }
+}
+
+function New-TestManifest {
+    <#
+        A schema-complete, gate-passing manifest, as an ordered hashtable that
+        ConvertTo-Json | ConvertFrom-Json round-trips into the shape the validator
+        walks. Frame-time p95 defaults well under 100 ms.
+    #>
+    param(
+        [int]$FrameP95 = 5000,
+        [int]$SkippedHours = 0,
+        [int]$CoalescedHours = 0,
+        [bool]$HourlyMet = $true
+    )
+    return [ordered]@{
+        schema              = "native_collector_session_v1"
+        skipped_game_hours  = $SkippedHours
+        hourly_requirement  = [ordered]@{ required = $true; met = $HourlyMet; problems = @() }
+        compact_stream      = [ordered]@{
+            frame_time_us = (New-TestTimingSummary -P95 $FrameP95)
+            hour_latch    = [ordered]@{ hours_coalesced = $CoalescedHours }
+        }
+        acceptance_telemetry = [ordered]@{
+            sink_write_us = (New-TestTimingSummary -P95 60 -Max 120 -Avg 25 -P50 20 -P99 100)
+            clock_skew    = [ordered]@{
+                wall_elapsed_us   = 300000000
+                mono_elapsed_us   = 300000100
+                drift_us          = -100
+                wall_monotonic_ok = $true
+            }
+        }
+    }
+}
+
+function ConvertTo-RoundTrippedManifest {
+    param([Parameter(Mandatory = $true)]$HashManifest)
+    return ($HashManifest | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
+}
+
+function Invoke-ValidationSelfTest {
+    $failures = [System.Collections.Generic.List[string]]::new()
+
+    function Assert-True {
+        param([bool]$Condition, [string]$Message)
+        if (-not $Condition) { $failures.Add($Message) }
+    }
+
+    # 1. Full, healthy manifest passes every gate.
+    $good = ConvertTo-RoundTrippedManifest (New-TestManifest)
+    $r = Test-ProductionCaptureManifest -Manifest $good -MaxFrameTimeUs 100000 `
+        -RequireZeroSkipped -RequireZeroCoalesced -RequireHourlyMet
+    Assert-True $r.Passed "healthy manifest should pass; problems: $($r.Problems -join '; ')"
+
+    # 2. Missing p99 on frame_time_us fails the schema gate (fail-closed on absence).
+    $h = New-TestManifest
+    $h.compact_stream.frame_time_us.Remove("p99") | Out-Null
+    $missing = ConvertTo-RoundTrippedManifest $h
+    $r = Test-ProductionCaptureManifest -Manifest $missing
+    Assert-True (-not $r.Passed) "manifest missing frame_time_us.p99 must fail"
+    Assert-True (($r.Problems -join "`n") -match "frame_time_us\.p99 missing") "problem must name the missing p99 field"
+
+    # 3. Missing the whole acceptance_telemetry block fails fail-closed.
+    $h2 = New-TestManifest
+    $h2.Remove("acceptance_telemetry") | Out-Null
+    $missing2 = ConvertTo-RoundTrippedManifest $h2
+    $r = Test-ProductionCaptureManifest -Manifest $missing2
+    Assert-True (-not $r.Passed) "manifest missing acceptance_telemetry must fail"
+    Assert-True (($r.Problems -join "`n") -match "sink_write_us missing") "problem must name missing sink_write_us"
+    Assert-True (($r.Problems -join "`n") -match "clock_skew missing") "problem must name missing clock_skew"
+
+    # 4. Missing a clock_skew field fails.
+    $h3 = New-TestManifest
+    $h3.acceptance_telemetry.clock_skew.Remove("drift_us") | Out-Null
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $h3)
+    Assert-True (-not $r.Passed) "manifest missing clock_skew.drift_us must fail"
+
+    # 5. Frame time over the ceiling fails the numeric gate (schema still complete).
+    $slow = ConvertTo-RoundTrippedManifest (New-TestManifest -FrameP95 150000)
+    $r = Test-ProductionCaptureManifest -Manifest $slow -MaxFrameTimeUs 100000
+    Assert-True (-not $r.Passed) "frame p95 150ms must fail the 100ms ceiling"
+    Assert-True (($r.Problems -join "`n") -match "frame_time_us\.p95 = 150000 exceeds max 100000") "problem must name the exceeded ceiling"
+
+    # 6. Non-zero skipped/coalesced hours fail their gates.
+    $skipped = ConvertTo-RoundTrippedManifest (New-TestManifest -SkippedHours 3)
+    $r = Test-ProductionCaptureManifest -Manifest $skipped -RequireZeroSkipped
+    Assert-True (-not $r.Passed) "3 skipped hours must fail -RequireZeroSkipped"
+    $coalesced = ConvertTo-RoundTrippedManifest (New-TestManifest -CoalescedHours 2)
+    $r = Test-ProductionCaptureManifest -Manifest $coalesced -RequireZeroCoalesced
+    Assert-True (-not $r.Passed) "2 coalesced hours must fail -RequireZeroCoalesced"
+
+    # 7. Null percentile is PRESENT (schema ok) but FAILS a numeric threshold.
+    $h4 = New-TestManifest
+    $h4.compact_stream.frame_time_us.p95 = $null
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $h4) -MaxFrameTimeUs 100000
+    Assert-True (-not $r.Passed) "null p95 must fail the numeric ceiling"
+    Assert-True (($r.Problems -join "`n") -match "frame_time_us\.p95 is null") "null p95 must be reported as null, not absent"
+
+    # 8. hourly_requirement.met false fails.
+    $notmet = ConvertTo-RoundTrippedManifest (New-TestManifest -HourlyMet $false)
+    $r = Test-ProductionCaptureManifest -Manifest $notmet -RequireHourlyMet
+    Assert-True (-not $r.Passed) "hourly_requirement.met=false must fail -RequireHourlyMet"
+
+    # 9. VALUE gate: sink_write_us.count=0 with null percentiles must FAIL even
+    #    though every field is PRESENT (no data masquerading as good telemetry).
+    $h5 = New-TestManifest
+    $h5.acceptance_telemetry.sink_write_us.count = 0
+    foreach ($pf in @("avg", "p50", "p95", "p99", "max")) { $h5.acceptance_telemetry.sink_write_us.$pf = $null }
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $h5)
+    Assert-True (-not $r.Passed) "sink_write_us.count=0 with null percentiles must fail on values, not pass on presence"
+    Assert-True (($r.Problems -join "`n") -match "sink_write_us\.count is 0") "problem must name the zero sink-write count"
+    Assert-True (($r.Problems -join "`n") -match "sink_write_us\.p95 is null") "problem must name the null percentile"
+
+    # 10. VALUE gate: clock_skew.wall_monotonic_ok=false (wall clock ran backwards)
+    #     must FAIL even with every field present.
+    $h6 = New-TestManifest
+    $h6.acceptance_telemetry.clock_skew.wall_monotonic_ok = $false
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $h6)
+    Assert-True (-not $r.Passed) "clock_skew.wall_monotonic_ok=false must fail"
+    Assert-True (($r.Problems -join "`n") -match "wall_monotonic_ok is not true") "problem must name the broken clock flag"
+
+    # 11. unmeasured clock skew: the recorder emits clock_skew as JSON null for a
+    #     deferred repack (no live loop). It must be treated as unmeasured and
+    #     FAIL fail-closed, never as a passing zero-drift measurement.
+    $h7 = New-TestManifest
+    $h7.acceptance_telemetry.clock_skew = $null
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $h7)
+    Assert-True (-not $r.Passed) "null (unmeasured) clock_skew must fail fail-closed"
+    Assert-True (($r.Problems -join "`n") -match "clock_skew is null \(unmeasured") "problem must name unmeasured clock skew distinctly"
+
+    # 12. TYPED-VALUE gate (finding 4): a MALFORMED non-null percentile (a string
+    #     "not-a-number") with a positive count must FAIL. Fail-before check: the
+    #     same manifest with real numbers passes, so the reject is value-driven.
+    $baseline = ConvertTo-RoundTrippedManifest (New-TestManifest)
+    $rBaseline = Test-ProductionCaptureManifest -Manifest $baseline
+    Assert-True $rBaseline.Passed "baseline (real numeric sink stats) must pass so #12 proves the value reject"
+    $h8 = New-TestManifest
+    $h8.acceptance_telemetry.sink_write_us.count = 1
+    foreach ($pf in @("avg", "p50", "p95", "p99", "max")) { $h8.acceptance_telemetry.sink_write_us.$pf = "not-a-number" }
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $h8)
+    Assert-True (-not $r.Passed) "count=1 with non-numeric percentiles must fail on values, not pass on presence"
+    Assert-True (($r.Problems -join "`n") -match "sink_write_us\.p95 is not numeric") "problem must name the non-numeric percentile"
+
+    # 13. TYPED-VALUE gate: numeric wall_monotonic_ok=1 (not a real boolean) must
+    #     FAIL — PowerShell would coerce 1 -eq $true, so a strict [bool] test is
+    #     required. Fail-before: wall_monotonic_ok=$true passes (test 1 baseline).
+    $h9 = New-TestManifest
+    $h9.acceptance_telemetry.clock_skew.wall_monotonic_ok = 1
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $h9)
+    Assert-True (-not $r.Passed) "numeric wall_monotonic_ok=1 (non-boolean) must fail the strict boolean gate"
+    Assert-True (($r.Problems -join "`n") -match "wall_monotonic_ok is not true") "problem must name the non-boolean clock flag"
+
+    # 14. TYPED-VALUE gate: a non-numeric clock_skew drift value must FAIL.
+    $h10 = New-TestManifest
+    $h10.acceptance_telemetry.clock_skew.drift_us = "NaN"
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $h10)
+    Assert-True (-not $r.Passed) "non-numeric clock_skew.drift_us must fail"
+    Assert-True (($r.Problems -join "`n") -match "clock_skew\.drift_us is not numeric") "problem must name the non-numeric drift value"
+
+    # 15. FINITE-VALUE gate (finding 2): PS 5.1 ConvertFrom-Json parses bare JSON
+    #     NaN/Infinity/-Infinity as System.Double. A count=1 sink_write_us block with
+    #     a non-finite percentile must FAIL — a non-finite value is not a real timing
+    #     statistic. Test the predicate directly (bare NaN/Infinity cannot survive a
+    #     PowerShell hashtable -> ConvertTo-Json round-trip, so drive Test-IsJsonNumber
+    #     with the exact doubles ConvertFrom-Json would produce).
+    Assert-True (-not (Test-IsJsonNumber ([double]::NaN))) "Test-IsJsonNumber must reject NaN"
+    Assert-True (-not (Test-IsJsonNumber ([double]::PositiveInfinity))) "Test-IsJsonNumber must reject +Infinity"
+    Assert-True (-not (Test-IsJsonNumber ([double]::NegativeInfinity))) "Test-IsJsonNumber must reject -Infinity"
+    Assert-True (Test-IsJsonNumber ([double]500.0)) "Test-IsJsonNumber must still accept a finite double"
+    Assert-True (Test-IsJsonNumber ([int]42)) "Test-IsJsonNumber must still accept a finite int"
+
+    # 16. FINITE-VALUE gate end-to-end: a sink_write_us percentile parsed from bare
+    #     JSON NaN/Infinity must fail Get-AcceptanceTelemetryProblems. Fail-before:
+    #     the same manifest text with a finite percentile passes.
+    $jsonFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"hour_latch":{"hours_coalesced":0}},"acceptance_telemetry":{"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true}}}'
+    $mFinite = $jsonFinite | ConvertFrom-Json
+    [string[]]$probsFinite = Get-AcceptanceTelemetryProblems -Manifest $mFinite
+    Assert-True ($probsFinite.Count -eq 0) "finite sink_write_us telemetry must pass (fail-before baseline); problems: $($probsFinite -join '; ')"
+    $jsonNaN = $jsonFinite -replace '"p95":60', '"p95":NaN'
+    $mNaN = $jsonNaN | ConvertFrom-Json
+    [string[]]$probsNaN = Get-AcceptanceTelemetryProblems -Manifest $mNaN
+    Assert-True (($probsNaN -join "`n") -match "sink_write_us\.p95 is not numeric") "a NaN sink_write_us.p95 must be rejected as non-numeric"
+    $jsonInf = $jsonFinite -replace '"max":120', '"max":Infinity'
+    $mInf = $jsonInf | ConvertFrom-Json
+    [string[]]$probsInf = Get-AcceptanceTelemetryProblems -Manifest $mInf
+    Assert-True (($probsInf -join "`n") -match "sink_write_us\.max is not numeric") "an Infinity sink_write_us.max must be rejected as non-numeric"
+
+    if ($failures.Count -gt 0) {
+        Write-Host "ProductionCapture.Validation self-test FAILED:" -ForegroundColor Red
+        foreach ($f in $failures) { Write-Host "  - $f" -ForegroundColor Red }
+        return $false
+    }
+    Write-Host "ProductionCapture.Validation self-test: all checks passed."
+    return $true
+}
+
+# Only run self-tests when invoked directly (not when dot-sourced for reuse).
+if ($SelfTest) {
+    if (Invoke-ValidationSelfTest) { exit 0 } else { exit 1 }
 }

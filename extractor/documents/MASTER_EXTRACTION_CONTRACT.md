@@ -363,7 +363,22 @@ cite `coverage_audit/recursive_paths_country.txt`.
 - [ ] F5. Make acceptance telemetry truthful: verified game speed, p50/p99/max frame and sink time,
   skew, per-domain bytes, prewarm cost, attempts/coalesced/in-flight accounting, and exact roster
 - [ ] F6. Run the acceptance ladder in order: synthetic faults, paused short proof, speed-5 short
-  proof, five-minute full roster, six-core weak-PC run, six-hour soak, and full-game size projection
+  proof, five-minute full roster, six-core weak-PC run, six-hour soak, and full-game size projection.
+  Every rung verdict is now BOUND to the attempt that produced it (report<->manifest sha + capture/
+  session id; predecessors re-verified against their bound artifacts, not the state JSON status).
+  **OWED live evidence producers** (the ladder FAILS CLOSED for each until wired; enumerated in
+  `Invoke-AcceptanceLadder.ps1` `Get-RungBoundProducerOwed`):
+  - **Bound-report producer for graded rungs** (speed5-short-proof, five-minute-full-roster,
+    weak-pc-six-core, six-hour-soak): `Start-Hoi4ProductionSpeed5Capture.ps1` writes no
+    attempt-bound `production_validation_report.json`; `Start-Hoi4ProductionCaptureSafe.ps1` does,
+    but needs out-of-band evidence pins (PID, speed-evidence transcript/nonce/verifier/probe/
+    static-disasm hashes, static bundle + mod/dlc/load-order + live-resolution report) the ladder
+    does not yet collect. OWED: wire the ladder to drive the Safe launcher (or invoke
+    `Test-ProductionCaptureArtifacts` in-ladder) with that pin set.
+  - **Injected-fault harness** (synthetic-fault rung): provoke a real fault and record
+    attempt-linked `synthetic_fault_proof` in the manifest.
+  - **Pause prover** (paused-short-proof rung): pause the live game and record attempt-linked
+    `pause_proof` in the manifest.
 
 ### P. PRODUCT SESSION COMPOSITION
 

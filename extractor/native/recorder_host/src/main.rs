@@ -1524,6 +1524,13 @@ fn run() -> Result<(), String> {
                 "decoded_sha256": capture.sha256,
             }),
         );
+        // Acceptance telemetry (F5): host-side sink-write latency + clock-skew
+        // over the capture. Per-frame `frame_time_us` (p50/p95/p99/max) lives
+        // under `compact_stream`; these are the host's own sink/storage metrics.
+        obj.insert(
+            "acceptance_telemetry".to_string(),
+            acceptance_telemetry_json(&capture),
+        );
         // M2: the recording's modset + game-build binding. `resolved:false`
         // means UNKNOWN modset (errors carried alongside) — downstream joins
         // must not assume vanilla.
@@ -2872,6 +2879,10 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
         stored_byte_count: fs::metadata(&raw_path)
             .map_err(|e| format!("stat compact stream failed: {e}"))?
             .len(),
+        // Repack reconstructs from a saved manifest; the live capture loop that
+        // produces sink-write/clock-skew telemetry did not run in this path.
+        write_latency: WriteLatencyHistogram::default(),
+        clock_skew: ClockSkewSample::unmeasured(),
     };
     let raw_len = capture.stored_byte_count;
     let stream_is_compressed = compact_stream::detect(&raw_path)
@@ -7993,6 +8004,190 @@ fn validate_process_creation_filetime(
     RetainedProcessAuthority::open(pid, Some(expected))
 }
 
+/// Number of power-of-two latency buckets in `WriteLatencyHistogram`. Bucket 0
+/// holds exactly-0us writes; bucket `i>=1` covers `[2^(i-1), 2^i)` us. 48 buckets
+/// reach `2^47` us (~4.5 years), so no real sink write can overflow the range.
+const WRITE_LATENCY_BUCKETS: usize = 48;
+
+/// Bounded, allocation-free accumulator for production sink-write latency. A raw
+/// per-write `Vec<u64>` (the frame-time pattern) is bounded by frame count, but
+/// there is one sink write per 64 KiB pipe chunk, so over a six-hour soak that
+/// vector would grow into the tens of millions of entries. This histogram keeps
+/// exact `count`/`sum`/`max` plus a fixed 48-bucket power-of-two distribution:
+/// per-write cost is one monotonic-clock delta (the constraint permits it — on
+/// Windows `Instant::now` is a user-mode QPC read, not a syscall) plus a bucket
+/// increment, and memory is constant regardless of capture length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WriteLatencyHistogram {
+    count: u64,
+    sum_us: u64,
+    max_us: u64,
+    buckets: [u64; WRITE_LATENCY_BUCKETS],
+}
+
+// `[u64; 48]` exceeds the array length std derives `Default` for, so hand-roll it.
+impl Default for WriteLatencyHistogram {
+    fn default() -> Self {
+        WriteLatencyHistogram {
+            count: 0,
+            sum_us: 0,
+            max_us: 0,
+            buckets: [0; WRITE_LATENCY_BUCKETS],
+        }
+    }
+}
+
+impl WriteLatencyHistogram {
+    fn record(&mut self, us: u64) {
+        self.count = self.count.saturating_add(1);
+        self.sum_us = self.sum_us.saturating_add(us);
+        if us > self.max_us {
+            self.max_us = us;
+        }
+        // floor(log2(us)) + 1 for us>=1; bucket 0 for us==0. Clamp to range.
+        let idx = if us == 0 {
+            0
+        } else {
+            (64 - us.leading_zeros() as usize).min(WRITE_LATENCY_BUCKETS - 1)
+        };
+        self.buckets[idx] = self.buckets[idx].saturating_add(1);
+    }
+
+    /// Nearest-rank percentile reported as the UPPER bound of the containing
+    /// power-of-two bucket, capped at the exact observed max. The true
+    /// percentile is therefore always `<= reported` — a conservative ceiling,
+    /// which is exactly what an acceptance "writes are fast enough" check wants.
+    fn percentile_ceiling(&self, pct: usize) -> Option<u64> {
+        if self.count == 0 {
+            return None;
+        }
+        let rank = (self.count.saturating_mul(pct as u64).saturating_add(99)) / 100;
+        let rank = rank.max(1);
+        let mut cumulative: u64 = 0;
+        for (idx, &n) in self.buckets.iter().enumerate() {
+            cumulative = cumulative.saturating_add(n);
+            if cumulative >= rank {
+                let upper = if idx == 0 { 0 } else { 1u64 << idx };
+                return Some(upper.min(self.max_us));
+            }
+        }
+        Some(self.max_us)
+    }
+}
+
+fn write_latency_summary_json(hist: &WriteLatencyHistogram) -> Value {
+    if hist.count == 0 {
+        return json!({
+            "count": 0,
+            "avg": null,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null,
+            "percentile_semantics": "bucket_upper_bound_us",
+        });
+    }
+    json!({
+        "count": hist.count,
+        "avg": (hist.sum_us as f64) / (hist.count as f64),
+        "p50": hist.percentile_ceiling(50),
+        "p95": hist.percentile_ceiling(95),
+        "p99": hist.percentile_ceiling(99),
+        "max": hist.max_us,
+        // p* is the upper bound of the nearest-rank power-of-two latency bucket
+        // (true value <= reported), capped at the exact observed max; avg/max
+        // are exact. Coarse by design so the accumulator stays O(1) memory.
+        "percentile_semantics": "bucket_upper_bound_us",
+    })
+}
+
+/// The manifest `acceptance_telemetry` block (F5): host-side sink-write latency
+/// and wall-vs-monotonic clock skew over the capture. Field names here are the
+/// contract the PowerShell acceptance gate (ProductionCapture.Validation.ps1)
+/// asserts fail-closed, so keep them in lockstep with that validator.
+fn acceptance_telemetry_json(capture: &PipeCapture) -> Value {
+    json!({
+        "note": "host-side sink-write latency and wall-vs-monotonic clock skew over the capture; per-frame extraction time is compact_stream.frame_time_us",
+        "sink_write_us": write_latency_summary_json(&capture.write_latency),
+        "clock_skew": capture.clock_skew.as_json(),
+    })
+}
+
+/// Wall-clock (SystemTime) vs monotonic (Instant) drift measured across the
+/// capture read loop. A large `drift_us` means the wall clock was stepped
+/// (NTP/manual) mid-capture, which would corrupt any wall-clock-anchored hour
+/// reasoning; the acceptance gate surfaces it rather than trusting wall time.
+/// `wall_monotonic_ok` is false when the wall clock ran BACKWARDS end-vs-start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClockSkewSample {
+    /// `false` for a sample that reconstructs a `PipeCapture` from an existing
+    /// manifest (e.g. deferred repack) and did not re-run the capture loop, so
+    /// there is no live drift to report. An unmeasured sample serializes as JSON
+    /// null (a distinct "no live loop ran here" state) — never as a valid-looking
+    /// zero-drift, wall-monotonic-ok measurement.
+    measured: bool,
+    wall_elapsed_us: i64,
+    mono_elapsed_us: u64,
+    drift_us: i64,
+    wall_monotonic_ok: bool,
+}
+
+impl ClockSkewSample {
+    /// Sentinel for paths that reconstruct a `PipeCapture` from an existing
+    /// manifest (e.g. deferred repack) and did not re-run the capture loop, so
+    /// there is no live drift to report. Serializes as JSON null; the acceptance
+    /// gate treats it as "no live loop ran here", not as a passing measurement.
+    fn unmeasured() -> Self {
+        ClockSkewSample {
+            measured: false,
+            wall_elapsed_us: 0,
+            mono_elapsed_us: 0,
+            drift_us: 0,
+            // Meaningless while `measured == false`; never serialized (as_json
+            // emits null) and never read as a verdict for an unmeasured sample.
+            wall_monotonic_ok: false,
+        }
+    }
+
+    /// Compute from the paired start anchors and the current instant/time.
+    fn measure(wall_start: SystemTime, mono_start: Instant) -> Self {
+        let mono_elapsed_us = mono_start.elapsed().as_micros().min(i64::MAX as u128) as u64;
+        let (wall_elapsed_us, wall_monotonic_ok) =
+            match SystemTime::now().duration_since(wall_start) {
+                Ok(delta) => (delta.as_micros().min(i64::MAX as u128) as i64, true),
+                // Wall clock stepped backwards during the capture.
+                Err(err) => (
+                    -(err.duration().as_micros().min(i64::MAX as u128) as i64),
+                    false,
+                ),
+            };
+        ClockSkewSample {
+            measured: true,
+            wall_elapsed_us,
+            mono_elapsed_us,
+            drift_us: wall_elapsed_us.saturating_sub(mono_elapsed_us as i64),
+            wall_monotonic_ok,
+        }
+    }
+
+    fn as_json(&self) -> Value {
+        // Fail-closed: an unmeasured sample publishes null, not a fabricated
+        // zero-drift OK measurement. The PS acceptance gate reads null as
+        // "clock_skew unmeasured / no live loop", which is a FAILURE for a live
+        // acceptance capture, never a silent pass.
+        if !self.measured {
+            return Value::Null;
+        }
+        json!({
+            "wall_elapsed_us": self.wall_elapsed_us,
+            "mono_elapsed_us": self.mono_elapsed_us,
+            "drift_us": self.drift_us,
+            "wall_monotonic_ok": self.wall_monotonic_ok,
+            "note": "drift_us = wall_elapsed - monotonic_elapsed over the capture; large magnitude = wall clock stepped mid-capture; wall_monotonic_ok=false means wall time ran backwards",
+        })
+    }
+}
+
 /// The outcome of a bounded-memory pipe capture: the stream was written straight
 /// to `raw_path` (never buffered whole in RAM), with a rolling SHA-256 and byte
 /// count computed on the way through. The sha256 is the streaming replacement for
@@ -8005,6 +8200,10 @@ struct PipeCapture {
     /// Bytes occupied by collector_stream.bin after file-boundary encoding.
     stored_byte_count: u64,
     sha256: String,
+    /// Bounded per-write sink latency distribution over the capture (F5).
+    write_latency: WriteLatencyHistogram,
+    /// Wall-vs-monotonic drift across the capture read loop (F5).
+    clock_skew: ClockSkewSample,
 }
 
 struct PipeCaptureOutcome {
@@ -8201,6 +8400,11 @@ fn capture_pipe_to_file(
     };
     let mut hasher = Sha256::new();
     let mut total: u64 = 0;
+    // Acceptance telemetry (F5): sink-write latency histogram + wall-vs-monotonic
+    // drift, both anchored the instant before the read/write loop begins.
+    let mut write_latency = WriteLatencyHistogram::default();
+    let capture_wall_start = SystemTime::now();
+    let capture_mono_start = Instant::now();
     let read_deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut write_err: Option<String> = None;
     let mut read_err: Option<String> = None;
@@ -8224,10 +8428,12 @@ fn capture_pipe_to_file(
             }
             let chunk = &buf[..got as usize];
             hasher.update(chunk);
+            let write_started = Instant::now();
             if let Err(e) = writer.write_all(chunk) {
                 write_err = Some(format!("write raw stream failed: {e}"));
                 break;
             }
+            write_latency.record(write_started.elapsed().as_micros().min(u64::MAX as u128) as u64);
             total = total.saturating_add(got as u64);
             if proof_emitter.is_some() {
                 match first_record_gate.observe(chunk) {
@@ -8289,6 +8495,8 @@ fn capture_pipe_to_file(
                 byte_count: total,
                 stored_byte_count,
                 sha256: to_hex(&hasher.finalize()),
+                write_latency,
+                clock_skew: ClockSkewSample::measure(capture_wall_start, capture_mono_start),
             },
             loaded_dll_sha256,
         })
@@ -10222,25 +10430,35 @@ fn lane_wall_summary_json(summary: &CompactSummary) -> Value {
     })
 }
 
+/// Nearest-rank percentile index into a length-`len` ascending-sorted slice.
+/// `ceil(len * pct / 100) - 1`, clamped to `[0, len-1]`. Shared by every
+/// `timing_summary_json` percentile so p50/p95/p99 use one consistent rule.
+fn percentile_index(len: usize, pct: usize) -> usize {
+    ((len * pct).saturating_add(99) / 100)
+        .saturating_sub(1)
+        .min(len.saturating_sub(1))
+}
+
 fn timing_summary_json(values: &[u64]) -> Value {
     if values.is_empty() {
         return json!({
             "count": 0,
             "avg": null,
+            "p50": null,
             "p95": null,
+            "p99": null,
             "max": null,
         });
     }
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
     let sum = sorted.iter().copied().sum::<u64>();
-    let p95_index = ((sorted.len() * 95).saturating_add(99) / 100)
-        .saturating_sub(1)
-        .min(sorted.len().saturating_sub(1));
     json!({
         "count": sorted.len(),
         "avg": (sum as f64) / (sorted.len() as f64),
-        "p95": sorted[p95_index],
+        "p50": sorted[percentile_index(sorted.len(), 50)],
+        "p95": sorted[percentile_index(sorted.len(), 95)],
+        "p99": sorted[percentile_index(sorted.len(), 99)],
         "max": sorted[sorted.len() - 1],
     })
 }
@@ -11320,6 +11538,8 @@ mod tests {
             byte_count: 123,
             stored_byte_count: 45,
             sha256: "abc123".to_string(),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let fold_stats = recorder_host::stream_fold::FoldStreamStats {
             stream_bytes: 123,
@@ -21480,6 +21700,8 @@ mod tests {
             byte_count: 8,
             stored_byte_count: 8,
             sha256: to_hex(&Sha256::digest(b"not-h4cr")),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let cfg = test_config(vec![], None);
 
@@ -21565,6 +21787,8 @@ mod tests {
             byte_count: raw.len() as u64,
             stored_byte_count: raw.len() as u64,
             sha256: to_hex(&Sha256::digest(&raw)),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
 
         let snapshot_path = spill_dir.join("000016959360.snapshot.json");
@@ -21928,6 +22152,8 @@ mod tests {
             byte_count: 0,
             stored_byte_count: 0,
             sha256: to_hex(&Sha256::digest(&[])),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let mut cfg = test_config(vec!["fuel_live"], None);
         cfg.session_id = session_a.to_string();
@@ -22011,6 +22237,8 @@ mod tests {
             byte_count: raw.len() as u64,
             stored_byte_count: raw.len() as u64,
             sha256: to_hex(&Sha256::digest(&raw)),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",
@@ -22126,6 +22354,8 @@ mod tests {
             sha256: to_hex(&Sha256::digest(&raw)),
             // Raw fixture: stored == decoded.
             stored_byte_count: raw.len() as u64,
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",
@@ -26277,6 +26507,175 @@ mod tests {
             domain.data_units_total.get("d69_member_fail_raw_sample"),
             Some(&9)
         );
+    }
+
+    #[test]
+    fn timing_summary_json_emits_p50_p95_p99_ascending() {
+        // 100 values 1..=100; nearest-rank ceilings land on the pct-th value.
+        let values: Vec<u64> = (1..=100).collect();
+        let summary = timing_summary_json(&values);
+        assert_eq!(summary["count"], json!(100));
+        assert_eq!(summary["p50"], json!(50));
+        assert_eq!(summary["p95"], json!(95));
+        assert_eq!(summary["p99"], json!(99));
+        assert_eq!(summary["max"], json!(100));
+        // p50 <= p95 <= p99 <= max, always.
+        let p50 = summary["p50"].as_u64().unwrap();
+        let p95 = summary["p95"].as_u64().unwrap();
+        let p99 = summary["p99"].as_u64().unwrap();
+        let max = summary["max"].as_u64().unwrap();
+        assert!(p50 <= p95 && p95 <= p99 && p99 <= max);
+    }
+
+    #[test]
+    fn timing_summary_json_empty_is_fail_closed_nulls() {
+        let summary = timing_summary_json(&[]);
+        assert_eq!(summary["count"], json!(0));
+        assert!(summary["p50"].is_null());
+        assert!(summary["p95"].is_null());
+        assert!(summary["p99"].is_null());
+        assert!(summary["avg"].is_null());
+        assert!(summary["max"].is_null());
+    }
+
+    #[test]
+    fn write_latency_histogram_is_bounded_and_percentiles_are_ceilings() {
+        let mut hist = WriteLatencyHistogram::default();
+        // Bucket assignment: 0->0, [1,2)->1, [2,4)->2, [4,8)->3 ...
+        for us in [0u64, 1, 3, 5, 7, 100, 100, 100, 1_000, 1_000_000] {
+            hist.record(us);
+        }
+        assert_eq!(hist.count, 10);
+        assert_eq!(hist.max_us, 1_000_000);
+        assert_eq!(hist.sum_us, 0 + 1 + 3 + 5 + 7 + 300 + 1_000 + 1_000_000);
+        // Memory is fixed regardless of how many writes land.
+        assert_eq!(hist.buckets.len(), WRITE_LATENCY_BUCKETS);
+        // Every percentile ceiling is >= its true count position yet <= max.
+        let p50 = hist.percentile_ceiling(50).unwrap();
+        let p95 = hist.percentile_ceiling(95).unwrap();
+        let p99 = hist.percentile_ceiling(99).unwrap();
+        assert!(p50 <= p95 && p95 <= p99);
+        assert!(p99 <= hist.max_us);
+        // p99 (rank 10 of 10) must reach the largest observed sample's bucket,
+        // capped at the exact max.
+        assert_eq!(p99, 1_000_000);
+        // A uniform histogram of many tiny writes must never grow the struct.
+        let mut big = WriteLatencyHistogram::default();
+        for _ in 0..1_000_000u64 {
+            big.record(7);
+        }
+        assert_eq!(big.count, 1_000_000);
+        assert_eq!(big.buckets.len(), WRITE_LATENCY_BUCKETS);
+        // 7us -> bucket 3 upper bound is 8, capped at max 7.
+        assert_eq!(big.percentile_ceiling(95).unwrap(), 7);
+    }
+
+    #[test]
+    fn write_latency_summary_json_empty_is_fail_closed_nulls() {
+        let summary = write_latency_summary_json(&WriteLatencyHistogram::default());
+        assert_eq!(summary["count"], json!(0));
+        assert!(summary["p50"].is_null());
+        assert!(summary["p99"].is_null());
+        assert!(summary["max"].is_null());
+        assert_eq!(summary["percentile_semantics"], json!("bucket_upper_bound_us"));
+    }
+
+    #[test]
+    fn acceptance_telemetry_json_carries_the_fields_the_ps_gate_requires() {
+        // Lockstep with ProductionCapture.Validation.ps1: sink_write_us must carry
+        // count/avg/p50/p95/p99/max and clock_skew must carry the four drift fields.
+        let mut hist = WriteLatencyHistogram::default();
+        for us in [1u64, 5, 5, 40, 900] {
+            hist.record(us);
+        }
+        let capture = PipeCapture {
+            byte_count: 100,
+            stored_byte_count: 100,
+            sha256: "0".repeat(64),
+            write_latency: hist,
+            clock_skew: ClockSkewSample {
+                measured: true,
+                wall_elapsed_us: 1000,
+                mono_elapsed_us: 1001,
+                drift_us: -1,
+                wall_monotonic_ok: true,
+            },
+        };
+        let value = acceptance_telemetry_json(&capture);
+        for field in ["count", "avg", "p50", "p95", "p99", "max"] {
+            assert!(
+                value["sink_write_us"].get(field).is_some(),
+                "sink_write_us missing {field}"
+            );
+        }
+        for field in ["wall_elapsed_us", "mono_elapsed_us", "drift_us", "wall_monotonic_ok"] {
+            assert!(
+                value["clock_skew"].get(field).is_some(),
+                "clock_skew missing {field}"
+            );
+        }
+        assert_eq!(value["clock_skew"]["wall_monotonic_ok"], json!(true));
+        assert_eq!(value["clock_skew"]["drift_us"], json!(-1));
+    }
+
+    #[test]
+    fn clock_skew_forward_wall_is_monotonic_ok() {
+        let mono_start = Instant::now();
+        let wall_start = SystemTime::now();
+        // Elapse a little real time so end-vs-start is non-negative.
+        while mono_start.elapsed() < Duration::from_millis(2) {}
+        let skew = ClockSkewSample::measure(wall_start, mono_start);
+        assert!(skew.wall_monotonic_ok);
+        assert!(skew.mono_elapsed_us > 0);
+        // drift = wall - mono; both measured over the same window, so the
+        // magnitude is small relative to the elapsed window (no clock step).
+        assert!(skew.drift_us.abs() < 5_000_000);
+        let value = skew.as_json();
+        assert_eq!(value["wall_monotonic_ok"], json!(true));
+        assert_eq!(
+            value["drift_us"],
+            json!(skew.wall_elapsed_us - skew.mono_elapsed_us as i64)
+        );
+    }
+
+    #[test]
+    fn clock_skew_unmeasured_serializes_as_null_not_a_passing_sample() {
+        // Regression: unmeasured() must NOT publish a valid-looking zero-drift,
+        // wall_monotonic_ok=true measurement (which the PS gate would read as a
+        // passing clock sample). It serializes as JSON null — a distinct
+        // "no live loop ran here" state.
+        let unmeasured = ClockSkewSample::unmeasured();
+        assert!(
+            unmeasured.as_json().is_null(),
+            "unmeasured clock skew must serialize as null, not a fabricated OK sample"
+        );
+
+        // A deferred-repack capture (reconstructed, no live loop) publishes a
+        // null clock_skew inside the acceptance telemetry block.
+        let capture = PipeCapture {
+            byte_count: 100,
+            stored_byte_count: 100,
+            sha256: "0".repeat(64),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
+        };
+        let value = acceptance_telemetry_json(&capture);
+        assert!(
+            value["clock_skew"].is_null(),
+            "unmeasured repack must emit clock_skew: null, not a zero-drift OK object"
+        );
+
+        // Measured samples are unaffected: still an object carrying every field.
+        let mono_start = Instant::now();
+        let wall_start = SystemTime::now();
+        while mono_start.elapsed() < Duration::from_millis(2) {}
+        let measured = ClockSkewSample::measure(wall_start, mono_start);
+        let mval = measured.as_json();
+        assert!(mval.is_object(), "measured clock skew must serialize as an object");
+        for field in ["wall_elapsed_us", "mono_elapsed_us", "drift_us", "wall_monotonic_ok"] {
+            assert!(mval.get(field).is_some(), "measured sample missing {field}");
+        }
+        assert_eq!(mval["wall_monotonic_ok"], json!(true));
     }
 
     #[test]
