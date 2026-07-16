@@ -24,27 +24,64 @@ tooltips, drag state, and other local UI preferences must not enter production r
 replay interface owns those choices and reconstructs its UI from captured facts. The historical UI
 rows in §5 are retained to make the exclusion explicit, not as an RE or fixture backlog.
 
-Generation-time support-file manifest (historical): the
-`extractor/native/runs/extraction_atlas_seed/` bundle is not present in this worktree and no
-archived replacement was found. The filenames remain here as provenance for the generated census,
-not as resolvable current paths:
-- `extractor/native/runs/extraction_atlas_seed/build_extraction_atlas.py`
-- `extractor/native/runs/extraction_atlas_seed/build_summary.json`
-- `extractor/native/runs/extraction_atlas_seed/top_level_save_census.csv`
-- `extractor/native/runs/extraction_atlas_seed/top_level_save_occurrences.csv`
-- `extractor/native/runs/extraction_atlas_seed/ger_country_depth1_census.csv`
-- `extractor/native/runs/extraction_atlas_seed/ger_country_depth1_entries.csv`
-- `extractor/native/runs/extraction_atlas_seed/save_path_catalog.csv`
-- `extractor/native/runs/extraction_atlas_seed/dynamic_script_keys.json`
-- `extractor/native/runs/extraction_atlas_seed/doc_signal_lines.csv`
-- `extractor/native/runs/extraction_atlas_seed/doc_signal_lines.json`
-- `extractor/native/runs/extraction_atlas_seed/rtti_runtime_class_candidates.csv`
-- `extractor/native/runs/extraction_atlas_seed/lane_file_inventory.csv`
-- `extractor/native/runs/extraction_atlas_seed/evidence_file_inventory.csv`
-- `extractor/native/runs/extraction_atlas_seed/compact_contract_evidence.json`
-- `extractor/native/runs/extraction_atlas_seed/residual_fixture_blocked_catalog.csv`
-- `extractor/native/runs/extraction_atlas_seed/derived_recompute_catalog.csv`
-- `extractor/native/runs/extraction_atlas_seed/memory_only_ui_ephemeral_census.csv`
+Generation-time support-file manifest (RECONCILED 2026-07-16): the original
+`extractor/native/runs/extraction_atlas_seed/` bundle (including its own
+`build_extraction_atlas.py`) is GONE and no archived replacement was found. It is
+replaced by an extractor-owned, reproducible generator:
+[`../coverage_audit/build_extraction_atlas.py`](../coverage_audit/build_extraction_atlas.py).
+Run it to regenerate these outputs into `extractor/coverage_audit/atlas_generated/`:
+
+```
+python extractor/coverage_audit/build_extraction_atlas.py            # DEGRADED (tracked data only)
+python extractor/coverage_audit/build_extraction_atlas.py --corpus-dir <re_scratch>   # FULL
+```
+
+Because the melted-save corpus (`re_scratch/*.txt`) is not tracked in the repo, the
+default run is DEGRADED: it regenerates everything derivable from the tracked
+key-tree corpus and writes a `<name>.OWED.txt` fail-closed marker (never a
+fabricated file) for every output that genuinely needs the melt. Each run emits a
+`build_summary.json` reconciling this declared manifest (produced / partial / owed)
+and an `atlas_corpus_manifest.json` recording the melt corpus + the four owner-gated
+fixture slots. Disposition of the historically-declared outputs:
+
+| declared output | DEGRADED (tracked-data) disposition |
+| --- | --- |
+| `build_extraction_atlas.py` | **produced** — the generator itself (extractor-owned) |
+| `build_summary.json` | **produced** — declared-manifest reconciliation |
+| `top_level_save_census.csv` | **produced** — from `save_keytree_union.json` |
+| `top_level_save_occurrences.csv` | **produced** — per-scenario from `save_keytree_*.json` |
+| `ger_country_depth1_census.csv` | **partial** — normalized all-country depth-1 schema from the tracked recursive walk (GER-specific view needs the melt) |
+| `memory_only_ui_ephemeral_census.csv` | **produced** — manifest F/G/H tier rows |
+| `residual_fixture_blocked_catalog.csv` | **produced** — parsed from contract registry §A |
+| `derived_recompute_catalog.csv` | **produced** — parsed from contract registry §C |
+| `save_path_catalog.csv` | **partial** — `countries.*` subtree from the tracked recursive walk; full states/provinces/weather/scripted catalog is melt-gated |
+| `ger_country_depth1_entries.csv` | **owed** — GER-specific per-instance occurrences need the melt |
+| `dynamic_script_keys.json` | **owed** — concrete script/flag/idea tokens are normalized to `<id>` in tracked data |
+| `doc_signal_lines.csv` / `.json` | **owed** — repo doc-tree scan by the absent seed orchestrator |
+| `rtti_runtime_class_candidates.csv` | **owed** — vanilla `hoi4.exe` RTTI scan, not save-derived |
+| `lane_file_inventory.csv` / `evidence_file_inventory.csv` | **owed** — inventories of the absent seed bundle |
+| `compact_contract_evidence.json` | **owed** — superseded; use `native/domain_registry.json` + `compact_contract` |
+
+In FULL mode (a reachable `--corpus-dir`) the four `save_path_catalog` /
+`dynamic_script_keys` / `ger_country_depth1_entries` outputs are produced at full
+fidelity from the melt; the six repo/exe-scan outputs remain owed (not save-derived).
+
+**OWED — weather deep subtree / open-vocab phenomenon-flag leaf (melt-corpus-gated).** The
+exhaustive save-path oracle (`coverage_audit/save_oracle.py`) enumerates NO deep weather path:
+the tracked canonical universe stops at `weather.regions` / `weather.provinces`, so an
+open-vocab `weather.regions.*.<phenomenon flag>` leaf has no ground truth to validate against.
+It is therefore NOT carried as a blanket `weather.regions.*.*` cover — a blanket over that
+unenumerated field slot would silently MASK a missing concrete sibling field row (drop the
+dedicated `weather.regions.*.temperature` row and the blanket would keep the field "covered").
+Instead the open-vocab leaf coverage is surfaced as an **explicit OWED disposition** (an
+exhaustive-oracle owed scope, alongside the `states.*` / `provinces.*` deep subtrees), pending
+the melt corpus; every CONCRETE weather field keeps its own dedicated manifest row (validated at
+spine level). Regenerate with `build_extraction_atlas.py --corpus-dir <melts>` to enumerate the
+weather deep subtree and retire this OWED item. (Soundness note: deriving a residual open-vocab
+cover that excludes the concrete siblings was rejected — the exclusion set can only be derived
+from the present manifest rows, so deleting a concrete row drops it from the set and the residual
+cover re-masks it; the only stable alternative is a hardcoded weather-field list, i.e. invented
+ground truth, which is not permitted.)
 
 ## 0. Generation audit and routing caveat (historical, 2026-07-05)
 
