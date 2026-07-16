@@ -35,6 +35,8 @@ use compact_contract::{
     campaign_identity::{Cid1Witnesses, ValidatedCid1},
 };
 
+use crate::stitching::{AppendTicket, CampaignIdentityResolution};
+
 /// Manifest schema tag for the campaign identity object.
 pub const CAMPAIGN_IDENTITY_SCHEMA: &str = "hoi4.campaign_identity.v1";
 
@@ -980,6 +982,143 @@ pub fn stitch_decision(a: &CampaignIdentity, b: &CampaignIdentity) -> StitchDeci
     }
 }
 
+// --- Reconciliation with the stitching CampaignIdentityResolution seam --------
+//
+// `STITCHING_DESIGN.md` §4 defines the fail-closed result the stitcher consumes
+// per verified save epoch. That seam type is `crate::stitching::
+// CampaignIdentityResolution`; this module is the identity *provider*. The two
+// independently-defined seams (this module's `CampaignIdentity` and stitching's
+// `CampaignIdentityResolution`) are joined here by ADAPTING a resolved identity
+// into that type — without weakening either side's validation:
+//   * a `Verified` result is minted ONLY when `is_bound()` holds (Known + the
+//     private, non-transferable in-memory evidence proof recomputes over the exact
+//     current fields and the immutable CID1 bytes), so a mutated clone or forged
+//     manifest metadata can never fabricate a stitchable identity; and
+//   * `campaign_key` is the OPAQUE canonical identity preimage — equal byte-for-
+//     byte iff two Known epochs are the same persisted playthrough — never a
+//     filename / date / mod / path heuristic, matching stitching's opaque-key rule.
+
+/// Stream/identity scheme major for the v1 `(game_unique_id, game_unique_seed)`
+/// identity (design §4 `scheme_major`). Two epochs may be candidates for one
+/// campaign only when their `scheme_major` **and** opaque `campaign_key` bytes match.
+pub const CAMPAIGN_IDENTITY_SCHEME_MAJOR: u16 = 1;
+
+/// Decode 64 lowercase-hex chars into 32 bytes; `None` on any non-hex/short input.
+fn hex64_to_bytes(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+impl CampaignIdentity {
+    /// Opaque campaign-key bytes for a bound identity: the exact canonical preimage
+    /// of the identity pair (`CID_PREIMAGE_PREFIX` + canonical uuid + NUL + canonical
+    /// seed — the same preimage `compute_campaign_id` digests). Equal byte-for-byte
+    /// iff two Known identities are the same playthrough; `None` unless fully bound.
+    /// Stitching treats these bytes as opaque and never inspects them.
+    fn campaign_key_bytes(&self) -> Option<Vec<u8>> {
+        if !self.is_bound() {
+            return None;
+        }
+        let uuid = canonical_uuid(self.game_unique_id.as_deref()?)?;
+        let seed = canonical_seed(self.game_unique_seed.as_deref()?)?;
+        let mut buf = Vec::with_capacity(CID_PREIMAGE_PREFIX.len() + uuid.len() + 1 + seed.len());
+        buf.extend_from_slice(CID_PREIMAGE_PREFIX);
+        buf.extend_from_slice(uuid.as_bytes());
+        buf.push(0x00);
+        buf.extend_from_slice(seed.as_bytes());
+        Some(buf)
+    }
+
+    /// Bridge this resolved identity into the fail-closed stitching seam
+    /// (`crate::stitching::CampaignIdentityResolution`, design §4). This is the join
+    /// point that feeds `plan_stitch` real per-epoch results.
+    ///
+    /// * `Known` (and `is_bound()`) -> `Verified` with the opaque `campaign_key`
+    ///   preimage and the sealed CID1 evidence hash as `evidence_digest` (audit
+    ///   only, never the equality key). If the private evidence proof does not
+    ///   recompute, the state is `Known` but `is_bound()` is false, so this yields
+    ///   `Missing` — fail closed, never `Verified`.
+    /// * `Unavailable` / `Unbound` -> `Missing { reason }` (no verified epoch).
+    /// * `Conflict` -> `Conflict { reason }`.
+    ///
+    /// This scheme never emits `Ambiguous`; that variant is reserved for a provider
+    /// that ranks multiple candidates, which the v1 pair-identity does not.
+    pub fn to_stitch_resolution(&self) -> CampaignIdentityResolution {
+        let unbound_reason = || {
+            self.resolution_note
+                .clone()
+                .unwrap_or_else(|| self.state.as_str().to_string())
+        };
+        match self.state {
+            CampaignIdentityState::Known => {
+                match (
+                    self.campaign_key_bytes(),
+                    self.stream_header_sha256
+                        .as_deref()
+                        .and_then(hex64_to_bytes),
+                ) {
+                    (Some(campaign_key), Some(evidence_digest)) => {
+                        CampaignIdentityResolution::Verified {
+                            scheme_major: CAMPAIGN_IDENTITY_SCHEME_MAJOR,
+                            campaign_key,
+                            evidence_digest,
+                        }
+                    }
+                    // Known but the evidence proof / sealed hash did not survive
+                    // (mutated clone, forged metadata): fail closed.
+                    _ => CampaignIdentityResolution::Missing {
+                        reason: self.resolution_note.clone().unwrap_or_else(|| {
+                            "identity marked known but its in-memory evidence proof does not \
+                             recompute"
+                                .to_string()
+                        }),
+                    },
+                }
+            }
+            CampaignIdentityState::Unavailable | CampaignIdentityState::Unbound => {
+                CampaignIdentityResolution::Missing {
+                    reason: unbound_reason(),
+                }
+            }
+            CampaignIdentityState::Conflict => CampaignIdentityResolution::Conflict {
+                reason: unbound_reason(),
+            },
+        }
+    }
+
+    /// Construct the stitching [`AppendTicket`] binding this bound identity's
+    /// campaign participation to an ALREADY-ALLOCATED `play_order` plus the session
+    /// provenance. `None` unless the identity is bound — an unresolved epoch never
+    /// acquires a ticket (design §4: bytes observed while identity is unresolved
+    /// stay in an unbound recovery source).
+    ///
+    /// The durable, campaign-locked `play_order` *allocation* itself (the append
+    /// ledger committed before the first campaign-bound byte is accepted) is the
+    /// campaign store's responsibility and is intentionally NOT built here — that is
+    /// the compact-stream/session-store lane. This method only binds an allocated
+    /// ordinal to the same opaque `campaign_key` the resolution carries, so one key
+    /// flows consistently to both `plan_stitch` inputs (identity result + ticket).
+    pub fn append_ticket(
+        &self,
+        play_order: u64,
+        session_nonce: impl Into<String>,
+        process_start_identity: impl Into<String>,
+    ) -> Option<AppendTicket> {
+        Some(AppendTicket {
+            campaign_key: self.campaign_key_bytes()?,
+            play_order,
+            session_nonce: session_nonce.into(),
+            process_start_identity: process_start_identity.into(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1379,6 +1518,87 @@ mod tests {
             stitch_decision(&unbound, &unbound),
             StitchDecision::IdentityUnavailable
         );
+    }
+
+    #[test]
+    fn to_stitch_resolution_verifies_only_bound_known() {
+        let a = resolve(&known_obs());
+        assert!(a.is_bound());
+        match a.to_stitch_resolution() {
+            CampaignIdentityResolution::Verified {
+                scheme_major,
+                campaign_key,
+                evidence_digest,
+            } => {
+                assert_eq!(scheme_major, CAMPAIGN_IDENTITY_SCHEME_MAJOR);
+                assert!(!campaign_key.is_empty());
+                // evidence_digest is the sealed CID1 hash (audit only), not the key.
+                assert_eq!(
+                    Some(evidence_digest),
+                    a.stream_header_sha256.as_deref().and_then(hex64_to_bytes)
+                );
+            }
+            other => panic!("bound Known must be Verified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_stitch_resolution_campaign_key_equal_iff_same_playthrough() {
+        let a = resolve(&known_obs());
+        let same = resolve(&known_obs());
+        let different = resolve(&verified_obs("11111111-1111-4111-8111-111111111111", "99"));
+        // Same components -> identical opaque key bytes (the equality contract
+        // plan_stitch enforces); a different playthrough -> different bytes.
+        assert_eq!(a.campaign_key_bytes(), same.campaign_key_bytes());
+        assert!(a.campaign_key_bytes().is_some());
+        assert_ne!(a.campaign_key_bytes(), different.campaign_key_bytes());
+    }
+
+    #[test]
+    fn to_stitch_resolution_maps_unbound_and_conflict_states() {
+        let unbound = resolve(&SessionHeaderIdentityObservation::default());
+        assert!(matches!(
+            unbound.to_stitch_resolution(),
+            CampaignIdentityResolution::Missing { .. }
+        ));
+
+        let mut conflict = resolve(&known_obs());
+        conflict.state = CampaignIdentityState::Conflict;
+        assert!(matches!(
+            conflict.to_stitch_resolution(),
+            CampaignIdentityResolution::Conflict { .. }
+        ));
+    }
+
+    #[test]
+    fn to_stitch_resolution_fails_closed_on_mutated_known_clone() {
+        // A Known identity whose fields were mutated so the private evidence proof
+        // no longer recomputes must NOT reach Verified — join without weakening.
+        let mut mutated = resolve(&known_obs());
+        mutated.game_unique_seed = Some("99".to_string());
+        assert_eq!(mutated.state, CampaignIdentityState::Known);
+        assert!(!mutated.is_bound());
+        assert!(matches!(
+            mutated.to_stitch_resolution(),
+            CampaignIdentityResolution::Missing { .. }
+        ));
+    }
+
+    #[test]
+    fn append_ticket_binds_allocated_order_only_when_bound() {
+        let bound = resolve(&known_obs());
+        let ticket = bound
+            .append_ticket(7, "nonce-x", "pid-x")
+            .expect("bound identity yields a ticket");
+        assert_eq!(ticket.play_order, 7);
+        assert_eq!(ticket.session_nonce, "nonce-x");
+        assert_eq!(ticket.process_start_identity, "pid-x");
+        // The ticket carries the SAME opaque key the resolution does, so one key
+        // flows to both plan_stitch inputs.
+        assert_eq!(Some(ticket.campaign_key), bound.campaign_key_bytes());
+
+        let unbound = resolve(&SessionHeaderIdentityObservation::default());
+        assert!(unbound.append_ticket(0, "n", "p").is_none());
     }
 
     #[test]

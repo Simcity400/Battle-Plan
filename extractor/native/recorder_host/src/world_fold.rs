@@ -959,6 +959,28 @@ struct SnapshotFileSink {
     /// (owns every hour) — behavior unchanged.
     stride: u64,
     stride_offset: u64,
+    /// Global segment ordinal for a stitching segment fold. When `Some(o)`, every
+    /// spilled snapshot filename is prefixed `s<o:08>.` so the same game hour
+    /// captured in two different segments (e.g. a reload rollback) cannot collide
+    /// on one filename — matching the canonical stitched-container name
+    /// `s<segment_id:08>.<hour_index:012>.snapshot.json`
+    /// ([`crate::stitching::PlannedSegment::snapshot_file`], design
+    /// `STITCHING_DESIGN.md` §7). `None` keeps the plain single-timeline name.
+    segment_ordinal: Option<u64>,
+}
+
+impl SnapshotFileSink {
+    /// Spill filename for one closed hour, segment-prefixed when this sink folds a
+    /// stitching segment. The unprefixed form is byte-identical to the historical
+    /// single-timeline name, so a `None` sink cannot change any existing output.
+    fn snapshot_path(&self, hour_index: i64) -> PathBuf {
+        match self.segment_ordinal {
+            Some(ordinal) => self
+                .dir
+                .join(format!("s{ordinal:08}.{hour_index:012}.snapshot.json")),
+            None => self.dir.join(format!("{hour_index:012}.snapshot.json")),
+        }
+    }
 }
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -1483,7 +1505,33 @@ impl WorldFold {
             pipeline: SnapshotEmitPipeline::spawn()?,
             stride: 1,
             stride_offset: 0,
+            segment_ordinal: None,
         });
+        Ok(fold)
+    }
+
+    /// Construct a file-backed fold for ONE stitching segment (design
+    /// `STITCHING_DESIGN.md` §5.3 step 5 / §2). The fold starts from a **fresh
+    /// zero accumulator** — no countries, states, delta baselines, tombstones, or
+    /// `emitted_hours` are inherited — because feeding a reload rollback through
+    /// the single-timeline fold cannot honour the owner policy: overlap hours are
+    /// rejected as already-finalized and unique earlier hours would inherit the
+    /// abandoned branch's persistent state (design §2). Every snapshot this fold
+    /// spills is named `s<global_ordinal:08>.<hour_index:012>.snapshot.json`, so
+    /// the same game hour captured in two segments cannot collide on one filename
+    /// (design §7). `global_ordinal` is the segment's deterministic global ordinal
+    /// (`(play_order, in_session_ordinal)` scanned from zero — never a PID, wall
+    /// clock, or input order); the stitch planner assigns the identical ordinal
+    /// via [`crate::stitching::PlannedSegment`].
+    pub fn new_file_backed_for_segment(
+        game_id: impl Into<String>,
+        snapshot_dir: impl Into<PathBuf>,
+        global_ordinal: u64,
+    ) -> std::io::Result<Self> {
+        let mut fold = Self::new_file_backed(game_id, snapshot_dir)?;
+        if let Some(sink) = &mut fold.file_sink {
+            sink.segment_ordinal = Some(global_ordinal);
+        }
         Ok(fold)
     }
 
@@ -2535,7 +2583,7 @@ impl WorldFold {
         let ordinal = self.emitted_hours.len() as u64;
         if let Some(sink) = &self.file_sink {
             let owns_hour = ordinal % sink.stride == sink.stride_offset;
-            let path = sink.dir.join(format!("{hour_index:012}.snapshot.json"));
+            let path = sink.snapshot_path(hour_index);
             if owns_hour {
                 let snapshot = foldprof::timed(&foldprof::BUILD_NS, || {
                     self.build_snapshot(hour_index, &date)

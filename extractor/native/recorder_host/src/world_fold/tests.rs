@@ -12595,3 +12595,114 @@ fn d17_diplomacy_failure_frames_do_not_mutate_state_but_war_segment_absent_folds
         "WAR_SEGMENT_ABSENT alone is informational and must fold"
     );
 }
+
+/// A unique temp directory scoped to one test, cleaned up on drop.
+struct SegmentTmpDir(std::path::PathBuf);
+impl SegmentTmpDir {
+    fn new(tag: &str) -> SegmentTmpDir {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "hoi4_wf_segment_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        SegmentTmpDir(p)
+    }
+}
+impl Drop for SegmentTmpDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn fold_one_country_hour(fold: &mut WorldFold, raw_hour: i32, tag: &str) {
+    fold.ingest_record(
+        raw_hour,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, tag)]),
+        0,
+    );
+    fold.ingest_record(raw_hour, 0, COMPACT_RECORD_TYPE_FRAME_END, &[0u8; 32], 0);
+}
+
+/// STITCHING_DESIGN.md §7 / §5.3 step 5: a per-segment fold spills every snapshot
+/// under the canonical `s<global_ordinal:08>.<hour:012>.snapshot.json` name so two
+/// segments capturing the same game hour cannot collide on one filename.
+#[test]
+fn segment_fold_prefixes_snapshot_filenames_with_global_ordinal() {
+    let dir = SegmentTmpDir::new("prefix");
+    let mut fold = WorldFold::new_file_backed_for_segment("gid", &dir.0, 5).unwrap();
+    // Fresh zero accumulator: nothing emitted before the first frame closes.
+    assert_eq!(fold.emitted_hours_count(), 0);
+    fold_one_country_hour(&mut fold, DATE_EPOCH_CONST + 16_959_360, "GER");
+    fold_one_country_hour(&mut fold, DATE_EPOCH_CONST + 16_959_361, "GER");
+    let files = fold.finish_file_backed().unwrap();
+    assert_eq!(files.len(), 2);
+    for f in &files {
+        let name = f.path.file_name().unwrap().to_str().unwrap();
+        let expected = format!("s00000005.{:012}.snapshot.json", f.hour_index);
+        assert_eq!(name, expected, "segment fold filename must be prefixed");
+        assert!(f.path.exists(), "snapshot spilled to disk");
+    }
+}
+
+/// The unprefixed constructor is byte-for-byte unchanged: `new_file_backed`
+/// (segment_ordinal None) keeps the historical `<hour:012>.snapshot.json` name,
+/// proving the segment prefix is opt-in and cannot perturb the single-timeline path.
+#[test]
+fn non_segment_fold_keeps_plain_snapshot_filenames() {
+    let dir = SegmentTmpDir::new("plain");
+    let mut fold = WorldFold::new_file_backed("gid", &dir.0).unwrap();
+    fold_one_country_hour(&mut fold, DATE_EPOCH_CONST + 16_959_362, "FRA");
+    let files = fold.finish_file_backed().unwrap();
+    assert_eq!(files.len(), 1);
+    let name = files[0].path.file_name().unwrap().to_str().unwrap();
+    assert_eq!(name, format!("{:012}.snapshot.json", files[0].hour_index));
+}
+
+/// Two independent per-segment folds over the SAME game hour produce distinct,
+/// non-colliding filenames (design §2: the reload-rollback filename-collision
+/// hazard the single-timeline fold cannot avoid), and each fold is an independent
+/// fresh accumulator (design §5.3 step 5 — no inherited state across a cut).
+#[test]
+fn two_segment_folds_of_one_hour_do_not_collide() {
+    let dir = SegmentTmpDir::new("collide");
+    let raw = DATE_EPOCH_CONST + 16_959_363;
+
+    let mut seg0 = WorldFold::new_file_backed_for_segment("gid", &dir.0, 0).unwrap();
+    fold_one_country_hour(&mut seg0, raw, "GER");
+    let files0 = seg0.finish_file_backed().unwrap();
+
+    let mut seg1 = WorldFold::new_file_backed_for_segment("gid", &dir.0, 1).unwrap();
+    // Independent fresh accumulator: seg1 starts empty despite seg0 having folded.
+    assert_eq!(seg1.emitted_hours_count(), 0);
+    fold_one_country_hour(&mut seg1, raw, "FRA");
+    let files1 = seg1.finish_file_backed().unwrap();
+
+    assert_eq!(files0.len(), 1);
+    assert_eq!(files1.len(), 1);
+    assert_eq!(files0[0].hour_index, files1[0].hour_index);
+    assert_ne!(
+        files0[0].path, files1[0].path,
+        "same hour in two segments must land in two distinct files"
+    );
+    assert!(files0[0]
+        .path
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("s00000000."));
+    assert!(files1[0]
+        .path
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("s00000001."));
+}

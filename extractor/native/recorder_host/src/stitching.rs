@@ -38,6 +38,9 @@
 
 use std::collections::BTreeMap;
 
+pub mod formation;
+pub mod publish;
+
 use serde_json::{json, Map, Value};
 use snapshot::canon::write_canonical;
 use snapshot::container::{canonical_stitch_input_digest, normalize_stitch_source_path};
