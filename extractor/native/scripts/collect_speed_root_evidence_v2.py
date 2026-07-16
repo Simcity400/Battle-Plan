@@ -200,13 +200,20 @@ def read_row(process:ReadOnlyProcess,base:int)->dict:
 def command_pause_cycle(args)->None:
     """Self-timing pause cycle: the operator pauses and unpauses at leisure; the tool
     keeps a rolling paused-read buffer so its paused evidence always ends within one
-    poll period of the actual unpause. No timed operator action exists."""
+    poll period of the actual unpause. No timed operator action exists.
+
+    Pacing is FIXED (not operator-tunable): every verifier bound must hold by
+    construction. poll=400ms; paused buffer cap 8 rows (span cap 2.8s, minimum 4 rows
+    over >=1.2s vs the verifier's 1s dwell); resume window 8 rows (worst-case
+    first-changed-tick gap 1 poll to detect + 7 polls = 3.2s vs the verifier's 5s
+    rule), with a local 4.5s gap check so a jitter-degenerate transcript is refused
+    here instead of being written and failing the verifier."""
     transcript=load_transcript(args.transcript)
     if len(transcript["speed_samples"])!=5:raise ProbeError("record the ordered UI speed 1..5 cycle first")
     if transcript["pause_samples"]:raise ProbeError("pause samples already recorded")
     if args.action_token!="RUN_PAUSE_CYCLE_AT_VISIBLE_UI_SPEED_3_AND_ACK":raise ProbeError("explicit pause-cycle action token missing")
-    delay=args.read_delay_ms/1000.0;deadline=time.monotonic()+args.timeout_s
-    min_rows=max(args.read_count,4);min_span=12_000_000
+    poll=0.4;min_rows=4;min_span=12_000_000;buffer_cap=8;resume_rows=8;max_resume_gap=45_000_000
+    deadline=time.monotonic()+args.timeout_s
     def check_deadline():
         if time.monotonic()>deadline:raise ProbeError("pause-cycle timed out waiting for operator action")
     with ReadOnlyProcess(transcript["process"]["pid"]) as process:
@@ -217,10 +224,14 @@ def command_pause_cycle(args)->None:
         def sample_of(sequence:int,phase:str,rows:list)->dict:
             renumbered=[dict(row,ordinal=index) for index,row in enumerate(rows,1)]
             return {"sequence":sequence,"action_nonce_hex":secrets.token_hex(32),"requested_ui_speed":3,"expected_raw_speed":2,"phase":phase,"addresses":addresses,"reads":renumbered}
+        def read_batch(count:int)->list:
+            rows=[]
+            for _ in range(count):
+                check_deadline();rows.append(read_row(process,base));time.sleep(poll)
+            return rows
         print("pause-cycle: set visible speed 3 and let the game RUN unpaused; leave it running...",flush=True)
         while True:
-            check_deadline();rows=[]
-            for _ in range(min_rows):rows.append(read_row(process,base));time.sleep(delay)
+            rows=read_batch(min_rows)
             if all(row["speed_raw"]==2 and row["pause_raw"]==0 for row in rows) and len({row["tick_progress_bits"] for row in rows})>=2:break
         running_before=sample_of(6,"running_before",rows)
         print("running evidence captured. PAUSE the game whenever you are ready (no timing needed)...",flush=True)
@@ -232,19 +243,21 @@ def command_pause_cycle(args)->None:
                 if buffer and row["tick_progress_bits"]!=buffer[-1]["tick_progress_bits"]:buffer=[row]
                 else:
                     buffer.append(row)
-                    if len(buffer)>8:buffer.pop(0)
+                    if len(buffer)>buffer_cap:buffer.pop(0)
                 if not announced and len(buffer)>=min_rows and buffer[-1]["observed_filetime_utc"]-buffer[0]["observed_filetime_utc"]>=min_span:
                     print("paused evidence sufficient. UNPAUSE the game whenever you are ready...",flush=True);announced=True
             else:
                 if announced and len(buffer)>=min_rows and buffer[-1]["observed_filetime_utc"]-buffer[0]["observed_filetime_utc"]>=min_span:break
                 if buffer:print("pause released before enough paused evidence accumulated; PAUSE again and hold until told...",flush=True);announced=False
                 buffer=[]
-            time.sleep(delay)
+            time.sleep(poll)
         paused=sample_of(7,"paused",buffer);frozen=buffer[-1]["tick_progress_bits"].lower()
-        rows=[]
-        for _ in range(min_rows):rows.append(read_row(process,base));time.sleep(delay)
+        rows=read_batch(resume_rows)
         if any(row["speed_raw"]!=2 or row["pause_raw"]!=0 for row in rows):raise ProbeError("game re-paused or speed changed during the resume evidence window")
-        if len({row["tick_progress_bits"] for row in rows})<2 or all(row["tick_progress_bits"].lower()==frozen for row in rows):raise ProbeError("tick progress did not visibly resume")
+        if len({row["tick_progress_bits"] for row in rows})<2:raise ProbeError("tick progress did not visibly resume")
+        changed=next((row for row in rows if row["tick_progress_bits"].lower()!=frozen),None)
+        if changed is None:raise ProbeError("tick progress did not visibly resume")
+        if changed["observed_filetime_utc"]-buffer[-1]["observed_filetime_utc"]>max_resume_gap:raise ProbeError("resume evidence exceeded the verifier's five-second window; the host is too slow or oversleeping")
         running_after=sample_of(8,"running_after",rows)
         transcript["pause_samples"]=[running_before,paused,running_after]
         atomic_json(args.transcript,transcript)
@@ -286,7 +299,7 @@ def main(argv=None)->int:
     pause=sub.add_parser("pause");pause.add_argument("--transcript",type=Path,required=True);pause.add_argument("--phase",choices=("running_before","paused","running_after"),required=True);pause.add_argument("--action-token",required=True)
     pause_cycle=sub.add_parser("pause-cycle");pause_cycle.add_argument("--transcript",type=Path,required=True);pause_cycle.add_argument("--action-token",required=True);pause_cycle.add_argument("--timeout-s",type=int,choices=range(60,3601),default=900)
     seal=sub.add_parser("seal");seal.add_argument("--transcript",type=Path,required=True);seal.add_argument("--action-token",required=True)
-    for action in (speed,pause,pause_cycle):action.add_argument("--read-count",type=int,choices=range(3,17),default=3);action.add_argument("--read-delay-ms",type=int,choices=range(50,1001),default=500)
+    for action in (speed,pause):action.add_argument("--read-count",type=int,choices=range(3,17),default=3);action.add_argument("--read-delay-ms",type=int,choices=range(50,1001),default=500)
     args=parser.parse_args(argv)
     try:{"self-test":command_self_test,"init":command_init,"speed":command_speed,"pause":command_pause,"pause-cycle":command_pause_cycle,"seal":command_seal}[args.command](args)
     except (Exception,KeyboardInterrupt) as exc:
