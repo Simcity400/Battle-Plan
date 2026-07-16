@@ -189,6 +189,68 @@ def command_pause(args)->None:
     transcript["pause_samples"].append(sample);atomic_json(args.transcript,transcript);print(f"recorded observation sequence {6+index}; no verdict emitted")
 
 
+def read_row(process:ReadOnlyProcess,base:int)->dict:
+    gs_slot=base+0x3316E90;clock_a_slot=base+0x33172E0;clock_b_slot=base+0x33172E8;expected_vtable=base+0x2952510
+    current_gs=process.u64(gs_slot);current_a=process.u64(clock_a_slot);current_b=process.u64(clock_b_slot);vtable=process.u64(current_a)
+    if current_gs<0x10000 or current_a<0x10000 or current_a!=current_b or vtable!=expected_vtable:raise ProbeError("root/sentinel validation failed")
+    tick_bits=process.u32(current_gs+0x4B8)
+    return {"ordinal":0,"observed_filetime_utc":now_filetime(),"cgame_state_value":f"0x{current_gs:x}","clock_slot_a_value":f"0x{current_a:x}","clock_slot_b_value":f"0x{current_b:x}","clock_vtable_value":f"0x{vtable:x}","speed_raw":process.i32(current_gs+0x4BC),"pause_raw":process.u8(current_a+0x6C1),"tick_progress_bits":f"0x{tick_bits:08x}"}
+
+
+def command_pause_cycle(args)->None:
+    """Self-timing pause cycle: the operator pauses and unpauses at leisure; the tool
+    keeps a rolling paused-read buffer so its paused evidence always ends within one
+    poll period of the actual unpause. No timed operator action exists."""
+    transcript=load_transcript(args.transcript)
+    if len(transcript["speed_samples"])!=5:raise ProbeError("record the ordered UI speed 1..5 cycle first")
+    if transcript["pause_samples"]:raise ProbeError("pause samples already recorded")
+    if args.action_token!="RUN_PAUSE_CYCLE_AT_VISIBLE_UI_SPEED_3_AND_ACK":raise ProbeError("explicit pause-cycle action token missing")
+    delay=args.read_delay_ms/1000.0;deadline=time.monotonic()+args.timeout_s
+    min_rows=max(args.read_count,4);min_span=12_000_000
+    def check_deadline():
+        if time.monotonic()>deadline:raise ProbeError("pause-cycle timed out waiting for operator action")
+    with ReadOnlyProcess(transcript["process"]["pid"]) as process:
+        base,_=assert_same_process(process,transcript)
+        gs=process.u64(base+0x3316E90);clock_a=process.u64(base+0x33172E0);clock_b=process.u64(base+0x33172E8)
+        if gs<0x10000 or clock_a<0x10000 or clock_a!=clock_b or process.u64(clock_a)!=base+0x2952510:raise ProbeError("root/sentinel validation failed")
+        addresses={"cgame_state_slot":f"0x{base+0x3316E90:x}","clock_slot_a":f"0x{base+0x33172E0:x}","clock_slot_b":f"0x{base+0x33172E8:x}","clock_vtable":f"0x{base+0x2952510:x}","cgame_state":f"0x{gs:x}","clock":f"0x{clock_a:x}","speed":f"0x{gs+0x4BC:x}","pause":f"0x{clock_a+0x6C1:x}","tick":f"0x{gs+0x4B8:x}"}
+        def sample_of(sequence:int,phase:str,rows:list)->dict:
+            renumbered=[dict(row,ordinal=index) for index,row in enumerate(rows,1)]
+            return {"sequence":sequence,"action_nonce_hex":secrets.token_hex(32),"requested_ui_speed":3,"expected_raw_speed":2,"phase":phase,"addresses":addresses,"reads":renumbered}
+        print("pause-cycle: set visible speed 3 and let the game RUN unpaused; leave it running...",flush=True)
+        while True:
+            check_deadline();rows=[]
+            for _ in range(min_rows):rows.append(read_row(process,base));time.sleep(delay)
+            if all(row["speed_raw"]==2 and row["pause_raw"]==0 for row in rows) and len({row["tick_progress_bits"] for row in rows})>=2:break
+        running_before=sample_of(6,"running_before",rows)
+        print("running evidence captured. PAUSE the game whenever you are ready (no timing needed)...",flush=True)
+        buffer=[];announced=False
+        while True:
+            check_deadline();row=read_row(process,base)
+            if row["speed_raw"]!=2:raise ProbeError("visible speed changed during the pause cycle; keep it at 3")
+            if row["pause_raw"]==1:
+                if buffer and row["tick_progress_bits"]!=buffer[-1]["tick_progress_bits"]:buffer=[row]
+                else:
+                    buffer.append(row)
+                    if len(buffer)>8:buffer.pop(0)
+                if not announced and len(buffer)>=min_rows and buffer[-1]["observed_filetime_utc"]-buffer[0]["observed_filetime_utc"]>=min_span:
+                    print("paused evidence sufficient. UNPAUSE the game whenever you are ready...",flush=True);announced=True
+            else:
+                if announced and len(buffer)>=min_rows and buffer[-1]["observed_filetime_utc"]-buffer[0]["observed_filetime_utc"]>=min_span:break
+                if buffer:print("pause released before enough paused evidence accumulated; PAUSE again and hold until told...",flush=True);announced=False
+                buffer=[]
+            time.sleep(delay)
+        paused=sample_of(7,"paused",buffer);frozen=buffer[-1]["tick_progress_bits"].lower()
+        rows=[]
+        for _ in range(min_rows):rows.append(read_row(process,base));time.sleep(delay)
+        if any(row["speed_raw"]!=2 or row["pause_raw"]!=0 for row in rows):raise ProbeError("game re-paused or speed changed during the resume evidence window")
+        if len({row["tick_progress_bits"] for row in rows})<2 or all(row["tick_progress_bits"].lower()==frozen for row in rows):raise ProbeError("tick progress did not visibly resume")
+        running_after=sample_of(8,"running_after",rows)
+        transcript["pause_samples"]=[running_before,paused,running_after]
+        atomic_json(args.transcript,transcript)
+        print("recorded observation sequences 6-8 (self-timed pause cycle); no verdict emitted")
+
+
 def command_seal(args)->None:
     transcript=load_transcript(args.transcript)
     if args.action_token!="SEAL_TRANSCRIPT_WITHOUT_VERDICT":raise ProbeError("explicit seal token missing")
@@ -222,10 +284,11 @@ def main(argv=None)->int:
     init=sub.add_parser("init");init.add_argument("--pid",type=int,required=True);init.add_argument("--session-id",required=True);init.add_argument("--evidence-nonce",required=True);init.add_argument("--nonce-ledger-root",type=Path,required=True);init.add_argument("--static-disasm",type=Path,required=True);init.add_argument("--out",type=Path,required=True);init.add_argument("--action-token",required=True)
     speed=sub.add_parser("speed");speed.add_argument("--transcript",type=Path,required=True);speed.add_argument("--ui-speed",type=int,choices=range(1,6),required=True);speed.add_argument("--action-token",required=True)
     pause=sub.add_parser("pause");pause.add_argument("--transcript",type=Path,required=True);pause.add_argument("--phase",choices=("running_before","paused","running_after"),required=True);pause.add_argument("--action-token",required=True)
+    pause_cycle=sub.add_parser("pause-cycle");pause_cycle.add_argument("--transcript",type=Path,required=True);pause_cycle.add_argument("--action-token",required=True);pause_cycle.add_argument("--timeout-s",type=int,choices=range(60,3601),default=900)
     seal=sub.add_parser("seal");seal.add_argument("--transcript",type=Path,required=True);seal.add_argument("--action-token",required=True)
-    for action in (speed,pause):action.add_argument("--read-count",type=int,choices=range(3,17),default=3);action.add_argument("--read-delay-ms",type=int,choices=range(50,1001),default=500)
+    for action in (speed,pause,pause_cycle):action.add_argument("--read-count",type=int,choices=range(3,17),default=3);action.add_argument("--read-delay-ms",type=int,choices=range(50,1001),default=500)
     args=parser.parse_args(argv)
-    try:{"self-test":command_self_test,"init":command_init,"speed":command_speed,"pause":command_pause,"seal":command_seal}[args.command](args)
+    try:{"self-test":command_self_test,"init":command_init,"speed":command_speed,"pause":command_pause,"pause-cycle":command_pause_cycle,"seal":command_seal}[args.command](args)
     except (Exception,KeyboardInterrupt) as exc:
         try:
             if args.command=="init" and getattr(args,"_nonce_issued_by_this_invocation",False) and HEX64.fullmatch(str(getattr(args,"evidence_nonce",""))):
@@ -233,7 +296,7 @@ def main(argv=None)->int:
                 if issue.is_file():
                     issued=json.loads(issue.read_text(encoding="utf-8-sig"))
                     consume_nonce(args.nonce_ledger_root.resolve(),args.evidence_nonce,"consumed_failure",args.session_id,args.out,"",issued["created_filetime_utc"])
-            elif args.command in ("speed","pause","seal") and args.transcript.is_file():
+            elif args.command in ("speed","pause","pause-cycle","seal") and args.transcript.is_file():
                 failed=json.loads(args.transcript.read_text(encoding="utf-8-sig"));capture=failed["capture"]
                 consume_nonce(Path(capture["nonce_ledger_root"]),capture["evidence_nonce_hex"],"consumed_failure",capture["session_id"],args.transcript,failed.get("transcript_sha256",""),capture["created_filetime_utc"])
         except Exception:pass
