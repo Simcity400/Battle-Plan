@@ -222,7 +222,16 @@ function Test-ProductionCaptureArtifacts {
     $frameTiming = Get-ObjectProperty $compact "frame_time_us"
     if ($null -eq $frameTiming) { Add-CaptureProblem $problems "frame_time_us_missing" }
     else {
-        if ([int64](Get-ObjectProperty $frameTiming "count") -ne $frameCount) { Add-CaptureProblem $problems "frame_time_sample_count_mismatch" }
+        # STRICT count type (re-gate2 finding 3): the old bare [int64] coercion
+        # silently accepted a numeric STRING ("10" -ne 10 is false after coercion)
+        # and THREW mid-gate on a bare JSON NaN. Require a genuine positive finite
+        # JSON integer BEFORE any comparison; wrong type = its own typed problem.
+        $frameTimingCount = Get-ObjectProperty $frameTiming "count"
+        if (-not (Test-IsJsonInteger $frameTimingCount) -or [int64]$frameTimingCount -le 0) {
+            Add-CaptureProblem $problems "frame_time_count_not_positive_integer"
+        } elseif ([int64]$frameTimingCount -ne $frameCount) {
+            Add-CaptureProblem $problems "frame_time_sample_count_mismatch"
+        }
         if ($null -eq (Get-ObjectProperty $frameTiming "max") -or [double](Get-ObjectProperty $frameTiming "max") -ge 100000.0) { Add-CaptureProblem $problems "frame_time_over_100ms" }
     }
     # Acceptance-telemetry schema gate (F5): fail-closed on any absent frame_time
@@ -380,16 +389,31 @@ function Test-ProductionCaptureArtifacts {
             }
         }
     }
-    $expectedCaptureId = [string](Get-ObjectProperty $capturePlan "capture_id")
-    $expectedSessionId = [string](Get-ObjectProperty $manifest "session_id")
+    # STRICT identity types (re-gate2 finding 4): capture_id / session_id must be
+    # GENUINE, non-blank JSON STRINGS. The old [string] coercion silently minted a
+    # usable identity from a numeric capture_id (123 -> "123") or a boolean
+    # session_id (true -> "True"). Wrong type = its own fail-closed problem, and the
+    # coerced value is NEVER adopted as the attempt identity.
+    $rawCaptureId = Get-ObjectProperty $capturePlan "capture_id"
+    $expectedCaptureId = ""
+    if ($rawCaptureId -is [string]) { $expectedCaptureId = $rawCaptureId }
+    elseif ($null -ne $rawCaptureId) { Add-CaptureProblem $problems "capture_id_not_a_json_string" }
+    $rawSessionId = Get-ObjectProperty $manifest "session_id"
+    $expectedSessionId = ""
+    if ($rawSessionId -is [string]) { $expectedSessionId = $rawSessionId }
+    elseif ($null -ne $rawSessionId) { Add-CaptureProblem $problems "session_id_not_a_json_string" }
     $expectedStreamSha256 = [string](Get-ObjectProperty $finalize "stream_sha256")
     if ([string]::IsNullOrWhiteSpace($expectedCaptureId)) { Add-CaptureProblem $problems "capture_id_missing_from_plan" }
     if ([string]::IsNullOrWhiteSpace($expectedSessionId)) { Add-CaptureProblem $problems "session_id_missing_from_manifest" }
     if (-not (Test-HexSha256 $expectedStreamSha256)) { Add-CaptureProblem $problems "capture_stream_sha256_invalid" }
-    if (
-        $null -ne $capturePlan -and
-        [string](Get-ObjectProperty $capturePlan "session_id") -cne $expectedSessionId
-    ) { Add-CaptureProblem $problems "capture_plan_session_id_mismatch" }
+    if ($null -ne $capturePlan) {
+        $rawPlanSessionId = Get-ObjectProperty $capturePlan "session_id"
+        if ($null -ne $rawPlanSessionId -and $rawPlanSessionId -isnot [string]) {
+            Add-CaptureProblem $problems "plan_session_id_not_a_json_string"
+        } elseif ([string]$rawPlanSessionId -cne $expectedSessionId) {
+            Add-CaptureProblem $problems "capture_plan_session_id_mismatch"
+        }
+    }
 
     # These gates are deliberately independent of recorder-authored claims. A
     # caller cannot obtain a production PASS without executing every verifier.
@@ -504,17 +528,45 @@ function Test-IsJsonNumber {
 
 function Test-IsJsonInteger {
     <#
-        A count/positive-integer field must be a genuine whole JSON number
-        (ConvertFrom-Json parses JSON integers as [long]). Reject bools, strings,
-        and fractional doubles; accept whole-valued doubles (e.g. 10.0).
+        A count/positive-integer field must be a genuine whole JSON INTEGER token.
+        ConvertFrom-Json parses a plain JSON integer as [long] (or [decimal] when it
+        exceeds Int64 but fits 96-bit decimal); it parses any number written with a
+        decimal point OR an exponent (e.g. 10.0, 1e3, 9007199254740993e0) as a
+        [double], which is ALREADY ROUNDED at parse time. A [double] therefore cannot
+        be trusted for lossless integer validation — the precision is gone before this
+        predicate ever runs (re-gate: 9007199254740993e0 and 9007199254740992.5e0 both
+        arrive as the same rounded double). So a count is accepted ONLY as an integer
+        type or an exact [decimal]; a [double]/[single] is always rejected. This costs
+        nothing real: the Rust recorder serialises counts as plain JSON integers
+        (serde_json never emits a float for an integer field), so a float-form count is
+        malformed input, not a legitimate value. Bools and strings are rejected too.
     #>
     param($Value)
     if ($null -eq $Value) { return $false }
     if ($Value -is [bool]) { return $false }
-    if ($Value -is [int] -or $Value -is [long] -or $Value -is [int16] -or
-        $Value -is [uint16] -or $Value -is [uint32] -or $Value -is [uint64] -or $Value -is [byte]) { return $true }
-    if ($Value -is [double] -or $Value -is [single] -or $Value -is [decimal]) {
-        return ([math]::Floor([double]$Value) -eq [double]$Value)
+    # Integer-typed values are accepted only when they land inside the signed
+    # Int64 range, because EVERY caller subsequently casts through [int64]. A
+    # [uint64] above Int64.MaxValue (JSON 9223372036854775808 parses as uint64
+    # on some PS 5.1 hosts) would otherwise pass and then THROW an overflow at
+    # the cast site. Types whose whole domain is inside Int64 are safe outright.
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [int64] -or
+        $Value -is [int16] -or $Value -is [sbyte] -or
+        $Value -is [uint16] -or $Value -is [uint32] -or $Value -is [byte]) { return $true }
+    if ($Value -is [uint64]) {
+        return ([uint64]$Value -le [uint64][int64]::MaxValue)
+    }
+    if ($Value -is [double] -or $Value -is [single]) {
+        # Already-rounded at parse time — never lossless. Reject unconditionally
+        # (this also covers NaN/±Infinity). A legitimate count is never a float.
+        return $false
+    }
+    if ($Value -is [decimal]) {
+        # [decimal] preserves the exact JSON digits (ConvertFrom-Json uses it for
+        # large plain integers), so integrality is decided EXACTLY via Truncate in
+        # decimal space; then require Int64 range (also exact in decimal).
+        $dec = [decimal]$Value
+        if ([math]::Truncate($dec) -ne $dec) { return $false }
+        return ($dec -ge [decimal][int64]::MinValue -and $dec -le [decimal][int64]::MaxValue)
     }
     return $false
 }
@@ -585,6 +637,37 @@ function Get-AcceptanceTelemetryProblems {
     } else {
         Test-TimingSummaryFields -Summary $frame.Value -RequiredFields $script:RequiredFrameTimeFields `
             -Label "compact_stream.frame_time_us" -Problems $problems
+        # VALUE gate (finding 2): frame_time_us percentiles were PRESENCE-ONLY, so a
+        # non-finite value slipped through. PS 5.1 ConvertFrom-Json parses bare JSON
+        # NaN / Infinity / -Infinity as System.Double, and the downstream ceiling
+        # compare (Test-NumericThreshold: `NaN -gt Max` is FALSE) then accepted it.
+        # Route each percentile through the SAME strict finite-number validation the
+        # sink_write_us / clock_skew fields use (Test-IsJsonNumber rejects null, bools,
+        # strings, AND NaN/Infinity), so a count>0 frame block with a non-finite or
+        # non-numeric p95 / max cannot pass on presence alone.
+        # count VALUE gate (re-gate2 finding 3): count was presence-only, so a string
+        # "10" or a bare JSON NaN count sailed through. Mirror the sink_write_us.count
+        # handling: a genuine POSITIVE finite JSON INTEGER, or FAIL.
+        $frameCountField = Resolve-JsonPath -Manifest $Manifest -Path "compact_stream.frame_time_us.count"
+        if ($frameCountField.Found) {
+            if ($null -eq $frameCountField.Value) {
+                $problems.Add("compact_stream.frame_time_us.count is null (no frame-time telemetry)")
+            } elseif (-not (Test-IsJsonInteger $frameCountField.Value)) {
+                $problems.Add("compact_stream.frame_time_us.count is not an integer ('$($frameCountField.Value)')")
+            } elseif ([int64]$frameCountField.Value -le 0) {
+                $problems.Add("compact_stream.frame_time_us.count is $($frameCountField.Value) (no frame-time samples captured)")
+            }
+        }
+        foreach ($pf in @("avg", "p50", "p95", "p99", "max")) {
+            $fv = Resolve-JsonPath -Manifest $Manifest -Path "compact_stream.frame_time_us.$pf"
+            if ($fv.Found) {
+                if ($null -eq $fv.Value) {
+                    $problems.Add("compact_stream.frame_time_us.$pf is null (empty/absent sample distribution)")
+                } elseif (-not (Test-IsJsonNumber $fv.Value)) {
+                    $problems.Add("compact_stream.frame_time_us.$pf is not numeric ('$($fv.Value)')")
+                }
+            }
+        }
     }
 
     # sink_write_us under acceptance_telemetry.
@@ -698,6 +781,15 @@ function Test-NumericThreshold {
             [System.Globalization.CultureInfo]::InvariantCulture,
             [ref]$parsed)) {
         $Problems.Add("$Path is not numeric ('$value')")
+        return
+    }
+    # Fail-closed on NON-FINITE (finding 2): PS 5.1 ConvertFrom-Json parses bare JSON
+    # NaN / Infinity / -Infinity as System.Double, and TryParse likewise accepts the
+    # strings "NaN" / "Infinity". `NaN -gt $Max` and `Infinity -gt $Max` both evaluate
+    # WRONG for a ceiling gate (NaN comparisons are false), so a non-finite statistic
+    # would silently pass. Reject any non-finite value BEFORE the threshold compare.
+    if ([double]::IsNaN($parsed) -or [double]::IsInfinity($parsed)) {
+        $Problems.Add("$Path is not a finite number ('$value') (threshold check <= $Max)")
         return
     }
     if ($parsed -gt $Max) {
@@ -999,6 +1091,139 @@ function Invoke-ValidationSelfTest {
     $mInf = $jsonInf | ConvertFrom-Json
     [string[]]$probsInf = Get-AcceptanceTelemetryProblems -Manifest $mInf
     Assert-True (($probsInf -join "`n") -match "sink_write_us\.max is not numeric") "an Infinity sink_write_us.max must be rejected as non-numeric"
+
+    # 17. FINDING 2 (frame_time_us presence-only + non-finite ceiling): the frame-time
+    #     percentiles were validated for PRESENCE only, and Test-NumericThreshold
+    #     compared the value with `-gt` without rejecting non-finite first, so a bare
+    #     JSON NaN/Infinity frame_time_us.p95/max returned Passed=True. Prove BOTH
+    #     holes closed, with a finite fail-before baseline for each.
+    $jsonFrameFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"hour_latch":{"hours_coalesced":0}},"acceptance_telemetry":{"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true}}}'
+    # (a) schema/value gate: bare NaN/Infinity frame percentiles are rejected.
+    [string[]]$probsFrameFinite = Get-AcceptanceTelemetryProblems -Manifest ($jsonFrameFinite | ConvertFrom-Json)
+    Assert-True ($probsFrameFinite.Count -eq 0) "finite frame_time_us telemetry must pass (fail-before baseline); problems: $($probsFrameFinite -join '; ')"
+    $jsonFrameNaN = $jsonFrameFinite -replace '"p95":900', '"p95":NaN'
+    [string[]]$probsFrameNaN = Get-AcceptanceTelemetryProblems -Manifest ($jsonFrameNaN | ConvertFrom-Json)
+    Assert-True (($probsFrameNaN -join "`n") -match "frame_time_us\.p95 is not numeric") "a NaN frame_time_us.p95 must be rejected as non-numeric (finding 2)"
+    $jsonFrameInf = $jsonFrameFinite -replace '"max":1000', '"max":Infinity'
+    [string[]]$probsFrameInf = Get-AcceptanceTelemetryProblems -Manifest ($jsonFrameInf | ConvertFrom-Json)
+    Assert-True (($probsFrameInf -join "`n") -match "frame_time_us\.max is not numeric") "an Infinity frame_time_us.max must be rejected as non-numeric (finding 2)"
+    # (b) end-to-end: Test-ProductionCaptureManifest with -MaxFrameTimeUs. OLD code
+    #     returned Passed=True on a NaN p95 (NaN -gt Max is false); it must now FAIL.
+    $rFrameFinite = Test-ProductionCaptureManifest -Manifest ($jsonFrameFinite | ConvertFrom-Json) -MaxFrameTimeUs 100000 -RequireZeroSkipped -RequireZeroCoalesced -RequireHourlyMet
+    Assert-True $rFrameFinite.Passed "finite frame manifest must pass -MaxFrameTimeUs (fail-before); problems: $($rFrameFinite.Problems -join '; ')"
+    $rFrameNaN = Test-ProductionCaptureManifest -Manifest ($jsonFrameNaN | ConvertFrom-Json) -MaxFrameTimeUs 100000 -RequireZeroSkipped -RequireZeroCoalesced -RequireHourlyMet
+    Assert-True (-not $rFrameNaN.Passed) "a NaN frame_time_us.p95 must FAIL Test-ProductionCaptureManifest, not pass on NaN -gt Max being false (finding 2)"
+    # (c) Test-NumericThreshold rejects a non-finite value BEFORE the ceiling compare.
+    $ntNaN = [System.Collections.Generic.List[string]]::new()
+    Test-NumericThreshold -Manifest ('{"compact_stream":{"frame_time_us":{"p95":NaN}}}' | ConvertFrom-Json) -Path "compact_stream.frame_time_us.p95" -Max 100000 -Problems $ntNaN
+    Assert-True (($ntNaN -join "`n") -match "not a finite number") "Test-NumericThreshold must reject NaN before comparing (finding 2)"
+    $ntInf = [System.Collections.Generic.List[string]]::new()
+    Test-NumericThreshold -Manifest ('{"compact_stream":{"frame_time_us":{"p95":Infinity}}}' | ConvertFrom-Json) -Path "compact_stream.frame_time_us.p95" -Max 100000 -Problems $ntInf
+    Assert-True (($ntInf -join "`n") -match "not a finite number") "Test-NumericThreshold must reject Infinity before comparing (finding 2)"
+
+    # 18. RE-GATE2 FINDING 3: frame_time_us.count must be a genuine positive finite
+    #     JSON integer. A string count passed the reusable gate (presence-only) and
+    #     the heavyweight [int64] coercion; a bare JSON NaN count also passed the
+    #     reusable gate. Fail-before baseline: integer count 10 passes (test 1).
+    $hCountStr = New-TestManifest
+    $hCountStr.compact_stream.frame_time_us.count = "10"
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $hCountStr)
+    Assert-True (-not $r.Passed) "a string frame_time_us.count must fail (was presence-only; re-gate2 finding 3)"
+    Assert-True (($r.Problems -join "`n") -match "frame_time_us\.count is not an integer") "problem must name the non-integer frame-time count"
+    $hCountZero = New-TestManifest
+    $hCountZero.compact_stream.frame_time_us.count = 0
+    $r = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $hCountZero)
+    Assert-True (-not $r.Passed) "frame_time_us.count=0 must fail (no frame-time samples)"
+    Assert-True (($r.Problems -join "`n") -match "frame_time_us\.count is 0") "problem must name the zero frame-time count"
+    $jsonCountNaN = $jsonFrameFinite -replace '"frame_time_us":\{"count":10', '"frame_time_us":{"count":NaN'
+    [string[]]$probsCountNaN = Get-AcceptanceTelemetryProblems -Manifest ($jsonCountNaN | ConvertFrom-Json)
+    Assert-True (($probsCountNaN -join "`n") -match "frame_time_us\.count is not an integer") "a bare JSON NaN frame_time_us.count must be rejected (re-gate2 finding 3)"
+    Assert-True (-not (Test-IsJsonInteger ([double]::NaN))) "Test-IsJsonInteger must reject NaN"
+    Assert-True (-not (Test-IsJsonInteger ([double]::PositiveInfinity))) "Test-IsJsonInteger must reject +Infinity"
+    #     re-gate6: a [double] is already rounded at JSON parse time, so it can never
+    #     be trusted for lossless integer validation — reject ALL doubles (a legitimate
+    #     count is emitted as a plain JSON integer, never a float). This closes the
+    #     exponent-form hole: 9007199254740993e0 and 9007199254740992.5e0 both parse to
+    #     the SAME rounded double, so neither may be accepted.
+    Assert-True (-not (Test-IsJsonInteger ([double]10.0))) "Test-IsJsonInteger must reject a whole-valued double (floats are lossy; counts are integer tokens)"
+    Assert-True (-not (Test-IsJsonInteger (('{"c":9007199254740992.5e0}' | ConvertFrom-Json).c))) "Test-IsJsonInteger must reject an exponent-form fractional value (parsed as a rounded double)"
+    Assert-True (-not (Test-IsJsonInteger (('{"c":9007199254740993e0}' | ConvertFrom-Json).c))) "Test-IsJsonInteger must reject an exponent-form whole value that a double cannot represent exactly"
+    #     re-gate3: a [decimal] with a fractional part above 2^53 lost its .5 when
+    #     coerced through [double]; decide integrality in decimal space instead.
+    Assert-True (-not (Test-IsJsonInteger 9007199254740992.5d)) "Test-IsJsonInteger must reject a non-integral decimal above 2^53 (decimal-space truncation, not double coercion)"
+    Assert-True (Test-IsJsonInteger 9007199254740992d) "Test-IsJsonInteger must accept a whole decimal in range"
+    #     re-gate3: JSON 9223372036854775808 (2^63) parses as [uint64] in PS 5.1;
+    #     it must fail closed here so the downstream [int64] cast never overflow-throws.
+    Assert-True (-not (Test-IsJsonInteger ([uint64]9223372036854775808))) "Test-IsJsonInteger must reject a uint64 above Int64.MaxValue (overflow-safe downstream cast)"
+    Assert-True (Test-IsJsonInteger ([int64]9223372036854775807)) "Test-IsJsonInteger must accept Int64.MaxValue itself"
+    #     End-to-end: both flagged values in a real manifest must FAIL the gate,
+    #     not pass and not throw an unhandled Int64 overflow.
+    $jsonDecCount = '{"schema_version":1,"compact_stream":{"frame_time_us":{"count":9007199254740992.5,"avg":1,"p50":1,"p95":1,"p99":1,"max":1}}}'
+    $probsDec = Get-AcceptanceTelemetryProblems -Manifest ($jsonDecCount | ConvertFrom-Json)
+    Assert-True (($probsDec -join "`n") -match "frame_time_us\.count is not an integer") "a fractional decimal frame count above 2^53 must be rejected, not silently truncated"
+    $jsonOverCount = '{"schema_version":1,"compact_stream":{"frame_time_us":{"count":9223372036854775808,"avg":1,"p50":1,"p95":1,"p99":1,"max":1}}}'
+    $probsOver = $null
+    $threw = $false
+    try { $probsOver = Get-AcceptanceTelemetryProblems -Manifest ($jsonOverCount | ConvertFrom-Json) } catch { $threw = $true }
+    Assert-True (-not $threw) "an out-of-Int64-range frame count must return a typed problem, never throw an overflow"
+    Assert-True (($probsOver -join "`n") -match "frame_time_us\.count is not an integer") "a frame count above Int64.MaxValue must be rejected as not-an-integer"
+    #     Heavyweight path: Test-ProductionCaptureArtifacts previously coerced the
+    #     count through [int64] (string "10" -eq frame count 10 after coercion). It
+    #     must now emit a typed problem instead.
+    $selfDir = Split-Path -Parent $PSCommandPath
+    $realRegistry = Join-Path (Split-Path -Parent $selfDir) "domain_registry.json"
+    Assert-True (Test-Path -LiteralPath $realRegistry -PathType Leaf) "domain_registry.json must exist for the heavyweight count/identity type checks ($realRegistry)"
+    if (Test-Path -LiteralPath $realRegistry -PathType Leaf) {
+        $hwTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("pcv_selftest_hw_" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $hwTmp | Out-Null
+        try {
+            $hwManifest = New-TestManifest
+            $hwManifest.compact_stream["frame_end_record_count"] = 10
+            $hwManifest.compact_stream.frame_time_us.count = "10"
+            $hwManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $hwTmp "native_session_manifest.json") -Encoding UTF8
+            $hwReport = Test-ProductionCaptureArtifacts -RunDir $hwTmp -RegistryPath $realRegistry -SpeedProofPath (Join-Path $hwTmp "speed5_proof.json")
+            Assert-True (@($hwReport.problems) -contains "frame_time_count_not_positive_integer") "heavyweight gate must reject a string frame_time_us.count with a typed problem, not coerce it through [int64] (re-gate2 finding 3)"
+            Assert-True ($hwReport.ok -eq $false) "the heavyweight verdict over the string-count manifest must be ok=false"
+            # Fail-before contrast: a proper integer count does NOT emit the typed
+            # count problem (the run still fails for other reasons in this bare dir).
+            $hwManifestOk = New-TestManifest
+            $hwManifestOk.compact_stream["frame_end_record_count"] = 10
+            $hwManifestOk | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $hwTmp "native_session_manifest.json") -Encoding UTF8
+            $hwReportOk = Test-ProductionCaptureArtifacts -RunDir $hwTmp -RegistryPath $realRegistry -SpeedProofPath (Join-Path $hwTmp "speed5_proof.json")
+            Assert-True (-not (@($hwReportOk.problems) -contains "frame_time_count_not_positive_integer")) "an integer frame_time_us.count must not trip the typed count problem"
+        } finally { Remove-Item -LiteralPath $hwTmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 19. RE-GATE2 FINDING 4: heavyweight identity fields must be genuine JSON
+    #     strings. plan {"capture_id":123,"session_id":true} + manifest
+    #     {"session_id":true} previously string-coerced ("123"/"True") and were
+    #     adopted as the attempt identity.
+    if (Test-Path -LiteralPath $realRegistry -PathType Leaf) {
+        $idTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("pcv_selftest_id_" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $idTmp | Out-Null
+        try {
+            $idManifest = New-TestManifest
+            $idManifest["session_id"] = $true
+            $idManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $idTmp "native_session_manifest.json") -Encoding UTF8
+            $idPlanPath = Join-Path $idTmp "production_capture_plan.json"
+            ([ordered]@{ schema = "battle-plan.production_capture_plan.v1"; capture_id = 123; session_id = $true } | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $idPlanPath -Encoding UTF8
+            $idReport = Test-ProductionCaptureArtifacts -RunDir $idTmp -RegistryPath $realRegistry -SpeedProofPath (Join-Path $idTmp "speed5_proof.json") -CapturePlanPath $idPlanPath -SourceInventoryPath (Join-Path $idTmp "src_inv.json") -LiveResolutionReportPath (Join-Path $idTmp "live_res.json")
+            Assert-True (@($idReport.problems) -contains "capture_id_not_a_json_string") "a numeric plan capture_id must be rejected as not-a-string, never coerced (re-gate2 finding 4)"
+            Assert-True (@($idReport.problems) -contains "session_id_not_a_json_string") "a boolean manifest session_id must be rejected as not-a-string, never coerced (re-gate2 finding 4)"
+            Assert-True (@($idReport.problems) -contains "plan_session_id_not_a_json_string") "a boolean plan session_id must be rejected as not-a-string"
+            Assert-True ([string]$idReport.capture_id -eq "") "the coerced numeric capture_id must NOT be adopted into the report identity"
+            # Fail-before contrast: genuine string identities emit NONE of the typed
+            # identity problems (other problems remain — bare dir).
+            $idManifest2 = New-TestManifest
+            $idManifest2["session_id"] = "sess-x"
+            $idManifest2 | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $idTmp "native_session_manifest.json") -Encoding UTF8
+            ([ordered]@{ schema = "battle-plan.production_capture_plan.v1"; capture_id = "cap-x"; session_id = "sess-x" } | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $idPlanPath -Encoding UTF8
+            $idReport2 = Test-ProductionCaptureArtifacts -RunDir $idTmp -RegistryPath $realRegistry -SpeedProofPath (Join-Path $idTmp "speed5_proof.json") -CapturePlanPath $idPlanPath -SourceInventoryPath (Join-Path $idTmp "src_inv.json") -LiveResolutionReportPath (Join-Path $idTmp "live_res.json")
+            foreach ($tp in @("capture_id_not_a_json_string", "session_id_not_a_json_string", "plan_session_id_not_a_json_string", "capture_plan_session_id_mismatch")) {
+                Assert-True (-not (@($idReport2.problems) -contains $tp)) "genuine string identities must not trip '$tp'"
+            }
+        } finally { Remove-Item -LiteralPath $idTmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 
     if ($failures.Count -gt 0) {
         Write-Host "ProductionCapture.Validation self-test FAILED:" -ForegroundColor Red

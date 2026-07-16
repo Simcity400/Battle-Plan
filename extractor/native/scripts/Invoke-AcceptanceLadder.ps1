@@ -275,24 +275,22 @@ function Test-PredecessorsPassed {
     $targetIdx = Get-CanonicalRungOrder -Name $Name
     $defs = Get-LadderRungDefinitions
     $seenRunDirs = @{}
+    $seenIdentities = @{}
     for ($i = 0; $i -lt $targetIdx; $i++) {
         $predName = $defs[$i].name
         $predRung = Get-StateRungByName -State $State -Name $predName
         $predRunDir = if ($null -eq $predRung) { "" } else { [string]$predRung.run_dir }
 
-        # Distinct-attempt binding (finding 3): no two rungs may share ONE run_dir.
-        # Pointing speed5 / five-minute / weak-pc all at a single valid speed5 run
-        # would otherwise let one bound run verify several rungs and unlock the soak.
-        # Checked here (before the per-rung reverify) over each PASSED predecessor's
-        # recorded directory, so a shared path is refused even if the run would
-        # otherwise verify. Pending/unset run_dirs are left to Test-RungBoundVerdict
-        # to diagnose precisely.
-        if (-not [string]::IsNullOrWhiteSpace($predRunDir) -and (Test-Path -LiteralPath $predRunDir -PathType Container)) {
-            $key = ([System.IO.Path]::GetFullPath($predRunDir)).TrimEnd([char]'\', [char]'/').ToLowerInvariant()
-            if ($seenRunDirs.ContainsKey($key)) {
-                return [pscustomobject]@{ Ok = $false; Blocking = $predName; Reason = "run_dir_shared_with_rung_'$($seenRunDirs[$key])'_not_a_distinct_attempt" }
-            }
-            $seenRunDirs[$key] = $predName
+        # Distinct-attempt binding (findings 3 + 4, re-gate2 finding 1): no two rungs
+        # may share ONE run_dir path or ONE bound capture/session identity. Enforced
+        # via the SHARED Test-AttemptUniqueness helper (identical logic to the
+        # completion certification, so the two enforcement sites cannot drift).
+        # Checked here (before the per-rung reverify) so a shared/duplicated attempt
+        # is refused even if each copy would individually verify. Blank/missing
+        # run_dirs are left to Test-RungBoundVerdict to diagnose precisely.
+        $uniqueness = Test-AttemptUniqueness -SeenRunDirs $seenRunDirs -SeenIdentities $seenIdentities -RungName $predName -RunDir $predRunDir
+        if ($null -ne $uniqueness) {
+            return [pscustomobject]@{ Ok = $false; Blocking = $predName; Reason = $uniqueness }
         }
 
         # Re-derive the predecessor's verdict from its bound artifacts, re-graded
@@ -683,6 +681,87 @@ function Get-RunDirBoundRung {
     return $rung
 }
 
+function Get-RunDirAttemptIdentity {
+    <#
+        The capture/session identity a run directory's BOUND ARTIFACTS declare
+        (finding 4): the capture plan's `capture_id` and the manifest's `session_id`
+        — producer-written evidence, NOT the user-editable ladder-state summary. Two
+        rung entries that resolve to the SAME identity are copies of ONE attempt, not
+        the distinct attempts the ladder requires: an attacker can copy one valid
+        attempt into several directories (defeating path-uniqueness) and rebind each
+        plan's `rung` + hash (defeating the rung-string check), but the copies still
+        share the ORIGINAL attempt's capture/session identity.
+
+        STRICT TYPES + FAIL-CLOSED RESULT (re-gate2 finding 4): the identity fields
+        must be GENUINE, non-blank JSON STRINGS. The old [string] coercion minted a
+        usable identity from a numeric capture_id (123 -> "123") or a boolean
+        session_id (true -> "true"), and — worse — an unreadable identity returned
+        $null, which SKIPPED deduplication entirely (fail-open). Returns
+        { Ok; Identity; Problem }: Ok=$false (with a named Problem) for a missing/
+        unparsable plan or manifest or a wrong-typed/blank identity field, so the
+        caller can refuse fail-closed instead of silently skipping the check.
+    #>
+    param([Parameter(Mandatory = $true)][string]$RunDir)
+    function New-IdentityFailure([string]$Problem) {
+        return [pscustomobject]@{ Ok = $false; Identity = $null; Problem = $Problem }
+    }
+    $planPath = Join-Path $RunDir "production_capture_plan.json"
+    $manifestPath = Join-Path $RunDir "native_session_manifest.json"
+    if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) { return (New-IdentityFailure "capture_plan_missing") }
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return (New-IdentityFailure "manifest_missing") }
+    try { $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json } catch { return (New-IdentityFailure "capture_plan_unparsable") }
+    try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json } catch { return (New-IdentityFailure "manifest_unparsable") }
+    $captureId = Get-ObjectProperty $plan "capture_id"
+    if ($captureId -isnot [string] -or [string]::IsNullOrWhiteSpace($captureId)) {
+        return (New-IdentityFailure "capture_id_not_a_nonblank_json_string (got '$captureId')")
+    }
+    $sessionId = Get-ObjectProperty $manifest "session_id"
+    if ($sessionId -isnot [string] -or [string]::IsNullOrWhiteSpace($sessionId)) {
+        return (New-IdentityFailure "session_id_not_a_nonblank_json_string (got '$sessionId')")
+    }
+    return [pscustomobject]@{
+        Ok       = $true
+        Identity = ("cap=" + $captureId.Trim().ToLowerInvariant() + "|sess=" + $sessionId.Trim().ToLowerInvariant())
+        Problem  = $null
+    }
+}
+
+function Test-AttemptUniqueness {
+    <#
+        The SINGLE shared distinct-attempt invariant (re-gate2 finding 1): no two
+        rung state entries may share one normalized run_dir path OR one bound
+        capture/session identity. Factored here so BOTH enforcement sites —
+        Test-PredecessorsPassed (ordering) and Get-LadderCompletionVerdict (the
+        `-Rung next` all-passed certification) — run the IDENTICAL logic and cannot
+        drift. Mutates the caller's $SeenRunDirs / $SeenIdentities maps. Returns
+        $null when this rung's dir is distinct (or blank/missing — left to the
+        bound-verdict reverify to diagnose precisely), otherwise a refusal reason.
+        An UNREADABLE/WRONG-TYPED identity is itself a refusal (fail-closed,
+        re-gate2 finding 4), never a silent skip of the dedup.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$SeenRunDirs,
+        [Parameter(Mandatory = $true)][hashtable]$SeenIdentities,
+        [Parameter(Mandatory = $true)][string]$RungName,
+        [AllowEmptyString()][string]$RunDir = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($RunDir) -or -not (Test-Path -LiteralPath $RunDir -PathType Container)) { return $null }
+    $key = ([System.IO.Path]::GetFullPath($RunDir)).TrimEnd([char]'\', [char]'/').ToLowerInvariant()
+    if ($SeenRunDirs.ContainsKey($key)) {
+        return "run_dir_shared_with_rung_'$($SeenRunDirs[$key])'_not_a_distinct_attempt"
+    }
+    $SeenRunDirs[$key] = $RungName
+    $identity = Get-RunDirAttemptIdentity -RunDir $RunDir
+    if (-not $identity.Ok) {
+        return "attempt_identity_unverifiable: $($identity.Problem) (fail-closed)"
+    }
+    if ($SeenIdentities.ContainsKey($identity.Identity)) {
+        return "capture_session_identity_shared_with_rung_'$($SeenIdentities[$identity.Identity])'_not_a_distinct_attempt"
+    }
+    $SeenIdentities[$identity.Identity] = $RungName
+    return $null
+}
+
 function Test-RungBoundVerdict {
     <#
         Re-derive whether a rung GENUINELY passed from its bound artifacts, not from
@@ -737,6 +816,66 @@ function Test-RungBoundVerdict {
     return [pscustomobject]@{ Passed = $true; Reason = $null }
 }
 
+function Get-LadderCompletionVerdict {
+    <#
+        Fail-closed re-derivation of "the whole ladder is already complete" (finding
+        1). The `-Rung next` short-circuit must NOT declare the ladder finished by
+        trusting the mutable state `status` fields (Get-NextPendingRungName keys off
+        `status` alone): a hand-authored state with all six entries status="passed"
+        and run_dir=null would otherwise print "all passed" and exit 0 without ever
+        calling the authoritative validator. This re-verifies EVERY rung against its
+        BOUND run_dir artifacts via Test-RungBoundVerdict (the SAME in-process
+        authoritative validator path predecessor ordering uses), so a passed entry
+        with a null/missing/unvalidatable run_dir is an UNVERIFIED completion.
+
+        CROSS-RUNG invariants (re-gate2 finding 1): per-rung reverification alone is
+        NOT sufficient — six distinct directories cloned from ONE valid attempt (each
+        plan's `rung` rebound, all sharing one capture_id/session_id) individually
+        re-verify, yet are one attempt masquerading as six. Completion therefore also
+        enforces the SAME cross-rung path/identity deduplication predecessor ordering
+        enforces, through the SHARED Test-AttemptUniqueness helper (factored so the
+        two callers cannot drift). Returns:
+          Complete   - $true only when every rung genuinely re-verifies in-process
+                       AND every rung is a distinct attempt
+          Unverified - [string[]] "rung: reason" for each rung that does not
+    #>
+    param([Parameter(Mandatory = $true)]$State)
+    $unverified = @()
+    $seenRunDirs = @{}
+    $seenIdentities = @{}
+    foreach ($def in (Get-LadderRungDefinitions)) {
+        $rung = Get-StateRungByName -State $State -Name $def.name
+        $runDir = if ($null -eq $rung) { "" } else { [string]$rung.run_dir }
+        # Same order as predecessor ordering: uniqueness first, then the reverify.
+        $uniqueness = Test-AttemptUniqueness -SeenRunDirs $seenRunDirs -SeenIdentities $seenIdentities -RungName $def.name -RunDir $runDir
+        if ($null -ne $uniqueness) {
+            $unverified += ("{0}: {1}" -f $def.name, $uniqueness)
+            continue
+        }
+        $bv = Test-RungBoundVerdict -State $State -Name $def.name
+        if (-not $bv.Passed) { $unverified += ("{0}: {1}" -f $def.name, $bv.Reason) }
+    }
+    return [pscustomobject]@{ Complete = ($unverified.Count -eq 0); Unverified = $unverified }
+}
+
+function Assert-LadderFreshRunDir {
+    <#
+        Create the fresh run directory for THIS invocation, refusing a pre-existing
+        candidate path (re-gate2 finding 5). The old `New-Item -Force` silently
+        REUSED an already-existing directory WITHOUT clearing it, so an attacker (or
+        a stale earlier run) could plant artifacts at a predicted path and have them
+        survive into the graded dir. A GUID-suffixed candidate colliding honestly is
+        astronomically unlikely, so an existing path is treated as tampering/staleness
+        and REFUSED fail-closed — never cleared, never reused. No -Force: creation
+        itself must be this invocation's.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath $Path) {
+        throw "fresh run dir candidate already exists: '$Path'; refusing to reuse a pre-existing directory for a new attempt (planted/stale artifacts would be graded as this run's; fail-closed)"
+    }
+    New-Item -ItemType Directory -Path $Path | Out-Null
+}
+
 function Invoke-LadderRung {
     <#
         Run one rung: enforce fail-closed ordering, launch the capture (via the
@@ -766,15 +905,30 @@ function Invoke-LadderRung {
     # inherit STALE ARTIFACTS from an earlier run and mis-grade this one. The in-
     # process validator grades whatever artifacts sit in this dir, so the dir must
     # hold only THIS attempt's. Second-resolution timestamps alone can collide when
-    # a rung is re-run quickly, so a random suffix guarantees a clean dir.
+    # a rung is re-run quickly, so a random suffix guarantees a clean dir. The
+    # allocation REFUSES a pre-existing candidate (re-gate2 finding 5) rather than
+    # silently reusing whatever already sits at that path.
     $runDir = Join-Path $RunRoot ("ladder_" + $Name + "_" + (Get-Date -Format "yyyyMMdd_HHmmss") + "_" + [guid]::NewGuid().ToString("N").Substring(0, 8))
-    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    Assert-LadderFreshRunDir -Path $runDir
 
     # The producer must leave the run's artifacts (a manifest, a capture plan bound
     # to this rung, the raw stream / container / etc.) in $runDir. Grading is done
     # in-process over those artifacts, NOT from any sidecar the producer may write.
-    $producedDir = & $CaptureFunction $rungDef $runDir
-    if ([string]::IsNullOrEmpty($producedDir)) { $producedDir = $runDir }
+    $produced = & $CaptureFunction $rungDef $runDir
+    # Pin the graded directory to the FRESH dir allocated for THIS invocation
+    # (finding 3). A producer must populate $runDir IN PLACE; returning a DIFFERENT
+    # directory (e.g. a previously-passing same-rung run) would let a STALE attempt be
+    # regraded and recorded as this run's evidence. An empty/blank return means
+    # "populated in place" and grades $runDir; ANY other returned path is refused
+    # fail-closed (normalized-path equality), never silently graded.
+    if (-not [string]::IsNullOrWhiteSpace([string]$produced)) {
+        $normProduced = ([System.IO.Path]::GetFullPath([string]$produced)).TrimEnd([char]'\', [char]'/').ToLowerInvariant()
+        $normFresh = ([System.IO.Path]::GetFullPath($runDir)).TrimEnd([char]'\', [char]'/').ToLowerInvariant()
+        if ($normProduced -ne $normFresh) {
+            throw "producer for rung '$Name' returned '$produced', not this invocation's fresh run dir '$runDir'; refusing to grade a non-fresh/foreign attempt (fail-closed)"
+        }
+    }
+    $producedDir = $runDir
 
     # Grade = full artifact gate RE-GRADED IN-PROCESS (finding 1, no sidecar trust)
     # AND rung-identity binding (finding 3) AND the rung's independent proof over the
@@ -817,17 +971,26 @@ function Invoke-LadderRung {
 }
 
 function Show-LadderStatus {
+    <#
+        INFORMATIONAL display of the persisted state file. The statuses shown here
+        are RECORDED STATE ONLY — they are NOT revalidated against bound artifacts
+        (re-gate2 finding 2), so no line may read "[PASS]": that wording would
+        assert a validated pass from a hand-editable JSON field. Certification only
+        happens through the in-process validator paths (Test-RungBoundVerdict /
+        Get-LadderCompletionVerdict on `-Rung next`).
+    #>
     param([Parameter(Mandatory = $true)]$State)
     Write-Host "acceptance ladder ($($State.schema)) updated $($State.updated_utc):"
+    Write-Host "  (statuses below are RECORDED state only, not revalidated; certification requires the in-process validator via -Rung next)"
     # Display in CANONICAL script order (not the mutable `order` field).
     $idx = 0
     foreach ($def in (Get-LadderRungDefinitions)) {
         $r = Get-StateRungByName -State $State -Name $def.name
         if ($null -eq $r) { $idx++; continue }
         $marker = switch ($r.status) {
-            "passed" { "[PASS]" }
-            "failed" { "[FAIL]" }
-            default  { "[    ]" }
+            "passed" { "[RECORDED passed - not revalidated]" }
+            "failed" { "[RECORDED failed]" }
+            default  { "[pending]" }
         }
         Write-Host ("  {0} {1}. {2}" -f $marker, $idx, $r.name)
         if ($r.status -eq "failed" -and @($r.problems).Count -gt 0) {
@@ -1311,6 +1474,190 @@ Set-Content -LiteralPath $Sentinel -Value ("A=[$A]`nB=[$B]`nC=[$C]") -Encoding U
             Assert-True $false "the backslash/quote child must have written its sentinel"
         }
 
+        # 17. FINDING 3 (fresh-dir pinning): a producer that IGNORES the fresh dir
+        #     allocated for this invocation and returns a DIFFERENT (previously-passing,
+        #     same-rung) directory must be REFUSED, so a stale attempt can never be
+        #     regraded and recorded as the new run. Fail-before: the old code took the
+        #     producer's returned dir verbatim and graded the stale (healthy) run,
+        #     recording it as this attempt.
+        $pinFile = Join-Path $tmp "pin_fresh_dir.json"
+        $pinState = Read-LadderState -StateFile $pinFile
+        $vPin = Invoke-LadderRung -State $pinState -Name "synthetic-fault" -StateFile $pinFile -CaptureFunction $healthy -RunRoot $runRoot
+        Assert-True $vPin.Passed "synthetic-fault should pass to create a prior run dir for the stale-dir test"
+        # A $script:-scoped stale dir so the producer scriptblock (invoked in the ladder
+        # function's scope) can reach it without a fragile closure.
+        $script:LadderSelfTestStaleDir = [string](Get-StateRungByName -State $pinState -Name "synthetic-fault").run_dir
+        $staleReturner = {
+            param($rungDef, $runDir)
+            # Populate the FRESH dir healthily (so grading a fresh dir WOULD pass), but
+            # return the STALE prior dir — the attack the pin must refuse.
+            New-FakeCaptureForRung -RunDir $runDir -RungName $rungDef.name -ProofKind (Get-RungProofKind -RungDef $rungDef) | Out-Null
+            return $script:LadderSelfTestStaleDir
+        }
+        $threwPin = $false; $pinMsg = ""
+        try { Invoke-LadderRung -State $pinState -Name "synthetic-fault" -StateFile $pinFile -CaptureFunction $staleReturner -RunRoot $runRoot | Out-Null }
+        catch { $threwPin = $true; $pinMsg = $_.Exception.Message }
+        Assert-True $threwPin "a producer returning a directory other than the fresh run dir must be refused (fail-closed)"
+        Assert-True ($pinMsg -match "fresh run dir") "the refusal must name the fresh-run-dir pin (got: $pinMsg)"
+        $script:LadderSelfTestStaleDir = $null
+
+        # 18. FINDING 4 (shared capture/session identity): copying ONE valid attempt
+        #     into a DIFFERENT directory and rebinding the copy's plan `rung` defeats
+        #     the path-uniqueness and rung-identity checks, but the copy still carries
+        #     the ORIGINAL attempt's capture_id/session_id. Distinct-attempt must ALSO
+        #     require a distinct capture/session identity, so the soak stays blocked.
+        $idFile = Join-Path $tmp "shared_identity.json"
+        $idState = Read-LadderState -StateFile $idFile
+        foreach ($nm in @("synthetic-fault", "paused-short-proof", "speed5-short-proof")) {
+            $vv = Invoke-LadderRung -State $idState -Name $nm -StateFile $idFile -CaptureFunction $healthy -RunRoot $runRoot
+            Assert-True $vv.Passed "$nm should pass to set up the shared-identity test"
+        }
+        $speed5IdDir = [string](Get-StateRungByName -State $idState -Name "speed5-short-proof").run_dir
+        # Copy speed5's attempt into a NEW dir (distinct path) and REBIND the copy's
+        # plan rung to five-minute (keeping the ORIGINAL capture_id/session_id).
+        $copyDir = Join-Path $runRoot ("copy_of_speed5_" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+        Copy-Item -LiteralPath $speed5IdDir -Destination $copyDir -Recurse -Force
+        $copyPlanPath = Join-Path $copyDir "production_capture_plan.json"
+        $copyPlan = Get-Content -LiteralPath $copyPlanPath -Raw | ConvertFrom-Json
+        $copyPlan.rung = "five-minute-full-roster"
+        $copyPlan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $copyPlanPath -Encoding UTF8
+        # Fail-before proof: the copy now BINDS to five-minute and its path is distinct,
+        # so ONLY the identity check can catch it (path + rung-string both pass).
+        Assert-True ((Get-RunDirBoundRung -RunDir $copyDir) -eq "five-minute-full-roster") "the copy's plan must rebind to five-minute (so path + rung-string checks pass; only identity catches it)"
+        $fmId = Get-StateRungByName -State $idState -Name "five-minute-full-roster"
+        $fmId.status = "passed"; $fmId.run_dir = $copyDir; $fmId.verdict_utc = (Get-Date).ToUniversalTime().ToString("o")
+        Save-LadderState -State $idState -StateFile $idFile
+        $idReloaded = Read-LadderState -StateFile $idFile
+        # Check ordering for weak-pc-six-core: its predecessors (synthetic/paused/
+        # speed5/five-minute) are ALL forged-passed with valid bound artifacts, so
+        # NOTHING but the shared-identity check can block it. Targeting six-hour-soak
+        # instead would trip on weak-pc being pending (status_not_passed) and mask
+        # whether the identity guard actually fired.
+        $idGuard = Test-PredecessorsPassed -State $idReloaded -Name "weak-pc-six-core"
+        Assert-True (-not $idGuard.Ok) "two rungs sharing one capture/session identity must be refused as not-distinct"
+        Assert-True ($idGuard.Reason -match "identity_shared") "the refusal must name the shared capture/session identity (got: $($idGuard.Reason))"
+        Assert-True ($idGuard.Blocking -eq "five-minute-full-roster") "the identity-duplicate rung must be named as the blocker (got: $($idGuard.Blocking))"
+
+        # 19. FINDING 1 (all-passed short-circuit trusts persisted statuses): a
+        #     hand-authored state with all six entries status="passed" and run_dir=null
+        #     must NOT be certified complete. Get-LadderCompletionVerdict re-verifies
+        #     every rung against its bound artifacts in-process; a null/missing run_dir
+        #     is unverifiable -> not complete. Fail-before: a genuinely-passed ladder
+        #     (all six run healthily) re-verifies -> complete.
+        $completeFile = Join-Path $tmp "all_passed_complete.json"
+        $completeState = Read-LadderState -StateFile $completeFile
+        foreach ($nm in @("synthetic-fault", "paused-short-proof", "speed5-short-proof", "five-minute-full-roster", "weak-pc-six-core", "six-hour-soak")) {
+            Invoke-LadderRung -State $completeState -Name $nm -StateFile $completeFile -CaptureFunction $healthy -RunRoot $runRoot | Out-Null
+        }
+        $genuine = Get-LadderCompletionVerdict -State $completeState
+        Assert-True $genuine.Complete "a genuinely-passed ladder (all six run healthily) must re-verify as complete; unverified: $($genuine.Unverified -join '; ')"
+        # The forged all-passed state: hand-write six passed entries with run_dir=null.
+        $forgeCompleteFile = Join-Path $tmp "forged_all_passed.json"
+        $forgeComplete = New-LadderState
+        foreach ($r in $forgeComplete.rungs) {
+            $r.status = "passed"; $r.run_dir = $null; $r.verdict_utc = (Get-Date).ToUniversalTime().ToString("o")
+        }
+        Save-LadderState -State $forgeComplete -StateFile $forgeCompleteFile
+        $forgeCompleteState = Read-LadderState -StateFile $forgeCompleteFile
+        # Get-NextPendingRungName trusts status -> would report "all passed" (null).
+        Assert-True ($null -eq (Get-NextPendingRungName -State $forgeCompleteState)) "the forged state trips the status-only next check (proving the short-circuit would fire)"
+        $forgedVerdict = Get-LadderCompletionVerdict -State $forgeCompleteState
+        Assert-True (-not $forgedVerdict.Complete) "a forged all-passed state (run_dir=null) must NOT re-verify as complete (finding 1)"
+        Assert-True ($forgedVerdict.Unverified.Count -eq 6) "all six forged rungs must be reported unverified"
+        Assert-True (($forgedVerdict.Unverified -join "`n") -match "recorded_run_dir_missing") "the unverified reason must name the missing bound run_dir"
+
+        # 20. RE-GATE2 FINDING 1: completion must enforce the SAME cross-rung
+        #     distinct-attempt invariants as predecessor ordering. Six DISTINCT
+        #     directories cloned from ONE valid attempt (each plan's `rung` rebound,
+        #     all sharing one capture_id/session_id, statuses passed) previously
+        #     re-verified rung-by-rung and returned Complete=true — while
+        #     Test-PredecessorsPassed correctly refused the same state.
+        $cloneSrc = Join-Path $runRoot ("clone_src_" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+        New-FakeCaptureForRung -RunDir $cloneSrc -RungName "synthetic-fault" -ProofKind "synthetic_fault" | Out-Null
+        # Give the source manifest BOTH proof blocks so every per-rung proof
+        # reverify holds on the clones — isolating the cross-rung invariant.
+        $cloneManifestPath = Join-Path $cloneSrc "native_session_manifest.json"
+        $cloneManifest = Get-Content -LiteralPath $cloneManifestPath -Raw | ConvertFrom-Json
+        $cloneManifest | Add-Member -NotePropertyName pause_proof -NotePropertyValue ([pscustomobject]@{ observed_paused = $true; source_unavailable_degrade = $true })
+        $cloneManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $cloneManifestPath -Encoding UTF8
+        $cloneFile = Join-Path $tmp "cloned_identity_complete.json"
+        $cloneState = New-LadderState
+        foreach ($r in $cloneState.rungs) {
+            $dst = Join-Path $runRoot ("clone_" + $r.name + "_" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+            Copy-Item -LiteralPath $cloneSrc -Destination $dst -Recurse -Force
+            $dstPlanPath = Join-Path $dst "production_capture_plan.json"
+            $dstPlan = Get-Content -LiteralPath $dstPlanPath -Raw | ConvertFrom-Json
+            $dstPlan.rung = $r.name
+            $dstPlan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $dstPlanPath -Encoding UTF8
+            $r.status = "passed"; $r.run_dir = $dst; $r.verdict_utc = (Get-Date).ToUniversalTime().ToString("o")
+        }
+        Save-LadderState -State $cloneState -StateFile $cloneFile
+        $cloneReloaded = Read-LadderState -StateFile $cloneFile
+        # Sanity: each clone INDIVIDUALLY re-verifies (else this test would not
+        # isolate the cross-rung invariant — the exact re-gate2 reproduction).
+        $cloneSoloVerdict = Test-RungBoundVerdict -State $cloneReloaded -Name "six-hour-soak"
+        Assert-True $cloneSoloVerdict.Passed "each clone must individually re-verify (test 20 precondition); reason: $($cloneSoloVerdict.Reason)"
+        Assert-True (-not (Test-PredecessorsPassed -State $cloneReloaded -Name "six-hour-soak").Ok) "predecessor ordering must refuse the cloned-identity state (verified-good baseline)"
+        $cloneVerdict = Get-LadderCompletionVerdict -State $cloneReloaded
+        Assert-True (-not $cloneVerdict.Complete) "completion must refuse six rungs cloned from ONE attempt exactly like predecessor ordering (re-gate2 finding 1)"
+        Assert-True (($cloneVerdict.Unverified -join "`n") -match "identity_shared") "the completion refusal must name the shared capture/session identity"
+
+        # 21. RE-GATE2 FINDING 2: the informational status display must never print
+        #     "[PASS]" from persisted (unvalidated) statuses. Reuse the forged
+        #     all-passed state from 19: its display must label recorded passes as
+        #     RECORDED-only. (Write-Host emits on the information stream; 6>&1.)
+        $statusOut = (Show-LadderStatus -State $forgeCompleteState 6>&1 | Out-String)
+        Assert-True ($statusOut -notmatch "\[PASS\]") "status display must not print [PASS] from unvalidated persisted statuses (re-gate2 finding 2)"
+        Assert-True ($statusOut -match "RECORDED passed") "status display must label recorded passes as RECORDED-only"
+        Assert-True ($statusOut -match "not revalidated") "status display must state that recorded statuses are not revalidated"
+
+        # 22. RE-GATE2 FINDING 5: the fresh-run-dir allocation must REFUSE a
+        #     pre-existing candidate path. `New-Item -Force` silently reused the
+        #     directory WITHOUT clearing it, so a planted stale_artifact.json
+        #     survived into the graded dir.
+        $plantedDir = Join-Path $runRoot ("planted_" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+        New-Item -ItemType Directory -Path $plantedDir | Out-Null
+        Set-Content -LiteralPath (Join-Path $plantedDir "stale_artifact.json") -Value '{"planted":true}' -Encoding UTF8
+        $threwPlanted = $false; $plantedMsg = ""
+        try { Assert-LadderFreshRunDir -Path $plantedDir } catch { $threwPlanted = $true; $plantedMsg = $_.Exception.Message }
+        Assert-True $threwPlanted "allocating a fresh run dir over a pre-existing directory must throw fail-closed (re-gate2 finding 5)"
+        Assert-True ($plantedMsg -match "already exists") "the refusal must name the pre-existing candidate (got: $plantedMsg)"
+        Assert-True (Test-Path -LiteralPath (Join-Path $plantedDir "stale_artifact.json") -PathType Leaf) "the planted dir must be left untouched (never cleared or adopted)"
+        $freshCandidate = Join-Path $runRoot ("fresh_" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+        Assert-LadderFreshRunDir -Path $freshCandidate
+        Assert-True (Test-Path -LiteralPath $freshCandidate -PathType Container) "a non-existing candidate must be created (pass-after baseline)"
+        Assert-True (@(Get-ChildItem -LiteralPath $freshCandidate -Force).Count -eq 0) "the freshly created run dir must be empty"
+
+        # 23. RE-GATE2 FINDING 4: attempt identity must come from GENUINE JSON
+        #     strings. A plan with numeric capture_id (123) or a manifest with a
+        #     boolean session_id previously string-coerced into a usable identity
+        #     ("cap=123|sess=true") — and an unreadable identity SKIPPED dedup
+        #     entirely. Wrong type must now refuse fail-closed at the dedup site.
+        $badIdFile = Join-Path $tmp "bad_identity_types.json"
+        $badIdState = Read-LadderState -StateFile $badIdFile
+        $v = Invoke-LadderRung -State $badIdState -Name "synthetic-fault" -StateFile $badIdFile -CaptureFunction $healthy -RunRoot $runRoot
+        Assert-True $v.Passed "synthetic-fault should pass before its plan identity is corrupted"
+        $badIdDir = [string](Get-StateRungByName -State $badIdState -Name "synthetic-fault").run_dir
+        $badPlanPath = Join-Path $badIdDir "production_capture_plan.json"
+        $badPlan = Get-Content -LiteralPath $badPlanPath -Raw | ConvertFrom-Json
+        $badPlan.capture_id = 123
+        $badPlan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $badPlanPath -Encoding UTF8
+        $badGuard = Test-PredecessorsPassed -State $badIdState -Name "paused-short-proof"
+        Assert-True (-not $badGuard.Ok) "a numeric plan capture_id must refuse fail-closed, not silently skip identity dedup (re-gate2 finding 4)"
+        Assert-True ($badGuard.Reason -match "capture_id_not_a") "the refusal must name the non-string capture_id (got: $($badGuard.Reason))"
+        # Variant: boolean manifest session_id (restore the plan's string capture_id
+        # first so ONLY the manifest field is wrong-typed).
+        $badPlan2 = Get-Content -LiteralPath $badPlanPath -Raw | ConvertFrom-Json
+        $badPlan2.capture_id = "capture-restored-string"
+        $badPlan2 | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $badPlanPath -Encoding UTF8
+        $badManifestPath = Join-Path $badIdDir "native_session_manifest.json"
+        $badManifest = Get-Content -LiteralPath $badManifestPath -Raw | ConvertFrom-Json
+        $badManifest.session_id = $true
+        $badManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $badManifestPath -Encoding UTF8
+        $badGuard2 = Test-PredecessorsPassed -State $badIdState -Name "paused-short-proof"
+        Assert-True (-not $badGuard2.Ok) "a boolean manifest session_id must refuse fail-closed (re-gate2 finding 4)"
+        Assert-True ($badGuard2.Reason -match "session_id_not_a") "the refusal must name the non-string session_id (got: $($badGuard2.Reason))"
+
     } finally {
         # Clear the in-process validator seam so it never leaks past the self-test.
         $script:LadderArtifactValidatorOverride = $priorOverride
@@ -1362,7 +1709,16 @@ $targetRung = $Rung
 if ($Rung -eq "next") {
     $targetRung = Get-NextPendingRungName -State $state
     if ($null -eq $targetRung) {
-        Write-Host "all ladder rungs already passed; nothing to run."
+        # Fail-closed (finding 1): every rung's `status` says passed, but that field is
+        # hand-editable. Do NOT declare the ladder complete on the persisted statuses
+        # alone — re-verify every rung against its bound run_dir artifacts through the
+        # authoritative in-process validator. A forged all-passed state (status=passed,
+        # run_dir=null) must ERROR here, not silently exit 0.
+        $completion = Get-LadderCompletionVerdict -State $state
+        if (-not $completion.Complete) {
+            throw ("refusing to certify the ladder complete: $($completion.Unverified.Count) rung(s) claim passed but do not re-verify against their bound artifacts (fail-closed): " + ($completion.Unverified -join '; '))
+        }
+        Write-Host "all ladder rungs already passed (re-verified in-process against their bound artifacts); nothing to run."
         exit 0
     }
 }
