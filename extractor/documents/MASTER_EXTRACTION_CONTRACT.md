@@ -29,7 +29,7 @@ multiplayer world. Stable identities, joins, timing, provenance, and completenes
 to interpret that state are also in scope. Coverage may use one-time/static records, deltas, or
 events rather than repeating unchanged values every hour.
 
-**Host-local presentation exclusion:** STATUS: PROPOSED — owner ratification owed (2026-07-16); aligns
+**Host-local presentation exclusion:** STATUS: RATIFIED (owner, 2026-07-16 — "It makes literally no sense to include the host local UI state... completely useless in the replay data"); host-local presentation state is normatively OUT of production capture scope. (Previously: aligns
 with the standing observer-interaction rulings. Camera/viewport state, selections, hover targets, open
 screens/dialogs, local map-mode and layer toggles, outliner state, tooltips, drag state, and other
 mouse/keyboard/UI preferences are explicitly out of production extractor scope. This remains true
@@ -132,6 +132,26 @@ they do not block extractor completion and must not be implemented or edited fro
   The tracked machine-readable probe only
   contains paused `[1,1,1]` samples and explicitly leaves the speed flip unverified; synthetic or
   asserted control metadata is not live proof.
+  **WIRE SEMANTIC RATIFIED (owner 2026-07-16):** canonical stream emits the **raw slot `0..4`**
+  (zero-loss engine truth); the displayed `1..5` is a derived consumer-side projection
+  (`displayed = raw + 1`), never a stored/authoritative field. See dossier I1_D57_SPEED_EVIDENCE §7.
+
+### Owner sign-offs — main.rs-refactor bundled behavior changes (RATIFIED 2026-07-16)
+The wave-0 gate found the ~12k-line main.rs extraction bundled four intentional decode-semantics
+changes (features, not verbatim moves); all reviewed, tested, fail-closed-consistent, and now
+owner-acknowledged:
+- **d49/d51 global-status masking** — global `status_flags_or` now applies a per-domain
+  interpretation mask before OR-ing, so a domain-local bit (e.g. naval "location candidate
+  unvalidated") no longer pollutes the global stream-health word. Accuracy only; no data change.
+- **FRD/d45 depth schema v3** — the focus/decisions record header carries an explicit authoritative
+  status word; v2 still accepted (all three in-tree decoders take both). Self-describing per-record
+  health; backward compatible.
+- **tech-sharing TSG2 migration** — the hand-rolled d-group parser replaced by the shared
+  `compact_contract` decoder (dynamic-bonus rows); legacy parser retained as `_legacy`. One
+  implementation, no drift.
+- **naval d49 re-promotion guard** — if the collector omits the "location unvalidated" badge but the
+  row evidence proves it, the reader re-applies the badge + records a parse error. Fail-closed
+  strengthening; an unverified location can never read as verified.
 - [ ] A4. Air combat lifecycle: sortie lifecycle / kill attribution / last_killer (d42)
 - [ ] A5. Ace kill_type / wounded variance (d46)
 - [ ] A6. Convoy/port disrupted-supply PRESSURE (nonzero) — blockaded island / cut pocket (d44)

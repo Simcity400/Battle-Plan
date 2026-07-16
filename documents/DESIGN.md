@@ -45,7 +45,7 @@ part of the production recording loop.
 
 ## Production Capture Scope
 
-STATUS: PROPOSED — owner ratification owed (2026-07-16); aligns with the standing observer-interaction rulings.
+STATUS: RATIFIED (owner, 2026-07-16 — "It makes literally no sense to include the host local UI state... completely useless in the replay data"); host-local presentation state is normatively OUT of production capture scope.
 
 The production replay records the authoritative multiplayer world, not a recording of the host's
 desktop or local client session. The default inclusion rule is:
