@@ -29,7 +29,8 @@ multiplayer world. Stable identities, joins, timing, provenance, and completenes
 to interpret that state are also in scope. Coverage may use one-time/static records, deltas, or
 events rather than repeating unchanged values every hour.
 
-**Host-local presentation exclusion:** camera/viewport state, selections, hover targets, open
+**Host-local presentation exclusion:** STATUS: PROPOSED — owner ratification owed (2026-07-16); aligns
+with the standing observer-interaction rulings. Camera/viewport state, selections, hover targets, open
 screens/dialogs, local map-mode and layer toggles, outliner state, tooltips, drag state, and other
 mouse/keyboard/UI preferences are explicitly out of production extractor scope. This remains true
 when such state is reachable in the host process: it describes only the host client's presentation,
@@ -132,10 +133,13 @@ they do not block extractor completion and must not be implemented or edited fro
 - [ ] A10. Running-operation owner/target contrast (operative loc ≠ target) (d53)
 - [ ] A11. Spy-network / intel-map percentages, same-tick (d53)
 - [ ] A12. Decision numeric state/province targets + cooldowns (d45)
-- [x] A13. Host-local scripted-GUI open/widget state — explicitly out of production scope under
-  the host-local presentation exclusion. Authoritative scripted flags, variables, delayed events,
-  and direct state-changing hooks remain in scope through d51/d64/X10; only the local widget state
-  is excluded
+- [ ] A13. Scripted-GUI open/state (d51) — OPEN. Only the host-local widget-state portion (which
+  panel is open, scroll/selection inside it) is excluded, and only under the *proposed*
+  presentation-scope ruling that is still owed owner ratification (2026-07-16). The authoritative
+  scripted-GUI state remainder is in scope and still owed: the standing owner scope ruling names
+  country scripted-GUIs (GER_inner_circle, JAP_imperial_influence, RAJ_famine) as in-scope, and
+  their authoritative scripted flags, variables, delayed events, and direct state-changing hooks are
+  tracked via X10 and d51/d64 (d51-d64) and remain open
 - [ ] A14. Construction repair semantics/speed — damaged building repairing (d48)
 - [ ] A15. MP chat/messages, hotjoin, tag-switch — 2-player same-build MP (d57)
 - [ ] A16. Subject autonomy CHANGE dynamics and `CSubjectRelation+0x60` ratio semantics — static
@@ -305,8 +309,11 @@ need an evidence-backed `crack-if-cheap`, `redundant`, `derived`, or `skip` disp
   direct-`rustc` parser; its stale README invocation is replaced by its manifest-local Cargo gate
 - [ ] F1b. The integrated workspace check and almost all targets are green, including `fold_check`
   17/17, production scripts 46, `live_capture` 770 passed/6 skipped, and `game_defs` 162 passed/20
-  skipped. Closure remains blocked by one `replay_decoder` fixture failure (20 passed/1 failed) and
-  the `snapshot` Windows Developer Mode namespace-capability arm (3 passed/1 failed/1 ignored)
+  skipped. Closure remains blocked by one `replay_decoder` fixture failure (20 passed/1 failed): the
+  failing test is `replay_decoder::tests::perf_payload_and_announced_trailer_are_exact` (PERF
+  FRAME_END domain-count certification against a stale fixture — fix in flight this wave). `snapshot`
+  is NOT a blocker here: it is 39/39 green, and its Windows Developer-Mode namespace arm is an
+  env-gated `#[ignore]` test (skipped, not red)
 - [x] F2. Safe production-attempt implementation — unique staged DLL, one injection attempt,
   production latch, sole recorder-pipe authority, and one strict post-capture validator are wired;
   nonzero exit, incomplete roster/hour, bad flags/latch, truncation, decode/fold/container failure,

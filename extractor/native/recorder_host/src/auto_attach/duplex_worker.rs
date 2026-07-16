@@ -1030,7 +1030,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         }
         let frame = match self
             .channel
-            .recv_until(self.startup_deadline, &self.transport_cancellation)
+            .recv_handshake_until(self.startup_deadline, &self.transport_cancellation)
         {
             Ok(frame) => frame,
             Err(error) => {
@@ -2313,17 +2313,52 @@ mod tests {
     }
 
     #[test]
-    fn setup_sink_failure_before_capability_hello_is_terminal_without_dispatch() {
-        let session_bytes = [0x36; 16];
+    fn sink_failure_as_first_handshake_frame_is_terminal_but_structured_and_surfaced() {
+        // Regression: the production control channel is admitted with an empty
+        // capability set, and `SinkSetupFailure`/`SinkTerminalFailure` require
+        // `TRANSPORT_STATUS`. Before this fix the ordinary capability gate poisoned
+        // the channel on a pre-hello sink failure, so the branch that decodes the
+        // structured report was unreachable, `sink_failure()` stayed `None`, and the
+        // report's topology/error class was lost. The handshake must still FAIL, but
+        // the failure must now be structured and reach `self.sink_failure`.
+        for (session_bytes, report) in [
+            ([0x36; 16], setup_sink_failure()),
+            ([0x3E; 16], terminal_sink_failure()),
+        ] {
+            let session_id = SessionId::from_bytes(session_bytes).unwrap();
+            let wire = encode_frame(
+                session_id,
+                0,
+                report.kind.message_kind(),
+                &encode_sink_failure(&report).unwrap(),
+            )
+            .unwrap();
+            let prepared = prepared_with_inbound(session_bytes, wire);
+            let mut session = accept(prepared);
+            assert!(matches!(
+                session.receive_collector_hello(Instant::now()),
+                Err(DuplexWorkerError::SinkFailure(observed)) if observed == report
+            ));
+            assert_eq!(session.sink_failure(), Some(&report));
+            assert_eq!(session.state(), DuplexWorkerState::Failed);
+        }
+    }
+
+    #[test]
+    fn non_sink_capability_gated_kind_before_hello_still_poisons_the_handshake() {
+        // The pre-hello allowance is closed: it admits ONLY the two sink-failure
+        // kinds. A different capability-gated kind (here `HeartbeatProof`, requiring
+        // `HEARTBEAT`) arriving before the hello must still be denied and poison the
+        // channel, so the allowance does not weaken the capability gate in general.
+        let session_bytes = [0x3F; 16];
         let session_id = SessionId::from_bytes(session_bytes).unwrap();
-        let report = setup_sink_failure();
-        let wire = encode_frame(
-            session_id,
-            0,
-            report.kind.message_kind(),
-            &encode_sink_failure(&report).unwrap(),
-        )
+        let payload = encode_heartbeat_proof(HeartbeatProof {
+            challenge: [9; 16],
+            last_complete_h4cr_sequence: 0,
+            state: HeartbeatState::Producing,
+        })
         .unwrap();
+        let wire = encode_frame(session_id, 0, MessageKind::HeartbeatProof, &payload).unwrap();
         let prepared = prepared_with_inbound(session_bytes, wire);
         let mut session = accept(prepared);
         assert!(matches!(

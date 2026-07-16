@@ -119,6 +119,23 @@ pub(crate) fn classify_process_trace(class: &str, pid: u32, name: &str) -> Optio
     }
 }
 
+/// Build the [`WmiPoll`] for a delivered process-trace event, fail-closed on an
+/// unreadable PID. `Some(pid)` yields the classified `Event`; `None` (the
+/// embedded `TargetInstance.ProcessId` could not be read) is a malformed event
+/// envelope — the same class of corruption as the missing / wrong-typed
+/// `TargetInstance` cases in the COM pump — and degrades to `Lost` rather than
+/// fabricating a `pid = 0` event that would poison the coordinator queue with a
+/// bogus zero-pid Start/Stop. The `Lost` surfaces through the module's real
+/// diagnostic channel: the watcher re-subscribes and health drops to `Degraded`
+/// (read by the coordinator). Pure and cross-platform so it is unit-tested
+/// directly without COM.
+pub(crate) fn event_or_lost(class: String, pid: Option<u32>, name: String) -> WmiPoll {
+    match pid {
+        Some(pid) => WmiPoll::Event { class, pid, name },
+        None => WmiPoll::Lost,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IterOutcome {
     /// Made progress or idled; loop again immediately (the pump's own poll
@@ -793,11 +810,14 @@ mod com {
                     return WmiPoll::Lost;
                 }
                 let target_obj = target.val0 as *mut IWbemClassObject;
-                let pid = get_u32(target_obj, "ProcessId").unwrap_or(0);
+                let pid = get_u32(target_obj, "ProcessId");
                 let name = get_string(target_obj, "Name").unwrap_or_default();
                 VariantClear(&mut target);
                 ((*(*obj).vtbl).release)(obj);
-                WmiPoll::Event { class, pid, name }
+                // Never fabricate a pid: an unreadable ProcessId degrades to
+                // `Lost` (see `event_or_lost`) instead of emitting a bogus
+                // pid = 0 Start/Stop into the coordinator queue.
+                super::event_or_lost(class, pid, name)
             }
         }
     }
@@ -889,6 +909,48 @@ mod tests {
             None
         );
         assert_eq!(classify_process_trace("", 1, "x").as_ref(), None);
+    }
+
+    // ---- event_or_lost (pure fail-closed PID gate) -------------------
+
+    #[test]
+    fn event_or_lost_builds_event_for_readable_pid() {
+        assert_eq!(
+            event_or_lost("Win32_ProcessStartTrace".into(), Some(42), "hoi4.exe".into()),
+            WmiPoll::Event {
+                class: "Win32_ProcessStartTrace".into(),
+                pid: 42,
+                name: "hoi4.exe".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn unreadable_pid_degrades_to_lost_never_fabricates_pid() {
+        // Regression: previously the COM poll did `get_u32(..).unwrap_or(0)` and
+        // emitted a bogus `pid = 0` Start/Stop. An unreadable ProcessId must now
+        // degrade to `Lost` (fail-closed) rather than fabricate an event.
+        assert_eq!(
+            event_or_lost("Win32_ProcessStopTrace".into(), None, "hoi4.exe".into()),
+            WmiPoll::Lost
+        );
+    }
+
+    #[test]
+    fn unreadable_pid_emits_no_event_and_degrades_health() {
+        // Drive the `Lost` through a real watcher iteration: no event reaches the
+        // coordinator queue and health drops to `Degraded` — the module's real,
+        // consumed diagnostic channel.
+        let shared = SharedWmiState::new();
+        shared.set_health(WatcherHealth::Healthy);
+        let poll = event_or_lost("Win32_ProcessStartTrace".into(), None, "hoi4.exe".into());
+        let mut pump = FakePump::new(vec![], vec![poll]);
+        let mut connected = true;
+        let out = pump_iteration(&mut pump, &mut connected, &shared);
+        assert_eq!(out, IterOutcome::Backoff);
+        assert!(shared.drain().is_empty());
+        assert_eq!(shared.health(), WatcherHealth::Degraded);
+        assert!(!connected);
     }
 
     // ---- fake WMI layer ----------------------------------------------

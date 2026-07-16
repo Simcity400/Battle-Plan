@@ -219,7 +219,13 @@ function Test-ProductionCaptureArtifacts {
         if ($expectedDataIds -contains $id -and [int64](Get-ObjectProperty $row "data_record_count") -ne $frameCount) { Add-CaptureProblem $problems "domain_${id}_data_record_count_mismatch" }
         $rawFlags = [uint32](Get-ObjectProperty $row "status_flags_or")
         $effectiveFlags = Get-ObjectProperty $row "effective_failure_status_flags_or"
-        if (($rawFlags -band $script:CanonicalCompactFailureMask) -ne 0 -and $null -ne $effectiveFlags -and ([uint32]$effectiveFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
+        if ($null -eq $effectiveFlags) {
+            # Fail-closed: an absent/unreadable per-domain effective-failure field
+            # means we cannot evaluate whether this domain masked a real failure,
+            # so it is a validation FAILURE, not a silent pass.
+            Add-CaptureProblem $problems "domain_${id}_effective_failure_status_flags_or_missing"
+        }
+        elseif (($rawFlags -band $script:CanonicalCompactFailureMask) -ne 0 -and ([uint32]$effectiveFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
             Add-CaptureProblem $problems "domain_${id}_effective_failure_status"
         }
     }

@@ -8482,7 +8482,12 @@ fn summarize_compact_stream_file_with_identity_mode(
         )
         .map_err(|e| format!("read compact stream payload failed: {e}"))?;
         let available_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_bytes);
-        if payload_bytes == payload_len {
+        // A fully-framed record (full payload read) still gets the stateful
+        // validator's admission check — but ONLY while that validator is live.
+        // A localizable per-record failure degrades (below) and leaves the
+        // validator permanently terminal by design, so every later record must
+        // skip it and be accounted directly by summarize_compact_stream_chunk.
+        if payload_bytes == payload_len && !stream_validator.is_terminal() {
             let payload = &record[COMPACT_RECORD_HEADER_LEN..record_len];
             match stream_validator.validate_record(&parsed_header, payload) {
                 Ok(compact_contract::stream_validator::AcceptedRecordKind::CampaignIdentity) => {
@@ -8491,7 +8496,15 @@ fn summarize_compact_stream_file_with_identity_mode(
                     continue;
                 }
                 Ok(compact_contract::stream_validator::AcceptedRecordKind::Ordinary) => {}
-                Err(error) => {
+                // CID1 admission authority (the IdentityV1 sequence-zero phase) and
+                // the already-terminal sentinel are the only NON-localizable failures
+                // reachable here: identity placement can no longer be trusted, so we
+                // fail closed exactly like master's framing stop — drain the reader
+                // and hard-break, surfacing a compressed-residual framing error.
+                Err(
+                    error @ (compact_contract::stream_validator::StreamValidationError::InvalidCampaignIdentity(_)
+                    | compact_contract::stream_validator::StreamValidationError::Terminal),
+                ) => {
                     let terminal_error = format!(
                         "offset {decoded_offset}: stateful stream validation failed before dispatch: {error}"
                     );
@@ -8515,6 +8528,16 @@ fn summarize_compact_stream_file_with_identity_mode(
                     }
                     break;
                 }
+                // Localizable per-record semantics — unknown record type/flag,
+                // malformed PERF grammar, unannounced/trailing PDU1 bytes,
+                // reserved domain zero, sequence gap/reuse. The record stays fully
+                // framed, so ZERO DATA LOSS mandates a per-record degrade rather
+                // than discarding the rest of the stream. Fall through to
+                // summarize_compact_stream_chunk, which re-derives the localizable
+                // parse/ordering error, skips accounting for THIS record (matching
+                // master), and lets the outer loop keep summarizing every
+                // subsequent record.
+                Err(_) => {}
             }
         }
         summarize_compact_stream_chunk(
@@ -11113,6 +11136,154 @@ mod tests {
         .expect_err("terminal validation failure must still verify compressed EOF");
         assert!(error.contains("stateful stream validation failed before dispatch"));
         assert!(error.contains("drain compact stream after terminal validation failure failed"));
+    }
+
+    // ZERO DATA LOSS regression: a single localizable per-record semantic anomaly
+    // (a DOMAIN_PERF record carrying one unannounced trailer byte) must degrade
+    // that one record and STILL summarize every subsequent record. Before the
+    // per-record-degrade fix, the stateful validator's Err branch pushed one
+    // parse_error, drained the reader to a sink, and broke — discarding records
+    // 3 and 4 below (record_count would collapse to 1). This test fails on that
+    // behaviour and passes once semantic errors degrade per-record.
+    #[test]
+    fn legacy_file_summary_degrades_semantic_record_and_keeps_summarizing() {
+        use compact_contract::stream_validator::StreamIdentityMode;
+
+        let dir = TmpDir::new("legacy_semantic_degrade");
+        let raw_path = dir.join("semantic_degrade.bin");
+
+        // 40-byte canonical DOMAIN_PERF base (reserved word at [36..40] is zero).
+        let valid_perf_payload = vec![0u8; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN];
+        // Same base plus ONE unannounced trailer byte with no PERF trailer flag:
+        // a localizable "unannounced trailer byte(s)" semantics failure.
+        let mut anomalous_perf_payload = valid_perf_payload.clone();
+        anomalous_perf_payload.push(0);
+        let frame_end_payload = vec![0u8; 32];
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            101,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &anomalous_perf_payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            102,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
+            103,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &valid_perf_payload,
+        );
+        fs::write(&raw_path, &raw).unwrap();
+
+        let summary =
+            summarize_compact_stream_file_with_identity_mode(&raw_path, StreamIdentityMode::Legacy)
+                .unwrap();
+
+        // Record 2 (the anomaly) is degraded: one localizable parse_error, and it
+        // is NOT accounted (matching master's summarize_compact_stream_chunk).
+        assert_eq!(
+            summary.parse_errors.len(),
+            1,
+            "exactly one degraded record: {:?}",
+            summary.parse_errors
+        );
+        assert!(
+            summary.parse_errors[0].contains("unannounced trailer"),
+            "{:?}",
+            summary.parse_errors
+        );
+        // Records 1, 3, 4 are accounted — the semantic anomaly did NOT truncate
+        // the stream summary.
+        assert_eq!(summary.record_count, 3, "records 1, 3, 4 accounted");
+        assert_eq!(summary.frame_end_record_count, 2, "records 1 and 3");
+        assert_eq!(summary.domain_perf_record_count, 1, "record 4 only");
+        assert_eq!(
+            summary.unique_hours,
+            vec![100, 102],
+            "both FRAME_END hours after the anomaly survive"
+        );
+        // Sequences 1..4 stay consecutive across the degraded record.
+        assert!(
+            summary.ordering_errors.is_empty(),
+            "{:?}",
+            summary.ordering_errors
+        );
+        assert_eq!(summary.total_bytes, raw.len());
+    }
+
+    // The complementary invariant: genuine FRAMING corruption (record boundaries
+    // can no longer be trusted) must still fail closed and truncate — a header
+    // whose magic is wrong stops the summary at the last trustworthy record.
+    #[test]
+    fn legacy_file_summary_fails_closed_on_framing_corruption() {
+        use compact_contract::stream_validator::StreamIdentityMode;
+
+        let dir = TmpDir::new("legacy_framing_stop");
+        let raw_path = dir.join("framing_stop.bin");
+        let frame_end_payload = vec![0u8; 32];
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload,
+        );
+        // A full-length header's worth of bytes whose magic is NOT the H4CR magic:
+        // parse_compact_record_header rejects it and the loop must stop, because
+        // record boundaries past this point are untrustworthy.
+        raw.extend_from_slice(&[0xAAu8; COMPACT_RECORD_HEADER_LEN]);
+        // A perfectly valid record that follows the corruption MUST be discarded.
+        append_test_compact_record(
+            &mut raw,
+            2,
+            101,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload,
+        );
+        fs::write(&raw_path, &raw).unwrap();
+
+        let summary =
+            summarize_compact_stream_file_with_identity_mode(&raw_path, StreamIdentityMode::Legacy)
+                .unwrap();
+
+        assert_eq!(
+            summary.record_count, 1,
+            "only the record before the framing corruption is trustworthy"
+        );
+        assert_eq!(summary.frame_end_record_count, 1);
+        assert!(
+            !summary.parse_errors.is_empty(),
+            "framing corruption records a parse_error"
+        );
+        assert_eq!(
+            summary.unique_hours,
+            vec![100],
+            "the post-corruption record is fail-closed discarded"
+        );
     }
 
     #[test]

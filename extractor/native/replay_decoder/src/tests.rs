@@ -75,6 +75,21 @@ fn frame_end_payload() -> Vec<u8> {
     vec![0u8; 32]
 }
 
+/// FRAME_END seal for an hour that emitted `non_probe_perf_domains` distinct
+/// non-probe DOMAIN_PERF domains. The production collector writes one
+/// DOMAIN_PERF record per emitted domain and stamps that same count into both
+/// the emitted- and scheduled-domain seal fields (collector::lib.rs
+/// `append_compact_frame_end_record`, called with `emitted_domains,
+/// emitted_domains`), so the strict boundary check cross-references these
+/// fields against the unique non-probe DOMAIN_PERF domains observed in the
+/// hour. A frame with no PERF records still uses the all-zero `frame_end_payload`.
+fn frame_end_payload_with_perf_domains(non_probe_perf_domains: u32) -> Vec<u8> {
+    let mut p = vec![0u8; 32];
+    p[16..20].copy_from_slice(&non_probe_perf_domains.to_le_bytes());
+    p[20..24].copy_from_slice(&non_probe_perf_domains.to_le_bytes());
+    p
+}
+
 fn perf_payload_with_trailer(name: &str) -> Vec<u8> {
     let mut payload = vec![0u8; 40];
     payload.extend_from_slice(b"PDU1");
@@ -426,7 +441,10 @@ fn perf_payload_and_announced_trailer_are_exact() {
         raw_for(HOUR_A),
         DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
-        &frame_end_payload(),
+        // One non-probe DOMAIN_PERF domain (domain 18) was emitted this hour, so
+        // the production writer seals emitted=scheduled=1; the all-zero payload
+        // would misrepresent the frame as PERF-free and fail the boundary check.
+        &frame_end_payload_with_perf_domains(1),
     );
     let mut cursor = open_reader(Cursor::new(valid.clone()), valid.len() as u64, "fold_check");
     assert_eq!(cursor.by_ref().count(), 1);

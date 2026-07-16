@@ -16,8 +16,9 @@ strings. No live-memory write or code wiring is part of this document. The gener
 2026-07-14**; retain them as triage provenance only and use the two authoritative sources above
 for current status.
 
-**Normative production scope:** every save-serialized datum and authoritative host-side simulation
-fact/event is in scope for semantic coverage. Host-local presentation state is not: camera,
+**Normative production scope:** STATUS: PROPOSED — owner ratification owed (2026-07-16); aligns with
+the standing observer-interaction rulings. Every save-serialized datum and authoritative host-side
+simulation fact/event is in scope for semantic coverage. Host-local presentation state is not: camera,
 viewport, selections, hover targets, open screens/dialogs, map-mode/layer toggles, outliner state,
 tooltips, drag state, and other local UI preferences must not enter production replay data. The
 replay interface owns those choices and reconstructs its UI from captured facts. The historical UI
@@ -1600,6 +1601,9 @@ The table is generated from `countries/GER` as the representative country block.
 Dynamic script key dumps: exact country/global/state `flags` and `variables` token names are in `dynamic_script_keys.json`. They are intentionally not expanded inline because they are content-script instances, not stable engine schema.
 
 ## 5. Authoritative runtime state and excluded host-local presentation census
+
+STATUS: PROPOSED — owner ratification owed (2026-07-16); aligns with the standing observer-interaction
+rulings. This status marker governs the OUT-OF-SCOPE host-local presentation rows below.
 
 These rows are not guaranteed to persist in the save. Authoritative session/runtime facts remain in
 scope when they affect or explain the shared multiplayer world. Host-local presentation state is

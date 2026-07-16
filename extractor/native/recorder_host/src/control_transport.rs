@@ -776,6 +776,39 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
         deadline: ControlDeadline,
         cancellation: &ControlCancellation,
     ) -> Result<ControlFrame, ControlError> {
+        self.recv_frame_until(deadline, cancellation, false)
+    }
+
+    /// Receive the collector's first handshake frame, permitting exactly the two
+    /// authoritative sink-failure kinds in addition to the capability-free
+    /// `CollectorHello`.
+    ///
+    /// A collector whose sink setup fails *before* it can answer with a hello
+    /// legitimately sends `SinkSetupFailure`/`SinkTerminalFailure` as its very
+    /// first control frame. Those two kinds require `TRANSPORT_STATUS`, which is
+    /// not admitted until after a valid hello, so the ordinary [`Self::recv_until`]
+    /// capability gate would poison the channel and discard the structured
+    /// failure report (a capability catch-22). This method opens a closed
+    /// pre-hello window for exactly those two kinds and only while the channel is
+    /// still in its empty-capability handshake state. Every other
+    /// capability-gated kind is still denied and permanently poisons, and the
+    /// window closes the instant any capability is admitted. The handshake still
+    /// fails terminally on such a frame; the fix is that the failure is
+    /// *structured and surfaced* rather than lost.
+    pub fn recv_handshake_until(
+        &mut self,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<ControlFrame, ControlError> {
+        self.recv_frame_until(deadline, cancellation, true)
+    }
+
+    fn recv_frame_until(
+        &mut self,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+        allow_pre_hello_sink_failure: bool,
+    ) -> Result<ControlFrame, ControlError> {
         self.preflight(deadline, cancellation)?;
         if self.next_recv_sequence == u64::MAX {
             return self.fail(ControlError::SequenceExhausted);
@@ -801,7 +834,9 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
             Ok(frame) => frame,
             Err(error) => return self.fail(error),
         };
-        self.assert_capability(frame.kind)?;
+        if !(allow_pre_hello_sink_failure && self.is_pre_hello_receivable_sink_failure(frame.kind)) {
+            self.assert_capability(frame.kind)?;
+        }
         if frame.kind.sender() != self.role.opposite() {
             return self.fail(ControlError::WrongDirection {
                 role: self.role,
@@ -810,6 +845,18 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
         }
         self.next_recv_sequence += 1;
         Ok(frame)
+    }
+
+    /// The closed set of kinds receivable before any capability is admitted:
+    /// exactly the two authoritative sink-failure kinds, and only while the
+    /// channel is still in its empty-capability pre-hello handshake window.
+    fn is_pre_hello_receivable_sink_failure(&self, kind: MessageKind) -> bool {
+        !self.hello_capabilities_admitted
+            && self.capabilities.bits() == 0
+            && matches!(
+                kind,
+                MessageKind::SinkSetupFailure | MessageKind::SinkTerminalFailure
+            )
     }
 
     pub fn is_poisoned(&self) -> bool {
@@ -1756,6 +1803,98 @@ mod tests {
                 assert!(channel.is_poisoned());
             }
         }
+    }
+
+    #[test]
+    fn handshake_receive_admits_only_sink_failure_kinds_before_capabilities() {
+        let cancellation = ControlCancellation::new();
+
+        // Both authoritative sink-failure kinds are receivable on an
+        // empty-capability channel through the handshake receive, even though
+        // they require TRANSPORT_STATUS. CollectorHello (capability-free) also
+        // passes. Every other capability-gated collector kind is still denied
+        // and permanently poisons.
+        for (kind, permitted) in [
+            (MessageKind::SinkSetupFailure, true),
+            (MessageKind::SinkTerminalFailure, true),
+            (MessageKind::CollectorHello, true),
+            (MessageKind::HeartbeatProof, false),
+            (MessageKind::RolloverPropose, false),
+            (MessageKind::IdentityFailure, false),
+        ] {
+            let (session, session_id) = fresh_session();
+            let peer = ControlPeerIdentity {
+                pid: 42,
+                creation_filetime: 9_001,
+            };
+            let admission = ValidatedSessionCapability::admit(
+                session,
+                peer,
+                peer,
+                ControlCapabilities::from_bits(0).unwrap(),
+                ControlCapabilities::from_bits(0).unwrap(),
+            )
+            .unwrap();
+            let wire = encode_frame(session_id, 0, kind, b"").unwrap();
+            let mut channel = DeadlineControlChannel::new(
+                DeadlineMemoryIo {
+                    inbound: wire.into(),
+                    ..DeadlineMemoryIo::default()
+                },
+                EndpointRole::Recorder,
+                admission,
+            );
+            let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+            let result = channel.recv_handshake_until(deadline, &cancellation);
+            if permitted {
+                assert_eq!(result.unwrap().kind, kind);
+                assert!(!channel.is_poisoned());
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ControlError::CapabilityDenied { kind: denied, .. }) if denied == kind
+                ));
+                assert!(channel.is_poisoned());
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_receive_still_denies_sink_failure_without_transport_status() {
+        // The pre-hello allowance lives only in the handshake receive; the
+        // ordinary recv_until path must keep gating the sink-failure kinds.
+        let cancellation = ControlCancellation::new();
+        let (session, session_id) = fresh_session();
+        let peer = ControlPeerIdentity {
+            pid: 42,
+            creation_filetime: 9_001,
+        };
+        let admission = ValidatedSessionCapability::admit(
+            session,
+            peer,
+            peer,
+            ControlCapabilities::from_bits(0).unwrap(),
+            ControlCapabilities::from_bits(0).unwrap(),
+        )
+        .unwrap();
+        let wire = encode_frame(session_id, 0, MessageKind::SinkSetupFailure, b"").unwrap();
+        let mut channel = DeadlineControlChannel::new(
+            DeadlineMemoryIo {
+                inbound: wire.into(),
+                ..DeadlineMemoryIo::default()
+            },
+            EndpointRole::Recorder,
+            admission,
+        );
+        let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            channel.recv_until(deadline, &cancellation),
+            Err(ControlError::CapabilityDenied {
+                kind: MessageKind::SinkSetupFailure,
+                ..
+            })
+        ));
+        assert!(channel.is_poisoned());
     }
 
     #[test]
